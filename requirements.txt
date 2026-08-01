@@ -1,0 +1,42 @@
+# Web
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+streamlit==1.41.1
+
+# DB
+SQLAlchemy==2.0.36
+pydantic==2.10.4
+pydantic-settings==2.7.1
+
+# Scheduler (replaces Celery+Redis for local autonomous mode)
+APScheduler==3.11.0
+
+# Scraping
+yt-dlp==2024.12.13
+playwright==1.49.1
+
+# Video processing (ffmpeg must be on system PATH)
+moviepy==2.1.2
+pillow==11.0.0
+
+# Language detection (for source-language preservation)
+langdetect==1.0.9
+
+# HTTP / utils
+httpx==0.28.1
+python-dotenv==1.0.1
+loguru==0.7.3
+python-multipart==0.0.20
+
+# YouTube API
+google-auth==2.37.0
+google-auth-oauthlib==1.2.1
+google-api-python-client==2.156.0
+
+# Dev / test
+pytest==8.3.4
+
+# Celery is OPTIONAL — only needed if you want to run a separate worker process.
+# For local autonomous mode (default), APScheduler is used instead.
+celery==5.4.0
+redis==5.2.1

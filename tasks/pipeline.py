@@ -1,0 +1,305 @@
+"""Pipeline tasks: scrape → transform → publish.
+
+Each task is a plain Python function. If Celery is available and a broker is
+running, `*_async` variants enqueue. Otherwise, call the function directly.
+"""
+from __future__ import annotations
+
+import logging
+import os
+import tempfile
+from datetime import datetime, timezone
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.analytics import recompute_scores
+from app.config import settings
+from app.db import session_scope
+from app.models import Creator, MetadataDraft, TransformJob, Video, VideoStatus
+from app.publishers import get_publisher
+from app.scrapers import get_scraper
+from app.scrapers.base import ScrapedItem
+from app.transformers import get_transformer
+from app.transformers.ffmpeg_transformer import recipe_from_dict
+from app import discovery, quota
+from app.metadata import generate_metadata, GeneratedMetadata
+
+log = logging.getLogger(__name__)
+
+
+# ---------- Persistence helper ----------
+def persist_scraped_items(items: list[ScrapedItem]) -> tuple[int, int]:
+    """Persist scraped items as pending Videos. Returns (created, skipped)."""
+    created = 0
+    skipped = 0
+    with session_scope() as db:
+        for it in items:
+            existing = db.execute(
+                select(Video).where(Video.source == it.source, Video.source_id == it.source_id)
+            ).scalar_one_or_none()
+            if existing:
+                skipped += 1
+                continue
+            v = Video(
+                source=it.source,
+                source_id=it.source_id,
+                source_url=it.source_url,
+                author=it.author,
+                title=it.title,
+                description=it.description,
+                thumbnail_url=it.thumbnail_url,
+                local_path=it.local_path,
+                views=it.views,
+                likes=it.likes,
+                comments=it.comments,
+                shares=it.shares,
+                duration_sec=it.duration_sec,
+                status=VideoStatus.PENDING,
+                meta=it.meta,
+            )
+            recompute_scores([v])
+            db.add(v)
+            created += 1
+    return created, skipped
+
+
+# ---------- Scrape ----------
+def scrape_task(handles: list[str] | None = None,
+                hashtags: list[str] | None = None,
+                max_per_run: int | None = None) -> dict:
+    """Scrape handles + hashtags and persist new videos (with downloaded mp4)."""
+    handles = handles if handles is not None else settings.handles_list
+    hashtags = hashtags if hashtags is not None else settings.hashtags_list
+    max_per_run = max_per_run or settings.scrape_max_per_run
+
+    with session_scope() as db:
+        discovery.ensure_seed_creators(db, handles)
+        active = discovery.list_active_creators(db, limit=20)
+        all_handles = list({*handles, *[c.handle for c in active if c.handle not in handles]})
+
+    scraper = get_scraper()
+    items: list[ScrapedItem] = []
+    if all_handles:
+        items.extend(scraper.scrape_handles(all_handles, max_per_run, download=not settings.use_mock))
+    if hashtags:
+        items.extend(scraper.scrape_hashtags(hashtags, max_per_run, download=not settings.use_mock))
+
+    created, skipped = persist_scraped_items(items)
+    return {"created": created, "skipped": skipped, "fetched": len(items)}
+
+
+# ---------- Metadata generation ----------
+def generate_metadata_for_video(video_id: str) -> dict:
+    """Generate or refresh LLM metadata for a video, store as MetadataDraft."""
+    with session_scope() as db:
+        v = db.get(Video, video_id)
+        if v is None:
+            return {"ok": False, "error": "video not found"}
+        md = db.execute(
+            select(MetadataDraft).where(MetadataDraft.video_id == video_id)
+        ).scalar_one_or_none()
+        if md is not None and not md.edited:
+            # Regenerate
+            db.delete(md)
+            db.flush()
+        source_title = v.title
+        source_desc = v.description or ""
+        author = v.author
+        platform = v.source
+
+    gen: GeneratedMetadata = generate_metadata(
+        source_title=source_title, source_desc=source_desc,
+        author=author, platform=platform,
+    )
+    with session_scope() as db:
+        # Delete any existing draft (we may have deleted above; do again to be safe)
+        existing = db.execute(
+            select(MetadataDraft).where(MetadataDraft.video_id == video_id)
+        ).scalar_one_or_none()
+        if existing:
+            db.delete(existing)
+            db.flush()
+        md = MetadataDraft(
+            video_id=video_id,
+            title=gen.title,
+            description=gen.description,
+            tags=gen.tags,
+            detected_language=gen.detected_language,
+        )
+        db.add(md)
+    return {
+        "ok": True, "video_id": video_id,
+        "title": gen.title, "description": gen.description[:120],
+        "tags": gen.tags, "language": gen.detected_language,
+        "source": gen.source,
+    }
+
+
+# ---------- Transform ----------
+def transform_task(video_id: str, recipe_dict: dict | None = None) -> dict:
+    """Transform a video into a vertical Shorts-friendly format."""
+    recipe_dict = recipe_dict or {}
+    with session_scope() as db:
+        v = db.get(Video, video_id)
+        if v is None:
+            return {"ok": False, "error": "video not found"}
+        if not v.local_path:
+            v.local_path = _ensure_mock_input(v)
+        v.status = VideoStatus.TRANSFORMING
+        job = TransformJob(
+            video_id=v.id, recipe=recipe_dict, status="running",
+            started_at=datetime.now(timezone.utc),
+        )
+        db.add(job)
+        db.flush()
+        job_id = job.id
+        input_path = v.local_path
+        out_dir = os.path.join(os.path.dirname(input_path) or ".", "transformed")
+        os.makedirs(out_dir, exist_ok=True)
+        output_path = os.path.join(out_dir, f"{v.id}.mp4")
+        v_id = v.id
+
+    try:
+        if settings.use_mock or not _ffmpeg_available():
+            import shutil
+            shutil.copyfile(input_path, output_path)
+        else:
+            transformer = get_transformer()
+            transformer.transform(input_path, output_path, recipe_from_dict(recipe_dict))
+        with session_scope() as db:
+            v = db.get(Video, v_id)
+            job = db.get(TransformJob, job_id)
+            v.transformed_path = output_path
+            v.status = VideoStatus.TRANSFORMED
+            v.transformed_at = datetime.now(timezone.utc)
+            job.status = "done"
+            job.output_path = output_path
+            job.finished_at = datetime.now(timezone.utc)
+        # Pre-generate metadata so it's ready at publish time
+        try:
+            generate_metadata_for_video(v_id)
+        except Exception as e:
+            log.warning("metadata gen failed for %s: %s", v_id, e)
+        return {"ok": True, "video_id": v_id, "output_path": output_path}
+    except Exception as e:
+        log.exception("transform failed")
+        with session_scope() as db:
+            v = db.get(Video, v_id)
+            job = db.get(TransformJob, job_id)
+            v.status = VideoStatus.FAILED
+            v.error = f"transform: {e}"
+            job.status = "failed"
+            job.error = str(e)
+            job.finished_at = datetime.now(timezone.utc)
+        return {"ok": False, "error": str(e)}
+
+
+def _ffmpeg_available() -> bool:
+    import shutil
+    return shutil.which("ffmpeg") is not None
+
+
+# ---------- Publish ----------
+def publish_task(video_id: str, meta: dict | None = None) -> dict:
+    """Publish the transformed video to YouTube. Uses MetadataDraft if available."""
+    meta = meta or {}
+    with session_scope() as db:
+        v = db.get(Video, video_id)
+        if v is None:
+            return {"ok": False, "error": "video not found"}
+        if not v.transformed_path:
+            return {"ok": False, "error": "video not transformed yet"}
+        if quota.remaining(db) <= 0:
+            return {"ok": False, "error": "daily quota exhausted"}
+        v.status = VideoStatus.PUBLISHING
+        v_id = v.id
+        file_path = v.transformed_path
+
+        # Load metadata draft (LLM-generated or user-edited)
+        md = db.execute(
+            select(MetadataDraft).where(MetadataDraft.video_id == video_id)
+        ).scalar_one_or_none()
+        if md:
+            title = meta.get("title") or md.title
+            description = meta.get("description") or md.description
+            tags = meta.get("tags") or md.tags
+        else:
+            title = meta.get("title") or f"{v.title} #shorts"
+            description = meta.get("description") or v.description or ""
+            tags = meta.get("tags") or settings.tags_list
+        privacy = meta.get("privacy") or settings.youtube_default_privacy
+
+    try:
+        publisher = get_publisher()
+        result = publisher.upload(
+            file_path=file_path,
+            title=title, description=description, tags=tags,
+            category=settings.youtube_default_category,
+            privacy=privacy,
+        )
+        with session_scope() as db:
+            v = db.get(Video, v_id)
+            v.youtube_video_id = result.video_id
+            v.status = VideoStatus.PUBLISHED
+            v.published_at = datetime.now(timezone.utc)
+            quota.consume_one(db, note=f"video {v_id}")
+            # Boost the source creator
+            if v.author:
+                discovery.boost_creator(db, v.source, v.author, amount=1.0)
+        return {"ok": True, "video_id": v_id, "youtube_id": result.video_id}
+    except Exception as e:
+        log.exception("publish failed")
+        with session_scope() as db:
+            v = db.get(Video, v_id)
+            v.status = VideoStatus.FAILED
+            v.error = f"publish: {e}"
+        return {"ok": False, "error": str(e)}
+
+
+# ---------- Mock input helper ----------
+def _ensure_mock_input(v: Video) -> str:
+    """Create a tiny black mp4 so transform/publish can run in mock mode."""
+    tmp_dir = os.path.join(tempfile.gettempdir(), "doomscroller_inputs")
+    os.makedirs(tmp_dir, exist_ok=True)
+    path = os.path.join(tmp_dir, f"{v.id}.mp4")
+    if os.path.exists(path):
+        return path
+    import subprocess, shutil
+    if shutil.which("ffmpeg"):
+        subprocess.run(
+            ["ffmpeg", "-y", "-f", "lavfi", "-i",
+             f"color=c=black:s={settings.transform_width}x{settings.transform_height}:d=3",
+             "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+             "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+             "-c:a", "aac", path],
+            check=True, capture_output=True,
+        )
+    else:
+        open(path, "wb").close()
+    return path
+
+
+# ---------- Optional Celery wrappers ----------
+try:
+    from celery import shared_task  # type: ignore
+
+    scrape_task_async = shared_task(name="tasks.pipeline.scrape_task")(scrape_task)
+    transform_task_async = shared_task(name="tasks.pipeline.transform_task")(transform_task)
+    publish_task_async = shared_task(name="tasks.pipeline.publish_task")(publish_task)
+except Exception:
+    # Celery not available — async variants fall back to sync via .delay() shim
+    class _SyncDelay:
+        def __init__(self, fn):
+            self.fn = fn
+        def delay(self, *a, **kw):
+            return self.fn(*a, **kw)
+        def apply(self, *a, **kw):
+            class _R:
+                def __init__(self, v): self.v = v
+                def get(self, **_): return self.v
+            return _R(self.fn(*a, **kw))
+
+    scrape_task_async = _SyncDelay(scrape_task)
+    transform_task_async = _SyncDelay(transform_task)
+    publish_task_async = _SyncDelay(publish_task)
