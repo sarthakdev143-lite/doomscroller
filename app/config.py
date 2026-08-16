@@ -41,9 +41,12 @@ class Settings(BaseSettings):
 
     # Scraping
     target_handles: str = '["@khaby.lame","@charlidamelio","@mrbeast","@bellapoarch","@addisonre","@zachking","@kimberly.loaiza","@fifaworldcup","@realmadrid","@bts_official_bighit","@therock","@willsmith","@domelipa","@billieeilish","@cznburak","@lamine.yamal","@jasonderulo","@kyliejenner","@selenagomez","@kylizzlemynizzl"]'
-    target_hashtags: str = '["fyp","viral","shorts","reels","snapchat"]'
-    enabled_platforms: str = '["tiktok","instagram","reddit","snapchat"]'
+    target_hashtags: str = '["reels","shorts","viral","trending","entertainment","spotlight"]'
+    enabled_platforms: str = '["instagram","snapchat","youtube"]'
     proxy_url: str = ""
+    # Browser cookies for yt-dlp (e.g. "edge" or "edge,Default" or "chrome,Profile 1")
+    # Leave empty to skip cookie extraction.
+    cookies_from_browser: str = ""
 
     # Storage
     content_dir: str = "./content"
@@ -131,7 +134,7 @@ class Settings(BaseSettings):
         try:
             return [str(x) for x in json.loads(self.enabled_platforms or "[]")]
         except Exception:
-            return ["tiktok", "reddit", "instagram"]
+            return ["instagram", "snapchat", "youtube"]
 
     @property
     def tags_list(self) -> List[str]:

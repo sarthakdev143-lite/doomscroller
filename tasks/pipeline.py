@@ -77,12 +77,26 @@ def _download_with_yt_dlp(items: list[ScrapedItem]) -> None:
 
 
 # ---------- Persistence helper ----------
+# Source priority: Reels + Spotlight bubble to the top of the queue.
+# Higher value = bigger engagement boost after scoring.
+SOURCE_PRIORITY: dict[str, float] = {
+    "instagram": 0.30,   # Reels — primary target
+    "snapchat": 0.30,    # Spotlight — primary target
+    "youtube": 0.10,     # Shorts only — secondary
+    "reddit": 0.0,
+}
+
+
 def persist_scraped_items(items: list[ScrapedItem]) -> tuple[int, int]:
     """Persist scraped items as pending Videos. Returns (created, skipped)."""
     created = 0
     skipped = 0
     with session_scope() as db:
         for it in items:
+            # Hard quality gate: reject stubs, slideshows, low-res garbage
+            if not _is_quality_short(it):
+                skipped += 1
+                continue
             existing = db.execute(
                 select(Video).where(Video.source == it.source, Video.source_id == it.source_id)
             ).scalar_one_or_none()
@@ -107,6 +121,9 @@ def persist_scraped_items(items: list[ScrapedItem]) -> tuple[int, int]:
                 meta=it.meta,
             )
             recompute_scores([v])
+            # Boost primary sources (Reels, Spotlight) so they surface first
+            priority = SOURCE_PRIORITY.get(v.source, 0.0)
+            v.engagement_score = min(1.0, v.engagement_score + priority)
             db.add(v)
             created += 1
     return created, skipped
@@ -133,7 +150,11 @@ def scrape_task(handles: list[str] | None = None,
     snap_handles, other_handles = _split_handles_by_platform(all_handles)
 
     default_scraper = get_scraper()
-    snap_scraper = SnapchatScraper()
+    try:
+        from app.scrapers.snapchat_scraper import SnapchatScraper
+        snap_scraper = SnapchatScraper()
+    except Exception:
+        snap_scraper = None
     items: list[ScrapedItem] = []
 
     # 1. Scrape non-Snapchat handles with the default scraper (yt-dlp / mock)
@@ -144,17 +165,29 @@ def scrape_task(handles: list[str] | None = None,
         items.extend(default_scraper.scrape_handles(other_handles, max_per_run, download=False))
 
     # 2. Scrape Snapchat handles (enumerate URLs only; download step below)
-    if snap_handles:
+    if snap_handles and snap_scraper is not None:
         per = max(1, max_per_run // max(len(snap_handles) + len(other_handles), 1))
         snap_items = snap_scraper.scrape_handles(snap_handles, per * len(snap_handles), download=False)
         items.extend(snap_items)
 
-    # 3. Hashtags (only with the default scraper)
+    # 3. Hashtags
+    # 3a. Snapchat hashtags -> Spotlight page (CDN URLs; download later)
+    if hashtags and snap_scraper is not None:
+        per_snap = max(1, max_per_run // (len(hashtags) * 2))
+        items.extend(
+            snap_scraper.scrape_hashtags(
+                hashtags, per_snap * len(hashtags), download=False
+            )
+        )
+    # 3b. Default hashtags (YouTube Shorts / generic yt-dlp search)
     if hashtags:
         per = max(1, max_per_run // max(len(snap_handles) + len(other_handles) + len(hashtags), 1))
         items.extend(default_scraper.scrape_hashtags(hashtags, per * len(hashtags), download=not settings.use_mock))
 
-    # 4. Download any items that still lack local_path (e.g. Snapchat URLs)
+    # 4a. Snapchat CDN (yt-dlp doesn't understand bolt-gcdn / cf-st URLs)
+    if snap_scraper is not None and not settings.use_mock:
+        snap_scraper._download_snapchat_cdn(items)
+    # 4b. Remaining straight-to-disk downloads (YouTube + Instagram fallbacks)
     if not settings.use_mock:
         _download_with_yt_dlp(items)
 
@@ -271,6 +304,83 @@ def transform_task(video_id: str, recipe_dict: dict | None = None) -> dict:
 def _ffmpeg_available() -> bool:
     import shutil
     return shutil.which("ffmpeg") is not None
+
+
+def _probe_quality(path: str, source: str = "") -> dict:
+    """Return video quality metrics via ffprobe: duration, width, height, bit_rate, size_bytes."""
+    import subprocess, os
+    result = {
+        "duration": 0.0,
+        "width": 0,
+        "height": 0,
+        "bit_rate": 0,
+        "size_bytes": os.path.getsize(path) if os.path.exists(path) else 0,
+        "valid": False,
+    }
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error",
+             "-select_streams", "v:0",
+             "-show_entries", "stream=duration,width,height,bit_rate",
+             "-of", "default=noprint_wrappers=1",
+             path],
+            capture_output=True, text=True, check=True,
+        )
+        for line in out.stdout.splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                k = k.strip()
+                v = v.strip()
+                if k == "duration":
+                    result["duration"] = float(v)
+                elif k == "width":
+                    result["width"] = int(v)
+                elif k == "height":
+                    result["height"] = int(v)
+                elif k == "bit_rate":
+                    result["bit_rate"] = int(v)
+
+        # Native short-form platforms (Snapchat Spotlight, Instagram Reels)
+        # are already vertically encoded and algorithmically filtered upstream.
+        # Use looser thresholds so we don't throw away good content.
+        if source == "snapchat":
+            if (result["duration"] >= 3 and
+                result["width"] >= 240 and result["height"] >= 240 and
+                result["bit_rate"] >= 100_000 and
+                result["size_bytes"] >= 50_000):
+                result["valid"] = True
+        else:
+            # Generic Shorts gate (YouTube, TikTok imports, etc.)
+            if (result["duration"] >= 10 and
+                result["width"] >= 240 and result["height"] >= 240 and
+                result["bit_rate"] >= 300_000 and
+                result["size_bytes"] >= 200_000):
+                result["valid"] = True
+    except Exception:
+        pass
+    return result
+
+
+def _is_quality_short(item: ScrapedItem) -> bool:
+    """Hard gate: only allow actual watchable Shorts to enter the DB."""
+    if not item.local_path or not os.path.exists(item.local_path):
+        return False
+    q = _probe_quality(item.local_path, source=item.source)
+    # Extra Shorts-specific checks
+    if not q["valid"]:
+        return False
+    # Duration must be Shorts-friendly. Snapchat Spotlight is native short-form,
+    # so we allow anything >= 3s there; others should be 8–59s.
+    if item.source == "snapchat":
+        if not (3 <= item.duration_sec <= 59):
+            return False
+    else:
+        if not (8 <= item.duration_sec <= 59):
+            return False
+    # Vertical-ish aspect ratio OR at least 720p
+    if q["height"] < 360:
+        return False
+    return True
 
 
 # ---------- Long-form to Shorts chopper ----------

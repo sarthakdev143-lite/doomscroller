@@ -17,6 +17,7 @@ from sqlalchemy import (
     Enum as SAEnum,
     UniqueConstraint,
 )
+from sqlalchemy.ext.mutable import MutableDict
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -75,7 +76,7 @@ class Video(Base):
     status: Mapped[VideoStatus] = mapped_column(
         SAEnum(VideoStatus), default=VideoStatus.PENDING, index=True
     )
-    meta: Mapped[dict] = mapped_column(JSON, default=dict)
+    meta: Mapped[dict] = mapped_column(MutableDict.as_mutable(JSON), default=dict)
     error: Mapped[Optional[str]] = mapped_column(Text, default=None)
 
     scraped_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
@@ -132,7 +133,7 @@ class Creator(Base):
     videos_scraped: Mapped[int] = mapped_column(Integer, default=0)
     last_scraped_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), default=None)
     discovered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
-    meta: Mapped[dict] = mapped_column(JSON, default=dict)
+    meta: Mapped[dict] = mapped_column(MutableDict.as_mutable(JSON), default=dict)
 
 
 class MetadataDraft(Base):

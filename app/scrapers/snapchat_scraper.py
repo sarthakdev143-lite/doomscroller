@@ -16,7 +16,9 @@ markup, selectors will need to be updated accordingly.
 from __future__ import annotations
 
 import logging
+import os
 import re
+import time
 from typing import Any
 
 from .base import ScrapedItem, Scraper
@@ -307,6 +309,156 @@ class SnapchatScraper(Scraper):
                         log.warning("yt-dlp snap download failed for %r: %s", it.source_url, exc)
             out.extend(items)
         return self._dedup(out)[:max_per_run]
+
+    # ------------------------------------------------------------------
+    # Snapchat CDN downloader
+    # ------------------------------------------------------------------
+    def _download_snapchat_cdn(
+        self, items: list[ScrapedItem], tag: str = "spotlight"
+    ) -> None:
+        """Download snapchat CDN video URLs via Playwright + direct HTTP.
+
+        ``yt-dlp`` does not understand snapchat's CDN host names
+        (``bolt-gcdn.sc-cdn.net``, ``cf-st.sc-cdn.net``), so we intercept the
+        network requests ourselves and then ``GET`` the stream URL directly with
+        the correct ``Referer`` header.
+        """
+        if not items:
+            return
+        to_download = [it for it in items if not it.local_path and it.source_url]
+        if not to_download:
+            return
+
+        try:
+            from .yt_dlp_scraper import YtDlpScraper  # noqa: F401
+            content_dir = YtDlpScraper().content_dir
+        except Exception:
+            try:
+                from app.config import settings
+                content_dir = settings.content_path
+            except Exception:
+                content_dir = "."
+
+        _HEADERS = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Referer": "https://www.snapchat.com/spotlight",
+            "Origin": "https://www.snapchat.com",
+        }
+
+        try:
+            from playwright.sync_api import sync_playwright as _sp
+        except ImportError:
+            log.debug("playwright not installed for snapchat CDN downloader")
+            return
+
+        found: list[str] = []
+        browser = None
+        ctx = None
+        page = None
+        try:
+            browser = self._get_browser()
+            ctx = self._new_context()
+            page = ctx.new_page()
+            page.set_default_timeout(30000)
+
+            seen: set[str] = set()
+            for it in to_download:
+                src_url = it.source_url or ""
+                if "snapchat.com/" in src_url:
+                    page_url = src_url
+                else:
+                    page_url = _SPOTLIGHT_URL
+                tag_clean = (it.meta or {}).get("hashtag", tag) if isinstance(it.meta, dict) else tag
+
+                def _on_req(req):
+                    u = req.url
+                    if ("sc-cdn.net" not in u) and ("bolt-gcdn" not in u):
+                        return
+                    # skip image / snapshot CDN requests
+                    path = u.split("?")[0]
+                    if "/bk/" in path:
+                        return
+                    if u not in seen:
+                        seen.add(u)
+                        found.append(u)
+
+                page.on("request", _on_req)
+                try:
+                    page.goto(page_url, wait_until="domcontentloaded")
+                except Exception:
+                    pass
+                page.wait_for_timeout(5000)
+                page.remove_listener("request", _on_req)
+
+                # try to match found URLs against the item we just scanned
+                if found:
+                    it.source_url = found[-1]
+                time.sleep(1)
+        except Exception as exc:
+            log.debug("snap CDN browser open failed: %s", exc)
+        finally:
+            if ctx:
+                try:
+                    ctx.close()
+                except Exception:
+                    pass
+
+        # HTTP-download the captured CDN URLs
+        import requests as _requests
+
+        dest_map: dict[str, str] = {}  # source_url -> local_path
+        for url in found:
+            if url in dest_map:
+                continue
+            try:
+                r = _requests.get(url, headers=_HEADERS, timeout=25, allow_redirects=True, stream=True)
+                if r.status_code != 200 or len(r.content) < 50_000:
+                    continue
+                fname = f"snap_{int(time.time())}_{len(dest_map)}.mp4"
+                dest = os.path.join(content_dir, fname)
+                with open(dest, "wb") as fh:
+                    for chunk in r.iter_content(64 * 1024):
+                        if chunk:
+                            fh.write(chunk)
+                dest_map[url] = dest
+            except Exception as exc:
+                log.debug("snap CDN GET failed %r: %s", url[:60], exc)
+
+        # Map back to items and populate minimal metadata via ffprobe
+        for it in items:
+            if it.local_path:
+                continue
+            mapped = dest_map.get(it.source_url)
+            if not mapped:
+                continue
+            it.local_path = mapped
+            try:
+                import subprocess as _subprocess
+                _out = _subprocess.run(
+                    [
+                        "ffprobe", "-v", "error",
+                        "-select_streams", "v:0",
+                        "-show_entries", "stream=duration,width,height,bit_rate",
+                        "-of", "default=noprint_wrappers=1",
+                        mapped,
+                    ],
+                    capture_output=True, text=True, check=True,
+                )
+                for line in _out.stdout.splitlines():
+                    if "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    if k.strip() == "duration":
+                        try:
+                            it.duration_sec = max(0, int(float(v.strip())))
+                        except Exception:
+                            pass
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Lifecycle

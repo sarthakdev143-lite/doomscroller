@@ -22,7 +22,7 @@ from .models import Creator, Video
 log = logging.getLogger(__name__)
 
 
-def ensure_seed_creators(db: Session, handles: list[str], platform: str = "tiktok") -> int:
+def ensure_seed_creators(db: Session, handles: list[str], platform: str = "instagram") -> int:
     """Insert any seed handles that aren't yet in the Creator table."""
     from .config import settings
     handles = handles or settings.handles_list

@@ -187,14 +187,17 @@ def start_scheduler() -> BackgroundScheduler:
         max_instances=1,
         coalesce=True,
     )
-    sched.add_job(
-        chop_long_job,
-        IntervalTrigger(hours=6),
-        id="chop_long",
-        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=5),
-        max_instances=1,
-        coalesce=True,
-    )
+    # Long-form chopper (YouTube → Shorts) is intentionally disabled as a
+    # scheduled job.  We now primary-target Instagram Reels, Snapchat
+    # Spotlight, and native YouTube Shorts.  Re-enable by uncommenting:
+    # sched.add_job(
+    #     chop_long_job,
+    #     IntervalTrigger(hours=6),
+    #     id="chop_long",
+    #     next_run_time=datetime.now(timezone.utc) + timedelta(minutes=5),
+    #     max_instances=1,
+    #     coalesce=True,
+    # )
     sched.add_job(
         recompute_scores_job,
         IntervalTrigger(hours=1),

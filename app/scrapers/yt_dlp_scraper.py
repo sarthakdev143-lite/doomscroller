@@ -19,7 +19,25 @@ class YtDlpScraper(Scraper):
         from ..config import settings
         self.proxy_url = settings.proxy_url or None
         self.content_dir = settings.content_path
+        self._cookiesfrombrowser = self._parse_browser_cookies(
+            settings.cookies_from_browser or ""
+        )
         self._yt = None
+
+    @staticmethod
+    def _parse_browser_cookies(raw: str):
+        """Parse 'edge' or 'edge,Default' into yt-dlp's format."""
+        raw = raw.strip()
+        if not raw:
+            return None
+        parts = [p.strip() for p in raw.split(",") if p.strip()]
+        if not parts:
+            return None
+        browser = parts[0]
+        profile = parts[1] if len(parts) > 1 else None
+        if profile:
+            return [(browser, profile)]
+        return [browser]
 
     def _client(self):
         if self._yt is None:
@@ -43,12 +61,23 @@ class YtDlpScraper(Scraper):
             # Prefer vertical MP4s (Shorts format); no filesize cap - WeMo
             "format": "best[height<=1920][ext=mp4]/best[ext=mp4]/best",
             "merge_output_format": "mp4",
+            # Reject videos outside Shorts duration at download time too
+            "match_filter": lambda info: (
+                None if (
+                    info.get("duration") is not None and
+                    8 <= int(info["duration"]) <= 59 and
+                    (info.get("height") or 0) >= 360
+                ) else
+                f"duration={info.get('duration')}s_or_resolution={info.get('height')}p_not_in_shorts_range"
+            ),
         }
         if download and outtmpl:
             opts["outtmpl"] = outtmpl
             opts["extract_audio"] = False
         if self.proxy_url:
             opts["proxy"] = self.proxy_url
+        if getattr(self, "_cookiesfrombrowser", None):
+            opts["cookiesfrombrowser"] = self._cookiesfrombrowser
         return opts
 
     def _to_item(self, info: dict, source: str) -> ScrapedItem:
@@ -166,10 +195,10 @@ class YtDlpScraper(Scraper):
     # ---------- Platform helpers ----------
     def _platform_for_handle(self, handle: str) -> str:
         h = handle.lower()
-        if "tiktok.com" in h or (h.startswith("@") and "instagram" not in h):
-            return "tiktok"
-        if "instagram.com" in h:
+        if "instagram.com" in h or h.startswith("@"):
             return "instagram"
+        if "snapchat.com" in h:
+            return "snapchat"
         if "reddit.com" in h or h.startswith("/r/"):
             return "reddit"
         return "youtube"
@@ -177,9 +206,9 @@ class YtDlpScraper(Scraper):
     def _handle_url(self, handle: str) -> str:
         h = handle.lstrip("/")
         if h.startswith("@"):
-            # TikTok disabled its public username endpoint; use ytsearch instead
+            # Instagram/TikTok direct profiles are often blocked; use ytsearch
             name = h.lstrip("@")
-            return f"ytsearch5:{name} viral shorts"
+            return f"ytsearch5:{name} reels shorts"
         if h.startswith("/r/"):
             return f"https://www.reddit.com{h}"
         if h.startswith("r/"):

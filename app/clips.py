@@ -14,12 +14,13 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import subprocess
 from dataclasses import dataclass, field
 from typing import List
 
-from app.models import Video
+from app.models import Video, VideoStatus
 from app.transformers.ffmpeg_transformer import FFmpegTransformer, TransformRecipe
 
 log = logging.getLogger(__name__)
@@ -105,12 +106,12 @@ def pick_hot_clips(
         return []
 
     window = float(target_short_sec)
-    total_windows = max(1, int(duration // window))
+    total_windows = max(1, int(math.ceil(duration / window)))
 
     raw: List[ClipSpec] = []
     for i in range(total_windows):
         start = i * window
-        end = duration if i == total_windows - 1 else (i + 1) * window
+        end = min((i + 1) * window, duration)
         pos = _score_window(i, total_windows)
         energy = _window_energy(source_path, start, end)
         score = 0.6 * pos + 0.4 * energy
@@ -177,8 +178,8 @@ def clips_from_long(video_id: str) -> dict:
     Creates new ``Video`` rows (status=PENDING) for each clip.
     Skips videos that are already Shorts (<= ``max_short_duration_sec``).
     """
-    from ..config import settings
-    from ..db import session_scope
+    from app.config import settings
+    from app.db import session_scope
     from app.analytics import recompute_scores
 
     min_long_sec = getattr(settings, "long_video_min_duration_sec", 120)
@@ -229,7 +230,7 @@ def clips_from_long(video_id: str) -> dict:
         out_path = os.path.join(out_dir, f"{video_id}_clip{idx}.mp4")
         if not os.path.exists(out_path):
             caption = f"{src.author or ''} — part {idx}" if src.author else f"Part {idx} #shorts"
-            render_clip(src.local_path, out_path, spec, caption=caption)
+            render_clip(src.local_path, out_path, spec, caption_text=caption)
 
         with session_scope() as db:
             clip = Video(
@@ -241,12 +242,13 @@ def clips_from_long(video_id: str) -> dict:
                 description=(src.description or "")[:2000],
                 thumbnail_url=src.thumbnail_url,
                 local_path=out_path,
+                transformed_path=out_path,
                 views=0,
                 likes=0,
                 comments=0,
                 shares=0,
                 duration_sec=int(spec.end_sec - spec.start_sec),
-                status="PENDING",
+                status=VideoStatus.PENDING,
                 meta=json.dumps({
                     "parent_video_id": video_id,
                     "clip_index": idx,
@@ -257,6 +259,8 @@ def clips_from_long(video_id: str) -> dict:
                 }),
             )
             recompute_scores([clip])
+            clip.meta = clip.meta if isinstance(clip.meta, dict) else json.loads(clip.meta or "{}")
+            clip.transformed_path = str(out_path)
             db.add(clip)
             created.append({
                 "id": clip.id,
