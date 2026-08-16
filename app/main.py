@@ -1,6 +1,7 @@
 """FastAPI app."""
 from __future__ import annotations
 
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import List, Optional
@@ -53,7 +54,6 @@ def health(db: Session = Depends(get_db)) -> HealthOut:
     return HealthOut(
         status="ok",
         use_mock=settings.use_mock,
-        db_url=settings.db_url,
         pending_count=int(pending),
     )
 
@@ -211,6 +211,7 @@ def run_job_now(job_id: str) -> dict:
         "discovery": scheduler.discovery_job,
         "publish": scheduler.publish_job,
         "cleanup": scheduler.cleanup_job,
+        "chop_long": scheduler.chop_long_job,
         "recompute": scheduler.recompute_scores_job,
     }
     fn = fn_map.get(job_id)
@@ -290,6 +291,19 @@ def list_creators(limit: int = 50, db: Session = Depends(get_db)) -> list:
         }
         for c in rows
     ]
+
+
+# ==================== Chop long videos into Shorts ====================
+@app.post("/videos/{video_id}/chop", response_model=dict)
+def chop_long_to_shorts(video_id: str, db: Session = Depends(get_db)) -> dict:
+    """Smart-split one long video into multiple Shorts using hot-clip heuristics."""
+    v = db.get(Video, video_id)
+    if v is None:
+        raise HTTPException(status_code=404, detail="not found")
+    if not v.local_path or not os.path.exists(v.local_path):
+        raise HTTPException(status_code=400, detail="source file not on disk")
+    from tasks.pipeline import long_to_shorts_task
+    return long_to_shorts_task(video_id)
 
 
 # ==================== Stats endpoint ====================

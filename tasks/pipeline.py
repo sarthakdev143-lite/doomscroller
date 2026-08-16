@@ -27,6 +27,54 @@ from app.metadata import generate_metadata, GeneratedMetadata
 
 log = logging.getLogger(__name__)
 
+# ---------- Platform detection ----------
+
+def _is_snapchat_handle(handle: str) -> bool:
+    h = handle.lower()
+    if "snapchat.com" in h:
+        return True
+    # Snapchat usernames typically don't start with @; @xxx on TikTok/IG
+    if h.startswith("@"):
+        return False
+    # Plain username without platform indicator → treat as non-snapchat
+    return False
+
+
+def _split_handles_by_platform(handles: list[str]) -> tuple[list[str], list[str]]:
+    """Split handles into (snapchat_handles, other_handles)."""
+    snap: list[str] = []
+    other: list[str] = []
+    for h in handles:
+        if _is_snapchat_handle(h):
+            snap.append(h)
+        else:
+            other.append(h)
+    return snap, other
+
+
+# ---------- Download helper ----------
+
+def _download_with_yt_dlp(items: list[ScrapedItem]) -> None:
+    """Download any items lacking local_path using YtDlpScraper (in-place)."""
+    if settings.use_mock:
+        return
+    try:
+        from app.scrapers.yt_dlp_scraper import YtDlpScraper  # noqa: F401
+        downloader = YtDlpScraper()
+    except Exception as exc:
+        log.warning("yt-dlp downloader unavailable: %s", exc)
+        return
+
+    for it in items:
+        if it.local_path:
+            continue
+        try:
+            path = downloader._download(it)
+            if path:
+                it.local_path = path
+        except Exception as exc:
+            log.warning("yt-dlp download failed for %r: %s", it.source_url, exc)
+
 
 # ---------- Persistence helper ----------
 def persist_scraped_items(items: list[ScrapedItem]) -> tuple[int, int]:
@@ -68,7 +116,11 @@ def persist_scraped_items(items: list[ScrapedItem]) -> tuple[int, int]:
 def scrape_task(handles: list[str] | None = None,
                 hashtags: list[str] | None = None,
                 max_per_run: int | None = None) -> dict:
-    """Scrape handles + hashtags and persist new videos (with downloaded mp4)."""
+    """Scrape handles + hashtags and persist new videos (with downloaded mp4).
+
+    Supports mixed-platform handles: Snapchat profiles are discovered via
+    Playwright, then the actual MP4 is downloaded via yt-dlp.
+    """
     handles = handles if handles is not None else settings.handles_list
     hashtags = hashtags if hashtags is not None else settings.hashtags_list
     max_per_run = max_per_run or settings.scrape_max_per_run
@@ -78,12 +130,33 @@ def scrape_task(handles: list[str] | None = None,
         active = discovery.list_active_creators(db, limit=20)
         all_handles = list({*handles, *[c.handle for c in active if c.handle not in handles]})
 
-    scraper = get_scraper()
+    snap_handles, other_handles = _split_handles_by_platform(all_handles)
+
+    default_scraper = get_scraper()
+    snap_scraper = SnapchatScraper()
     items: list[ScrapedItem] = []
-    if all_handles:
-        items.extend(scraper.scrape_handles(all_handles, max_per_run, download=not settings.use_mock))
+
+    # 1. Scrape non-Snapchat handles with the default scraper (yt-dlp / mock)
+    if other_handles and not settings.use_mock:
+        per = max(1, max_per_run // max(len(snap_handles) + len(other_handles), 1))
+        items.extend(default_scraper.scrape_handles(other_handles, per * len(other_handles), download=True))
+    elif other_handles:
+        items.extend(default_scraper.scrape_handles(other_handles, max_per_run, download=False))
+
+    # 2. Scrape Snapchat handles (enumerate URLs only; download step below)
+    if snap_handles:
+        per = max(1, max_per_run // max(len(snap_handles) + len(other_handles), 1))
+        snap_items = snap_scraper.scrape_handles(snap_handles, per * len(snap_handles), download=False)
+        items.extend(snap_items)
+
+    # 3. Hashtags (only with the default scraper)
     if hashtags:
-        items.extend(scraper.scrape_hashtags(hashtags, max_per_run, download=not settings.use_mock))
+        per = max(1, max_per_run // max(len(snap_handles) + len(other_handles) + len(hashtags), 1))
+        items.extend(default_scraper.scrape_hashtags(hashtags, per * len(hashtags), download=not settings.use_mock))
+
+    # 4. Download any items that still lack local_path (e.g. Snapchat URLs)
+    if not settings.use_mock:
+        _download_with_yt_dlp(items)
 
     created, skipped = persist_scraped_items(items)
     return {"created": created, "skipped": skipped, "fetched": len(items)}
@@ -198,6 +271,18 @@ def transform_task(video_id: str, recipe_dict: dict | None = None) -> dict:
 def _ffmpeg_available() -> bool:
     import shutil
     return shutil.which("ffmpeg") is not None
+
+
+# ---------- Long-form to Shorts chopper ----------
+
+def long_to_shorts_task(video_id: str) -> dict:
+    """Split one long-form video into multiple Shorts clips.
+
+    Requires ffmpeg on PATH.  Returns a summary dict including the IDs and
+    timestamps of each generated clip.
+    """
+    from app.clips import clips_from_long
+    return clips_from_long(video_id)
 
 
 # ---------- Publish ----------

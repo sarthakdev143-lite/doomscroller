@@ -15,6 +15,7 @@ from sqlalchemy import (
     Text,
     ForeignKey,
     Enum as SAEnum,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -44,6 +45,10 @@ class VideoStatus(str, enum.Enum):
 
 class Video(Base):
     __tablename__ = "videos"
+
+    __table_args__ = (
+        UniqueConstraint("source", "source_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
     source: Mapped[str] = mapped_column(String(32), index=True)  # tiktok|instagram|youtube|mock

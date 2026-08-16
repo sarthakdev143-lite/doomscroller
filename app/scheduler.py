@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import logging
 import os
-import time
 from datetime import datetime, timedelta, timezone
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -32,31 +31,10 @@ _scheduler: BackgroundScheduler | None = None
 def scrape_job(handles: list[str] | None = None,
                hashtags: list[str] | None = None,
                max_per_run: int | None = None) -> dict:
-    """Run a scrape cycle. Persists new videos and updates creator stats."""
-    from .scrapers import get_scraper
-    from tasks.pipeline import persist_scraped_items
-    handles = handles if handles is not None else settings.handles_list
-    hashtags = hashtags if hashtags is not None else settings.hashtags_list
-    max_per_run = max_per_run or settings.scrape_max_per_run
-
-    # Make sure seed creators exist
-    with session_scope() as db:
-        discovery.ensure_seed_creators(db, handles)
-        # Also include discovered creators in the scrape rotation
-        active = discovery.list_active_creators(db, limit=20)
-        all_handles = list({*handles, *[c.handle for c in active if c.handle not in handles]})
-
-    log.info("scrape_job: handles=%s hashtags=%s max=%d", all_handles, hashtags, max_per_run)
-    scraper = get_scraper()
-    items: list = []
-    if all_handles:
-        items.extend(scraper.scrape_handles(all_handles, max_per_run, download=not settings.use_mock))
-    if hashtags:
-        items.extend(scraper.scrape_hashtags(hashtags, max_per_run, download=not settings.use_mock))
-
-    created, skipped = persist_scraped_items(items)
-    log.info("scrape_job: created=%d skipped=%d fetched=%d", created, skipped, len(items))
-    return {"created": created, "skipped": skipped, "fetched": len(items)}
+    """Run a scrape cycle. Delegates to tasks.pipeline.scrape_task for
+    multi-platform support ( Snapchat via Playwright + yt-dlp )."""
+    from tasks.pipeline import scrape_task
+    return scrape_task(handles=handles, hashtags=hashtags, max_per_run=max_per_run)
 
 
 def discovery_job() -> dict:
@@ -135,6 +113,31 @@ def cleanup_job() -> dict:
     return {"deleted": deleted}
 
 
+def chop_long_job() -> dict:
+    """Auto-chop long videos pending/approved that exceed duration threshold."""
+    from .config import settings
+    from tasks.pipeline import long_to_shorts_task
+
+    min_dur = getattr(settings, "long_video_min_duration_sec", 120)
+    batch = 5
+    processed, clips = 0, 0
+    with session_scope() as db:
+        long_vids = db.execute(
+            select(Video).where(
+                Video.duration_sec >= min_dur,
+                Video.status.in_([VideoStatus.PENDING, VideoStatus.APPROVED]),
+                Video.local_path.isnot(None),
+            )
+        ).scalars().all()
+    for v in long_vids[:batch]:
+        result = long_to_shorts_task(v.id)
+        if result.get("ok"):
+            clips += result.get("clips_created", 0)
+        processed += 1
+    log.info("chop_long_job: processed=%d new_clips=%d", processed, clips)
+    return {"processed": processed, "clips_created": clips}
+
+
 def recompute_scores_job() -> dict:
     """Refresh all engagement/velocity scores."""
     with session_scope() as db:
@@ -181,6 +184,14 @@ def start_scheduler() -> BackgroundScheduler:
         cleanup_job,
         IntervalTrigger(hours=24),
         id="cleanup",
+        max_instances=1,
+        coalesce=True,
+    )
+    sched.add_job(
+        chop_long_job,
+        IntervalTrigger(hours=6),
+        id="chop_long",
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=5),
         max_instances=1,
         coalesce=True,
     )

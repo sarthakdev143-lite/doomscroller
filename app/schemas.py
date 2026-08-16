@@ -74,7 +74,7 @@ class QuotaOut(BaseModel):
 class HealthOut(BaseModel):
     status: str
     use_mock: bool
-    db_url: str
+    db_url: Optional[str] = None
     pending_count: int
 
 

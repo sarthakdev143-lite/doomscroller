@@ -36,10 +36,11 @@ class YtDlpScraper(Scraper):
             "no_warnings": True,
             "skip_download": not download,
             "ignoreerrors": True,
-            "retries": 2,
-            "fragment_retries": 2,
+            "retries": 1,
+            "fragment_retries": 1,
             "geo_bypass": True,
-            # Vertical video preferred
+            "socket_timeout": 20,
+            # Prefer vertical MP4s (Shorts format); no filesize cap - WeMo
             "format": "best[height<=1920][ext=mp4]/best[ext=mp4]/best",
             "merge_output_format": "mp4",
         }
@@ -105,6 +106,20 @@ class YtDlpScraper(Scraper):
                 if not info:
                     return None
                 path = info.get("requested_downloads", [{}])[0].get("filepath") if info.get("requested_downloads") else info.get("filepath")
+                if not path:
+                    return None
+                # Reject tiny stubs (some platforms serve HTML/redirect pages
+                # that yt-dlp writes as 5-12 KB pseudo-mp4 files)
+                if os.path.exists(path) and os.path.getsize(path) < 50_000:
+                    log.warning(
+                        "Rejected stub download for %r (only %d bytes)",
+                        item.source_url, os.path.getsize(path),
+                    )
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
+                    return None
                 return path
         except Exception as e:
             log.error("yt-dlp download failed for %r: %s", item.source_url, e)
@@ -162,9 +177,13 @@ class YtDlpScraper(Scraper):
     def _handle_url(self, handle: str) -> str:
         h = handle.lstrip("/")
         if h.startswith("@"):
-            return f"https://www.tiktok.com/{h}"
+            # TikTok disabled its public username endpoint; use ytsearch instead
+            name = h.lstrip("@")
+            return f"ytsearch5:{name} viral shorts"
         if h.startswith("/r/"):
             return f"https://www.reddit.com{h}"
         if h.startswith("r/"):
             return f"https://www.reddit.com/r/{h[2:]}"
         return h
+
+    

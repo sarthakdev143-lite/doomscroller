@@ -35,7 +35,7 @@ def _engine_factory() -> Engine:
 
 
 engine: Engine = _engine_factory()
-SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True, expire_on_commit=False)
 
 
 def init_db() -> None:
