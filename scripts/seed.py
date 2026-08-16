@@ -44,6 +44,8 @@ def main(n: int = 20) -> None:
                 author=it.author,
                 title=it.title,
                 description=it.description,
+                thumbnail_url=it.thumbnail_url,
+                local_path=it.local_path,
                 views=it.views,
                 likes=it.likes,
                 comments=it.comments,
@@ -55,7 +57,7 @@ def main(n: int = 20) -> None:
             recompute_scores([v])
             db.add(v)
             created += 1
-    print(f"✅ Seeded {created} mock videos.")
+    print(f"Seeded {created} mock videos.")
 
 
 if __name__ == "__main__":

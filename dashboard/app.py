@@ -4,12 +4,36 @@ Run with: streamlit run dashboard/app.py --server.port 8501
 """
 from __future__ import annotations
 
+import importlib
+import json
+import os
 import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+# Force the project root onto sys.path *before* anything else,
+# and aggressively evict anything that shadowed the real `app` package
+# (Streamlit sometimes injects the script dir at the front of sys.path).
+for _p in list(sys.path):
+    if Path(_p).resolve() == (PROJECT_ROOT / "dashboard").resolve():
+        sys.path.remove(_p)
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+# Drop cached modules that Streamlit may have pre-loaded from the wrong
+# location so the fresh import resolves against the real package root.
+for _mod in ("app", "app.config", "app.db", "app.models", "app.quota",
+             "app.analytics", "tasks", "tasks.pipeline"):
+    sys.modules.pop(_mod, None)
+
+# Make sure this script always runs with the project root as cwd so
+# relative imports and file paths stay consistent regardless of how
+# Streamlit is invoked.
+try:
+    os.chdir(PROJECT_ROOT)
+except OSError:
+    pass
 
 import streamlit as st  # noqa: E402
 import httpx  # noqa: E402
@@ -111,6 +135,12 @@ def sidebar():
         out = _api("POST", "/scheduler/run/publish")
         st.sidebar.success(f"Publish: {out}")
 
+    if st.sidebar.button("✂️ Chop long to Shorts now"):
+        with st.sidebar.spinner("Chopping long videos into Shorts clips…"):
+            out = _api("POST", "/scheduler/run/chop_long")
+        if out:
+            st.sidebar.success(f"Chop: {out}")
+
     auto_publish = st.sidebar.checkbox(
         "Auto-publish at scheduled slots",
         value=settings.auto_publish,
@@ -136,14 +166,22 @@ def load_metadata(video_id: str) -> dict | None:
         }
 
 
-def render_video_card(v: Video):
+def render_video_card(v: Video, prefix: str = "main"):
     status = _status_badge(v.status.value if hasattr(v.status, "value") else str(v.status))
     col_main, col_meta, col_actions = st.columns([6, 3, 5])
 
     with col_main:
         title = v.title or "(no title)"
         st.markdown(f"**{title}**")
-        st.caption(f"By {v.author or 'unknown'} · {v.source} · {v.duration_sec}s · {v.source_url}")
+        st.caption(f"By {v.author or 'unknown'} · {v.source} · {v.duration_sec}s")
+        # Thumbnail or local video preview
+        try:
+            if v.thumbnail_url:
+                st.image(v.thumbnail_url, width=320)
+            elif v.local_path and os.path.exists(v.local_path):
+                st.video(v.local_path)
+        except Exception:
+            pass
         if v.description:
             with st.expander("Source description"):
                 st.write(v.description[:800])
@@ -159,14 +197,14 @@ def render_video_card(v: Video):
     with col_actions:
         if v.status == VideoStatus.PENDING:
             c1, c2 = st.columns(2)
-            if c1.button("✅ Approve", key=f"approve_{v.id}"):
+            if c1.button("✅ Approve", key=f"{prefix}_approve_{v.id}"):
                 with session_scope() as db:
                     row = db.get(Video, v.id)
                     row.status = VideoStatus.APPROVED
                     row.curated_at = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
                 st.success("Approved — will be transformed automatically.")
                 st.rerun()
-            if c2.button("🔴 Reject", key=f"reject_{v.id}"):
+            if c2.button("🔴 Reject", key=f"{prefix}_reject_{v.id}"):
                 with session_scope() as db:
                     row = db.get(Video, v.id)
                     row.status = VideoStatus.REJECTED
@@ -174,44 +212,75 @@ def render_video_card(v: Video):
                 st.rerun()
 
         elif v.status == VideoStatus.APPROVED:
-            if st.button("🎨 Transform now", key=f"transform_{v.id}"):
-                with st.spinner("Transforming…"):
-                    out = transform_task(v.id, {})
-                st.write(out)
+            if st.button("🎨 Transform now", key=f"{prefix}_transform_{v.id}"):
+                with st.spinner("Transforming — this can take 30–120s depending on video size…"):
+                    out = _api("POST", f"/videos/{v.id}/transform", json={})
+                if out:
+                    if out.get("queued"):
+                        st.success(f"Queued! Task ID: {out.get('task_id', 'N/A')} — auto-refreshing…")
+                    elif out.get("result", {}).get("ok"):
+                        st.success("Transform complete!")
+                    else:
+                        st.error(f"Transform error: {out}")
+                import time as _time
+                _time.sleep(1)
                 st.rerun()
+            # Long video option
+            if v.duration_sec and v.duration_sec > 60:
+                if st.button("✂️ Generate Shorts clips", key=f"{prefix}_chop_{v.id}"):
+                    with st.spinner(f"Analyzing {v.duration_sec}s video and chopping into Shorts…"):
+                        chop_out = _api("POST", f"/videos/{v.id}/chop")
+                    if chop_out:
+                        st.json(chop_out)
+                        st.rerun()
 
         elif v.status == VideoStatus.TRANSFORMED:
             # Show metadata preview + edit + publish
             with st.expander("📝 Metadata (editable)", expanded=True):
                 md = load_metadata(v.id)
                 if md is None:
-                    if st.button("Generate metadata with LLM", key=f"gen_{v.id}"):
+                    if st.button("Generate metadata with LLM", key=f"{prefix}_gen_{v.id}"):
                         with st.spinner("LLM generating metadata…"):
-                            out = generate_metadata_for_video(v.id)
-                        st.write(out)
+                            out = _api("POST", f"/metadata/{v.id}/generate")
+                        if out and out.get("ok"):
+                            st.success(f"Generated: {out.get('title', '')[:60]}")
+                        else:
+                            st.error(f"Metadata generation failed: {out}")
                         st.rerun()
                 else:
-                    new_title = st.text_input("Title", value=md["title"], key=f"t_{v.id}")
+                    new_title = st.text_input("Title", value=md["title"], key=f"{prefix}_t_{v.id}")
                     new_desc = st.text_area("Description", value=md["description"],
-                                            height=100, key=f"d_{v.id}")
+                                            height=100, key=f"{prefix}_d_{v.id}")
                     new_tags = st.text_input("Tags (comma-separated)",
                                              value=", ".join(md["tags"]),
-                                             key=f"tags_{v.id}")
+                                             key=f"{prefix}_tags_{v.id}")
                     col_a, col_b = st.columns(2)
-                    if col_a.button("💾 Save metadata", key=f"save_{v.id}"):
+                    if col_a.button("💾 Save metadata", key=f"{prefix}_save_{v.id}"):
                         tags_list = [t.strip() for t in new_tags.split(",") if t.strip()]
                         _api("PUT", f"/metadata/{v.id}", json={
                             "title": new_title, "description": new_desc, "tags": tags_list,
                         })
                         st.success("Saved")
-                    if col_b.button("🔄 Regenerate", key=f"regen_{v.id}"):
+                    if col_b.button("🔄 Regenerate", key=f"{prefix}_regen_{v.id}"):
                         with st.spinner("Regenerating…"):
-                            out = generate_metadata_for_video(v.id)
+                            out = _api("POST", f"/metadata/{v.id}/generate")
+                        if out and out.get("ok"):
+                            st.success("Regenerated")
+                        else:
+                            st.error(f"Regenerate failed: {out}")
                         st.rerun()
-            if st.button("📺 Publish now", key=f"publish_{v.id}"):
-                with st.spinner("Publishing…"):
-                    out = publish_task(v.id, {})
-                st.write(out)
+            if st.button("📺 Publish now", key=f"{prefix}_publish_{v.id}"):
+                with st.spinner("Publishing to YouTube… (can take 1–2 min)"):
+                    out = _api("POST", f"/videos/{v.id}/publish", json={})
+                if out:
+                    if out.get("queued"):
+                        st.success(f"Publish queued! Task ID: {out.get('task_id', 'N/A')}")
+                    elif out.get("ok") or out.get("result", {}).get("ok"):
+                        st.success("Published!")
+                    else:
+                        st.error(f"Publish failed: {out}")
+                import time as _time_pub
+                _time_pub.sleep(1)
                 st.rerun()
 
         elif v.status == VideoStatus.PUBLISHED:
@@ -221,8 +290,18 @@ def render_video_card(v: Video):
 
         elif v.status == VideoStatus.FAILED:
             st.error(v.error or "Failed")
-            if st.button("Retry transform", key=f"retry_{v.id}"):
-                transform_task(v.id, {})
+            if st.button("Retry transform", key=f"{prefix}_retry_{v.id}"):
+                with st.spinner("Retrying transform…"):
+                    out = _api("POST", f"/videos/{v.id}/transform", json={})
+                if out:
+                    if out.get("queued"):
+                        st.success(f"Transform queued! Task ID: {out.get('task_id', 'N/A')}")
+                    elif out.get("result", {}).get("ok"):
+                        st.success("Transform complete!")
+                    else:
+                        st.error(f"Transform failed: {out}")
+                import time as _time_retry
+                _time_retry.sleep(1)
                 st.rerun()
 
     st.divider()
@@ -252,7 +331,7 @@ def main():
     c5.metric("Published", published)
     c6.metric("Creators", creators)
 
-    tabs = st.tabs(["📥 Pending", "✅ Approved", "📺 Ready to publish", "✅ Published", "👥 Creators", "🗂 All"])
+    tabs = st.tabs(["📥 Pending", "✅ Approved", "📺 Ready to publish", "🚀 Pipeline", "✂️ Clips", "✅ Published", "👥 Creators", "🗂 All"])
 
     with tabs[0]:
         st.subheader("Pending curation — your only job: approve or reject")
@@ -265,7 +344,7 @@ def main():
         if not rows:
             st.info("No pending videos. The scraper will fetch more on its schedule, or click 'Scrape now' in the sidebar.")
         for v in rows:
-            render_video_card(v)
+            render_video_card(v, prefix="pending")
 
     with tabs[1]:
         st.subheader("Approved — queued for transformation")
@@ -277,7 +356,7 @@ def main():
         if not rows:
             st.info("Nothing approved yet. Approve videos from the Pending tab.")
         for v in rows:
-            render_video_card(v)
+            render_video_card(v, prefix="approved")
 
     with tabs[2]:
         st.subheader("Transformed — ready to publish. Review metadata then publish.")
@@ -289,9 +368,89 @@ def main():
         if not rows:
             st.info("No transformed videos. The scheduler transforms approved videos automatically.")
         for v in rows:
-            render_video_card(v)
+            render_video_card(v, prefix="ready")
 
     with tabs[3]:
+        st.subheader("🚀 Pipeline — ready to upload")
+        with session_scope() as db:
+            pending_count = db.scalar(
+                select(func.count(Video.id)).where(Video.status == VideoStatus.PENDING)
+            ) or 0
+            approved_count = db.scalar(
+                select(func.count(Video.id)).where(Video.status == VideoStatus.APPROVED)
+            ) or 0
+            transforming_count = db.scalar(
+                select(func.count(Video.id)).where(Video.status == VideoStatus.TRANSFORMING)
+            ) or 0
+            transformed_count = db.scalar(
+                select(func.count(Video.id)).where(Video.status == VideoStatus.TRANSFORMED)
+            ) or 0
+            failed_pipeline = db.scalar(
+                select(func.count(Video.id)).where(Video.status == VideoStatus.FAILED)
+            ) or 0
+        ready = approved_count + transforming_count + transformed_count
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("Pending", pending_count)
+        c2.metric("Approved", approved_count)
+        c3.metric("Transforming", transforming_count)
+        c4.metric("Transformed", transformed_count)
+        c5.metric("Ready to upload", ready)
+        if failed_pipeline:
+            st.warning(f"{failed_pipeline} failed — retry or discard")
+        # Show all pipeline items (pending through transformed)
+        with session_scope() as db:
+            rows = db.execute(
+                select(Video)
+                .where(Video.status.in_([
+                    VideoStatus.PENDING,
+                    VideoStatus.APPROVED,
+                    VideoStatus.TRANSFORMING,
+                    VideoStatus.TRANSFORMED,
+                    VideoStatus.FAILED,
+                ]))
+                .order_by(desc(Video.velocity_score), desc(Video.engagement_score))
+                .limit(100)
+            ).scalars().all()
+        if not rows:
+            st.info("Pipeline is empty. Scrape some videos first!")
+        for v in rows:
+            render_video_card(v, prefix="pipeline")
+
+    with tabs[4]:
+        st.subheader("✂️ Auto-generated Shorts clips from long videos")
+        st.caption("These were chopped automatically from long-form videos using hot-section heuristics.")
+        with session_scope() as db:
+            rows = db.execute(
+                select(Video)
+                .where(
+                    Video.meta.isnot(None),
+                    Video.meta != "",
+                )
+                .order_by(desc(Video.scraped_at))
+                .limit(100)
+            ).scalars().all()
+        clips = []
+        for v in rows:
+            try:
+                meta = json.loads(v.meta or "{}")
+                if "parent_video_id" in meta:
+                    clips.append((v, meta))
+            except Exception:
+                pass
+        if not clips:
+            st.info("No clips yet. Approve a long video and click ✂️ Generate Shorts clips to create them.")
+        for v, meta in clips:
+            st.markdown(f"**{v.title}**  ·  {v.duration_sec}s  ·  score: {meta.get('clip_score', 0):.2f}")
+            st.caption(
+                f"Parent: {meta.get('parent_video_id', '')[:12]}… · "
+                f"segment: {meta.get('clip_start', 0):.0f}s → {meta.get('clip_end', 0):.0f}s  ·  "
+                f"{meta.get('clip_reason', '')}"
+            )
+            # Reuse render_video_card so clips get Approve/Transform/Publish buttons too
+            render_video_card(v, prefix="clips_item_" + v.id[:8])
+            st.divider()
+
+    with tabs[5]:
         st.subheader("Published to YouTube")
         with session_scope() as db:
             rows = db.execute(
@@ -301,9 +460,9 @@ def main():
         if not rows:
             st.info("Nothing published yet.")
         for v in rows:
-            render_video_card(v)
+            render_video_card(v, prefix="published")
 
-    with tabs[4]:
+    with tabs[6]:
         st.subheader("Discovered creators")
         with session_scope() as db:
             creators = db.execute(
@@ -321,18 +480,18 @@ def main():
                 }
                 for c in creators
             ]
-            st.dataframe(data, use_container_width=True)
+            st.dataframe(data, width="stretch")
         else:
             st.info("No creators yet. Add seeds to TARGET_HANDLES in .env, or run discovery.")
 
-    with tabs[5]:
+    with tabs[7]:
         st.subheader("All videos")
         with session_scope() as db:
             rows = db.execute(
                 select(Video).order_by(desc(Video.scraped_at)).limit(100)
             ).scalars().all()
         for v in rows:
-            render_video_card(v)
+            render_video_card(v, prefix="all")
 
 
 if __name__ == "__main__":

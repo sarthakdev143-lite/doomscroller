@@ -1,7 +1,7 @@
 # Doomscroller
 
 Autonomous YouTube Shorts factory. Scrapes viral short-form videos from
-TikTok, Instagram Reels, and Reddit → human approves/rejects via dashboard →
+TikTok, Instagram Reels, Snapchat, and Reddit → human approves/rejects via dashboard →
 app auto-transforms to vertical Shorts format → auto-generates SEO metadata
 via LLM (preserving source language) → auto-publishes to your YouTube channel
 on a conservative 3-uploads-per-day schedule.
@@ -71,7 +71,7 @@ few → the scheduler will transform them, generate LLM metadata, and publish
 on the 8-hour cadence.
 
 For background daemon mode (logs to `logs/`):
-```bash
+\]'-```bash
 python scripts/run.py --daemon
 python scripts/run.py --status
 python scripts/run.py --stop

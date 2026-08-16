@@ -13,7 +13,7 @@ from app.config import settings
 def main() -> None:
     print(f"DB URL: {settings.db_url}")
     init_db()
-    print("✅ Database initialized.")
+    print("Database initialized.")
 
 
 if __name__ == "__main__":

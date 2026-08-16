@@ -40,9 +40,9 @@ class Settings(BaseSettings):
     auto_publish: bool = True
 
     # Scraping
-    target_handles: str = "[]"
-    target_hashtags: str = '["fyp","viral","shorts"]'
-    enabled_platforms: str = '["tiktok","reddit","instagram"]'
+    target_handles: str = '["@khaby.lame","@charlidamelio","@mrbeast","@bellapoarch","@addisonre","@zachking","@kimberly.loaiza","@fifaworldcup","@realmadrid","@bts_official_bighit","@therock","@willsmith","@domelipa","@billieeilish","@cznburak","@lamine.yamal","@jasonderulo","@kyliejenner","@selenagomez","@kylizzlemynizzl"]'
+    target_hashtags: str = '["fyp","viral","shorts","reels","snapchat"]'
+    enabled_platforms: str = '["tiktok","instagram","reddit","snapchat"]'
     proxy_url: str = ""
 
     # Storage
@@ -54,6 +54,12 @@ class Settings(BaseSettings):
     transform_height: int = 1920
     transform_blur_sigma: int = 20
     transform_caption_font: str = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+
+    # Long-form chopper — turns long downloaded videos into multiple Shorts
+    long_video_min_duration_sec: int = 120   # only chop videos >= 2 minutes
+    clip_target_sec: int = 59               # target length of each Shorts clip
+    max_clips_per_video: int = 3            # max clips per source video
+    min_clip_duration_sec: int = 30         # discard clips shorter than this
 
     # YouTube
     youtube_client_secrets: str = ""
@@ -83,14 +89,19 @@ class Settings(BaseSettings):
     def db_url(self) -> str:
         url = self.database_url.strip() if self.database_url else ""
         if not url:
-            return f"sqlite:///{PROJECT_ROOT / 'doomscroller.db'}"
+            path = (PROJECT_ROOT / "doomscroller.db").as_posix()
+            return f"sqlite:///{path}"
         # Accept bare file paths or `file:` URIs and normalise to SQLAlchemy form.
         if url.startswith("file:"):
             url = url[len("file:"):]
             if url.startswith("//"):
                 url = url[2:]
         if "://" not in url:
-            return f"sqlite:///{url}"
+            # Convert Windows backslashes to forward slashes for SQLite URL
+            import pathlib
+            p = pathlib.Path(url)
+            url_path = p.as_posix()
+            return f"sqlite:///{url_path}"
         return url
 
     @property
