@@ -1,7 +1,7 @@
 # Doomscroller
 
 Autonomous YouTube Shorts factory. Scrapes viral short-form videos from
-TikTok, Instagram Reels, Snapchat, and Reddit → human approves/rejects via dashboard →
+Snapchat Spotlight, Instagram Reels, and YouTube Shorts → human approves/rejects via dashboard →
 app auto-transforms to vertical Shorts format → auto-generates SEO metadata
 via LLM (preserving source language) → auto-publishes to your YouTube channel
 on a conservative 3-uploads-per-day schedule.
