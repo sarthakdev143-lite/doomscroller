@@ -1,11 +1,15 @@
 """Autonomous scheduler using APScheduler.
 
 Replaces Celery+Redis for local mode. Runs inside the FastAPI process.
-Schedules:
-  - scrape_job: every SCRAPE_INTERVAL_HOURS (default 6h)
-  - discovery_job: every DISCOVERY_INTERVAL_HOURS (default 24h)
-  - publish_job: every UPLOAD_INTERVAL_HOURS (default 8h) — picks next transformed video and publishes
-  - cleanup_job: daily — deletes old source video files
+Uses BackgroundScheduler from the REAL apscheduler package (not a local stub).
+
+Scheduled:
+  - scrape      : every SCRAPE_INTERVAL_HOURS (default 6h, first run ~10s after startup)
+  - discovery   : every DISCOVERY_INTERVAL_HOURS (default 24h)
+  - transform   : every 1h — auto-transforms APPROVED videos
+  - publish     : every UPLOAD_INTERVAL_HOURS (default 8h)
+  - cleanup     : every 24h — removes old source files
+  - recompute   : every 1h — refreshes engagement/velocity scores
 """
 from __future__ import annotations
 
@@ -13,6 +17,7 @@ import logging
 import os
 from datetime import datetime, timedelta, timezone
 
+from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import desc, select
@@ -28,193 +33,269 @@ _scheduler: BackgroundScheduler | None = None
 
 
 # ---------- Job impls (importable so they can be triggered manually too) ----------
+
 def scrape_job(handles: list[str] | None = None,
                hashtags: list[str] | None = None,
                max_per_run: int | None = None) -> dict:
-    """Run a scrape cycle. Delegates to tasks.pipeline.scrape_task for
-    multi-platform support ( Snapchat via Playwright + yt-dlp )."""
+    """Run a scrape cycle."""
     from tasks.pipeline import scrape_task
-    return scrape_task(handles=handles, hashtags=hashtags, max_per_run=max_per_run)
+    log.info("scrape_job: handles=%s hashtags=%s max=%s", handles, hashtags, max_per_run)
+    try:
+        result = scrape_task(handles=handles, hashtags=hashtags, max_per_run=max_per_run)
+        log.info("scrape_job: done result=%s", result)
+        return result
+    except Exception as e:
+        log.exception("scrape_job failed: %s", e)
+        return {"error": str(e)}
 
 
 def discovery_job() -> dict:
     """Discover new creators from recent viral videos."""
-    with session_scope() as db:
-        new = discovery.discover_creators(db, days=7, top_n=5)
-    log.info("discovery_job: discovered=%d", len(new))
-    return {"discovered": len(new)}
+    try:
+        with session_scope() as db:
+            new = discovery.discover_creators(db, days=7, top_n=5)
+        log.info("discovery_job: discovered=%d", len(new))
+        return {"discovered": len(new)}
+    except Exception as e:
+        log.exception("discovery_job failed: %s", e)
+        return {"error": str(e)}
+
+
+def transform_job() -> dict:
+    """Auto-transform up to 3 APPROVED → TRANSFORMED per run."""
+    from tasks.pipeline import transform_task
+    BATCH = 3
+    processed = 0
+    errors: list[dict] = []
+    try:
+        with session_scope() as db:
+            rows = db.execute(
+                select(Video)
+                .where(
+                    Video.status == VideoStatus.APPROVED,
+                    Video.transformed_path.is_(None),
+                    Video.local_path.isnot(None),
+                )
+                .order_by(Video.curated_at)
+                .limit(BATCH)
+            ).scalars().all()
+            video_ids = [r.id for r in rows]
+
+        for vid in video_ids:
+            try:
+                log.info("transform_job: video=%s", vid)
+                result = transform_task(vid)
+                processed += 1
+                log.info("transform_job: video=%s ok=%s", vid, result.get("ok"))
+            except Exception as e:
+                log.exception("transform_job: video=%s error=%s", vid, e)
+                errors.append({"video_id": vid, "error": str(e)})
+
+        log.info("transform_job: transformed=%d errors=%d", processed, len(errors))
+        return {"transformed": processed, "errors": errors}
+    except Exception as e:
+        log.exception("transform_job outer failure: %s", e)
+        return {"error": str(e), "transformed": 0}
 
 
 def publish_job() -> dict:
-    """Pick the next transformed video and publish it, if quota allows."""
+    """Auto-publish next TRANSFORMED video if quota allows."""
     if not settings.auto_publish:
         return {"skipped": "auto_publish disabled"}
-    with session_scope() as db:
-        # Quota check
-        if quota.remaining(db) <= 0:
-            return {"skipped": "quota exhausted"}
-        # Find next transformed video (oldest first)
-        v = db.execute(
-            select(Video)
-            .where(Video.status == VideoStatus.TRANSFORMED)
-            .order_by(Video.transformed_at)
-            .limit(1)
-        ).scalar_one_or_none()
-        if v is None:
-            return {"skipped": "no transformed videos ready"}
-        # Make sure we haven't already published today's allotment
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        todays = db.execute(
-            select(Video).where(
-                Video.status == VideoStatus.PUBLISHED,
-                Video.published_at.isnot(None),
-            )
-        ).scalars().all()
-        todays_count = sum(
-            1 for t in todays
-            if t.published_at and t.published_at.strftime("%Y-%m-%d") == today
-        )
-        if todays_count >= settings.uploads_per_day:
-            return {"skipped": f"daily cap reached ({todays_count}/{settings.uploads_per_day})"}
-        video_id = v.id
 
-    # Delegate to publish_task (runs synchronously — no Celery needed)
-    from tasks.pipeline import publish_task, generate_metadata_for_video
-    # Ensure metadata exists
-    generate_metadata_for_video(video_id)
-    result = publish_task(video_id, meta={})
-    log.info("publish_job: video=%s result=%s", video_id, result)
-    return result
+    try:
+        with session_scope() as db:
+            if quota.remaining(db) <= 0:
+                return {"skipped": "quota exhausted"}
+
+            v = db.execute(
+                select(Video)
+                .where(Video.status == VideoStatus.TRANSFORMED)
+                .order_by(Video.transformed_at)
+                .limit(1)
+            ).scalar_one_or_none()
+
+            if v is None:
+                return {"skipped": "no transformed videos ready"}
+
+            # Daily cap check — count today's published videos
+            today_start = datetime.now(timezone.utc).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            todays = db.execute(
+                select(Video.id).where(
+                    Video.status == VideoStatus.PUBLISHED,
+                    Video.published_at >= today_start,
+                )
+            ).scalars().all()
+            todays_count = len(todays)
+
+            if todays_count >= settings.uploads_per_day:
+                return {"skipped": f"daily cap {todays_count}/{settings.uploads_per_day}"}
+
+            video_id = v.id
+
+        from tasks.pipeline import publish_task, generate_metadata_for_video
+        try:
+            generate_metadata_for_video(video_id)
+        except Exception as e:
+            log.warning("publish_job: metadata gen failed %s: %s", video_id, e)
+
+        result = publish_task(video_id, meta={})
+        log.info("publish_job: video=%s result=%s", video_id, result)
+        return result
+
+    except Exception as e:
+        log.exception("publish_job failure: %s", e)
+        return {"error": str(e)}
 
 
 def cleanup_job() -> dict:
-    """Delete downloaded source video files older than SOURCE_VIDEO_MAX_AGE_DAYS."""
-    from .config import settings
-    max_age_days = settings.source_video_max_age_days
-    cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
-    deleted = 0
-    with session_scope() as db:
-        rows = db.execute(
-            select(Video).where(
-                Video.local_path.isnot(None),
-                Video.scraped_at < cutoff,
-                Video.status.in_([VideoStatus.PUBLISHED, VideoStatus.REJECTED]),
-            )
-        ).scalars().all()
-        for v in rows:
-            if v.local_path and os.path.exists(v.local_path):
-                try:
-                    os.remove(v.local_path)
-                    v.local_path = None
-                    deleted += 1
-                except OSError:
-                    pass
-    log.info("cleanup_job: deleted=%d old source files", deleted)
-    return {"deleted": deleted}
-
-
-def chop_long_job() -> dict:
-    """Auto-chop long videos pending/approved that exceed duration threshold."""
-    from .config import settings
-    from tasks.pipeline import long_to_shorts_task
-
-    min_dur = getattr(settings, "long_video_min_duration_sec", 120)
-    batch = 5
-    processed, clips = 0, 0
-    with session_scope() as db:
-        long_vids = db.execute(
-            select(Video).where(
-                Video.duration_sec >= min_dur,
-                Video.status.in_([VideoStatus.PENDING, VideoStatus.APPROVED]),
-                Video.local_path.isnot(None),
-            )
-        ).scalars().all()
-    for v in long_vids[:batch]:
-        result = long_to_shorts_task(v.id)
-        if result.get("ok"):
-            clips += result.get("clips_created", 0)
-        processed += 1
-    log.info("chop_long_job: processed=%d new_clips=%d", processed, clips)
-    return {"processed": processed, "clips_created": clips}
+    """Delete source files older than SOURCE_VIDEO_MAX_AGE_DAYS."""
+    try:
+        max_age = settings.source_video_max_age_days
+        cutoff = datetime.now(timezone.utc) - timedelta(days=max_age)
+        deleted = 0
+        with session_scope() as db:
+            rows = db.execute(
+                select(Video).where(
+                    Video.local_path.isnot(None),
+                    Video.scraped_at < cutoff,
+                    Video.status.in_([VideoStatus.PUBLISHED, VideoStatus.REJECTED]),
+                )
+            ).scalars().all()
+            for v in rows:
+                if v.local_path and os.path.exists(v.local_path):
+                    try:
+                        os.remove(v.local_path)
+                        v.local_path = None
+                        deleted += 1
+                    except OSError as e:
+                        log.warning("cleanup_job: delete failed %s: %s", v.local_path, e)
+        log.info("cleanup_job: deleted=%d", deleted)
+        return {"deleted": deleted}
+    except Exception as e:
+        log.exception("cleanup_job failure: %s", e)
+        return {"error": str(e)}
 
 
 def recompute_scores_job() -> dict:
     """Refresh all engagement/velocity scores."""
-    with session_scope() as db:
-        rows = db.execute(select(Video)).scalars().all()
-        recompute_scores(rows)
-    return {"updated": len(rows)}
+    try:
+        with session_scope() as db:
+            rows = db.execute(select(Video)).scalars().all()
+            recompute_scores(rows)
+            db.commit()
+        return {"updated": len(rows)}
+    except Exception as e:
+        log.exception("recompute_scores_job failure: %s", e)
+        return {"error": str(e)}
 
 
 # ---------- Scheduler lifecycle ----------
-def start_scheduler() -> BackgroundScheduler:
-    """Start the background scheduler. Idempotent."""
-    global _scheduler
-    if _scheduler is not None:
-        return _scheduler
 
-    init_db()
+def _make_scheduler() -> BackgroundScheduler:
+    """Build a configured BackgroundScheduler (does NOT start it)."""
+    executors = {
+        "default": ThreadPoolExecutor(max_workers=8),
+    }
+    sched = BackgroundScheduler(
+        timezone="UTC",
+        executors=executors,
+    )
 
-    sched = BackgroundScheduler(timezone="UTC")
+    now = datetime.now(timezone.utc)
+
     sched.add_job(
         scrape_job,
         IntervalTrigger(hours=settings.scrape_interval_hours),
         id="scrape",
-        next_run_time=datetime.now(timezone.utc) + timedelta(seconds=10),  # run once at startup
+        next_run_time=now + timedelta(seconds=10),
         max_instances=1,
         coalesce=True,
+        replace_existing=True,
     )
     sched.add_job(
         discovery_job,
         IntervalTrigger(hours=settings.discovery_interval_hours),
         id="discovery",
-        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=2),
+        next_run_time=now + timedelta(minutes=2),
         max_instances=1,
         coalesce=True,
+        replace_existing=True,
+    )
+    sched.add_job(
+        transform_job,
+        IntervalTrigger(hours=1),
+        id="transform",
+        next_run_time=now + timedelta(minutes=3),
+        max_instances=1,
+        coalesce=True,
+        replace_existing=True,
     )
     sched.add_job(
         publish_job,
         IntervalTrigger(hours=settings.upload_interval_hours),
         id="publish",
-        # Don't auto-publish on startup — wait for the first scheduled slot.
+        next_run_time=now + timedelta(minutes=5),
         max_instances=1,
         coalesce=True,
+        replace_existing=True,
     )
     sched.add_job(
         cleanup_job,
         IntervalTrigger(hours=24),
         id="cleanup",
+        next_run_time=now + timedelta(hours=1),
         max_instances=1,
         coalesce=True,
+        replace_existing=True,
     )
-    # Long-form chopper (YouTube → Shorts) is intentionally disabled as a
-    # scheduled job.  We now primary-target Instagram Reels, Snapchat
-    # Spotlight, and native YouTube Shorts.  Re-enable by uncommenting:
-    # sched.add_job(
-    #     chop_long_job,
-    #     IntervalTrigger(hours=6),
-    #     id="chop_long",
-    #     next_run_time=datetime.now(timezone.utc) + timedelta(minutes=5),
-    #     max_instances=1,
-    #     coalesce=True,
-    # )
     sched.add_job(
         recompute_scores_job,
         IntervalTrigger(hours=1),
         id="recompute",
+        next_run_time=now + timedelta(minutes=4),
         max_instances=1,
         coalesce=True,
+        replace_existing=True,
     )
+    return sched
+
+
+def start_scheduler() -> BackgroundScheduler:
+    """Start the APScheduler BackgroundScheduler. Idempotent and restart-safe."""
+    global _scheduler
+
+    # Shut down any previous run if it's still alive (module-reload safe)
+    if _scheduler is not None and _scheduler.running:
+        try:
+            _scheduler.shutdown(wait=False)
+        except Exception:
+            pass
+        _scheduler = None
+
+    init_db()
+
+    sched = _make_scheduler()
     sched.start()
     _scheduler = sched
-    log.info("Scheduler started: scrape=%dh discovery=%dh publish=%dh cleanup=24h",
-             settings.scrape_interval_hours, settings.discovery_interval_hours,
-             settings.upload_interval_hours)
+
+    log.info(
+        "Scheduler started: scrape=%dh discovery=%dh transform=1h publish=%dh cleanup=24h recompute=1h",
+        settings.scrape_interval_hours,
+        settings.discovery_interval_hours,
+        settings.upload_interval_hours,
+    )
     return sched
 
 
 def stop_scheduler() -> None:
     global _scheduler
     if _scheduler is not None:
-        _scheduler.shutdown(wait=False)
+        try:
+            _scheduler.shutdown(wait=False)
+        except Exception as e:
+            log.warning("Scheduler shutdown error: %s", e)
         _scheduler = None
+        log.info("Scheduler stopped")
