@@ -210,11 +210,21 @@ class SnapchatScraper(Scraper):
         context = self._new_context()
         try:
             page = context.new_page()
-            page.set_default_timeout(30_000)
+            page.set_default_timeout(15_000)
             page.goto(url, wait_until="domcontentloaded")
-            # Give client-side JS up to 10s to render
-            page.wait_for_timeout(10_000)
+            try:
+                page.wait_for_selector('script[type="application/json"]', timeout=4000)
+            except Exception:
+                pass
+            page.wait_for_timeout(2500)
             items = self._extract_video_urls_from_page(page, source, id_prefix)
+            if not items:
+                try:
+                    page.wait_for_selector('a[href], video', timeout=2000)
+                    page.wait_for_timeout(1000)
+                    items = self._extract_video_urls_from_page(page, source, id_prefix)
+                except Exception:
+                    pass
         except Exception as exc:
             log.error("Snapchat page scan failed for %r: %s", url, exc)
         finally:
@@ -227,88 +237,105 @@ class SnapchatScraper(Scraper):
     # ------------------------------------------------------------------
     # Public scraper interface
     # ------------------------------------------------------------------
+    def _scrape_single(self, url: str, source: str, prefix: str, per: int) -> list[ScrapedItem]:
+        ctx = None
+        try:
+            browser = self._get_browser()
+            ctx = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36", viewport={"width":1280,"height":900}, locale="en-US")
+            ctx.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
+            page = ctx.new_page()
+            page.set_default_timeout(12_000)
+            page.goto(url, wait_until="domcontentloaded")
+            try:
+                page.wait_for_selector('script[type="application/json"]', timeout=2000)
+            except Exception:
+                pass
+            page.wait_for_timeout(1200)
+            items = self._extract_video_urls_from_page(page, source, prefix)
+            return items[:per]
+        except Exception as exc:
+            log.error("Snapchat parallel scan failed for %r: %s", url, exc)
+            return []
+        finally:
+            try:
+                if ctx: ctx.close()
+            except Exception:
+                pass
+
+    def _scrape_urls_batch(self, urls: list[tuple[str, str, str]], max_results: int) -> list[ScrapedItem]:
+        if not urls:
+            return []
+        if len(urls) == 1:
+            url, source, prefix = urls[0]
+            per = max_results
+            return self._dedup(self._scrape_single(url, source, prefix, per))[:max_results]
+        import concurrent.futures as _fut
+        per = max(1, max_results // max(len(urls), 1))
+        out: list[ScrapedItem] = []
+        workers = min(len(urls), 4)
+        with _fut.ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = {ex.submit(self._scrape_single, u, s, p, per): (u,s,p) for u,s,p in urls}
+            for fut in _fut.as_completed(futs):
+                try:
+                    items = fut.result()
+                    out.extend(items)
+                except Exception as exc:
+                    log.error("parallel scrape future failed: %s", exc)
+                if len(out) >= max_results:
+                    break
+        return self._dedup(out)[:max_results]
+
+    def _scrape_urls_batch_parallel(self, urls: list[tuple[str, str, str]], max_results: int) -> list[ScrapedItem]:
+        return self._scrape_urls_batch(urls, max_results)
+
     def scrape_handles(
         self, handles: list[str], max_per_run: int, download: bool = True
     ) -> list[ScrapedItem]:
-        """Scrape public video URLs from Snapchat profile pages.
-
-        When **download** is True the discovered video URLs are passed through
-        yt-dlp so the resulting :class:`ScrapedItem` carries a real
-        ``local_path`` pointing at a downloaded MP4.
-        """
+        """Scrape public video URLs from Snapchat profile pages."""
         out: list[ScrapedItem] = []
         handles = [h for h in handles if h]
         if not handles:
             return out
-        per = max(1, max_per_run // len(handles))
-        downloader = None
-        if download:
-            try:
-                from .yt_dlp_scraper import YtDlpScraper as _DL
-                downloader = _DL()
-            except Exception as exc:
-                log.warning("yt-dlp downloader unavailable for Snapchat downloads: %s", exc)
-
+        valid = []
         for h in handles:
             username = self._normalize_handle(h)
             if not username:
                 log.warning("Could not parse Snapchat handle: %r", h)
                 continue
-            url = self._profile_url(username)
-            items = self._scan_page(
-                url=url,
-                source="snapchat",
-                id_prefix=username,
-                max_results=per,
-            )
-            for it in items:
-                it.author = username
-                if download and downloader and not it.local_path:
-                    try:
-                        path = downloader._download(it)
-                        if path:
-                            it.local_path = path
-                    except Exception as exc:
-                        log.warning("yt-dlp snap download failed for %r: %s", it.source_url, exc)
-            out.extend(items)
-        return self._dedup(out)[:max_per_run]
+            valid.append(username)
+        if not valid:
+            return out
+        urls = [(self._profile_url(u), "snapchat", u) for u in valid]
+        items = self._scrape_urls_batch(urls, max_results=max_per_run)
+        if download and items:
+            try:
+                self._download_snapchat_cdn(items)
+            except Exception as exc:
+                log.warning("snap CDN download failed: %s", exc)
+        return self._dedup(items)[:max_per_run]
 
     def scrape_hashtags(
         self, hashtags: list[str], max_per_run: int, download: bool = True
     ) -> list[ScrapedItem]:
         """Scrape from the Snapchat Spotlight page (public trending videos)."""
-        out: list[ScrapedItem] = []
         hashtags = [t for t in hashtags if t]
         if not hashtags:
-            return out
-        per = max(1, max_per_run // max(len(hashtags), 1))
-        downloader = None
-        if download:
+            return []
+        unique_tags = list({t.lstrip("#") for t in hashtags})
+        # Spotlight is a single page — scraping it N times is wasteful, do it once
+        primary = unique_tags[0] if unique_tags else "spotlight"
+        items = self._scrape_urls_batch(
+            [(_SPOTLIGHT_URL, "snapchat", f"spotlight_{primary}")],
+            max_results=max_per_run,
+        )
+        for it in items:
+            it.meta = {**(it.meta or {}), "hashtag": primary, "hashtags": unique_tags}
+        if download and items:
             try:
-                from .yt_dlp_scraper import YtDlpScraper as _DL
-                downloader = _DL()
+                self._download_snapchat_cdn(items)
             except Exception as exc:
-                log.warning("yt-dlp downloader unavailable for Snapchat downloads: %s", exc)
-
-        for tag in hashtags:
-            tag_clean = tag.lstrip("#")
-            items = self._scan_page(
-                url=_SPOTLIGHT_URL,
-                source="snapchat",
-                id_prefix=f"spotlight_{tag_clean}",
-                max_results=per,
-            )
-            for it in items:
-                it.meta = {**(it.meta or {}), "hashtag": tag_clean}
-                if download and downloader and not it.local_path:
-                    try:
-                        path = downloader._download(it)
-                        if path:
-                            it.local_path = path
-                    except Exception as exc:
-                        log.warning("yt-dlp snap download failed for %r: %s", it.source_url, exc)
-            out.extend(items)
-        return self._dedup(out)[:max_per_run]
+                log.warning("snap CDN download failed: %s", exc)
+        return self._dedup(items)[:max_per_run]
 
     # ------------------------------------------------------------------
     # Snapchat CDN downloader
@@ -316,18 +343,15 @@ class SnapchatScraper(Scraper):
     def _download_snapchat_cdn(
         self, items: list[ScrapedItem], tag: str = "spotlight"
     ) -> None:
-        """Download snapchat CDN video URLs via Playwright + direct HTTP.
-
-        ``yt-dlp`` does not understand snapchat's CDN host names
-        (``bolt-gcdn.sc-cdn.net``, ``cf-st.sc-cdn.net``), so we intercept the
-        network requests ourselves and then ``GET`` the stream URL directly with
-        the correct ``Referer`` header.
-        """
+        """Download snapchat CDN video URLs via single-page intercept + parallel HTTP."""
         if not items:
             return
         to_download = [it for it in items if not it.local_path and it.source_url]
         if not to_download:
             return
+        # If source_url already looks like direct CDN, skip intercept and download directly
+        direct = [it for it in to_download if "sc-cdn.net" in (it.source_url or "")]
+        intercept_needed = [it for it in to_download if "sc-cdn.net" not in (it.source_url or "")]
 
         try:
             from .yt_dlp_scraper import YtDlpScraper  # noqa: F401
@@ -340,113 +364,103 @@ class SnapchatScraper(Scraper):
                 content_dir = "."
 
         _HEADERS = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             "Referer": "https://www.snapchat.com/spotlight",
             "Origin": "https://www.snapchat.com",
         }
 
-        try:
-            from playwright.sync_api import sync_playwright as _sp
-        except ImportError:
-            log.debug("playwright not installed for snapchat CDN downloader")
-            return
+        found: list[str] = [it.source_url for it in direct if it.source_url]
 
-        found: list[str] = []
-        browser = None
-        ctx = None
-        page = None
-        try:
-            browser = self._get_browser()
-            ctx = self._new_context()
-            page = ctx.new_page()
-            page.set_default_timeout(30000)
-
-            seen: set[str] = set()
-            for it in to_download:
-                src_url = it.source_url or ""
-                if "snapchat.com/" in src_url:
-                    page_url = src_url
-                else:
-                    page_url = _SPOTLIGHT_URL
-                tag_clean = (it.meta or {}).get("hashtag", tag) if isinstance(it.meta, dict) else tag
-
+        if intercept_needed:
+            try:
+                ctx = self._new_context()
+                page = ctx.new_page()
+                page.set_default_timeout(15000)
+                seen: set[str] = set(found)
                 def _on_req(req):
                     u = req.url
                     if ("sc-cdn.net" not in u) and ("bolt-gcdn" not in u):
                         return
-                    # skip image / snapshot CDN requests
-                    path = u.split("?")[0]
-                    if "/bk/" in path:
+                    if "/bk/" in u.split("?")[0]:
                         return
                     if u not in seen:
                         seen.add(u)
                         found.append(u)
-
                 page.on("request", _on_req)
                 try:
-                    page.goto(page_url, wait_until="domcontentloaded")
+                    page.goto(_SPOTLIGHT_URL, wait_until="domcontentloaded")
+                    page.wait_for_timeout(1500)
+                    try:
+                        page.evaluate("window.scrollBy(0, 800)")
+                    except Exception:
+                        pass
+                    page.wait_for_timeout(800)
                 except Exception:
                     pass
-                page.wait_for_timeout(5000)
-                page.remove_listener("request", _on_req)
-
-                # try to match found URLs against the item we just scanned
-                if found:
-                    it.source_url = found[-1]
-                time.sleep(1)
-        except Exception as exc:
-            log.debug("snap CDN browser open failed: %s", exc)
-        finally:
-            if ctx:
                 try:
                     ctx.close()
                 except Exception:
                     pass
-
-        # HTTP-download the captured CDN URLs
-        import requests as _requests
-
-        dest_map: dict[str, str] = {}  # source_url -> local_path
-        for url in found:
-            if url in dest_map:
-                continue
-            try:
-                r = _requests.get(url, headers=_HEADERS, timeout=25, allow_redirects=True, stream=True)
-                if r.status_code != 200 or len(r.content) < 50_000:
-                    continue
-                fname = f"snap_{int(time.time())}_{len(dest_map)}.mp4"
-                dest = os.path.join(content_dir, fname)
-                with open(dest, "wb") as fh:
-                    for chunk in r.iter_content(64 * 1024):
-                        if chunk:
-                            fh.write(chunk)
-                dest_map[url] = dest
             except Exception as exc:
-                log.debug("snap CDN GET failed %r: %s", url[:60], exc)
+                log.debug("snap CDN intercept failed: %s", exc)
+            # map intercepted CDN urls back to items needing it
+            for idx, it in enumerate(intercept_needed):
+                if idx < len(found):
+                    it.source_url = found[idx]
 
-        # Map back to items and populate minimal metadata via ffprobe
+        import requests as _requests
+        import concurrent.futures as _fut
+
+        # dedupe found
+        found = list(dict.fromkeys([u for u in found if u and "sc-cdn.net" in u]))
+        dest_map: dict[str, str] = {}
+
+        def _fetch(url: str) -> tuple[str, str | None]:
+            try:
+                r = _requests.get(url, headers=_HEADERS, timeout=15, stream=True)
+                if r.status_code != 200:
+                    return url, None
+                data = b"".join(r.iter_content(64 * 1024))
+                if len(data) < 50_000:
+                    return url, None
+                fname = f"snap_{int(time.time()*1000)}_{abs(hash(url)) % 10000}.mp4"
+                dest = os.path.join(str(content_dir), fname)
+                with open(dest, "wb") as fh:
+                    fh.write(data)
+                return url, dest
+            except Exception:
+                return url, None
+
+        urls_to_fetch = [u for u in found if u not in dest_map]
+        # Also fetch direct source_urls that weren't in found
+        for it in to_download:
+            if it.source_url and it.source_url not in found and "sc-cdn.net" in it.source_url:
+                urls_to_fetch.append(it.source_url)
+        urls_to_fetch = list(dict.fromkeys(urls_to_fetch))[: max(len(to_download), len(found)) + 4]
+
+        with _fut.ThreadPoolExecutor(max_workers=4) as ex:
+            for url, dest in ex.map(_fetch, urls_to_fetch):
+                if dest:
+                    dest_map[url] = dest
+
         for it in items:
             if it.local_path:
                 continue
             mapped = dest_map.get(it.source_url)
+            if not mapped and found:
+                # fallback: assign any unused dest
+                unused = [d for u, d in dest_map.items() if d not in [x.local_path for x in items]]
+                if unused:
+                    mapped = unused[0]
+                    it.source_url = [u for u, d in dest_map.items() if d == mapped][0]
             if not mapped:
                 continue
             it.local_path = mapped
             try:
                 import subprocess as _subprocess
                 _out = _subprocess.run(
-                    [
-                        "ffprobe", "-v", "error",
-                        "-select_streams", "v:0",
-                        "-show_entries", "stream=duration,width,height,bit_rate",
-                        "-of", "default=noprint_wrappers=1",
-                        mapped,
-                    ],
-                    capture_output=True, text=True, check=True,
+                    ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=duration,width,height,bit_rate", "-of", "default=noprint_wrappers=1", mapped],
+                    capture_output=True, text=True, check=True, timeout=8,
                 )
                 for line in _out.stdout.splitlines():
                     if "=" not in line:

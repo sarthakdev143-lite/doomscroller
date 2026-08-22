@@ -168,9 +168,12 @@ def scrape_task(handles: list[str] | None = None,
 
     with session_scope() as db:
         discovery.ensure_seed_creators(db, handles, platform="snapchat")
-        active = discovery.list_active_creators(db, limit=20)
-        snap_handles_all = [c.handle for c in active if c.platform == "snapchat"]
-        all_handles = list({*handles, *snap_handles_all})
+        if settings.auto_discovery:
+            active = discovery.list_active_creators(db, limit=20)
+            snap_handles_all = [c.handle for c in active if c.platform == "snapchat"]
+            all_handles = list({*handles, *snap_handles_all})
+        else:
+            all_handles = list(handles)
 
     if snap_only:
         snap_handles, other_handles = (all_handles, [])
@@ -192,23 +195,42 @@ def scrape_task(handles: list[str] | None = None,
     elif other_handles and not snap_only:
         items.extend(default_scraper.scrape_handles(other_handles, max_per_run, download=False))
 
-    # 2. Scrape Snapchat handles (enumerate URLs only; download step below)
-    if snap_handles and snap_scraper is not None:
-        denom = max(len(snap_handles) + (len(other_handles) if not snap_only else 0), 1)
-        per = max(1, max_per_run // denom)
-        snap_items = snap_scraper.scrape_handles(snap_handles, per * len(snap_handles), download=False)
-        items.extend(snap_items)
-
-    # 3. Hashtags
-    if hashtags and snap_scraper is not None:
-        per_snap = max(1, max_per_run // max(len(hashtags), 1))
-        if snap_only:
+    # 2+3 combined parallel: handles + Spotlight in ONE batch (crazy fast)
+    if snap_only and snap_scraper is not None and (snap_handles or hashtags):
+        h_urls = [(snap_scraper._profile_url(snap_scraper._normalize_handle(h) or h), "snapchat", snap_scraper._normalize_handle(h) or h) for h in (snap_handles or []) if snap_scraper._normalize_handle(h)]
+        s_urls = []
+        if hashtags:
+            uniq = list({t.lstrip("#") for t in hashtags})
+            if uniq:
+                s_urls = [(snap_scraper._SPOTLIGHT_URL if hasattr(snap_scraper, '_SPOTLIGHT_URL') else "https://www.snapchat.com/spotlight", "snapchat", f"spotlight_{uniq[0]}")]
+                # keep tag meta for later
+                s_tag = uniq[0]
+            else:
+                s_tag = "spotlight"
+        combined = h_urls + s_urls
+        # parallel batch: each URL scraped in its own browser (4 workers)
+        items = snap_scraper._scrape_urls_batch_parallel(combined, max_results=max_per_run)
+        # tag spotlight items
+        if hashtags and s_urls:
+            uniq = list({t.lstrip("#") for t in hashtags})
+            for it in items:
+                if it.source_id.startswith("spotlight_"):
+                    it.meta = {**(it.meta or {}), "hashtag": uniq[0], "hashtags": uniq}
+    else:
+        if snap_handles and snap_scraper is not None:
+            denom = max(len(snap_handles) + (len(other_handles) if not snap_only else 0), 1)
+            per = max(1, max_per_run // denom)
+            snap_items = snap_scraper.scrape_handles(snap_handles, per * len(snap_handles), download=False)
+            items.extend(snap_items)
+        if hashtags and snap_scraper is not None:
             per_snap = max(1, max_per_run // max(len(hashtags), 1))
-        items.extend(
-            snap_scraper.scrape_hashtags(
-                hashtags, per_snap * len(hashtags), download=False
+            if snap_only:
+                per_snap = max(1, max_per_run // max(len(hashtags), 1))
+            items.extend(
+                snap_scraper.scrape_hashtags(
+                    hashtags, per_snap * len(hashtags), download=False
+                )
             )
-        )
     # 3b. Default hashtags (disabled in MVP)
     if hashtags and not snap_only:
         per = max(1, max_per_run // max(len(snap_handles) + len(other_handles) + len(hashtags), 1))
