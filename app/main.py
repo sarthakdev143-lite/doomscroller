@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
@@ -130,9 +131,23 @@ def queue_transform(video_id: str, body: TransformBody,
         return {"task_id": None, "video_id": video_id, "sync": True, "result": out}
 
 
+@app.get("/videos/{video_id}/download")
+def download_video(video_id: str, db: Session = Depends(get_db)):
+    v = db.get(Video, video_id)
+    if v is None:
+        raise HTTPException(status_code=404, detail="not found")
+    path = v.transformed_path or v.local_path
+    if not path or not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="file not found on disk")
+    filename = f"{v.id}.mp4"
+    return FileResponse(path, media_type="video/mp4", filename=filename)
+
+
 @app.post("/videos/{video_id}/publish", response_model=dict)
 def queue_publish(video_id: str, body: PublishBody,
                   db: Session = Depends(get_db)) -> dict:
+    if not settings.enable_publish:
+        raise HTTPException(status_code=404, detail="publishing disabled in MVP")
     v = db.get(Video, video_id)
     if v is None:
         raise HTTPException(status_code=404, detail="not found")
@@ -206,12 +221,16 @@ def list_jobs() -> dict:
 @app.post("/scheduler/run/{job_id}", response_model=dict)
 def run_job_now(job_id: str) -> dict:
     """Trigger a scheduler job to run immediately."""
+    if job_id == "publish" and not settings.enable_publish:
+        raise HTTPException(status_code=404, detail="publishing disabled in MVP")
+    if job_id == "chop_long" and not settings.enable_publish:
+        raise HTTPException(status_code=404, detail="chop disabled in MVP")
     fn_map = {
         "scrape": scheduler.scrape_job,
         "discovery": scheduler.discovery_job,
         "publish": scheduler.publish_job,
         "cleanup": scheduler.cleanup_job,
-        "chop_long": scheduler.chop_long_job,
+        "chop_long": getattr(scheduler, "chop_long_job", scheduler.cleanup_job),
         "recompute": scheduler.recompute_scores_job,
     }
     fn = fn_map.get(job_id)
@@ -297,6 +316,8 @@ def list_creators(limit: int = 50, db: Session = Depends(get_db)) -> list:
 @app.post("/videos/{video_id}/chop", response_model=dict)
 def chop_long_to_shorts(video_id: str, db: Session = Depends(get_db)) -> dict:
     """Smart-split one long video into multiple Shorts using hot-clip heuristics."""
+    if not settings.enable_publish:
+        raise HTTPException(status_code=404, detail="chop disabled in MVP")
     v = db.get(Video, video_id)
     if v is None:
         raise HTTPException(status_code=404, detail="not found")
@@ -319,4 +340,6 @@ def stats(db: Session = Depends(get_db)) -> dict:
         "use_mock": settings.use_mock,
         "uploads_per_day": settings.uploads_per_day,
         "auto_publish": settings.auto_publish,
+        "enable_publish": settings.enable_publish,
+        "enabled_platforms": settings.enabled_platforms_list,
     }

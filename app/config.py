@@ -37,12 +37,18 @@ class Settings(BaseSettings):
     uploads_per_day: int = 3
     upload_interval_hours: int = 8
     min_approved_queue: int = 1
-    auto_publish: bool = True
+    auto_publish: bool = False
+    enable_publish: bool = False
+    auto_discovery: bool = False
 
     # Scraping
     target_handles: str = '["@khaby.lame","@charlidamelio","@mrbeast","@bellapoarch","@addisonre","@zachking","@kimberly.loaiza","@fifaworldcup","@realmadrid","@bts_official_bighit","@therock","@willsmith","@domelipa","@billieeilish","@cznburak","@lamine.yamal","@jasonderulo","@kyliejenner","@selenagomez","@kylizzlemynizzl"]'
     target_hashtags: str = '["reels","shorts","viral","trending","entertainment","spotlight"]'
-    enabled_platforms: str = '["instagram","snapchat","youtube"]'
+    enabled_platforms: str = '["snapchat"]'
+    viral_min_engagement: float = 0.15
+    viral_min_velocity: float = 0.12
+    viral_preferred_min_duration: int = 5
+    viral_preferred_max_duration: int = 35
     proxy_url: str = ""
     # Browser cookies for yt-dlp (e.g. "edge" or "edge,Default" or "chrome,Profile 1")
     # Leave empty to skip cookie extraction.
@@ -143,7 +149,7 @@ class Settings(BaseSettings):
         except Exception:
             return ["shorts"]
 
-    @field_validator("use_mock", "use_llm_metadata", "auto_publish", mode="before")
+    @field_validator("use_mock", "use_llm_metadata", "auto_publish", "enable_publish", "auto_discovery", mode="before")
     @classmethod
     def _coerce_bool(cls, v):
         if isinstance(v, str):

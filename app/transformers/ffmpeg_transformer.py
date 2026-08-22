@@ -20,6 +20,35 @@ from typing import List
 from .base import Transformer, TransformRecipe
 
 
+def _is_already_9x16(w: int, h: int) -> bool:
+    if w <= 0 or h <= 0:
+        return False
+    ratio = w / h
+    target = 9 / 16
+    return abs(ratio - target) < 0.03 and h >= 1280 and w >= 720
+
+
+def _probe_dims(path: str) -> tuple[int, int]:
+    import subprocess
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height", "-of", "default=noprint_wrappers=1", path],
+            capture_output=True, text=True, check=True, timeout=10,
+        )
+        w = h = 0
+        for line in out.stdout.splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                if k.strip() == "width":
+                    w = int(v.strip())
+                elif k.strip() == "height":
+                    h = int(v.strip())
+        return w, h
+    except Exception:
+        return 0, 0
+
+
 def _ff(*args) -> str:
     """Run ffmpeg and raise on failure."""
     cmd = ["ffmpeg", "-y", *args]
@@ -41,6 +70,13 @@ class FFmpegTransformer(Transformer):
             raise FileNotFoundError(input_path)
 
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+
+        w_probe, h_probe = _probe_dims(input_path)
+        if _is_already_9x16(w_probe, h_probe) and not recipe.add_blur_background and not recipe.add_caption and not recipe.mirror and recipe.speed_factor == 1.0:
+            import shutil as _shutil
+            if os.path.abspath(input_path) != os.path.abspath(output_path):
+                _shutil.copyfile(input_path, output_path)
+            return output_path
 
         W, H = recipe.width, recipe.height
         filters: List[str] = []

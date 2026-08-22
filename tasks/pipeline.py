@@ -87,14 +87,39 @@ SOURCE_PRIORITY: dict[str, float] = {
 }
 
 
+def _is_viral_candidate(it: ScrapedItem, engagement: float, velocity: float) -> bool:
+    if it.source == "snapchat":
+        if it.views == 0 and it.likes == 0 and it.comments == 0:
+            return True
+        if it.views > 0 and it.views < 1000:
+            return False
+        if engagement < settings.viral_min_engagement and velocity < settings.viral_min_velocity:
+            return False
+        if it.views >= 50000 and 6 <= it.duration_sec <= 12:
+            return True
+        return True
+    return engagement >= settings.viral_min_engagement or velocity >= settings.viral_min_velocity
+
+
 def persist_scraped_items(items: list[ScrapedItem]) -> tuple[int, int]:
     """Persist scraped items as pending Videos. Returns (created, skipped)."""
     created = 0
     skipped = 0
     with session_scope() as db:
         for it in items:
-            # Hard quality gate: reject stubs, slideshows, low-res garbage
             if not _is_quality_short(it):
+                skipped += 1
+                continue
+            tmp_video = Video(
+                source=it.source, source_id=it.source_id, source_url=it.source_url,
+                author=it.author, title=it.title, description=it.description,
+                views=it.views, likes=it.likes, comments=it.comments, shares=it.shares,
+                duration_sec=it.duration_sec, status=VideoStatus.PENDING,
+            )
+            from app.analytics import engagement_score as _eng, velocity_score as _vel
+            eng = _eng(tmp_video)
+            vel = _vel(tmp_video)
+            if not _is_viral_candidate(it, eng, vel):
                 skipped += 1
                 continue
             existing = db.execute(
@@ -133,21 +158,24 @@ def persist_scraped_items(items: list[ScrapedItem]) -> tuple[int, int]:
 def scrape_task(handles: list[str] | None = None,
                 hashtags: list[str] | None = None,
                 max_per_run: int | None = None) -> dict:
-    """Scrape handles + hashtags and persist new videos (with downloaded mp4).
-
-    Supports mixed-platform handles: Snapchat profiles are discovered via
-    Playwright, then the actual MP4 is downloaded via yt-dlp.
-    """
+    """Snapchat-only scrape: Spotlight + handles via SnapchatScraper."""
     handles = handles if handles is not None else settings.handles_list
     hashtags = hashtags if hashtags is not None else settings.hashtags_list
     max_per_run = max_per_run or settings.scrape_max_per_run
 
-    with session_scope() as db:
-        discovery.ensure_seed_creators(db, handles)
-        active = discovery.list_active_creators(db, limit=20)
-        all_handles = list({*handles, *[c.handle for c in active if c.handle not in handles]})
+    enabled = [p.lower() for p in settings.enabled_platforms_list]
+    snap_only = enabled == ["snapchat"]
 
-    snap_handles, other_handles = _split_handles_by_platform(all_handles)
+    with session_scope() as db:
+        discovery.ensure_seed_creators(db, handles, platform="snapchat")
+        active = discovery.list_active_creators(db, limit=20)
+        snap_handles_all = [c.handle for c in active if c.platform == "snapchat"]
+        all_handles = list({*handles, *snap_handles_all})
+
+    if snap_only:
+        snap_handles, other_handles = (all_handles, [])
+    else:
+        snap_handles, other_handles = _split_handles_by_platform(all_handles)
 
     default_scraper = get_scraper()
     try:
@@ -157,39 +185,54 @@ def scrape_task(handles: list[str] | None = None,
         snap_scraper = None
     items: list[ScrapedItem] = []
 
-    # 1. Scrape non-Snapchat handles with the default scraper (yt-dlp / mock)
-    if other_handles and not settings.use_mock:
+    # 1. Scrape non-Snapchat handles (disabled in snapchat-only MVP)
+    if other_handles and not snap_only and not settings.use_mock:
         per = max(1, max_per_run // max(len(snap_handles) + len(other_handles), 1))
         items.extend(default_scraper.scrape_handles(other_handles, per * len(other_handles), download=True))
-    elif other_handles:
+    elif other_handles and not snap_only:
         items.extend(default_scraper.scrape_handles(other_handles, max_per_run, download=False))
 
     # 2. Scrape Snapchat handles (enumerate URLs only; download step below)
     if snap_handles and snap_scraper is not None:
-        per = max(1, max_per_run // max(len(snap_handles) + len(other_handles), 1))
+        denom = max(len(snap_handles) + (len(other_handles) if not snap_only else 0), 1)
+        per = max(1, max_per_run // denom)
         snap_items = snap_scraper.scrape_handles(snap_handles, per * len(snap_handles), download=False)
         items.extend(snap_items)
 
     # 3. Hashtags
-    # 3a. Snapchat hashtags -> Spotlight page (CDN URLs; download later)
     if hashtags and snap_scraper is not None:
-        per_snap = max(1, max_per_run // (len(hashtags) * 2))
+        per_snap = max(1, max_per_run // max(len(hashtags), 1))
+        if snap_only:
+            per_snap = max(1, max_per_run // max(len(hashtags), 1))
         items.extend(
             snap_scraper.scrape_hashtags(
                 hashtags, per_snap * len(hashtags), download=False
             )
         )
-    # 3b. Default hashtags (YouTube Shorts / generic yt-dlp search)
-    if hashtags:
+    # 3b. Default hashtags (disabled in MVP)
+    if hashtags and not snap_only:
         per = max(1, max_per_run // max(len(snap_handles) + len(other_handles) + len(hashtags), 1))
         items.extend(default_scraper.scrape_hashtags(hashtags, per * len(hashtags), download=not settings.use_mock))
 
     # 4a. Snapchat CDN (yt-dlp doesn't understand bolt-gcdn / cf-st URLs)
     if snap_scraper is not None and not settings.use_mock:
         snap_scraper._download_snapchat_cdn(items)
-    # 4b. Remaining straight-to-disk downloads (YouTube + Instagram fallbacks)
-    if not settings.use_mock:
+    # 4b. Remaining downloads (disabled in snapchat-only MVP unless fallback needed)
+    if not settings.use_mock and not snap_only:
         _download_with_yt_dlp(items)
+    elif not settings.use_mock and snap_only:
+        snap_items_only = [it for it in items if it.source == "snapchat" and not it.local_path]
+        _download_with_yt_dlp(snap_items_only)
+
+    # Sort by viral potential before persist so top hooks win when capped
+    if items:
+        from app.analytics import engagement_score as _eng2, velocity_score as _vel2
+        def _viral_sort(it: ScrapedItem) -> float:
+            tmp = Video(source=it.source, source_id=it.source_id, source_url=it.source_url,
+                        views=it.views, likes=it.likes, comments=it.comments, shares=it.shares,
+                        duration_sec=it.duration_sec)
+            return _vel2(tmp) * 0.7 + _eng2(tmp) * 0.3
+        items = sorted(items, key=_viral_sort, reverse=True)[:max_per_run * 2]
 
     created, skipped = persist_scraped_items(items)
     return {"created": created, "skipped": skipped, "fetched": len(items)}
@@ -242,10 +285,20 @@ def generate_metadata_for_video(video_id: str) -> dict:
     }
 
 
+def _is_already_9x16(path: str) -> bool:
+    q = _probe_quality(path, source="snapchat")
+    w, h = q["width"], q["height"]
+    if w <= 0 or h <= 0:
+        return False
+    ratio = w / h
+    target = 9 / 16
+    return abs(ratio - target) < 0.03 and h >= 1280 and w >= 720
+
+
 # ---------- Transform ----------
 def transform_task(video_id: str, recipe_dict: dict | None = None) -> dict:
-    """Transform a video into a vertical Shorts-friendly format."""
-    recipe_dict = recipe_dict or {}
+    """Transform a video into a vertical Shorts-friendly format. Blur only if not 9:16."""
+    recipe_dict = dict(recipe_dict or {})
     with session_scope() as db:
         v = db.get(Video, video_id)
         if v is None:
@@ -271,8 +324,16 @@ def transform_task(video_id: str, recipe_dict: dict | None = None) -> dict:
             import shutil
             shutil.copyfile(input_path, output_path)
         else:
-            transformer = get_transformer()
-            transformer.transform(input_path, output_path, recipe_from_dict(recipe_dict))
+            already_vertical = _is_already_9x16(input_path)
+            if already_vertical and not recipe_dict:
+                import shutil
+                shutil.copyfile(input_path, output_path)
+            else:
+                if not recipe_dict:
+                    recipe_dict["add_blur_background"] = not already_vertical
+                    recipe_dict["add_caption"] = False
+                transformer = get_transformer()
+                transformer.transform(input_path, output_path, recipe_from_dict(recipe_dict))
         with session_scope() as db:
             v = db.get(Video, v_id)
             job = db.get(TransformJob, job_id)
@@ -282,11 +343,11 @@ def transform_task(video_id: str, recipe_dict: dict | None = None) -> dict:
             job.status = "done"
             job.output_path = output_path
             job.finished_at = datetime.now(timezone.utc)
-        # Pre-generate metadata so it's ready at publish time
-        try:
-            generate_metadata_for_video(v_id)
-        except Exception as e:
-            log.warning("metadata gen failed for %s: %s", v_id, e)
+        if settings.use_llm_metadata and settings.enable_publish:
+            try:
+                generate_metadata_for_video(v_id)
+            except Exception as e:
+                log.warning("metadata gen failed for %s: %s", v_id, e)
         return {"ok": True, "video_id": v_id, "output_path": output_path}
     except Exception as e:
         log.exception("transform failed")
@@ -366,18 +427,16 @@ def _is_quality_short(item: ScrapedItem) -> bool:
     if not item.local_path or not os.path.exists(item.local_path):
         return False
     q = _probe_quality(item.local_path, source=item.source)
-    # Extra Shorts-specific checks
     if not q["valid"]:
         return False
-    # Duration must be Shorts-friendly. Snapchat Spotlight is native short-form,
-    # so we allow anything >= 3s there; others should be 8–59s.
     if item.source == "snapchat":
         if not (3 <= item.duration_sec <= 59):
+            return False
+        if q.get("width", 0) > q.get("height", 0):
             return False
     else:
         if not (8 <= item.duration_sec <= 59):
             return False
-    # Vertical-ish aspect ratio OR at least 720p
     if q["height"] < 360:
         return False
     return True
@@ -397,7 +456,9 @@ def long_to_shorts_task(video_id: str) -> dict:
 
 # ---------- Publish ----------
 def publish_task(video_id: str, meta: dict | None = None) -> dict:
-    """Publish the transformed video to YouTube. Uses MetadataDraft if available."""
+    """Publish the transformed video to YouTube. Disabled in MVP when enable_publish is false."""
+    if not settings.enable_publish:
+        return {"ok": False, "error": "publishing disabled in MVP (enable_publish=false)"}
     meta = meta or {}
     with session_scope() as db:
         v = db.get(Video, video_id)

@@ -49,7 +49,7 @@ from tasks.pipeline import (  # noqa: E402
 
 from sqlalchemy import desc, func, select  # noqa: E402
 
-API_BASE = "http://localhost:8000"
+API_BASE = os.environ.get("DOOMSCROLLER_API_URL", "http://localhost:8000")
 
 st.set_page_config(
     page_title=settings.dashboard_title,
@@ -92,17 +92,11 @@ def _status_badge(status: str) -> str:
 # ============ Sidebar ============
 def sidebar():
     st.sidebar.markdown(f"## {settings.dashboard_title}")
-    st.sidebar.caption(f"mock_mode={settings.use_mock} · niche={settings.channel_niche}")
-    st.sidebar.markdown(f"Uploads/day: **{settings.uploads_per_day}** (every {settings.upload_interval_hours}h)")
-
-    with session_scope() as db:
-        snap = quota.snapshot(db)
-    st.sidebar.markdown("### Daily quota")
-    used = snap["uploads"]
-    cap = snap["cap"]
-    remaining = snap["remaining"]
-    st.sidebar.metric("Today", f"{used} / {cap}", delta=f"{remaining} left")
-    st.sidebar.progress(min(1.0, used / max(1, cap)))
+    st.sidebar.caption(f"mock_mode={settings.use_mock} · platforms={','.join(settings.enabled_platforms_list)}")
+    if not settings.enable_publish:
+        st.sidebar.info("📦 MVP mode — YouTube publishing disabled. Download ready videos.")
+    else:
+        st.sidebar.markdown(f"Uploads/day: **{settings.uploads_per_day}** (every {settings.upload_interval_hours}h)")
 
     # Scheduler status
     jobs = _api("GET", "/scheduler/jobs") or {}
@@ -130,25 +124,6 @@ def sidebar():
     if st.sidebar.button("🔍 Discover creators"):
         out = _api("POST", "/scheduler/run/discovery")
         st.sidebar.success(f"Discovery: {out}")
-
-    if st.sidebar.button("📺 Run publish slot"):
-        out = _api("POST", "/scheduler/run/publish")
-        st.sidebar.success(f"Publish: {out}")
-
-    if st.sidebar.button("✂️ Chop long to Shorts now"):
-        with st.sidebar.spinner("Chopping long videos into Shorts clips…"):
-            out = _api("POST", "/scheduler/run/chop_long")
-        if out:
-            st.sidebar.success(f"Chop: {out}")
-
-    auto_publish = st.sidebar.checkbox(
-        "Auto-publish at scheduled slots",
-        value=settings.auto_publish,
-        help="When enabled, the scheduler auto-publishes the next transformed video every "
-             f"{settings.upload_interval_hours}h (cap {settings.uploads_per_day}/day).",
-    )
-    if auto_publish != settings.auto_publish:
-        st.sidebar.info("Toggle AUTO_PUBLISH in .env to change this permanently.")
 
 
 # ============ Video card ============
@@ -225,8 +200,7 @@ def render_video_card(v: Video, prefix: str = "main"):
                 import time as _time
                 _time.sleep(1)
                 st.rerun()
-            # Long video option
-            if v.duration_sec and v.duration_sec > 60:
+            if settings.enable_publish and v.duration_sec and v.duration_sec > 60:
                 if st.button("✂️ Generate Shorts clips", key=f"{prefix}_chop_{v.id}"):
                     with st.spinner(f"Analyzing {v.duration_sec}s video and chopping into Shorts…"):
                         chop_out = _api("POST", f"/videos/{v.id}/chop")
@@ -235,53 +209,28 @@ def render_video_card(v: Video, prefix: str = "main"):
                         st.rerun()
 
         elif v.status == VideoStatus.TRANSFORMED:
-            # Show metadata preview + edit + publish
-            with st.expander("📝 Metadata (editable)", expanded=True):
-                md = load_metadata(v.id)
-                if md is None:
-                    if st.button("Generate metadata with LLM", key=f"{prefix}_gen_{v.id}"):
-                        with st.spinner("LLM generating metadata…"):
-                            out = _api("POST", f"/metadata/{v.id}/generate")
-                        if out and out.get("ok"):
-                            st.success(f"Generated: {out.get('title', '')[:60]}")
-                        else:
-                            st.error(f"Metadata generation failed: {out}")
-                        st.rerun()
-                else:
-                    new_title = st.text_input("Title", value=md["title"], key=f"{prefix}_t_{v.id}")
-                    new_desc = st.text_area("Description", value=md["description"],
-                                            height=100, key=f"{prefix}_d_{v.id}")
-                    new_tags = st.text_input("Tags (comma-separated)",
-                                             value=", ".join(md["tags"]),
-                                             key=f"{prefix}_tags_{v.id}")
-                    col_a, col_b = st.columns(2)
-                    if col_a.button("💾 Save metadata", key=f"{prefix}_save_{v.id}"):
-                        tags_list = [t.strip() for t in new_tags.split(",") if t.strip()]
-                        _api("PUT", f"/metadata/{v.id}", json={
-                            "title": new_title, "description": new_desc, "tags": tags_list,
-                        })
-                        st.success("Saved")
-                    if col_b.button("🔄 Regenerate", key=f"{prefix}_regen_{v.id}"):
-                        with st.spinner("Regenerating…"):
-                            out = _api("POST", f"/metadata/{v.id}/generate")
-                        if out and out.get("ok"):
-                            st.success("Regenerated")
-                        else:
-                            st.error(f"Regenerate failed: {out}")
-                        st.rerun()
-            if st.button("📺 Publish now", key=f"{prefix}_publish_{v.id}"):
-                with st.spinner("Publishing to YouTube… (can take 1–2 min)"):
-                    out = _api("POST", f"/videos/{v.id}/publish", json={})
-                if out:
-                    if out.get("queued"):
-                        st.success(f"Publish queued! Task ID: {out.get('task_id', 'N/A')}")
-                    elif out.get("ok") or out.get("result", {}).get("ok"):
-                        st.success("Published!")
-                    else:
-                        st.error(f"Publish failed: {out}")
-                import time as _time_pub
-                _time_pub.sleep(1)
-                st.rerun()
+            st.success("✅ Ready to upload — 9:16 Short")
+            if v.transformed_path and os.path.exists(v.transformed_path):
+                try:
+                    st.video(v.transformed_path)
+                except Exception:
+                    pass
+                st.caption(f"`{v.transformed_path}`")
+                try:
+                    with open(v.transformed_path, "rb") as fh:
+                        st.download_button(
+                            "⬇️ Download 9:16 Short",
+                            data=fh.read(),
+                            file_name=f"{v.id}.mp4",
+                            mime="video/mp4",
+                            key=f"{prefix}_dl_{v.id}",
+                        )
+                except Exception as e:
+                    st.error(f"Download failed: {e}")
+                # API download link as fallback
+                st.caption(f"API: `GET /videos/{v.id}/download`")
+            else:
+                st.warning("Transformed file not on disk")
 
         elif v.status == VideoStatus.PUBLISHED:
             st.success(f"Published: {v.youtube_video_id}")
@@ -312,8 +261,11 @@ def main():
     _ensure_db()
     sidebar()
 
-    st.title("🎬 Doomscroller")
-    st.caption("Semi-automated YouTube Shorts factory · approve → autonomous publish")
+    st.title("🎬 Doomscroller — Snapchat MVP")
+    if settings.enable_publish:
+        st.caption("Semi-automated YouTube Shorts factory · approve → autonomous publish")
+    else:
+        st.caption("Snapchat MVP · scrape Spotlight → approve → download 9:16 Short (blur only if not already 9:16)")
 
     # Top stats
     with session_scope() as db:
@@ -331,7 +283,10 @@ def main():
     c5.metric("Published", published)
     c6.metric("Creators", creators)
 
-    tabs = st.tabs(["📥 Pending", "✅ Approved", "📺 Ready to publish", "🚀 Pipeline", "✂️ Clips", "✅ Published", "👥 Creators", "🗂 All"])
+    if settings.enable_publish:
+        tabs = st.tabs(["📥 Pending", "✅ Approved", "📺 Ready to publish", "🚀 Pipeline", "✂️ Clips", "✅ Published", "👥 Creators", "🗂 All"])
+    else:
+        tabs = st.tabs(["📥 Pending", "✅ Approved", "⬇️ Ready to Upload", "🚀 Pipeline", "👥 Creators", "🗂 All"])
 
     with tabs[0]:
         st.subheader("Pending curation — your only job: approve or reject")
@@ -359,14 +314,15 @@ def main():
             render_video_card(v, prefix="approved")
 
     with tabs[2]:
-        st.subheader("Transformed — ready to publish. Review metadata then publish.")
+        st.subheader("⬇️ Ready to Upload — 9:16 Shorts (download)")
+        st.caption("Approved → transformed. Blur was applied only if source wasn't already 9:16. Download is enough.")
         with session_scope() as db:
             rows = db.execute(
                 select(Video).where(Video.status == VideoStatus.TRANSFORMED)
                 .order_by(desc(Video.transformed_at)).limit(50)
             ).scalars().all()
         if not rows:
-            st.info("No transformed videos. The scheduler transforms approved videos automatically.")
+            st.info("No ready videos. Approve then transform; auto-transform runs every hour.")
         for v in rows:
             render_video_card(v, prefix="ready")
 
@@ -416,82 +372,114 @@ def main():
         for v in rows:
             render_video_card(v, prefix="pipeline")
 
-    with tabs[4]:
-        st.subheader("✂️ Auto-generated Shorts clips from long videos")
-        st.caption("These were chopped automatically from long-form videos using hot-section heuristics.")
-        with session_scope() as db:
-            rows = db.execute(
-                select(Video)
-                .where(
-                    Video.meta.isnot(None),
-                    Video.meta != "",
+    if settings.enable_publish:
+        with tabs[4]:
+            st.subheader("✂️ Auto-generated Shorts clips from long videos")
+            st.caption("These were chopped automatically from long-form videos using hot-section heuristics.")
+            with session_scope() as db:
+                rows = db.execute(
+                    select(Video)
+                    .where(
+                        Video.meta.isnot(None),
+                        Video.meta != "",
+                    )
+                    .order_by(desc(Video.scraped_at))
+                    .limit(100)
+                ).scalars().all()
+            clips = []
+            for v in rows:
+                try:
+                    meta = json.loads(v.meta or "{}")
+                    if "parent_video_id" in meta:
+                        clips.append((v, meta))
+                except Exception:
+                    pass
+            if not clips:
+                st.info("No clips yet. Approve a long video and click ✂️ Generate Shorts clips to create them.")
+            for v, meta in clips:
+                st.markdown(f"**{v.title}**  ·  {v.duration_sec}s  ·  score: {meta.get('clip_score', 0):.2f}")
+                st.caption(
+                    f"Parent: {meta.get('parent_video_id', '')[:12]}… · "
+                    f"segment: {meta.get('clip_start', 0):.0f}s → {meta.get('clip_end', 0):.0f}s  ·  "
+                    f"{meta.get('clip_reason', '')}"
                 )
-                .order_by(desc(Video.scraped_at))
-                .limit(100)
-            ).scalars().all()
-        clips = []
-        for v in rows:
-            try:
-                meta = json.loads(v.meta or "{}")
-                if "parent_video_id" in meta:
-                    clips.append((v, meta))
-            except Exception:
-                pass
-        if not clips:
-            st.info("No clips yet. Approve a long video and click ✂️ Generate Shorts clips to create them.")
-        for v, meta in clips:
-            st.markdown(f"**{v.title}**  ·  {v.duration_sec}s  ·  score: {meta.get('clip_score', 0):.2f}")
-            st.caption(
-                f"Parent: {meta.get('parent_video_id', '')[:12]}… · "
-                f"segment: {meta.get('clip_start', 0):.0f}s → {meta.get('clip_end', 0):.0f}s  ·  "
-                f"{meta.get('clip_reason', '')}"
-            )
-            # Reuse render_video_card so clips get Approve/Transform/Publish buttons too
-            render_video_card(v, prefix="clips_item_" + v.id[:8])
-            st.divider()
+                render_video_card(v, prefix="clips_item_" + v.id[:8])
+                st.divider()
 
-    with tabs[5]:
-        st.subheader("Published to YouTube")
-        with session_scope() as db:
-            rows = db.execute(
-                select(Video).where(Video.status == VideoStatus.PUBLISHED)
-                .order_by(desc(Video.published_at)).limit(50)
-            ).scalars().all()
-        if not rows:
-            st.info("Nothing published yet.")
-        for v in rows:
-            render_video_card(v, prefix="published")
+        with tabs[5]:
+            st.subheader("Published to YouTube")
+            with session_scope() as db:
+                rows = db.execute(
+                    select(Video).where(Video.status == VideoStatus.PUBLISHED)
+                    .order_by(desc(Video.published_at)).limit(50)
+                ).scalars().all()
+            if not rows:
+                st.info("Nothing published yet.")
+            for v in rows:
+                render_video_card(v, prefix="published")
 
-    with tabs[6]:
-        st.subheader("Discovered creators")
-        with session_scope() as db:
-            creators = db.execute(
-                select(Creator).order_by(desc(Creator.score), desc(Creator.is_seed)).limit(100)
-            ).scalars().all()
-        if creators:
-            data = [
-                {
-                    "handle": c.handle, "platform": c.platform,
-                    "seed": "✅" if c.is_seed else "🔍",
-                    "score": round(c.score, 3),
-                    "videos_scraped": c.videos_scraped,
-                    "discovered_from": c.discovered_from or "-",
-                    "last_scraped": c.last_scraped_at.strftime("%Y-%m-%d %H:%M") if c.last_scraped_at else "-",
-                }
-                for c in creators
-            ]
-            st.dataframe(data, width="stretch")
-        else:
-            st.info("No creators yet. Add seeds to TARGET_HANDLES in .env, or run discovery.")
+        with tabs[6]:
+            st.subheader("Discovered creators")
+            with session_scope() as db:
+                creators = db.execute(
+                    select(Creator).order_by(desc(Creator.score), desc(Creator.is_seed)).limit(100)
+                ).scalars().all()
+            if creators:
+                data = [
+                    {
+                        "handle": c.handle, "platform": c.platform,
+                        "seed": "✅" if c.is_seed else "🔍",
+                        "score": round(c.score, 3),
+                        "videos_scraped": c.videos_scraped,
+                        "discovered_from": c.discovered_from or "-",
+                        "last_scraped": c.last_scraped_at.strftime("%Y-%m-%d %H:%M") if c.last_scraped_at else "-",
+                    }
+                    for c in creators
+                ]
+                st.dataframe(data, width="stretch")
+            else:
+                st.info("No creators yet. Add seeds to TARGET_HANDLES in .env, or run discovery.")
 
-    with tabs[7]:
-        st.subheader("All videos")
-        with session_scope() as db:
-            rows = db.execute(
-                select(Video).order_by(desc(Video.scraped_at)).limit(100)
-            ).scalars().all()
-        for v in rows:
-            render_video_card(v, prefix="all")
+        with tabs[7]:
+            st.subheader("All videos")
+            with session_scope() as db:
+                rows = db.execute(
+                    select(Video).order_by(desc(Video.scraped_at)).limit(100)
+                ).scalars().all()
+            for v in rows:
+                render_video_card(v, prefix="all")
+    else:
+        with tabs[4]:
+            st.subheader("👥 Creators (manual discovery)")
+            st.caption("Auto-discovery is off in MVP. Click 🔍 Discover creators in sidebar to populate.")
+            with session_scope() as db:
+                creators = db.execute(
+                    select(Creator).order_by(desc(Creator.score), desc(Creator.is_seed)).limit(100)
+                ).scalars().all()
+            if creators:
+                data = [
+                    {
+                        "handle": c.handle, "platform": c.platform,
+                        "seed": "✅" if c.is_seed else "🔍",
+                        "score": round(c.score, 3),
+                        "videos_scraped": c.videos_scraped,
+                        "discovered_from": c.discovered_from or "-",
+                        "last_scraped": c.last_scraped_at.strftime("%Y-%m-%d %H:%M") if c.last_scraped_at else "-",
+                    }
+                    for c in creators
+                ]
+                st.dataframe(data, width="stretch")
+            else:
+                st.info("No creators yet. Add Snapchat handles to TARGET_HANDLES or run discovery.")
+
+        with tabs[5]:
+            st.subheader("🗂 All videos")
+            with session_scope() as db:
+                rows = db.execute(
+                    select(Video).order_by(desc(Video.scraped_at)).limit(100)
+                ).scalars().all()
+            for v in rows:
+                render_video_card(v, prefix="all")
 
 
 if __name__ == "__main__":

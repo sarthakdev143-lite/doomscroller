@@ -22,6 +22,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import desc, select
 
+from .logging_config import log_job_execution
 from .config import settings
 from .db import session_scope, init_db
 from .models import Creator, Video, VideoStatus
@@ -32,7 +33,26 @@ log = logging.getLogger(__name__)
 _scheduler: BackgroundScheduler | None = None
 
 
-# ---------- Job impls (importable so they can be triggered manually too) ----------
+# ---------- Job wrappers ----------
+
+_JOBS: dict[str, callable] = {}
+
+def _register(job_id: str, fn: callable):
+    _JOBS[job_id] = fn
+    return fn
+
+
+def _run_job(job_id: str):
+    """Wrap a job to log its result."""
+    def wrapper():
+        log.info("job[%s] started", job_id)
+        result = _JOBS[job_id]()
+        log_job_execution(job_id, result)
+        return result
+    return wrapper
+
+
+# ---------- Job impls ----------
 
 def scrape_job(handles: list[str] | None = None,
                hashtags: list[str] | None = None,
@@ -99,7 +119,9 @@ def transform_job() -> dict:
 
 
 def publish_job() -> dict:
-    """Auto-publish next TRANSFORMED video if quota allows."""
+    """Auto-publish next TRANSFORMED video if quota allows. Disabled in MVP."""
+    if not settings.enable_publish:
+        return {"skipped": "publishing disabled in MVP (enable_publish=false)"}
     if not settings.auto_publish:
         return {"skipped": "auto_publish disabled"}
 
@@ -215,15 +237,16 @@ def _make_scheduler() -> BackgroundScheduler:
         coalesce=True,
         replace_existing=True,
     )
-    sched.add_job(
-        discovery_job,
-        IntervalTrigger(hours=settings.discovery_interval_hours),
-        id="discovery",
-        next_run_time=now + timedelta(minutes=2),
-        max_instances=1,
-        coalesce=True,
-        replace_existing=True,
-    )
+    if settings.auto_discovery:
+        sched.add_job(
+            discovery_job,
+            IntervalTrigger(hours=settings.discovery_interval_hours),
+            id="discovery",
+            next_run_time=now + timedelta(minutes=2),
+            max_instances=1,
+            coalesce=True,
+            replace_existing=True,
+        )
     sched.add_job(
         transform_job,
         IntervalTrigger(hours=1),
@@ -233,15 +256,16 @@ def _make_scheduler() -> BackgroundScheduler:
         coalesce=True,
         replace_existing=True,
     )
-    sched.add_job(
-        publish_job,
-        IntervalTrigger(hours=settings.upload_interval_hours),
-        id="publish",
-        next_run_time=now + timedelta(minutes=5),
-        max_instances=1,
-        coalesce=True,
-        replace_existing=True,
-    )
+    if settings.enable_publish:
+        sched.add_job(
+            publish_job,
+            IntervalTrigger(hours=settings.upload_interval_hours),
+            id="publish",
+            next_run_time=now + timedelta(minutes=5),
+            max_instances=1,
+            coalesce=True,
+            replace_existing=True,
+        )
     sched.add_job(
         cleanup_job,
         IntervalTrigger(hours=24),
@@ -282,10 +306,12 @@ def start_scheduler() -> BackgroundScheduler:
     _scheduler = sched
 
     log.info(
-        "Scheduler started: scrape=%dh discovery=%dh transform=1h publish=%dh cleanup=24h recompute=1h",
+        "Scheduler started: scrape=%dh discovery=%s transform=1h publish=%s cleanup=24h recompute=1h (enable_publish=%s auto_discovery=%s)",
         settings.scrape_interval_hours,
-        settings.discovery_interval_hours,
-        settings.upload_interval_hours,
+        "auto" if settings.auto_discovery else "manual",
+        f"{settings.upload_interval_hours}h" if settings.enable_publish else "disabled",
+        settings.enable_publish,
+        settings.auto_discovery,
     )
     return sched
 

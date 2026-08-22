@@ -113,21 +113,27 @@ class MockScraper(Scraper):
     def scrape_handles(self, handles: list[str], max_per_run: int,
                        download: bool = True) -> list[ScrapedItem]:
         handles = handles or _AUTHORS
+        from ..config import settings as _s
+        snap_only = [p.lower() for p in _s.enabled_platforms_list] == ["snapchat"]
+        source = "snapchat" if snap_only else "tiktok"
         out: List[ScrapedItem] = []
         for h in handles:
             n = max(1, max_per_run // max(1, len(handles)))
             for i in range(n):
-                out.append(self._fake_item(source="tiktok", handle=h, idx=i))
+                out.append(self._fake_item(source=source, handle=h, idx=i))
         return self._dedup(out)[:max_per_run]
 
     def scrape_hashtags(self, hashtags: list[str], max_per_run: int,
                         download: bool = True) -> list[ScrapedItem]:
         hashtags = hashtags or ["fyp", "viral", "shorts", "reels", "snapchat"]
+        from ..config import settings as _s2
+        snap_only = [p.lower() for p in _s2.enabled_platforms_list] == ["snapchat"]
+        source = "snapchat" if snap_only else "instagram"
         out: List[ScrapedItem] = []
         for tag in hashtags:
             n = max(1, max_per_run // max(1, len(hashtags)))
             for i in range(n):
-                out.append(self._fake_item(source="instagram", handle=tag, idx=i))
+                out.append(self._fake_item(source=source, handle=tag, idx=i))
         return self._dedup(out)[:max_per_run]
 
     def _fake_item(self, *, source: str, handle: str, idx: int) -> ScrapedItem:
