@@ -1,8 +1,19 @@
-"""LLM-based YouTube metadata generation using the z-ai CLI.
+"""YouTube metadata generation.
 
-Calls `z-ai chat` as a subprocess, returns JSON-structured metadata that
-preserves the source video's language. Falls back to rule-based metadata
-on any failure.
+Metadata is assembled from the best source available, in this order:
+
+1.  **platform** -- Snapchat already runs its own captioning model over every
+    Spotlight video and exposes the result (``llmTitle``, ``llmDescription``,
+    keywords, detected language). It is written for search, in the video's own
+    language, and it costs nothing. When present it wins.
+2.  **llm** -- the ``z-ai`` CLI, if that binary is on PATH.
+3.  **fallback** -- a rule-based composer over whatever text we do have.
+
+Whichever supplies the raw copy, everything is then pushed through the same
+finishing pass (:func:`compose`), which enforces YouTube's limits, preserves the
+source language, builds the tag list, and appends the creator credit. That
+credit matters: this tool republishes other people's videos, and attribution is
+both the decent thing to do and the cheapest strike-avoidance there is.
 """
 from __future__ import annotations
 
@@ -11,71 +22,178 @@ import logging
 import re
 import shutil
 import subprocess
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Optional, Sequence
 
 from .config import settings
 
 log = logging.getLogger(__name__)
+
+# YouTube hard limits.
+_TITLE_MAX = 100
+_DESCRIPTION_MAX = 5000
+_TAG_MAX_CHARS = 30
+_TAGS_MAX_COUNT = 15
+_TAGS_MAX_TOTAL_CHARS = 480  # the real cap is 500; leave headroom
+
+_SHORTS_HASHTAG = "#Shorts"
+_BASE_TAGS = ("shorts", "viral", "trending", "reels")
+# Tags that add nothing and dilute relevance.
+_TAG_STOPWORDS = frozenset({
+    "video", "videos", "snap", "snapchat", "spotlight", "clip", "clips", "the",
+})
 
 
 @dataclass
 class GeneratedMetadata:
     title: str
     description: str
-    tags: list[str]
-    detected_language: str
-    source: str  # "llm" | "fallback"
+    tags: list[str] = field(default_factory=list)
+    detected_language: str = "en"
+    source: str = "fallback"  # platform | llm | fallback
 
 
-# ---------- Language detection ----------
+# ---------------------------------------------------------------------------
+# Language
+# ---------------------------------------------------------------------------
 def detect_language(text: str) -> str:
-    """Detect the dominant language of a text. Returns ISO 639-1 code."""
+    """Detect the dominant language of a text. Returns an ISO 639-1 code."""
     if not text or not text.strip():
         return "en"
     try:
         from langdetect import detect
+
         return detect(text) or "en"
     except Exception:
         return "en"
 
 
-# ---------- LLM call ----------
-def _call_llm(system_prompt: str, user_prompt: str) -> Optional[str]:
-    """Call z-ai CLI, return the assistant message content or None on failure."""
-    if not shutil.which("z-ai"):
-        log.warning("z-ai CLI not found on PATH; falling back to rules.")
-        return None
-    cmd = [
-        "z-ai", "chat",
-        "--prompt", user_prompt,
-        "--system", system_prompt,
-    ]
-    try:
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True,
-            timeout=settings.llm_timeout_sec,
-        )
-        if proc.returncode != 0:
-            log.error("z-ai CLI failed: %s", proc.stderr[-500:])
-            return None
-        # CLI output is JSON prefixed with a couple of status lines. Find the JSON.
-        out = proc.stdout
-        # Strip ANSI / status lines — find first '{'
-        idx = out.find("{")
-        if idx < 0:
-            return None
-        data = json.loads(out[idx:])
-        return (data.get("choices") or [{}])[0].get("message", {}).get("content")
-    except subprocess.TimeoutExpired:
-        log.error("z-ai CLI timed out after %ss", settings.llm_timeout_sec)
-        return None
-    except Exception as e:
-        log.error("z-ai CLI error: %s", e)
-        return None
+# ---------------------------------------------------------------------------
+# Finishing pass
+# ---------------------------------------------------------------------------
+def _clean_title(title: str) -> str:
+    """Trim a title to YouTube's limit, leaving room for the Shorts hashtag."""
+    title = re.sub(r"\s+", " ", (title or "").strip())
+    if not title:
+        return ""
+    budget = _TITLE_MAX - len(_SHORTS_HASHTAG) - 1
+    if len(title) <= budget:
+        return title
+    # Prefer cutting at a separator Snapchat likes to use ("A | B").
+    for separator in (" | ", " - ", ": "):
+        head = title.split(separator)[0].strip()
+        if head and len(head) <= budget:
+            return head
+    # Otherwise cut on a word boundary.
+    clipped = title[:budget].rsplit(" ", 1)[0].strip()
+    return clipped or title[:budget].strip()
 
 
-# ---------- Prompt ----------
+def _slug_tag(raw: str) -> str:
+    """Normalise one tag: lowercase, no punctuation, length-capped."""
+    tag = re.sub(r"[^\w\s]", "", str(raw or ""), flags=re.UNICODE).strip().lower()
+    tag = re.sub(r"\s+", " ", tag)
+    return tag[:_TAG_MAX_CHARS].strip()
+
+
+def build_tags(keywords: Sequence[str], author: str = "") -> list[str]:
+    """Build a deduped, length-capped YouTube tag list."""
+    candidates: list[str] = []
+    for keyword in list(keywords or []) + list(_BASE_TAGS):
+        tag = _slug_tag(keyword)
+        if not tag or len(tag) < 2 or tag in _TAG_STOPWORDS:
+            continue
+        candidates.append(tag)
+    if author:
+        author_tag = _slug_tag(author)
+        if author_tag and len(author_tag) >= 2:
+            candidates.append(author_tag)
+
+    tags: list[str] = []
+    total = 0
+    for tag in dict.fromkeys(candidates):  # order-preserving dedupe
+        if len(tags) >= _TAGS_MAX_COUNT:
+            break
+        # Tags containing spaces are quoted by the API, costing two extra chars.
+        cost = len(tag) + (2 if " " in tag else 0) + 1
+        if total + cost > _TAGS_MAX_TOTAL_CHARS:
+            continue
+        tags.append(tag)
+        total += cost
+    return tags
+
+
+def _hashtags_from(tags: Sequence[str], limit: int = 4) -> list[str]:
+    """Turn the leading tags into description hashtags."""
+    out: list[str] = []
+    for tag in tags:
+        if " " in tag:
+            continue  # hashtags cannot contain spaces
+        candidate = f"#{tag}"
+        if candidate.lower() != _SHORTS_HASHTAG.lower():
+            out.append(candidate)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def compose(
+    *,
+    title: str,
+    description: str,
+    keywords: Sequence[str],
+    author: str = "",
+    author_name: str = "",
+    source_url: str = "",
+    platform: str = "",
+    language: str = "en",
+    source: str = "fallback",
+) -> GeneratedMetadata:
+    """Apply YouTube limits, tags, hashtags and creator credit to raw copy."""
+    author = (author or "").lstrip("@").strip()
+    tags = build_tags(keywords, author=author)
+
+    clean_title = _clean_title(title)
+    if not clean_title:
+        clean_title = _clean_title(description) or "Watch this"
+    if _SHORTS_HASHTAG.lower() not in clean_title.lower():
+        clean_title = f"{clean_title} {_SHORTS_HASHTAG}"
+
+    body = re.sub(r"\s+", " ", (description or "").strip())
+    blocks: list[str] = []
+    if body:
+        blocks.append(body)
+
+    hashtags = _hashtags_from(tags)
+    if hashtags:
+        blocks.append(" ".join([_SHORTS_HASHTAG, *hashtags]))
+    else:
+        blocks.append(_SHORTS_HASHTAG)
+
+    # Credit the original creator, with a link back where we have one.
+    if author:
+        display = author_name or author
+        credit = f"Credit: {display} (@{author})"
+        if platform:
+            credit += f" on {platform.title()}"
+        if source_url:
+            credit += f"\n{source_url}"
+        blocks.append(credit)
+
+    description_text = "\n\n".join(blocks)[:_DESCRIPTION_MAX]
+
+    return GeneratedMetadata(
+        title=clean_title[:_TITLE_MAX],
+        description=description_text,
+        tags=tags,
+        detected_language=language or "en",
+        source=source,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Optional z-ai CLI provider
+# ---------------------------------------------------------------------------
 _NICHE_HINTS = {
     "general_viral": "general viral short-form content (any niche)",
     "tech": "tech, coding, AI, and programming content",
@@ -85,99 +203,167 @@ _NICHE_HINTS = {
 
 _SYSTEM = (
     "You are a YouTube Shorts metadata writer. You write click-worthy but "
-    "not spammy titles, SEO-friendly descriptions with 3-5 relevant hashtags, "
-    "and 5-10 relevant tags. You MUST respond in the same language as the "
-    "source content. You MUST respond as a single minified JSON object with "
-    "exactly these keys: title, description, tags. No other text."
+    "not spammy titles, SEO-friendly descriptions, and relevant tags. You MUST "
+    "respond in the same language as the source content. You MUST respond as a "
+    "single minified JSON object with exactly these keys: title, description, "
+    "tags. No other text."
 )
 
+
 def _user_prompt(*, source_title: str, source_desc: str, author: str,
-                 platform: str, language: str, niche: str) -> str:
+                 platform: str, language: str, niche: str,
+                 keywords: Sequence[str]) -> str:
     niche_hint = _NICHE_HINTS.get(niche, _NICHE_HINTS["general_viral"])
     return (
         f"Source platform: {platform}\n"
         f"Author: {author}\n"
         f"Detected language: {language}\n"
-        f"Channel niche: {niche_hint}\n\n"
+        f"Channel niche: {niche_hint}\n"
+        f"Known keywords: {', '.join(keywords) or 'none'}\n\n"
         f"Source title: {source_title!r}\n"
         f"Source description: {source_desc[:1000]!r}\n\n"
         f"Generate YouTube Shorts metadata in {language}. The title must be "
-        f"<= 90 characters, attention-grabbing, and faithful to the source. "
-        f"The description should be 1-3 sentences plus 3-5 hashtags. Tags must "
-        f"be lowercase, 1-3 words each, 5-10 items. Respond ONLY with the JSON."
+        f"<= 80 characters, attention-grabbing, and faithful to the source. "
+        f"The description should be 1-3 sentences. Tags must be lowercase, "
+        f"1-3 words each, 5-10 items. Respond ONLY with the JSON."
     )
 
 
-# ---------- JSON extraction ----------
 def _extract_json(text: str) -> Optional[dict]:
+    """Pull the first JSON object out of a possibly chatty LLM response."""
     if not text:
         return None
-    # Try direct parse first
     try:
-        return json.loads(text)
-    except Exception:
+        parsed = json.loads(text)
+        return parsed if isinstance(parsed, dict) else None
+    except json.JSONDecodeError:
         pass
-    # Try to find a {...} block
-    m = re.search(r"\{[\s\S]*\}", text)
-    if m:
-        try:
-            return json.loads(m.group(0))
-        except Exception:
-            return None
-    return None
+    match = re.search(r"\{[\s\S]*\}", text)
+    if not match:
+        return None
+    try:
+        parsed = json.loads(match.group(0))
+        return parsed if isinstance(parsed, dict) else None
+    except json.JSONDecodeError:
+        return None
 
 
-# ---------- Public API ----------
-def generate_metadata(*, source_title: str, source_desc: str, author: str,
-                      platform: str) -> GeneratedMetadata:
-    """Generate YouTube metadata for a video, preserving source language."""
-    text_for_lang = f"{source_title} {source_desc}"
-    language = detect_language(text_for_lang)
-
-    if settings.use_llm_metadata:
-        user = _user_prompt(
-            source_title=source_title, source_desc=source_desc,
-            author=author, platform=platform,
-            language=language, niche=settings.channel_niche,
+def _call_llm(system_prompt: str, user_prompt: str) -> Optional[str]:
+    """Call the z-ai CLI; return the assistant message, or None on any failure."""
+    if not shutil.which("z-ai"):
+        log.debug("z-ai CLI not on PATH; skipping LLM provider")
+        return None
+    try:
+        proc = subprocess.run(
+            ["z-ai", "chat", "--prompt", user_prompt, "--system", system_prompt],
+            capture_output=True, text=True, timeout=settings.llm_timeout_sec,
         )
-        raw = _call_llm(_SYSTEM, user)
-        if raw:
-            data = _extract_json(raw) or {}
-            title = str(data.get("title") or "").strip()
-            desc = str(data.get("description") or "").strip()
-            tags = data.get("tags") or []
-            if not isinstance(tags, list):
-                tags = [tags]
-            tags = [str(t).strip().lower() for t in tags if str(t).strip()]
-            # Always include shorts tag
-            if "shorts" not in tags:
-                tags.insert(0, "shorts")
-            if title and desc:
-                return GeneratedMetadata(
-                    title=title[:100],
-                    description=desc[:5000],
-                    tags=tags[:15],
-                    detected_language=language,
-                    source="llm",
-                )
+    except subprocess.TimeoutExpired:
+        log.warning("z-ai CLI timed out after %ss", settings.llm_timeout_sec)
+        return None
+    except Exception as exc:
+        log.warning("z-ai CLI error: %s", exc)
+        return None
+    if proc.returncode != 0:
+        log.warning("z-ai CLI failed: %s", (proc.stderr or "")[-400:])
+        return None
+    # The CLI prefixes its JSON with status lines.
+    start = proc.stdout.find("{")
+    if start < 0:
+        return None
+    try:
+        payload = json.loads(proc.stdout[start:])
+    except json.JSONDecodeError:
+        return None
+    choices = payload.get("choices") or [{}]
+    return (choices[0].get("message") or {}).get("content")
 
-    # Fallback: rule-based
-    return _fallback_metadata(
-        source_title=source_title, source_desc=source_desc,
-        author=author, language=language,
+
+def llm_available() -> bool:
+    """Whether the optional LLM provider can actually be used."""
+    return bool(settings.use_llm_metadata and shutil.which("z-ai"))
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+def generate_metadata(
+    *,
+    source_title: str = "",
+    source_desc: str = "",
+    author: str = "",
+    author_name: str = "",
+    platform: str = "",
+    source_url: str = "",
+    keywords: Sequence[str] | None = None,
+    language: str = "",
+    platform_title: str = "",
+    platform_description: str = "",
+) -> GeneratedMetadata:
+    """Generate YouTube metadata for a video, preserving its source language.
+
+    ``platform_title`` / ``platform_description`` are the source platform's own
+    generated copy (for Snapchat, ``llmTitle`` / ``llmDescription``). They are
+    preferred over calling out to an LLM ourselves: same job, already done, in
+    the right language, for free.
+    """
+    keywords = list(keywords or [])
+    language = language or detect_language(
+        f"{platform_title or source_title} {platform_description or source_desc}"
+    )
+
+    # 1. The platform already wrote SEO copy for us.
+    if platform_title or platform_description:
+        return compose(
+            title=platform_title or source_title,
+            description=platform_description or source_desc,
+            keywords=keywords,
+            author=author, author_name=author_name,
+            source_url=source_url, platform=platform,
+            language=language, source="platform",
+        )
+
+    # 2. Ask the local LLM CLI, if there is one.
+    if settings.use_llm_metadata:
+        raw = _call_llm(
+            _SYSTEM,
+            _user_prompt(
+                source_title=source_title, source_desc=source_desc,
+                author=author, platform=platform, language=language,
+                niche=settings.channel_niche, keywords=keywords,
+            ),
+        )
+        data = _extract_json(raw or "") or {}
+        title = str(data.get("title") or "").strip()
+        description = str(data.get("description") or "").strip()
+        if title:
+            raw_tags = data.get("tags")
+            if not isinstance(raw_tags, list):
+                raw_tags = [raw_tags] if raw_tags else []
+            return compose(
+                title=title,
+                description=description or source_desc,
+                keywords=[*raw_tags, *keywords],
+                author=author, author_name=author_name,
+                source_url=source_url, platform=platform,
+                language=language, source="llm",
+            )
+
+    # 3. Rule-based composition over whatever we have.
+    return compose(
+        title=source_title,
+        description=source_desc,
+        keywords=keywords,
+        author=author, author_name=author_name,
+        source_url=source_url, platform=platform,
+        language=language, source="fallback",
     )
 
 
 def _fallback_metadata(*, source_title: str, source_desc: str,
                        author: str, language: str) -> GeneratedMetadata:
-    title = (source_title or "Amazing Short")[:90]
-    if not title.lower().endswith("#shorts"):
-        title = f"{title} #shorts"
-    desc = (source_desc or "Watch till the end! Subscribe for more.")[:4000]
-    desc = desc + "\n\n#shorts #viral #fyp"
-    tags = ["shorts", "viral", "fyp", "trending", author.lstrip("@").lower()[:30]]
-    tags = [t for t in tags if t]
-    return GeneratedMetadata(
-        title=title, description=desc, tags=tags[:10],
-        detected_language=language, source="fallback",
+    """Rule-based metadata. Retained as a stable entry point for tests."""
+    return compose(
+        title=source_title, description=source_desc, keywords=[],
+        author=author, language=language, source="fallback",
     )

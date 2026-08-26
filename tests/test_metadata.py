@@ -31,7 +31,7 @@ def test_fallback_metadata_basic():
         author="@creator",
         language="en",
     )
-    assert "#shorts" in md.title
+    assert "#shorts" in md.title.lower()
     assert "shorts" in md.tags
     assert md.detected_language == "en"
     assert md.source == "fallback"

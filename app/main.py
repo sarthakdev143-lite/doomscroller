@@ -13,9 +13,9 @@ from sqlalchemy.orm import Session
 
 from .analytics import recompute_scores
 from .config import settings
-from .db import get_db, init_db
+from .db import SessionLocal, get_db, init_db
 from .models import Creator, MetadataDraft, Video, VideoStatus
-from . import quota, scheduler
+from . import metadata, quota, scheduler
 from .schemas import (
     ApproveBody,
     HealthOut,
@@ -55,6 +55,7 @@ def health(db: Session = Depends(get_db)) -> HealthOut:
     return HealthOut(
         status="ok",
         use_mock=settings.use_mock,
+        db_url=settings.db_url,
         pending_count=int(pending),
     )
 
@@ -64,7 +65,11 @@ def list_pending(limit: int = 20, db: Session = Depends(get_db)) -> List[VideoOu
     rows = db.execute(
         select(Video)
         .where(Video.status == VideoStatus.PENDING)
-        .order_by(desc(Video.velocity_score), desc(Video.engagement_score))
+        .order_by(
+            desc(Video.viral_score),
+            desc(Video.reach_score),
+            desc(Video.velocity_score),
+        )
         .limit(limit)
     ).scalars().all()
     return [VideoOut.model_validate(r) for r in rows]
@@ -220,29 +225,50 @@ def list_jobs() -> dict:
 
 @app.post("/scheduler/run/{job_id}", response_model=dict)
 def run_job_now(job_id: str) -> dict:
-    """Trigger a scheduler job to run immediately."""
-    fn_map_extra = {
-        "auto_approve": scheduler.auto_approve_job,
-        "analytics_pull": scheduler.analytics_pull_job,
+    """Trigger a scheduler job immediately, bypassing its interval."""
+    if job_id not in scheduler.JOB_FUNCTIONS:
+        raise HTTPException(
+            status_code=404,
+            detail=f"unknown job: {job_id}. known: {sorted(scheduler.JOB_FUNCTIONS)}",
+        )
+    return {"job": job_id, "result": scheduler.run_job(job_id)}
+
+
+@app.get("/scheduler/available", response_model=dict)
+def list_available_jobs() -> dict:
+    """Job ids accepted by POST /scheduler/run/{job_id}."""
+    return {"jobs": sorted(scheduler.JOB_FUNCTIONS)}
+
+
+# ==================== Queue maintenance ====================
+@app.post("/queue/apply-filters", response_model=dict)
+def apply_filters(dry_run: bool = False) -> dict:
+    """Re-check the pending queue against the current focus/safety filters.
+
+    Pass ``?dry_run=true`` to see what *would* be rejected without changing
+    anything.
+    """
+    from tasks.pipeline import apply_queue_filters
+
+    return apply_queue_filters(dry_run=dry_run)
+
+
+@app.get("/queue/focus", response_model=dict)
+def queue_focus() -> dict:
+    """The channel-focus rules currently in force, plus the queue breakdown."""
+    with SessionLocal() as db:
+        rows = db.execute(
+            select(Video.language, func.count(Video.id))
+            .where(Video.status == VideoStatus.PENDING)
+            .group_by(Video.language)
+        ).all()
+    return {
+        "target_languages": settings.languages_list,
+        "allow_unknown_language": settings.allow_unknown_language,
+        "target_topics": settings.topics_list,
+        "excluded_topics": settings.excluded_topics_list,
+        "pending_by_language": {(lang or "unknown"): count for lang, count in rows},
     }
-    if job_id in fn_map_extra:
-        fn = fn_map_extra[job_id]
-        return {"job": job_id, "result": fn()}
-    fn_map = {
-        "scrape": scheduler.scrape_job,
-        "discovery": scheduler.discovery_job,
-        "publish": scheduler.publish_job,
-        "cleanup": scheduler.cleanup_job,
-        "chop_long": getattr(scheduler, "chop_long_job", scheduler.cleanup_job),
-        "recompute": scheduler.recompute_scores_job,
-        "auto_approve": scheduler.auto_approve_job,
-        "analytics_pull": scheduler.analytics_pull_job,
-    }
-    fn = fn_map.get(job_id)
-    if fn is None:
-        raise HTTPException(status_code=404, detail=f"unknown job: {job_id}")
-    out = fn()
-    return {"job": job_id, "result": out}
 
 
 # ==================== Metadata endpoints ====================
@@ -337,9 +363,14 @@ def stats(db: Session = Depends(get_db)) -> dict:
         select(Video.status, func.count(Video.id)).group_by(Video.status)
     ).all()
     total_creators = db.scalar(select(func.count(Creator.id))) or 0
+    ready = db.scalar(
+        select(func.count(Video.id)).where(Video.status == VideoStatus.TRANSFORMED)
+    ) or 0
     return {
         "by_status": {s.value: c for s, c in by_status},
         "total_creators": total_creators,
+        "ready_to_publish": int(ready),
+        "llm_metadata": metadata.llm_available(),
         "use_mock": settings.use_mock,
         "uploads_per_day": settings.uploads_per_day,
         "upload_interval_hours": settings.upload_interval_hours,

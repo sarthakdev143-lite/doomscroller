@@ -78,7 +78,8 @@ def _cached_stats():
         transformed=db.scalar(select(func.count(Video.id)).where(Video.status==VideoStatus.TRANSFORMED)) or 0
         published=db.scalar(select(func.count(Video.id)).where(Video.status==VideoStatus.PUBLISHED)) or 0
         creators=db.scalar(select(func.count(Creator.id))) or 0
-        return {"total":total,"pending":pending,"approved":approved,"transformed":transformed,"published":published,"creators":creators}
+        reach=db.scalar(select(func.sum(Video.views)).where(Video.status.in_([VideoStatus.PENDING,VideoStatus.APPROVED,VideoStatus.TRANSFORMED]))) or 0
+        return {"total":total,"pending":pending,"approved":approved,"transformed":transformed,"published":published,"creators":creators,"reach":int(reach)}
 
 def _api(method, path, **kw):
     timeout=4 if path in ("/scheduler/jobs","/stats","/health") else 40 if "scrape" in path else 10
@@ -128,6 +129,31 @@ def sidebar_frag():
             out=_api("POST","/config/publish", json={"uploads_per_day":uploads,"upload_jitter_minutes":jitter,"auto_approve":auto_approve})
             if out and out.get("ok"):
                 st.toast(f"Saved {uploads}/day", icon="✅"); time.sleep(0.4); st.rerun()
+        st.divider()
+        st.markdown("**🎯 Channel focus**")
+        focus=_api("GET","/queue/focus") or {}
+        langs=focus.get("target_languages") or []
+        st.caption(f"Languages: `{', '.join(langs) if langs else 'any'}`")
+        by_lang=focus.get("pending_by_language") or {}
+        if by_lang:
+            off=[f"{k} {v}" for k,v in sorted(by_lang.items(), key=lambda x:-x[1])
+                 if langs and k not in langs]
+            if off:
+                st.caption(f"Off-focus pending: {', '.join(off)}")
+        c1,c2=st.columns(2)
+        if c1.button("🔍 Preview", width="stretch", help="Dry run: what the current filters would reject"):
+            out=_api("POST","/queue/apply-filters?dry_run=true")
+            if out:
+                st.session_state["focus_preview"]=out
+        if c2.button("🧽 Apply", width="stretch", help="Reject pending videos that fail the current filters"):
+            out=_api("POST","/queue/apply-filters")
+            if out:
+                st.toast(f"Rejected {out.get('rejected',0)}, kept {out.get('kept',0)}", icon="🧽")
+                _cached_stats.clear(); time.sleep(0.4); st.rerun()
+        prev=st.session_state.get("focus_preview")
+        if prev:
+            st.caption(f"Would keep **{prev.get('kept',0)}**, reject **{prev.get('rejected',0)}** — {prev.get('reasons',{})}")
+        st.divider()
         st.caption("Shortcuts: `Ctrl+K` search • `A` approve • `R` reject • `J/K` next/prev")
 
 # Video card fragment — isolated, no full rerun
@@ -141,8 +167,15 @@ def video_card_frag(v: Video, prefix: str):
     with c1:
         st.markdown(f"**{v.title or '(no title)'}**")
         dur=f"{v.duration_sec}s" if v.duration_sec else "?"
-        st.caption(f"**{v.author or 'unknown'}** • {v.source} • {dur} • `{v.id[:8]}`")
+        who=v.author_name or v.author or "unknown"
+        handle=f"@{v.author}" if v.author else ""
+        res=f"{v.width}x{v.height}" if v.width and v.height else "?"
+        lang=f" • {v.language}" if v.language else ""
+        st.caption(f"**{who}** {handle} • {v.source} • {dur} • {res}{lang} • `{v.id[:8]}`")
         st.markdown(_badge(status), unsafe_allow_html=True)
+        if v.keywords:
+            kws=v.keywords if isinstance(v.keywords,list) else []
+            if kws: st.caption("🏷 " + " · ".join(str(k) for k in kws[:5]))
         if v.thumbnail_url:
             st.image(v.thumbnail_url, width="stretch")
         elif v.local_path and os.path.exists(v.local_path):
@@ -155,8 +188,8 @@ def video_card_frag(v: Video, prefix: str):
         m1,m2=st.columns(2)
         m1.metric("Views", f"{v.views:,}")
         m2.metric("Likes", f"{v.likes:,}")
-        m1.metric("Eng", f"{v.engagement_score:.3f}")
-        m2.metric("Vel", f"{v.velocity_score:.3f}")
+        m1.metric("Viral", f"{(v.viral_score or 0):.3f}")
+        m2.metric("Eng", f"{(v.engagement_score or 0):.3f}")
         if v.meta and isinstance(v.meta,dict) and v.meta.get("auto_approved"):
             st.caption("🤖 auto")
     with c3:
@@ -183,6 +216,19 @@ def video_card_frag(v: Video, prefix: str):
                 st.toast("Done" if out and out.get("result",{}).get("ok") else "Queued", icon="✅"); _cached_stats.clear(); time.sleep(0.6); st.rerun()
         elif v.status==VideoStatus.TRANSFORMED:
             st.success("✅ Ready 9:16", icon="✅")
+            _var=(v.meta or {}).get("variation") if isinstance(v.meta,dict) else None
+            if _var: st.caption(f"🎛 {_var}")
+            try:
+                from app.models import MetadataDraft as _MD
+                with session_scope() as _db:
+                    _d=_db.execute(select(_MD).where(_MD.video_id==v.id)).scalar_one_or_none()
+                    if _d:
+                        with st.expander("📝 YouTube metadata", expanded=False):
+                            st.text_input("Title", value=_d.title, key=f"{prefix}_mdt_{v.id}", disabled=True)
+                            st.caption(f"**Tags:** {', '.join(_d.tags or [])}")
+                            st.caption(f"**Language:** {_d.detected_language}")
+                            st.text_area("Description", value=_d.description, height=110, key=f"{prefix}_mdd_{v.id}", disabled=True)
+            except Exception: pass
             if v.transformed_path and os.path.exists(v.transformed_path):
                 with st.expander("▶ Ready", expanded=False):
                     st.video(v.transformed_path)
@@ -213,7 +259,9 @@ def stats_frag():
     c3.metric("Approved", s["approved"])
     c4.metric("Ready", s["transformed"])
     c5.metric("Published", s["published"], delta="live" if s["published"] else None)
-    c6.metric("Creators", s["creators"])
+    reach=s.get("reach",0)
+    c6.metric("Queue reach", f"{reach/1_000_000:.1f}M" if reach>=1_000_000 else f"{reach:,}",
+              help="Combined source views of everything waiting in the queue")
     # progress to 20
     if s["pending"]<20:
         st.progress(s["pending"]/20, text=f"{s['pending']}/20 pending — scraper fills to 20")
@@ -233,10 +281,10 @@ def main():
             st.session_state["video_search"]=search
             st.session_state["pending_page"]=0
     with top2:
-        sort_by=st.selectbox("Sort", ["🔥 Velocity","❤️ Engagement","🕒 Recent"], index=0, label_visibility="collapsed")
+        sort_by=st.selectbox("Sort", ["🔥 Viral","👁 Reach","❤️ Engagement","⚡ Velocity","🕒 Recent"], index=0, label_visibility="collapsed")
     with top3:
         density=st.segmented_control("View", ["Comfort","Compact"], default="Comfort", label_visibility="collapsed")
-    sort_map={"🔥 Velocity":(Video.velocity_score,True),"❤️ Engagement":(Video.engagement_score,True),"🕒 Recent":(Video.scraped_at,True)}
+    sort_map={"🔥 Viral":(Video.viral_score,True),"👁 Reach":(Video.views,True),"❤️ Engagement":(Video.engagement_score,True),"⚡ Velocity":(Video.velocity_score,True),"🕒 Recent":(Video.scraped_at,True)}
     sort_col, sort_desc = sort_map[sort_by]
 
     s=stats_frag()
@@ -274,7 +322,7 @@ def main():
         with session_scope() as db:
             base=select(Video).where(Video.status==VideoStatus.PENDING)
             if q:
-                base=base.where(or_(func.lower(Video.title).like(f"%{q}%"), func.lower(Video.author).like(f"%{q}%"), func.lower(Video.source_id).like(f"%{q}%")))
+                base=base.where(or_(func.lower(Video.title).like(f"%{q}%"), func.lower(Video.author).like(f"%{q}%"), func.lower(Video.author_name).like(f"%{q}%"), func.lower(Video.source_id).like(f"%{q}%")))
             total=db.scalar(select(func.count()).select_from(base.subquery())) or 0
             order=desc(sort_col) if sort_desc else sort_col
             rows=db.execute(base.order_by(order).offset(page*per_page).limit(per_page)).scalars().all()
@@ -322,7 +370,7 @@ def main():
         c1.metric("Pending",pc); c2.metric("Approved",ac); c3.metric("Transforming",tc); c4.metric("Ready",tr); c5.metric("Total",pc+ac+tc+tr+fc)
         if fc: st.warning(f"{fc} failed")
         with session_scope() as db:
-            rows=db.execute(select(Video).where(Video.status.in_([VideoStatus.PENDING,VideoStatus.APPROVED,VideoStatus.TRANSFORMING,VideoStatus.TRANSFORMED,VideoStatus.FAILED])).order_by(desc(Video.velocity_score)).limit(16)).scalars().all()
+            rows=db.execute(select(Video).where(Video.status.in_([VideoStatus.PENDING,VideoStatus.APPROVED,VideoStatus.TRANSFORMING,VideoStatus.TRANSFORMED,VideoStatus.FAILED])).order_by(desc(Video.viral_score)).limit(16)).scalars().all()
         for v in rows: video_card_frag(v, "pipeline")
     with tabs[4]:
         with session_scope() as db:

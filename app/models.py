@@ -56,10 +56,14 @@ class Video(Base):
     source_id: Mapped[str] = mapped_column(String(128), index=True)  # id on the source platform
     source_url: Mapped[str] = mapped_column(Text)
 
-    author: Mapped[str] = mapped_column(String(128), default="")
+    author: Mapped[str] = mapped_column(String(128), default="", index=True)
+    author_name: Mapped[str] = mapped_column(String(256), default="")
     title: Mapped[str] = mapped_column(String(512), default="")
     description: Mapped[Optional[str]] = mapped_column(Text, default="")
     thumbnail_url: Mapped[Optional[str]] = mapped_column(Text, default=None)
+    media_url: Mapped[Optional[str]] = mapped_column(Text, default=None)
+    language: Mapped[str] = mapped_column(String(16), default="")
+    keywords: Mapped[list] = mapped_column(JSON, default=list)
     local_path: Mapped[Optional[str]] = mapped_column(Text, default=None)  # original downloaded file
     transformed_path: Mapped[Optional[str]] = mapped_column(Text, default=None)
     youtube_video_id: Mapped[Optional[str]] = mapped_column(String(64), default=None)
@@ -69,9 +73,13 @@ class Video(Base):
     comments: Mapped[int] = mapped_column(Integer, default=0)
     shares: Mapped[int] = mapped_column(Integer, default=0)
     duration_sec: Mapped[int] = mapped_column(Integer, default=0)
+    width: Mapped[int] = mapped_column(Integer, default=0)
+    height: Mapped[int] = mapped_column(Integer, default=0)
 
     engagement_score: Mapped[float] = mapped_column(Float, default=0.0)
     velocity_score: Mapped[float] = mapped_column(Float, default=0.0)
+    reach_score: Mapped[float] = mapped_column(Float, default=0.0)
+    viral_score: Mapped[float] = mapped_column(Float, default=0.0)
 
     status: Mapped[VideoStatus] = mapped_column(
         SAEnum(VideoStatus), default=VideoStatus.PENDING, index=True
@@ -79,6 +87,9 @@ class Video(Base):
     meta: Mapped[dict] = mapped_column(MutableDict.as_mutable(JSON), default=dict)
     error: Mapped[Optional[str]] = mapped_column(Text, default=None)
 
+    source_published_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
     scraped_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     curated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), default=None)
     transformed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), default=None)

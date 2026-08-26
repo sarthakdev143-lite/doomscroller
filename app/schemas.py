@@ -16,29 +16,53 @@ class VideoOut(BaseModel):
     source_id: str
     source_url: str
     author: str
+    author_name: str = ""
     title: str
     description: Optional[str] = None
     thumbnail_url: Optional[str] = None
+    media_url: Optional[str] = None
     local_path: Optional[str] = None
     transformed_path: Optional[str] = None
     youtube_video_id: Optional[str] = None
+    language: str = ""
+    keywords: list[str] = []
 
     views: int
     likes: int
     comments: int
     shares: int
     duration_sec: int
+    width: int = 0
+    height: int = 0
 
     engagement_score: float
     velocity_score: float
+    reach_score: float = 0.0
+    viral_score: float = 0.0
     status: str
     meta: dict | str | None = None
     error: Optional[str] = None
 
+    source_published_at: Optional[datetime] = None
     scraped_at: datetime
     curated_at: Optional[datetime] = None
     transformed_at: Optional[datetime] = None
     published_at: Optional[datetime] = None
+
+    @field_validator("keywords", mode="before")
+    @classmethod
+    def _coerce_keywords(cls, v: Any) -> list[str]:
+        if v is None:
+            return []
+        if isinstance(v, str):
+            try:
+                parsed = json.loads(v)
+                return [str(x) for x in parsed] if isinstance(parsed, list) else []
+            except Exception:
+                return []
+        if isinstance(v, list):
+            return [str(x) for x in v]
+        return []
 
     @field_validator("meta", mode="before")
     @classmethod

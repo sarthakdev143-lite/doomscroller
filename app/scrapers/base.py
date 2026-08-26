@@ -8,20 +8,37 @@ from typing import Iterable, Optional
 
 @dataclass
 class ScrapedItem:
-    source: str            # tiktok | instagram | youtube | mock
+    source: str            # snapchat | instagram | youtube | mock
     source_id: str
-    source_url: str
-    author: str = ""
+    source_url: str        # canonical, human-viewable page URL
+    author: str = ""       # platform handle, no leading '@'
+    author_name: str = ""  # display name
     title: str = ""
     description: str = ""
     thumbnail_url: Optional[str] = None
+    media_url: Optional[str] = None   # direct CDN URL for the video bytes
     local_path: Optional[str] = None
     views: int = 0
     likes: int = 0
     comments: int = 0
     shares: int = 0
     duration_sec: int = 0
+    width: int = 0
+    height: int = 0
+    language: str = ""
+    keywords: list[str] = field(default_factory=list)
+    published_at: Optional[datetime] = None
+    follower_count: int = 0
     meta: dict = field(default_factory=dict)
+
+    @property
+    def aspect_ratio(self) -> float:
+        return (self.width / self.height) if self.width and self.height else 0.0
+
+    @property
+    def is_vertical(self) -> bool:
+        r = self.aspect_ratio
+        return bool(r) and r < 0.95
 
 
 class Scraper:

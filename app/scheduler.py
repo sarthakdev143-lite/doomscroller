@@ -147,45 +147,95 @@ def transform_job() -> dict:
 
 
 def auto_approve_job() -> dict:
-    """Autonomously approve pending videos that pass viral/quality gate. Human can still reject within veto window."""
+    """Approve pending videos that clear the quality and virality bars.
+
+    Videos are held for ``AUTO_APPROVE_VETO_HOURS`` after being scraped before
+    they become eligible, which is the window a human has to reject something
+    the filters would otherwise wave through. Set the veto window to 0 to
+    approve immediately.
+    """
     if not settings.auto_approve:
         return {"skipped": "auto_approve disabled"}
+
+    from tasks.pipeline import (
+        channel_focus_reason, content_safety_reason, _item_view, _probe_quality,
+    )
+
     approved = 0
-    skipped: list[str] = []
+    reasons: dict[str, int] = {}
+
+    def note(reason: str) -> None:
+        reasons[reason] = reasons.get(reason, 0) + 1
+
+    veto_cutoff = datetime.now(timezone.utc) - timedelta(
+        hours=max(0, settings.auto_approve_veto_hours)
+    )
+
     try:
-        from tasks.pipeline import _is_viral_candidate, _probe_quality
-        from app.analytics import engagement_score, velocity_score
         with session_scope() as db:
             rows = db.execute(
-                select(Video).where(Video.status == VideoStatus.PENDING).order_by(desc(Video.velocity_score), desc(Video.engagement_score)).limit(20)
+                select(Video)
+                .where(Video.status == VideoStatus.PENDING)
+                .order_by(desc(Video.viral_score), desc(Video.reach_score))
+                .limit(40)
             ).scalars().all()
-            for v in rows:
-                if not v.local_path or not os.path.exists(v.local_path):
+
+            for video in rows:
+                scraped_at = video.scraped_at
+                if scraped_at is not None and scraped_at.tzinfo is None:
+                    scraped_at = scraped_at.replace(tzinfo=timezone.utc)
+                if scraped_at is not None and scraped_at > veto_cutoff:
+                    note("inside veto window")
                     continue
-                q = _probe_quality(v.local_path, source=v.source)
-                if q["height"] < 360:
+
+                if not video.local_path or not os.path.exists(video.local_path):
+                    note("no local file")
                     continue
-                if v.source == "snapchat" and not (3 <= (v.duration_sec or 0) <= 59):
+
+                # Re-check safety *and* channel focus. Both may have changed
+                # since this video was scraped, and unattended approval is the
+                # last gate before an upload goes out.
+                view = _item_view(video)
+                disqualified = content_safety_reason(view) or channel_focus_reason(view)
+                if disqualified:
+                    video.status = VideoStatus.REJECTED
+                    video.curated_at = datetime.now(timezone.utc)
+                    video.meta = {
+                        **(video.meta or {}),
+                        "auto_rejected": disqualified,
+                    }
+                    note(disqualified.split(":")[0])
                     continue
-                eng = engagement_score(v)
-                vel = velocity_score(v)
-                from app.scrapers.base import ScrapedItem
-                tmp = ScrapedItem(source=v.source, source_id=v.source_id, source_url=v.source_url, views=v.views, likes=v.likes, comments=v.comments, shares=v.shares, duration_sec=v.duration_sec or 0)
-                if not _is_viral_candidate(tmp, eng, vel):
+
+                height = video.height
+                if not height:
+                    height = _probe_quality(video.local_path, source=video.source)["height"]
+                if height and height < settings.min_source_height:
+                    note("resolution too low")
                     continue
-                # 5-35s preferred for Shorts virality, but 3-59 allowed
-                if not (settings.viral_preferred_min_duration <= (v.duration_sec or 0) <= settings.viral_preferred_max_duration):
-                    # allow but don't boost
-                    pass
-                v.status = VideoStatus.APPROVED
-                v.curated_at = datetime.now(timezone.utc)
-                v.meta = {**(v.meta or {}), "auto_approved": True, "auto_eng": eng, "auto_vel": vel}
+
+                if video.views and video.views < settings.viral_min_views:
+                    note("below reach floor")
+                    continue
+
+                if video.viral_score < settings.auto_approve_min_viral_score:
+                    note("below viral score")
+                    continue
+
+                video.status = VideoStatus.APPROVED
+                video.curated_at = datetime.now(timezone.utc)
+                video.meta = {
+                    **(video.meta or {}),
+                    "auto_approved": True,
+                    "auto_viral_score": video.viral_score,
+                }
                 approved += 1
-        log.info("auto_approve_job: approved=%d", approved)
-        return {"approved": approved, "skipped": skipped}
-    except Exception as e:
-        log.exception("auto_approve_job failure: %s", e)
-        return {"error": str(e), "approved": approved}
+
+        log.info("auto_approve_job: approved=%d reasons=%s", approved, reasons or {})
+        return {"approved": approved, "reasons": reasons}
+    except Exception as exc:
+        log.exception("auto_approve_job failure: %s", exc)
+        return {"error": str(exc), "approved": approved}
 
 
 def analytics_pull_job() -> dict:
@@ -320,6 +370,26 @@ def recompute_scores_job() -> dict:
     except Exception as e:
         log.exception("recompute_scores_job failure: %s", e)
         return {"error": str(e)}
+
+
+# ---------- Job registry ----------
+# The single source of truth for job ids. Both _make_scheduler() and the
+# POST /scheduler/run/{job_id} endpoint read this, so the two can never drift.
+JOB_FUNCTIONS: dict[str, "callable"] = {
+    "scrape": scrape_job,
+    "discovery": discovery_job,
+    "auto_approve": auto_approve_job,
+    "transform": transform_job,
+    "publish": publish_job,
+    "cleanup": cleanup_job,
+    "recompute": recompute_scores_job,
+    "analytics_pull": analytics_pull_job,
+}
+
+
+def run_job(job_id: str) -> dict:
+    """Run a registered job by id. Raises KeyError for an unknown id."""
+    return JOB_FUNCTIONS[job_id]()
 
 
 # ---------- Scheduler lifecycle ----------

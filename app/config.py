@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     auto_discovery: bool = True
     auto_approve: bool = True
     auto_approve_veto_hours: int = 1
+    # Minimum blended viral_score an unattended approval requires.
+    auto_approve_min_viral_score: float = 0.45
 
     # Scraping
     target_handles: str = '["@khaby.lame","@charlidamelio","@mrbeast","@bellapoarch","@addisonre","@zachking","@kimberly.loaiza","@fifaworldcup","@realmadrid","@bts_official_bighit","@therock","@willsmith","@domelipa","@billieeilish","@cznburak","@lamine.yamal","@jasonderulo","@kyliejenner","@selenagomez","@kylizzlemynizzl"]'
@@ -53,6 +55,29 @@ class Settings(BaseSettings):
     viral_min_velocity: float = 0.12
     viral_preferred_min_duration: int = 5
     viral_preferred_max_duration: int = 35
+    # Absolute reach floor for Spotlight, which is already algorithmically
+    # filtered upstream -- engagement rate alone is a poor gate there.
+    viral_min_views: int = 25_000
+
+    # Source-shape gates, applied to platform metadata before downloading and
+    # re-checked against ffprobe afterwards.
+    min_source_duration_sec: int = 3
+    max_source_duration_sec: int = 179
+    min_source_height: int = 480
+    min_file_size_bytes: int = 50_000
+
+    # ---- Channel focus ----
+    # A channel that posts six languages teaches the recommender nothing about
+    # who to show it to. Empty list = accept every language.
+    target_languages: str = '["en"]'
+    # When true, a video whose language could not be detected is kept. Snapchat
+    # usually reports one, but not always, and dropping them is wasteful.
+    allow_unknown_language: bool = True
+    # Optional topic allowlist matched against the platform keywords, title and
+    # description. Empty = accept every topic.
+    target_topics: str = '[]'
+    # Topics to reject outright even when they clear the safety blocklist.
+    excluded_topics: str = '[]'
     proxy_url: str = ""
     # Browser cookies for yt-dlp (e.g. "edge" or "edge,Default" or "chrome,Profile 1")
     # Leave empty to skip cookie extraction.
@@ -66,7 +91,43 @@ class Settings(BaseSettings):
     transform_width: int = 1080
     transform_height: int = 1920
     transform_blur_sigma: int = 20
-    transform_caption_font: str = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+    # Empty means "autodetect a bold system font"; see transformers.fonts.
+    transform_caption_font: str = ""
+
+    # ---- Output variation ----
+    # Republishing someone else's video verbatim is what YouTube's reused-content
+    # policy targets. These add genuine, per-video differentiation.
+    transform_variation: bool = True
+    # Channel name burned into a corner watermark. Empty disables the watermark.
+    brand_name: str = ""
+    brand_watermark_opacity: float = 0.45
+    # Burn the generated hook caption over the opening seconds.
+    # Off by default: Spotlight clips usually arrive with the creator's own
+    # burned-in captions plus Snapchat's attribution, so a third text layer
+    # reads as clutter rather than branding. Enable it for clean sources.
+    caption_enabled: bool = False
+    caption_seconds: float = 3.0
+    caption_max_chars: int = 42
+    # Overlay a subscribe end card over the closing seconds (overlaid, not
+    # appended, so it never adds duration to a Short).
+    end_card_enabled: bool = True
+    end_card_seconds: float = 2.0
+    end_card_text: str = "Subscribe for more"
+    # Per-video zoom and speed jitter ranges. Deterministic per video id.
+    zoom_min: float = 1.02
+    zoom_max: float = 1.08
+    speed_min: float = 0.97
+    speed_max: float = 1.04
+    # Sharpen after upscaling; Spotlight sources are commonly 540x960.
+    upscale_sharpen: bool = True
+
+    # Trim the top/bottom bands of the source, as a percentage of height.
+    # Spotlight clips carry Snapchat branding and the original creator handle
+    # burned into those bands. Cropping them produces a cleaner Short, but it
+    # also strips the platform's visible attribution, leaving only the credit
+    # line in the description. Off by default: enable it deliberately.
+    source_crop_top_pct: float = 0.0
+    source_crop_bottom_pct: float = 0.0
 
     # Long-form chopper — turns long downloaded videos into multiple Shorts
     long_video_min_duration_sec: int = 120   # only chop videos >= 2 minutes
@@ -147,13 +208,39 @@ class Settings(BaseSettings):
             return ["instagram", "snapchat", "youtube"]
 
     @property
+    def languages_list(self) -> List[str]:
+        try:
+            return [str(x).lower() for x in json.loads(self.target_languages or "[]")]
+        except Exception:
+            return []
+
+    @property
+    def topics_list(self) -> List[str]:
+        try:
+            return [str(x).lower() for x in json.loads(self.target_topics or "[]")]
+        except Exception:
+            return []
+
+    @property
+    def excluded_topics_list(self) -> List[str]:
+        try:
+            return [str(x).lower() for x in json.loads(self.excluded_topics or "[]")]
+        except Exception:
+            return []
+
+    @property
     def tags_list(self) -> List[str]:
         try:
             return [str(x) for x in json.loads(self.youtube_default_tags or "[]")]
         except Exception:
             return ["shorts"]
 
-    @field_validator("use_mock", "use_llm_metadata", "auto_publish", "enable_publish", "auto_discovery", "auto_approve", mode="before")
+    @field_validator(
+        "use_mock", "use_llm_metadata", "auto_publish", "enable_publish",
+        "auto_discovery", "auto_approve", "allow_unknown_language",
+        "transform_variation", "caption_enabled", "end_card_enabled",
+        "upscale_sharpen", mode="before",
+    )
     @classmethod
     def _coerce_bool(cls, v):
         if isinstance(v, str):

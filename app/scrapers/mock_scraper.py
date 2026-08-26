@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import os
 import random
+from datetime import datetime, timedelta, timezone
 import shutil
 import subprocess
 import tempfile
@@ -153,19 +154,32 @@ class MockScraper(Scraper):
         if not os.path.exists(local_path):
             shutil.copy2(self._master_path, local_path)
 
+        published_at = datetime.now(timezone.utc) - timedelta(
+            hours=rnd.uniform(1, 96)
+        )
         return ScrapedItem(
             source=source,
             source_id=sid,
             source_url=f"https://example.com/{source}/{sid}",
-            author=author,
+            author=author.lstrip("@"),
+            author_name=author.lstrip("@").replace(".", " ").title(),
             title=title,
             description=f"Mock scraped from {handle} on {source}.",
             thumbnail_url=None,
+            media_url=f"https://example.com/{source}/{sid}.mp4",
             local_path=local_path,
             views=views,
             likes=likes,
             comments=comments,
             shares=shares,
             duration_sec=duration_sec,
+            width=1080,
+            height=1920,
+            language="en",
+            keywords=rnd.sample(
+                ["viral", "funny", "trending", "shorts", "dance", "pets", "food"], 3
+            ),
+            published_at=published_at,
+            follower_count=rnd.randint(1_000, 5_000_000),
             meta={"mock": True, "seed_handle": handle},
         )
