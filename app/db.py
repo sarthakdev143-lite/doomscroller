@@ -17,12 +17,11 @@ def _engine_factory() -> Engine:
     url = settings.db_url
     if url.startswith("sqlite:///") and not url.endswith(":memory:"):
         connect_args = {"check_same_thread": False}
-        # Ensure the parent directory exists for file-based SQLite databases.
         db_path = url.replace("sqlite:///", "", 1)
         parent = os.path.dirname(os.path.abspath(db_path))
         if parent:
             os.makedirs(parent, exist_ok=True)
-        return create_engine(url, future=True, connect_args=connect_args, echo=False)
+        return create_engine(url, future=True, connect_args=connect_args, echo=False, pool_pre_ping=True)
     if url.startswith("sqlite") and ":memory:" in url:
         # In-memory SQLite — keep a single connection so the schema persists.
         return create_engine(

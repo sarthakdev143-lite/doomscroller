@@ -1,10 +1,10 @@
 # Doomscroller
 
 Autonomous YouTube Shorts factory. Scrapes viral short-form videos from
-Snapchat Spotlight, Instagram Reels, and YouTube Shorts → human approves/rejects via dashboard →
-app auto-transforms to vertical Shorts format → auto-generates SEO metadata
-via LLM (preserving source language) → auto-publishes to your YouTube channel
-on a conservative 3-uploads-per-day schedule.
+Snapchat Spotlight and creator profiles → human approves/rejects via dashboard →
+app auto-transforms to vertical Shorts format (or chops long-form into clips) →
+auto-generates SEO metadata via LLM (preserving source language) → auto-publishes
+to your YouTube channel on a conservative 3-uploads-per-day schedule.
 
 **The user's only job: approve or reject videos. Everything else is automated.**
 
@@ -71,7 +71,7 @@ few → the scheduler will transform them, generate LLM metadata, and publish
 on the 8-hour cadence.
 
 For background daemon mode (logs to `logs/`):
-\]'-```bash
+```bash
 python scripts/run.py --daemon
 python scripts/run.py --status
 python scripts/run.py --stop
@@ -79,12 +79,12 @@ python scripts/run.py --stop
 
 ## Going to production (real scraping + real YouTube)
 
-1. **Install ffmpeg**: `apt install ffmpeg` (or `brew install ffmpeg`)
+1. **Install ffmpeg**: `apt install ffmpeg`, `brew install ffmpeg`, or on Windows `winget install Gyan.FFmpeg`
 2. **Edit `.env`**:
    ```env
    USE_MOCK=false
    USE_LLM_METADATA=true                 # uses free z-ai CLI
-   TARGET_HANDLES=["@creator1","@creator2"]  # seed TikTok handles
+   TARGET_HANDLES=["@creator1","@creator2"]  # seed Snapchat handles
    TARGET_HASHTAGS=["fyp","viral"]
    YOUTUBE_CLIENT_SECRETS=/abs/path/client_secret.json
    YOUTUBE_DEFAULT_PRIVACY=public        # or private until you trust it
@@ -106,10 +106,11 @@ python scripts/run.py --stop
    `YOUTUBE_TOKEN_PATH` for subsequent runs.
 
 That's it. The app will now:
-- Scrape TikTok/Reddit/Instagram every 6h
+- Scrape Snapchat profiles + Spotlight every 6h (parallel per-URL browser contexts)
+- Download videos directly from Snapchat's CDN
 - Discover new creators daily
 - Show you pending videos in the dashboard
-- When you approve, transform + generate metadata automatically
+- When you approve, transform + generate metadata automatically (or chop long-form into Shorts clips)
 - Publish 3 videos per day, 8 hours apart, to your channel
 - Track quota, clean up old source files, boost creators whose videos perform well
 
@@ -128,8 +129,9 @@ doomscroller/
 │   ├── metadata.py         # LLM metadata generation (z-ai CLI + fallback)
 │   ├── discovery.py        # creator auto-discovery from engagement graphs
 │   ├── scheduler.py        # APScheduler autonomous loop
-│   ├── scrapers/           # yt-dlp + mock scrapers
+│   ├── scrapers/           # Snapchat (Playwright + CDN) + yt-dlp + mock scrapers
 │   ├── transformers/       # FFmpeg vertical Shorts transformer
+│   ├── clips.py            # Smart long-form → Shorts clip chopper
 │   └── publishers/         # YouTube OAuth2 + mock publishers
 ├── tasks/
 │   └── pipeline.py         # scrape/transform/publish/metadata functions
@@ -159,6 +161,7 @@ doomscroller/
 | POST   | `/videos/{id}/approve`            | Approve / reject (body: `{approved: bool, note?: str}`) |
 | POST   | `/videos/{id}/transform`          | Queue transformation             |
 | POST   | `/videos/{id}/publish`            | Queue YouTube publish            |
+| POST   | `/videos/{id}/chop`               | Chop long-form into Shorts clips |
 
 ### Metadata
 | Method | Path                              | Purpose                          |
@@ -204,7 +207,7 @@ doomscroller/
 ## Free by default
 
 Everything in the default config costs nothing:
-- **yt-dlp** — open source, no API keys
+- **Playwright + yt-dlp** — open source, no API keys
 - **z-ai CLI** for LLM metadata — in-house, free
 - **SQLite** — local file, no server
 - **APScheduler** — in-process, no Redis

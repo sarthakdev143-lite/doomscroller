@@ -33,13 +33,17 @@ class Settings(BaseSettings):
     # Scheduler
     scrape_interval_hours: int = 6
     scrape_max_per_run: int = 20
+    scrape_target_pending: int = 20
     discovery_interval_hours: int = 24
-    uploads_per_day: int = 3
-    upload_interval_hours: int = 8
+    uploads_per_day: int = 8
+    upload_interval_hours: int = 3
+    upload_jitter_minutes: int = 45
     min_approved_queue: int = 1
-    auto_publish: bool = False
-    enable_publish: bool = False
-    auto_discovery: bool = False
+    auto_publish: bool = True
+    enable_publish: bool = True
+    auto_discovery: bool = True
+    auto_approve: bool = True
+    auto_approve_veto_hours: int = 1
 
     # Scraping
     target_handles: str = '["@khaby.lame","@charlidamelio","@mrbeast","@bellapoarch","@addisonre","@zachking","@kimberly.loaiza","@fifaworldcup","@realmadrid","@bts_official_bighit","@therock","@willsmith","@domelipa","@billieeilish","@cznburak","@lamine.yamal","@jasonderulo","@kyliejenner","@selenagomez","@kylizzlemynizzl"]'
@@ -149,7 +153,7 @@ class Settings(BaseSettings):
         except Exception:
             return ["shorts"]
 
-    @field_validator("use_mock", "use_llm_metadata", "auto_publish", "enable_publish", "auto_discovery", mode="before")
+    @field_validator("use_mock", "use_llm_metadata", "auto_publish", "enable_publish", "auto_discovery", "auto_approve", mode="before")
     @classmethod
     def _coerce_bool(cls, v):
         if isinstance(v, str):

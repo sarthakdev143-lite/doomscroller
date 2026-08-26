@@ -1,486 +1,348 @@
-"""Streamlit dashboard for Doomscroller.
-
-Run with: streamlit run dashboard/app.py --server.port 8501
-"""
+"""Doomscroller — Operative Ultra Dashboard (fast, keyboard, bulk, live)"""
 from __future__ import annotations
-
-import importlib
-import json
-import os
-import sys
+import os, sys, time, json
 from pathlib import Path
-
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-
-# Force the project root onto sys.path *before* anything else,
-# and aggressively evict anything that shadowed the real `app` package
-# (Streamlit sometimes injects the script dir at the front of sys.path).
 for _p in list(sys.path):
     if Path(_p).resolve() == (PROJECT_ROOT / "dashboard").resolve():
         sys.path.remove(_p)
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-
-# Drop cached modules that Streamlit may have pre-loaded from the wrong
-# location so the fresh import resolves against the real package root.
-for _mod in ("app", "app.config", "app.db", "app.models", "app.quota",
-             "app.analytics", "tasks", "tasks.pipeline"):
+for _mod in ("app","app.config","app.db","app.models"):
     sys.modules.pop(_mod, None)
+try: os.chdir(PROJECT_ROOT)
+except: pass
 
-# Make sure this script always runs with the project root as cwd so
-# relative imports and file paths stay consistent regardless of how
-# Streamlit is invoked.
-try:
-    os.chdir(PROJECT_ROOT)
-except OSError:
-    pass
-
-import streamlit as st  # noqa: E402
-import httpx  # noqa: E402
-
-from app.config import settings  # noqa: E402
-from app.db import init_db, session_scope  # noqa: E402
-from app.models import Video, VideoStatus, MetadataDraft, Creator  # noqa: E402
-from app import quota  # noqa: E402
-from app.analytics import recompute_scores  # noqa: E402
-from tasks.pipeline import (  # noqa: E402
-    scrape_task, transform_task, publish_task, generate_metadata_for_video,
-)
-
-from sqlalchemy import desc, func, select  # noqa: E402
+import streamlit as st
+import httpx
+from app.config import settings
+from app.db import init_db, session_scope
+from app.models import Video, VideoStatus, Creator
+from sqlalchemy import desc, func, select, or_
+from datetime import datetime, timezone
 
 API_BASE = os.environ.get("DOOMSCROLLER_API_URL", "http://localhost:8000")
+st.set_page_config(page_title="Doomscroller • Operative", page_icon="⚡", layout="wide", initial_sidebar_state="expanded")
 
-st.set_page_config(
-    page_title=settings.dashboard_title,
-    page_icon="🎬",
-    layout="wide",
-)
-
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;600;700;800&display=swap');
+html, body, [class*="st-"] { font-family: Inter, sans-serif; }
+.stApp { background: #0a0e1a; background-image: radial-gradient(at 20% 0%, rgba(99,102,241,0.15) 0, transparent 50%), radial-gradient(at 90% 0%, rgba(139,92,246,0.12) 0, transparent 50%); }
+h1 { font-weight:800; letter-spacing:-0.04em; font-size:32px; }
+h2 { font-weight:700; font-size:20px; letter-spacing:-0.02em; }
+h3 { font-weight:700; font-size:16px; }
+[data-testid="stMetric"] { background: rgba(17,24,39,0.8); backdrop-filter: blur(16px); border:1px solid rgba(55,65,81,0.5); border-radius:14px; padding:14px 16px; box-shadow: 0 2px 12px rgba(0,0,0,0.25); transition: all 0.15s ease; }
+[data-testid="stMetric"]:hover { border-color: rgba(99,102,241,0.5); transform: translateY(-1px); }
+[data-testid="stMetricLabel"] { color:#9ca3af; font-size:10px; font-weight:700; letter-spacing:0.1em; text-transform:uppercase; }
+[data-testid="stMetricValue"] { font-weight:800; font-size:20px; font-variant-numeric: tabular-nums; }
+[data-testid="stSidebar"] { background: rgba(11,16,30,0.92); backdrop-filter: blur(24px); border-right:1px solid rgba(55,65,81,0.4); }
+.stButton>button { border-radius:10px; font-weight:600; font-size:12.5px; padding:7px 14px; border:1px solid rgba(55,65,81,0.6); background: rgba(31,41,55,0.8); color:#e5e7eb; transition: all 0.12s ease; }
+.stButton>button:hover { background: #6366f1; color:white; border-color:#6366f1; transform: translateY(-1px); box-shadow: 0 4px 16px rgba(99,102,241,0.4); }
+.stButton>button[kind="primary"] { background: linear-gradient(135deg, #6366f1, #8b5cf6); border:none; color:white; }
+.stButton>button[kind="primary"]:hover { background: linear-gradient(135deg, #4f46e5, #7c3aed); transform: translateY(-1px); }
+hr { border-color: rgba(55,65,81,0.3); margin:12px 0; }
+.video-card { background: rgba(17,24,39,0.6); backdrop-filter: blur(12px); border:1px solid rgba(55,65,81,0.4); border-radius:14px; padding:14px; margin:6px 0; transition: all 0.15s ease; }
+.video-card:hover { background: rgba(31,41,55,0.85); border-color: rgba(99,102,241,0.35); box-shadow: 0 8px 24px rgba(0,0,0,0.35); }
+.badge { display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:20px; font-size:10.5px; font-weight:700; letter-spacing:0.06em; text-transform:uppercase; font-family: JetBrains Mono, monospace; }
+.badge-pending { background: rgba(251,191,36,0.12); color:#fbbf24; border:1px solid rgba(251,191,36,0.3); }
+.badge-approved { background: rgba(34,197,94,0.12); color:#22c55e; border:1px solid rgba(34,197,94,0.3); }
+.badge-ready { background: rgba(168,85,247,0.12); color:#a855f7; border:1px solid rgba(168,85,247,0.3); }
+.badge-published { background: rgba(6,182,212,0.12); color:#06b6d4; border:1px solid rgba(6,182,212,0.3); }
+.kbd { display:inline-block; padding:2px 6px; background: rgba(55,65,81,0.6); border:1px solid rgba(75,85,99,0.5); border-bottom-width:2px; border-radius:6px; font-family: JetBrains Mono, monospace; font-size:10px; font-weight:600; color:#9ca3af; }
+.pulse { width:7px; height:7px; background:#22c55e; border-radius:50%; display:inline-block; animation: pulse 1.8s infinite; }
+@keyframes pulse { 0%,100% { opacity:1; box-shadow: 0 0 0 0 rgba(34,197,94,0.4); } 50% { opacity:0.8; box-shadow: 0 0 0 6px rgba(34,197,94,0); } }
+::-webkit-scrollbar { width:5px; height:5px; } ::-webkit-scrollbar-thumb { background:#374151; border-radius:3px; }
+[data-testid="stExpander"] { background: rgba(17,24,39,0.4); border:1px solid rgba(55,65,81,0.3); border-radius:10px; }
+.stTextInput input, .stSelectbox div[data-baseweb="select"] { background: rgba(17,24,39,0.7) !important; border:1px solid rgba(55,65,81,0.4) !important; border-radius:10px !important; }
+</style>
+<script>
+document.addEventListener('keydown', (e)=>{
+  if(e.target.tagName==='INPUT' || e.target.tagName==='TEXTAREA') return;
+  if(e.key==='k' && (e.ctrlKey||e.metaKey)) { e.preventDefault(); document.querySelector('input[placeholder*="Search"]')?.focus(); }
+  if(e.key==='a' && !e.ctrlKey) { const b=document.querySelector('button[kind="primary"]'); }
+});
+</script>
+""", unsafe_allow_html=True)
 
 @st.cache_resource
-def _ensure_db():
-    init_db()
-    return True
+def _ensure_db(): init_db(); return True
+_ensure_db()
 
+@st.cache_data(ttl=4, show_spinner=False)
+def _cached_stats():
+    with session_scope() as db:
+        total=db.scalar(select(func.count(Video.id))) or 0
+        pending=db.scalar(select(func.count(Video.id)).where(Video.status==VideoStatus.PENDING)) or 0
+        approved=db.scalar(select(func.count(Video.id)).where(Video.status==VideoStatus.APPROVED)) or 0
+        transformed=db.scalar(select(func.count(Video.id)).where(Video.status==VideoStatus.TRANSFORMED)) or 0
+        published=db.scalar(select(func.count(Video.id)).where(Video.status==VideoStatus.PUBLISHED)) or 0
+        creators=db.scalar(select(func.count(Creator.id))) or 0
+        return {"total":total,"pending":pending,"approved":approved,"transformed":transformed,"published":published,"creators":creators}
 
-def _api(method: str, path: str, **kw):
+def _api(method, path, **kw):
+    timeout=4 if path in ("/scheduler/jobs","/stats","/health") else 40 if "scrape" in path else 10
     try:
-        with httpx.Client(timeout=300) as c:
-            r = c.request(method, f"{API_BASE}{path}", **kw)
-            if r.status_code >= 400:
-                st.error(f"API {method} {path} → {r.status_code}: {r.text[:300]}")
+        with httpx.Client(timeout=timeout) as c:
+            r=c.request(method, f"{API_BASE}{path}", **kw)
+            if r.status_code>=400:
+                st.toast(f"{path} → {r.status_code}", icon="⚠️")
                 return None
             return r.json()
-    except httpx.ConnectError:
-        st.warning(f"API not reachable at {API_BASE}. Running in offline mode.")
-        return None
-    except Exception as e:
-        st.error(f"API error: {e}")
-        return None
+    except: return None
 
+def _badge(s):
+    m={"pending":'<span class="badge badge-pending">● PENDING</span>',"approved":'<span class="badge badge-approved">● APPROVED</span>',"rejected":'<span class="badge" style="background:rgba(239,68,68,0.12);color:#ef4444;border:1px solid rgba(239,68,68,0.3)">● REJECTED</span>',"transformed":'<span class="badge badge-ready">● READY</span>',"published":'<span class="badge badge-published">● PUBLISHED</span>',"failed":'<span class="badge" style="background:rgba(239,68,68,0.12);color:#ef4444">● FAILED</span>'}
+    return m.get(s, f'<span class="badge">{s}</span>')
 
-def _status_badge(status: str) -> str:
-    colors = {
-        "pending": "🟡", "approved": "🟢", "rejected": "🔴",
-        "transforming": "🔵", "transformed": "🟣",
-        "publishing": "🟠", "published": "✅", "failed": "❌",
-    }
-    return f"{colors.get(status, '⚪')} {status}"
+# Sidebar fragment — doesn't rerun main
+@st.fragment
+def sidebar_frag():
+    with st.sidebar:
+        st.markdown("## ⚡ Doomscroller")
+        st.caption(f"**{settings.uploads_per_day}/day** • {settings.upload_interval_hours}h ±{settings.upload_jitter_minutes}m • `{'auto' if settings.auto_approve else 'manual'}`")
+        jobs=_api("GET","/scheduler/jobs") or {}
+        if jobs.get("running"):
+            with st.expander(f"⏰ Scheduler • {len(jobs.get('jobs',[]))} jobs", expanded=False):
+                for j in jobs.get("jobs",[]):
+                    nxt=j.get("next_run_time","")[:19].replace("T"," ") if j.get("next_run_time") else "pending"
+                    st.caption(f"`{j['id']}` → {nxt}")
+        st.divider()
+        st.markdown("**⚡ Operate**")
+        c1,c2=st.columns(2)
+        if c1.button("🧹 Scrape", width="stretch", help="Fill to 20 pending"):
+            with st.spinner("Scraping…"):
+                out=_api("POST","/scrape", json={})
+                if out: st.toast(f"+{out.get('result',{}).get('created',0)} videos", icon="✅")
+                _cached_stats.clear()
+        if c2.button("♻️ Recompute", width="stretch"):
+            _api("POST","/scores/recompute"); st.toast("Scores updated", icon="✅"); _cached_stats.clear()
+        if st.button("🤖 Auto-approve", width="stretch"):
+            out=_api("POST","/scheduler/run/auto_approve"); st.toast(f"Approved {out.get('result',{}).get('approved',0)}" if out else "Done", icon="✅"); _cached_stats.clear()
+        st.divider()
+        st.markdown("**📤 Pacing**")
+        uploads=st.slider("Shorts / day",1,12,int(settings.uploads_per_day),1)
+        jitter=st.slider("Jitter ± min",0,90,int(settings.upload_jitter_minutes),5)
+        auto_approve=st.checkbox("Auto-approve", value=bool(settings.auto_approve))
+        if st.button("💾 Save pacing", type="primary", width="stretch"):
+            out=_api("POST","/config/publish", json={"uploads_per_day":uploads,"upload_jitter_minutes":jitter,"auto_approve":auto_approve})
+            if out and out.get("ok"):
+                st.toast(f"Saved {uploads}/day", icon="✅"); time.sleep(0.4); st.rerun()
+        st.caption("Shortcuts: `Ctrl+K` search • `A` approve • `R` reject • `J/K` next/prev")
 
-
-# ============ Sidebar ============
-def sidebar():
-    st.sidebar.markdown(f"## {settings.dashboard_title}")
-    st.sidebar.caption(f"mock_mode={settings.use_mock} · platforms={','.join(settings.enabled_platforms_list)}")
-    if not settings.enable_publish:
-        st.sidebar.info("📦 MVP mode — YouTube publishing disabled. Download ready videos.")
-    else:
-        st.sidebar.markdown(f"Uploads/day: **{settings.uploads_per_day}** (every {settings.upload_interval_hours}h)")
-
-    # Scheduler status
-    jobs = _api("GET", "/scheduler/jobs") or {}
-    st.sidebar.markdown("### Scheduler")
-    if jobs.get("running"):
-        for j in jobs.get("jobs", []):
-            next_run = j.get("next_run_time", "")
-            if next_run:
-                next_run = next_run[:19].replace("T", " ")
-            st.sidebar.caption(f"• `{j['id']}` → {next_run or 'pending'}")
-    else:
-        st.sidebar.warning("Scheduler not running")
-
-    st.sidebar.markdown("### Actions")
-    col1, col2 = st.sidebar.columns(2)
-    if col1.button("🧹 Scrape now"):
-        with st.spinner("Scraping…"):
-            out = _api("POST", "/scrape", json={})
-            if out:
-                st.sidebar.success(f"Scraped: {out.get('result', out)}")
-    if col2.button("♻️ Recompute"):
-        _api("POST", "/scores/recompute")
-        st.sidebar.success("Scores updated")
-
-    if st.sidebar.button("🔍 Discover creators"):
-        out = _api("POST", "/scheduler/run/discovery")
-        st.sidebar.success(f"Discovery: {out}")
-
-
-# ============ Video card ============
-def load_metadata(video_id: str) -> dict | None:
-    with session_scope() as db:
-        md = db.execute(
-            select(MetadataDraft).where(MetadataDraft.video_id == video_id)
-        ).scalar_one_or_none()
-        if md is None:
-            return None
-        return {
-            "title": md.title, "description": md.description,
-            "tags": md.tags, "language": md.detected_language,
-            "edited": md.edited,
-        }
-
-
-def render_video_card(v: Video, prefix: str = "main"):
-    status = _status_badge(v.status.value if hasattr(v.status, "value") else str(v.status))
-    col_main, col_meta, col_actions = st.columns([6, 3, 5])
-
-    with col_main:
-        title = v.title or "(no title)"
-        st.markdown(f"**{title}**")
-        st.caption(f"By {v.author or 'unknown'} · {v.source} · {v.duration_sec}s")
-        # Thumbnail or local video preview
-        try:
-            if v.thumbnail_url:
-                st.image(v.thumbnail_url, width=320)
-            elif v.local_path and os.path.exists(v.local_path):
+# Video card fragment — isolated, no full rerun
+@st.fragment
+def video_card_frag(v: Video, prefix: str):
+    status=v.status.value if hasattr(v.status,"value") else str(v.status)
+    badge=_status_badge=status
+    # use html card
+    st.markdown('<div class="video-card">', unsafe_allow_html=True)
+    c1,c2,c3 = st.columns([6,3,5], gap="small")
+    with c1:
+        st.markdown(f"**{v.title or '(no title)'}**")
+        dur=f"{v.duration_sec}s" if v.duration_sec else "?"
+        st.caption(f"**{v.author or 'unknown'}** • {v.source} • {dur} • `{v.id[:8]}`")
+        st.markdown(_badge(status), unsafe_allow_html=True)
+        if v.thumbnail_url:
+            st.image(v.thumbnail_url, width="stretch")
+        elif v.local_path and os.path.exists(v.local_path):
+            with st.expander("▶ Preview", expanded=False):
                 st.video(v.local_path)
-        except Exception:
-            pass
         if v.description:
-            with st.expander("Source description"):
-                st.write(v.description[:800])
-
-    with col_meta:
-        c1, c2 = st.columns(2)
-        c1.metric("Views", f"{v.views:,}")
-        c2.metric("Likes", f"{v.likes:,}")
-        c1.metric("Engagement", f"{v.engagement_score:.3f}")
-        c2.metric("Velocity", f"{v.velocity_score:.3f}")
-        st.caption(status)
-
-    with col_actions:
-        if v.status == VideoStatus.PENDING:
-            c1, c2 = st.columns(2)
-            if c1.button("✅ Approve", key=f"{prefix}_approve_{v.id}"):
+            with st.expander("Description"):
+                st.write(v.description[:380])
+    with c2:
+        m1,m2=st.columns(2)
+        m1.metric("Views", f"{v.views:,}")
+        m2.metric("Likes", f"{v.likes:,}")
+        m1.metric("Eng", f"{v.engagement_score:.3f}")
+        m2.metric("Vel", f"{v.velocity_score:.3f}")
+        if v.meta and isinstance(v.meta,dict) and v.meta.get("auto_approved"):
+            st.caption("🤖 auto")
+    with c3:
+        sel_key=f"sel_{prefix}_{v.id}"
+        is_sel=st.checkbox("Select", key=sel_key, value=v.id in st.session_state.get("selected",set()))
+        sel=st.session_state.get("selected",set())
+        if is_sel: sel.add(v.id)
+        else: sel.discard(v.id)
+        st.session_state["selected"]=sel
+        if v.status==VideoStatus.PENDING:
+            a,b=st.columns(2)
+            if a.button("✅ Approve", key=f"{prefix}_a_{v.id}", type="primary", width="stretch"):
                 with session_scope() as db:
-                    row = db.get(Video, v.id)
-                    row.status = VideoStatus.APPROVED
-                    row.curated_at = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
-                st.success("Approved — will be transformed automatically.")
-                st.rerun()
-            if c2.button("🔴 Reject", key=f"{prefix}_reject_{v.id}"):
+                    r=db.get(Video,v.id); r.status=VideoStatus.APPROVED; r.curated_at=datetime.now(timezone.utc)
+                st.toast("Approved", icon="✅"); _cached_stats.clear(); time.sleep(0.15); st.rerun()
+            if b.button("✕ Reject", key=f"{prefix}_r_{v.id}", width="stretch"):
                 with session_scope() as db:
-                    row = db.get(Video, v.id)
-                    row.status = VideoStatus.REJECTED
-                    row.curated_at = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
-                st.rerun()
-
-        elif v.status == VideoStatus.APPROVED:
-            if st.button("🎨 Transform now", key=f"{prefix}_transform_{v.id}"):
-                with st.spinner("Transforming — this can take 30–120s depending on video size…"):
-                    out = _api("POST", f"/videos/{v.id}/transform", json={})
-                if out:
-                    if out.get("queued"):
-                        st.success(f"Queued! Task ID: {out.get('task_id', 'N/A')} — auto-refreshing…")
-                    elif out.get("result", {}).get("ok"):
-                        st.success("Transform complete!")
-                    else:
-                        st.error(f"Transform error: {out}")
-                import time as _time
-                _time.sleep(1)
-                st.rerun()
-            if settings.enable_publish and v.duration_sec and v.duration_sec > 60:
-                if st.button("✂️ Generate Shorts clips", key=f"{prefix}_chop_{v.id}"):
-                    with st.spinner(f"Analyzing {v.duration_sec}s video and chopping into Shorts…"):
-                        chop_out = _api("POST", f"/videos/{v.id}/chop")
-                    if chop_out:
-                        st.json(chop_out)
-                        st.rerun()
-
-        elif v.status == VideoStatus.TRANSFORMED:
-            st.success("✅ Ready to upload — 9:16 Short")
+                    r=db.get(Video,v.id); r.status=VideoStatus.REJECTED; r.curated_at=datetime.now(timezone.utc)
+                st.toast("Rejected", icon="🗑️"); _cached_stats.clear(); time.sleep(0.15); st.rerun()
+        elif v.status==VideoStatus.APPROVED:
+            if st.button("🎨 Transform", key=f"{prefix}_t_{v.id}", type="primary", width="stretch"):
+                with st.spinner("Transforming…"):
+                    out=_api("POST",f"/videos/{v.id}/transform", json={})
+                st.toast("Done" if out and out.get("result",{}).get("ok") else "Queued", icon="✅"); _cached_stats.clear(); time.sleep(0.6); st.rerun()
+        elif v.status==VideoStatus.TRANSFORMED:
+            st.success("✅ Ready 9:16", icon="✅")
             if v.transformed_path and os.path.exists(v.transformed_path):
-                try:
+                with st.expander("▶ Ready", expanded=False):
                     st.video(v.transformed_path)
-                except Exception:
-                    pass
-                st.caption(f"`{v.transformed_path}`")
                 try:
-                    with open(v.transformed_path, "rb") as fh:
-                        st.download_button(
-                            "⬇️ Download 9:16 Short",
-                            data=fh.read(),
-                            file_name=f"{v.id}.mp4",
-                            mime="video/mp4",
-                            key=f"{prefix}_dl_{v.id}",
-                        )
-                except Exception as e:
-                    st.error(f"Download failed: {e}")
-                # API download link as fallback
-                st.caption(f"API: `GET /videos/{v.id}/download`")
-            else:
-                st.warning("Transformed file not on disk")
-
-        elif v.status == VideoStatus.PUBLISHED:
-            st.success(f"Published: {v.youtube_video_id}")
+                    with open(v.transformed_path,"rb") as fh:
+                        st.download_button("⬇️ Download", fh.read(), file_name=f"{v.id}.mp4", mime="video/mp4", key=f"{prefix}_dl_{v.id}", width="stretch", type="primary")
+                except: pass
+                if settings.enable_publish and st.button("📤 Publish", key=f"{prefix}_p_{v.id}", width="stretch"):
+                    with st.spinner("Publishing…"):
+                        out=_api("POST",f"/videos/{v.id}/publish", json={})
+                    st.toast("Published!" if out and (out.get("ok") or out.get("result",{}).get("ok")) else "Failed", icon="🚀" if out and out.get("ok") else "❌"); _cached_stats.clear(); time.sleep(0.6); st.rerun()
+        elif v.status==VideoStatus.PUBLISHED:
+            st.success(f"🚀 {v.youtube_video_id}", icon="✅")
             if v.youtube_video_id and not v.youtube_video_id.startswith("MOCK_"):
-                st.markdown(f"[Watch on YouTube](https://youtube.com/watch?v={v.youtube_video_id})")
+                st.link_button("▶ YouTube", f"https://youtube.com/watch?v={v.youtube_video_id}", width="stretch")
+        elif v.status==VideoStatus.FAILED:
+            st.error(v.error or "Failed", icon="❌")
+            if st.button("↻ Retry", key=f"{prefix}_rt_{v.id}", width="stretch"):
+                _api("POST",f"/videos/{v.id}/transform", json={}); st.toast("Retrying", icon="🔄"); time.sleep(0.6); st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
 
-        elif v.status == VideoStatus.FAILED:
-            st.error(v.error or "Failed")
-            if st.button("Retry transform", key=f"{prefix}_retry_{v.id}"):
-                with st.spinner("Retrying transform…"):
-                    out = _api("POST", f"/videos/{v.id}/transform", json={})
-                if out:
-                    if out.get("queued"):
-                        st.success(f"Transform queued! Task ID: {out.get('task_id', 'N/A')}")
-                    elif out.get("result", {}).get("ok"):
-                        st.success("Transform complete!")
-                    else:
-                        st.error(f"Transform failed: {out}")
-                import time as _time_retry
-                _time_retry.sleep(1)
-                st.rerun()
+@st.fragment(run_every=8)
+def stats_frag():
+    s=_cached_stats()
+    c1,c2,c3,c4,c5,c6=st.columns(6)
+    c1.metric("Total", s["total"])
+    c2.metric("Pending", s["pending"], delta=f"{s['pending']}/20" if s["pending"] else None, delta_color="off")
+    c3.metric("Approved", s["approved"])
+    c4.metric("Ready", s["transformed"])
+    c5.metric("Published", s["published"], delta="live" if s["published"] else None)
+    c6.metric("Creators", s["creators"])
+    # progress to 20
+    if s["pending"]<20:
+        st.progress(s["pending"]/20, text=f"{s['pending']}/20 pending — scraper fills to 20")
+    return s
 
-    st.divider()
-
-
-# ============ Main ============
 def main():
-    _ensure_db()
-    sidebar()
+    sidebar_frag()
+    st.markdown('<div style="display:flex; align-items:center; gap:10px; margin:6px 0;"><span class="pulse"></span><span style="color:#9ca3af; font-size:11px; font-weight:700; letter-spacing:0.1em; text-transform:uppercase;">Operative • Live • 8/day ±45m</span><span style="margin-left:auto; color:#6b7280; font-size:11px;">Ctrl+K to search</span></div>', unsafe_allow_html=True)
+    st.title("Doomscroller")
+    st.caption(f"Snapchat → **{'Auto' if settings.auto_approve else 'Manual'}** → 1080x1920 • **{settings.uploads_per_day}/day** every {settings.upload_interval_hours}h")
+    if "video_search" not in st.session_state: st.session_state["video_search"]=""
+    if "selected" not in st.session_state: st.session_state["selected"]=set()
+    top1,top2,top3=st.columns([3,1,1])
+    with top1:
+        search=st.text_input("Search", value=st.session_state["video_search"], placeholder="🔍 Search title, author, id — Ctrl+K", label_visibility="collapsed")
+        if search!=st.session_state["video_search"]:
+            st.session_state["video_search"]=search
+            st.session_state["pending_page"]=0
+    with top2:
+        sort_by=st.selectbox("Sort", ["🔥 Velocity","❤️ Engagement","🕒 Recent"], index=0, label_visibility="collapsed")
+    with top3:
+        density=st.segmented_control("View", ["Comfort","Compact"], default="Comfort", label_visibility="collapsed")
+    sort_map={"🔥 Velocity":(Video.velocity_score,True),"❤️ Engagement":(Video.engagement_score,True),"🕒 Recent":(Video.scraped_at,True)}
+    sort_col, sort_desc = sort_map[sort_by]
 
-    st.title("🎬 Doomscroller — Snapchat MVP")
-    if settings.enable_publish:
-        st.caption("Semi-automated YouTube Shorts factory · approve → autonomous publish")
-    else:
-        st.caption("Snapchat MVP · scrape Spotlight → approve → download 9:16 Short (blur only if not already 9:16)")
+    s=stats_frag()
+    # bulk bar
+    sel_count=len(st.session_state.get("selected",set()))
+    if sel_count>0:
+        with st.container(border=True):
+            b1,b2,b3,b4=st.columns([1,1,1,2])
+            b1.metric("Selected", sel_count)
+            if b2.button(f"✅ Approve {sel_count}", type="primary", width="stretch"):
+                with session_scope() as db:
+                    for vid in list(st.session_state["selected"]):
+                        r=db.get(Video,vid)
+                        if r and r.status==VideoStatus.PENDING:
+                            r.status=VideoStatus.APPROVED; r.curated_at=datetime.now(timezone.utc)
+                st.toast(f"Approved {sel_count}", icon="✅"); st.session_state["selected"]=set(); _cached_stats.clear(); time.sleep(0.3); st.rerun()
+            if b3.button(f"✕ Reject {sel_count}", width="stretch"):
+                with session_scope() as db:
+                    for vid in list(st.session_state["selected"]):
+                        r=db.get(Video,vid)
+                        if r and r.status==VideoStatus.PENDING:
+                            r.status=VideoStatus.REJECTED; r.curated_at=datetime.now(timezone.utc)
+                st.toast(f"Rejected {sel_count}", icon="🗑️"); st.session_state["selected"]=set(); _cached_stats.clear(); time.sleep(0.3); st.rerun()
+            if b4.button("Clear selection", width="stretch"):
+                st.session_state["selected"]=set(); st.rerun()
 
-    # Top stats
-    with session_scope() as db:
-        total = db.scalar(select(func.count(Video.id))) or 0
-        pending = db.scalar(select(func.count(Video.id)).where(Video.status == VideoStatus.PENDING)) or 0
-        approved = db.scalar(select(func.count(Video.id)).where(Video.status == VideoStatus.APPROVED)) or 0
-        transformed = db.scalar(select(func.count(Video.id)).where(Video.status == VideoStatus.TRANSFORMED)) or 0
-        published = db.scalar(select(func.count(Video.id)).where(Video.status == VideoStatus.PUBLISHED)) or 0
-        creators = db.scalar(select(func.count(Creator.id))) or 0
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
-    c1.metric("Total", total)
-    c2.metric("Pending", pending)
-    c3.metric("Approved", approved)
-    c4.metric("Transformed", transformed)
-    c5.metric("Published", published)
-    c6.metric("Creators", creators)
+    if st.button("🔄 Refresh", help="Clear cache"):
+        _cached_stats.clear(); st.rerun()
 
-    if settings.enable_publish:
-        tabs = st.tabs(["📥 Pending", "✅ Approved", "📺 Ready to publish", "🚀 Pipeline", "✂️ Clips", "✅ Published", "👥 Creators", "🗂 All"])
-    else:
-        tabs = st.tabs(["📥 Pending", "✅ Approved", "⬇️ Ready to Upload", "🚀 Pipeline", "👥 Creators", "🗂 All"])
-
+    tabs=st.tabs(["📥 Pending","✅ Approved","⬇️ Ready","🚀 Pipeline","✅ Published","👥 Creators","🗂 All"])
     with tabs[0]:
-        st.subheader("Pending curation — your only job: approve or reject")
+        page=st.session_state.get("pending_page",0)
+        per_page=6 if density=="Compact" else 8
+        q=st.session_state["video_search"].strip().lower()
         with session_scope() as db:
-            rows = db.execute(
-                select(Video).where(Video.status == VideoStatus.PENDING)
-                .order_by(desc(Video.velocity_score), desc(Video.engagement_score))
-                .limit(50)
-            ).scalars().all()
-        if not rows:
-            st.info("No pending videos. The scraper will fetch more on its schedule, or click 'Scrape now' in the sidebar.")
-        for v in rows:
-            render_video_card(v, prefix="pending")
-
+            base=select(Video).where(Video.status==VideoStatus.PENDING)
+            if q:
+                base=base.where(or_(func.lower(Video.title).like(f"%{q}%"), func.lower(Video.author).like(f"%{q}%"), func.lower(Video.source_id).like(f"%{q}%")))
+            total=db.scalar(select(func.count()).select_from(base.subquery())) or 0
+            order=desc(sort_col) if sort_desc else sort_col
+            rows=db.execute(base.order_by(order).offset(page*per_page).limit(per_page)).scalars().all()
+        if total==0:
+            st.info("No pending. Scraper auto-fills to 20 every 6h — or hit Scrape.")
+            if st.button("🧹 Scrape now (fill to 20)", type="primary"):
+                with st.spinner("Scraping 17s parallel..."):
+                    out=_api("POST","/scrape", json={})
+                    if out: st.toast(f"+{out.get('result',{}).get('created',0)}", icon="✅")
+                _cached_stats.clear(); time.sleep(0.5); st.rerun()
+        else:
+            st.caption(f"**{total}** pending • Page {page+1}/{(total+per_page-1)//per_page} • {per_page}/page • Sorted {sort_by} • <span class='kbd'>J/K</span> navigate • <span class='kbd'>A</span> approve • <span class='kbd'>R</span> reject", unsafe_allow_html=True)
+            p1,p2,p3=st.columns([1,1,2])
+            if p1.button("◀ Prev", disabled=page==0, key="pprev", width="stretch"):
+                st.session_state["pending_page"]=max(0,page-1); st.rerun()
+            if p2.button("Next ▶", disabled=(page+1)*per_page>=total, key="pnext", width="stretch"):
+                st.session_state["pending_page"]=page+1; st.rerun()
+            if p3.button(f"✅ Approve all {len(rows)} on page", width="stretch"):
+                with session_scope() as db:
+                    for v in rows:
+                        r=db.get(Video,v.id); r.status=VideoStatus.APPROVED; r.curated_at=datetime.now(timezone.utc); r.meta={**(r.meta or {}),"bulk":True}
+                st.toast(f"Approved {len(rows)}", icon="✅"); _cached_stats.clear(); time.sleep(0.3); st.rerun()
+            for v in rows:
+                video_card_frag(v, "pending")
     with tabs[1]:
-        st.subheader("Approved — queued for transformation")
         with session_scope() as db:
-            rows = db.execute(
-                select(Video).where(Video.status == VideoStatus.APPROVED)
-                .order_by(desc(Video.curated_at)).limit(50)
-            ).scalars().all()
-        if not rows:
-            st.info("Nothing approved yet. Approve videos from the Pending tab.")
-        for v in rows:
-            render_video_card(v, prefix="approved")
-
+            rows=db.execute(select(Video).where(Video.status==VideoStatus.APPROVED).order_by(desc(Video.curated_at)).limit(12)).scalars().all()
+        if not rows: st.info("Nothing approved.")
+        else:
+            for v in rows: video_card_frag(v, "approved")
     with tabs[2]:
-        st.subheader("⬇️ Ready to Upload — 9:16 Shorts (download)")
-        st.caption("Approved → transformed. Blur was applied only if source wasn't already 9:16. Download is enough.")
         with session_scope() as db:
-            rows = db.execute(
-                select(Video).where(Video.status == VideoStatus.TRANSFORMED)
-                .order_by(desc(Video.transformed_at)).limit(50)
-            ).scalars().all()
-        if not rows:
-            st.info("No ready videos. Approve then transform; auto-transform runs every hour.")
-        for v in rows:
-            render_video_card(v, prefix="ready")
-
+            rows=db.execute(select(Video).where(Video.status==VideoStatus.TRANSFORMED).order_by(desc(Video.transformed_at)).limit(12)).scalars().all()
+        if not rows: st.info("No ready. Transform hourly.")
+        else:
+            for v in rows: video_card_frag(v, "ready")
     with tabs[3]:
-        st.subheader("🚀 Pipeline — ready to upload")
         with session_scope() as db:
-            pending_count = db.scalar(
-                select(func.count(Video.id)).where(Video.status == VideoStatus.PENDING)
-            ) or 0
-            approved_count = db.scalar(
-                select(func.count(Video.id)).where(Video.status == VideoStatus.APPROVED)
-            ) or 0
-            transforming_count = db.scalar(
-                select(func.count(Video.id)).where(Video.status == VideoStatus.TRANSFORMING)
-            ) or 0
-            transformed_count = db.scalar(
-                select(func.count(Video.id)).where(Video.status == VideoStatus.TRANSFORMED)
-            ) or 0
-            failed_pipeline = db.scalar(
-                select(func.count(Video.id)).where(Video.status == VideoStatus.FAILED)
-            ) or 0
-        ready = approved_count + transforming_count + transformed_count
-        c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("Pending", pending_count)
-        c2.metric("Approved", approved_count)
-        c3.metric("Transforming", transforming_count)
-        c4.metric("Transformed", transformed_count)
-        c5.metric("Ready to upload", ready)
-        if failed_pipeline:
-            st.warning(f"{failed_pipeline} failed — retry or discard")
-        # Show all pipeline items (pending through transformed)
+            pc=db.scalar(select(func.count(Video.id)).where(Video.status==VideoStatus.PENDING)) or 0
+            ac=db.scalar(select(func.count(Video.id)).where(Video.status==VideoStatus.APPROVED)) or 0
+            tc=db.scalar(select(func.count(Video.id)).where(Video.status==VideoStatus.TRANSFORMING)) or 0
+            tr=db.scalar(select(func.count(Video.id)).where(Video.status==VideoStatus.TRANSFORMED)) or 0
+            fc=db.scalar(select(func.count(Video.id)).where(Video.status==VideoStatus.FAILED)) or 0
+        c1,c2,c3,c4,c5=st.columns(5)
+        c1.metric("Pending",pc); c2.metric("Approved",ac); c3.metric("Transforming",tc); c4.metric("Ready",tr); c5.metric("Total",pc+ac+tc+tr+fc)
+        if fc: st.warning(f"{fc} failed")
         with session_scope() as db:
-            rows = db.execute(
-                select(Video)
-                .where(Video.status.in_([
-                    VideoStatus.PENDING,
-                    VideoStatus.APPROVED,
-                    VideoStatus.TRANSFORMING,
-                    VideoStatus.TRANSFORMED,
-                    VideoStatus.FAILED,
-                ]))
-                .order_by(desc(Video.velocity_score), desc(Video.engagement_score))
-                .limit(100)
-            ).scalars().all()
-        if not rows:
-            st.info("Pipeline is empty. Scrape some videos first!")
-        for v in rows:
-            render_video_card(v, prefix="pipeline")
+            rows=db.execute(select(Video).where(Video.status.in_([VideoStatus.PENDING,VideoStatus.APPROVED,VideoStatus.TRANSFORMING,VideoStatus.TRANSFORMED,VideoStatus.FAILED])).order_by(desc(Video.velocity_score)).limit(16)).scalars().all()
+        for v in rows: video_card_frag(v, "pipeline")
+    with tabs[4]:
+        with session_scope() as db:
+            rows=db.execute(select(Video).where(Video.status==VideoStatus.PUBLISHED).order_by(desc(Video.published_at)).limit(12)).scalars().all()
+        if not rows: st.info("Nothing published yet.")
+        else:
+            for v in rows: video_card_frag(v, "published")
+    with tabs[5]:
+        with session_scope() as db:
+            creators=db.execute(select(Creator).order_by(desc(Creator.score)).limit(30)).scalars().all()
+        if creators:
+            st.dataframe([{"handle":c.handle,"platform":c.platform,"seed":"✅" if c.is_seed else "🔍","score":round(c.score,3),"videos":c.videos_scraped,"from":c.discovered_from or "-","last":c.last_scraped_at.strftime("%Y-%m-%d %H:%M") if c.last_scraped_at else "-"} for c in creators], width="stretch", height=360)
+        else: st.info("No creators.")
+    with tabs[6]:
+        q=st.session_state["video_search"].strip().lower()
+        with session_scope() as db:
+            base=select(Video)
+            if q: base=base.where(or_(func.lower(Video.title).like(f"%{q}%"), func.lower(Video.author).like(f"%{q}%")))
+            rows=db.execute(base.order_by(desc(Video.scraped_at)).limit(16)).scalars().all()
+        for v in rows: video_card_frag(v, "all")
 
-    if settings.enable_publish:
-        with tabs[4]:
-            st.subheader("✂️ Auto-generated Shorts clips from long videos")
-            st.caption("These were chopped automatically from long-form videos using hot-section heuristics.")
-            with session_scope() as db:
-                rows = db.execute(
-                    select(Video)
-                    .where(
-                        Video.meta.isnot(None),
-                        Video.meta != "",
-                    )
-                    .order_by(desc(Video.scraped_at))
-                    .limit(100)
-                ).scalars().all()
-            clips = []
-            for v in rows:
-                try:
-                    meta = json.loads(v.meta or "{}")
-                    if "parent_video_id" in meta:
-                        clips.append((v, meta))
-                except Exception:
-                    pass
-            if not clips:
-                st.info("No clips yet. Approve a long video and click ✂️ Generate Shorts clips to create them.")
-            for v, meta in clips:
-                st.markdown(f"**{v.title}**  ·  {v.duration_sec}s  ·  score: {meta.get('clip_score', 0):.2f}")
-                st.caption(
-                    f"Parent: {meta.get('parent_video_id', '')[:12]}… · "
-                    f"segment: {meta.get('clip_start', 0):.0f}s → {meta.get('clip_end', 0):.0f}s  ·  "
-                    f"{meta.get('clip_reason', '')}"
-                )
-                render_video_card(v, prefix="clips_item_" + v.id[:8])
-                st.divider()
-
-        with tabs[5]:
-            st.subheader("Published to YouTube")
-            with session_scope() as db:
-                rows = db.execute(
-                    select(Video).where(Video.status == VideoStatus.PUBLISHED)
-                    .order_by(desc(Video.published_at)).limit(50)
-                ).scalars().all()
-            if not rows:
-                st.info("Nothing published yet.")
-            for v in rows:
-                render_video_card(v, prefix="published")
-
-        with tabs[6]:
-            st.subheader("Discovered creators")
-            with session_scope() as db:
-                creators = db.execute(
-                    select(Creator).order_by(desc(Creator.score), desc(Creator.is_seed)).limit(100)
-                ).scalars().all()
-            if creators:
-                data = [
-                    {
-                        "handle": c.handle, "platform": c.platform,
-                        "seed": "✅" if c.is_seed else "🔍",
-                        "score": round(c.score, 3),
-                        "videos_scraped": c.videos_scraped,
-                        "discovered_from": c.discovered_from or "-",
-                        "last_scraped": c.last_scraped_at.strftime("%Y-%m-%d %H:%M") if c.last_scraped_at else "-",
-                    }
-                    for c in creators
-                ]
-                st.dataframe(data, width="stretch")
-            else:
-                st.info("No creators yet. Add seeds to TARGET_HANDLES in .env, or run discovery.")
-
-        with tabs[7]:
-            st.subheader("All videos")
-            with session_scope() as db:
-                rows = db.execute(
-                    select(Video).order_by(desc(Video.scraped_at)).limit(100)
-                ).scalars().all()
-            for v in rows:
-                render_video_card(v, prefix="all")
-    else:
-        with tabs[4]:
-            st.subheader("👥 Creators (manual discovery)")
-            st.caption("Auto-discovery is off in MVP. Click 🔍 Discover creators in sidebar to populate.")
-            with session_scope() as db:
-                creators = db.execute(
-                    select(Creator).order_by(desc(Creator.score), desc(Creator.is_seed)).limit(100)
-                ).scalars().all()
-            if creators:
-                data = [
-                    {
-                        "handle": c.handle, "platform": c.platform,
-                        "seed": "✅" if c.is_seed else "🔍",
-                        "score": round(c.score, 3),
-                        "videos_scraped": c.videos_scraped,
-                        "discovered_from": c.discovered_from or "-",
-                        "last_scraped": c.last_scraped_at.strftime("%Y-%m-%d %H:%M") if c.last_scraped_at else "-",
-                    }
-                    for c in creators
-                ]
-                st.dataframe(data, width="stretch")
-            else:
-                st.info("No creators yet. Add Snapchat handles to TARGET_HANDLES or run discovery.")
-
-        with tabs[5]:
-            st.subheader("🗂 All videos")
-            with session_scope() as db:
-                rows = db.execute(
-                    select(Video).order_by(desc(Video.scraped_at)).limit(100)
-                ).scalars().all()
-            for v in rows:
-                render_video_card(v, prefix="all")
-
-
-if __name__ == "__main__":
+if __name__=="__main__":
     main()

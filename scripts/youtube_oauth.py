@@ -25,7 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.config import settings
 
-CLIENT_SECRETS_PATH = "secrets/youtube_client_secrets.json"
+CLIENT_SECRETS_PATH = "secrets/client_secret.json"
 TOKEN_PATH = "secrets/youtube_token.json"
 
 
@@ -45,24 +45,30 @@ def main():
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--force", action="store_true", help="Re-authorize even if a token exists")
+    ap.add_argument("--secrets", default=CLIENT_SECRETS_PATH, help="Path to client_secret.json")
+    ap.add_argument("--token", default=TOKEN_PATH, help="Path to save token")
     args = ap.parse_args()
+    secrets_path = args.secrets
+    token_path = args.token
 
-    if os.path.exists(TOKEN_PATH) and not args.force:
-        print(f"Token already exists at {TOKEN_PATH}. Use --force to re-authorize.")
+    if os.path.exists(token_path) and not args.force:
+        print(f"Token already exists at {token_path}. Use --force to re-authorize.")
         sys.exit(0)
 
     from google_auth_oauthlib.flow import InstalledAppFlow
 
-    scopes = ["https://www.googleapis.com/auth/youtube.upload"]
-    flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRETS_PATH, scopes)
+    scopes = ["https://www.googleapis.com/auth/youtube.upload", "https://www.googleapis.com/auth/youtube.readonly"]
+    flow = InstalledAppFlow.from_client_secrets_file(secrets_path, scopes)
     print("Opening browser for Google OAuth…")
-    creds = flow.run_local_server(port=0)
+    print(f"Using secrets: {secrets_path}")
+    creds = flow.run_local_server(port=0, open_browser=True)
 
-    os.makedirs(os.path.dirname(TOKEN_PATH), exist_ok=True)
-    with open(TOKEN_PATH, "w") as fh:
+    os.makedirs(os.path.dirname(token_path) or ".", exist_ok=True)
+    with open(token_path, "w") as fh:
         fh.write(creds.to_json())
-    print(f"Token saved to {TOKEN_PATH}")
+    print(f"Token saved to {token_path}")
     print("YouTube publishing is ready. The scheduler will upload automatically.")
+    print(f"Set .env YOUTUBE_CLIENT_SECRETS={secrets_path} YOUTUBE_TOKEN_PATH={token_path}")
 
 
 if __name__ == "__main__":

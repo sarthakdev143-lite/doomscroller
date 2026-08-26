@@ -147,7 +147,7 @@ def download_video(video_id: str, db: Session = Depends(get_db)):
 def queue_publish(video_id: str, body: PublishBody,
                   db: Session = Depends(get_db)) -> dict:
     if not settings.enable_publish:
-        raise HTTPException(status_code=404, detail="publishing disabled in MVP")
+        raise HTTPException(status_code=404, detail="publishing disabled (enable_publish=false)")
     v = db.get(Video, video_id)
     if v is None:
         raise HTTPException(status_code=404, detail="not found")
@@ -221,10 +221,13 @@ def list_jobs() -> dict:
 @app.post("/scheduler/run/{job_id}", response_model=dict)
 def run_job_now(job_id: str) -> dict:
     """Trigger a scheduler job to run immediately."""
-    if job_id == "publish" and not settings.enable_publish:
-        raise HTTPException(status_code=404, detail="publishing disabled in MVP")
-    if job_id == "chop_long" and not settings.enable_publish:
-        raise HTTPException(status_code=404, detail="chop disabled in MVP")
+    fn_map_extra = {
+        "auto_approve": scheduler.auto_approve_job,
+        "analytics_pull": scheduler.analytics_pull_job,
+    }
+    if job_id in fn_map_extra:
+        fn = fn_map_extra[job_id]
+        return {"job": job_id, "result": fn()}
     fn_map = {
         "scrape": scheduler.scrape_job,
         "discovery": scheduler.discovery_job,
@@ -232,6 +235,8 @@ def run_job_now(job_id: str) -> dict:
         "cleanup": scheduler.cleanup_job,
         "chop_long": getattr(scheduler, "chop_long_job", scheduler.cleanup_job),
         "recompute": scheduler.recompute_scores_job,
+        "auto_approve": scheduler.auto_approve_job,
+        "analytics_pull": scheduler.analytics_pull_job,
     }
     fn = fn_map.get(job_id)
     if fn is None:
@@ -316,8 +321,6 @@ def list_creators(limit: int = 50, db: Session = Depends(get_db)) -> list:
 @app.post("/videos/{video_id}/chop", response_model=dict)
 def chop_long_to_shorts(video_id: str, db: Session = Depends(get_db)) -> dict:
     """Smart-split one long video into multiple Shorts using hot-clip heuristics."""
-    if not settings.enable_publish:
-        raise HTTPException(status_code=404, detail="chop disabled in MVP")
     v = db.get(Video, video_id)
     if v is None:
         raise HTTPException(status_code=404, detail="not found")
@@ -339,7 +342,76 @@ def stats(db: Session = Depends(get_db)) -> dict:
         "total_creators": total_creators,
         "use_mock": settings.use_mock,
         "uploads_per_day": settings.uploads_per_day,
+        "upload_interval_hours": settings.upload_interval_hours,
+        "upload_jitter_minutes": settings.upload_jitter_minutes,
         "auto_publish": settings.auto_publish,
         "enable_publish": settings.enable_publish,
+        "auto_approve": settings.auto_approve,
         "enabled_platforms": settings.enabled_platforms_list,
     }
+
+
+@app.post("/config/publish", response_model=dict)
+def update_publish_config(body: dict, db: Session = Depends(get_db)) -> dict:
+    try:
+        if "uploads_per_day" in body:
+            v = int(body["uploads_per_day"])
+            if not 1 <= v <= 24:
+                raise HTTPException(status_code=400, detail="uploads_per_day must be 1..24")
+            settings.uploads_per_day = v
+            # keep interval consistent
+            settings.upload_interval_hours = max(1, round(24 / v))
+            try:
+                from pathlib import Path as _P
+                env_path = _P(settings.db_url) if False else None
+            except Exception:
+                pass
+            # persist to .env
+            try:
+                from pathlib import Path as __P
+                p = __P(__file__).resolve().parent.parent / ".env"
+                txt = p.read_text(encoding="utf-8") if p.exists() else ""
+                import re as _re
+                txt = _re.sub(r"UPLOADS_PER_DAY=\d+", f"UPLOADS_PER_DAY={v}", txt)
+                txt = _re.sub(r"UPLOAD_INTERVAL_HOURS=\d+", f"UPLOAD_INTERVAL_HOURS={settings.upload_interval_hours}", txt)
+                p.write_text(txt, encoding="utf-8")
+            except Exception:
+                pass
+            scheduler.reschedule_publish()
+        if "upload_jitter_minutes" in body:
+            j = int(body["upload_jitter_minutes"])
+            if not 0 <= j <= 120:
+                raise HTTPException(status_code=400, detail="jitter must be 0..120")
+            settings.upload_jitter_minutes = j
+            try:
+                from pathlib import Path as __P2
+                p2 = __P2(__file__).resolve().parent.parent / ".env"
+                txt2 = p2.read_text(encoding="utf-8") if p2.exists() else ""
+                import re as _re2
+                if "UPLOAD_JITTER_MINUTES" in txt2:
+                    txt2 = _re2.sub(r"UPLOAD_JITTER_MINUTES=\d+", f"UPLOAD_JITTER_MINUTES={j}", txt2)
+                else:
+                    txt2 += f"\nUPLOAD_JITTER_MINUTES={j}\n"
+                p2.write_text(txt2, encoding="utf-8")
+            except Exception:
+                pass
+        if "auto_approve" in body:
+            settings.auto_approve = bool(body["auto_approve"])
+            try:
+                from pathlib import Path as __P3
+                p3 = __P3(__file__).resolve().parent.parent / ".env"
+                txt3 = p3.read_text(encoding="utf-8") if p3.exists() else ""
+                import re as _re3
+                val = "true" if settings.auto_approve else "false"
+                if "AUTO_APPROVE" in txt3:
+                    txt3 = _re3.sub(r"AUTO_APPROVE=\w+", f"AUTO_APPROVE={val}", txt3)
+                else:
+                    txt3 += f"\nAUTO_APPROVE={val}\n"
+                p3.write_text(txt3, encoding="utf-8")
+            except Exception:
+                pass
+        return {"ok": True, "uploads_per_day": settings.uploads_per_day, "upload_interval_hours": settings.upload_interval_hours, "upload_jitter_minutes": settings.upload_jitter_minutes, "auto_approve": settings.auto_approve}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

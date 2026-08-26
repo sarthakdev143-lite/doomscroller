@@ -17,7 +17,7 @@ playwright==1.62.0
 
 # Video processing (ffmpeg must be on system PATH)
 moviepy==2.1.2
-pillow==11.2.1
+pillow==10.4.0
 
 # Language detection (for source-language preservation)
 langdetect==1.0.9

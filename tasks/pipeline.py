@@ -195,27 +195,38 @@ def scrape_task(handles: list[str] | None = None,
     elif other_handles and not snap_only:
         items.extend(default_scraper.scrape_handles(other_handles, max_per_run, download=False))
 
-    # 2+3 combined parallel: handles + Spotlight in ONE batch (crazy fast)
+    # 2+3 combined: handles + Spotlight (mock or real)
     if snap_only and snap_scraper is not None and (snap_handles or hashtags):
-        h_urls = [(snap_scraper._profile_url(snap_scraper._normalize_handle(h) or h), "snapchat", snap_scraper._normalize_handle(h) or h) for h in (snap_handles or []) if snap_scraper._normalize_handle(h)]
-        s_urls = []
-        if hashtags:
-            uniq = list({t.lstrip("#") for t in hashtags})
-            if uniq:
-                s_urls = [(snap_scraper._SPOTLIGHT_URL if hasattr(snap_scraper, '_SPOTLIGHT_URL') else "https://www.snapchat.com/spotlight", "snapchat", f"spotlight_{uniq[0]}")]
-                # keep tag meta for later
-                s_tag = uniq[0]
-            else:
-                s_tag = "spotlight"
-        combined = h_urls + s_urls
-        # parallel batch: each URL scraped in its own browser (4 workers)
-        items = snap_scraper._scrape_urls_batch_parallel(combined, max_results=max_per_run)
-        # tag spotlight items
-        if hashtags and s_urls:
-            uniq = list({t.lstrip("#") for t in hashtags})
-            for it in items:
-                if it.source_id.startswith("spotlight_"):
-                    it.meta = {**(it.meta or {}), "hashtag": uniq[0], "hashtags": uniq}
+        if settings.use_mock:
+            # Mock mode: use MockScraper for instant fake videos (no browser)
+            mock = get_scraper()
+            if snap_handles:
+                items.extend(mock.scrape_handles(snap_handles, max_per_run, download=True))
+            if hashtags:
+                # mock hashtags -> single spotlight page equivalent
+                items.extend(mock.scrape_hashtags(hashtags, max_per_run, download=True))
+            items = mock._dedup(items)[:max_per_run]
+        else:
+            h_urls = [(snap_scraper._profile_url(snap_scraper._normalize_handle(h) or h), "snapchat", snap_scraper._normalize_handle(h) or h) for h in (snap_handles or []) if snap_scraper._normalize_handle(h)]
+            s_urls = []
+            if hashtags:
+                uniq = list({t.lstrip("#") for t in hashtags})
+                if uniq:
+                    s_urls = [(snap_scraper._SPOTLIGHT_URL if hasattr(snap_scraper, '_SPOTLIGHT_URL') else "https://www.snapchat.com/spotlight", "snapchat", f"spotlight_{uniq[0]}")]
+                    s_tag = uniq[0]
+                else:
+                    s_tag = "spotlight"
+            combined = h_urls + s_urls
+            try:
+                items = snap_scraper._scrape_urls_batch_parallel(combined, max_results=max_per_run)
+            except Exception as exc:
+                log.warning("parallel scrape failed, falling back to sequential: %s", exc)
+                items = snap_scraper._scrape_urls_batch(combined, max_results=max_per_run)
+            if hashtags and s_urls:
+                uniq = list({t.lstrip("#") for t in hashtags})
+                for it in items:
+                    if it.source_id.startswith("spotlight_"):
+                        it.meta = {**(it.meta or {}), "hashtag": uniq[0], "hashtags": uniq}
     else:
         if snap_handles and snap_scraper is not None:
             denom = max(len(snap_handles) + (len(other_handles) if not snap_only else 0), 1)
@@ -448,6 +459,12 @@ def _is_quality_short(item: ScrapedItem) -> bool:
     """Hard gate: only allow actual watchable Shorts to enter the DB."""
     if not item.local_path or not os.path.exists(item.local_path):
         return False
+    if settings.use_mock:
+        if not (3 <= item.duration_sec <= 59):
+            return False
+        if os.path.getsize(item.local_path) < 1000:
+            return False
+        return True
     q = _probe_quality(item.local_path, source=item.source)
     if not q["valid"]:
         return False

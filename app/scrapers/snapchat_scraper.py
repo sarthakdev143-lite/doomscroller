@@ -238,10 +238,14 @@ class SnapchatScraper(Scraper):
     # Public scraper interface
     # ------------------------------------------------------------------
     def _scrape_single(self, url: str, source: str, prefix: str, per: int) -> list[ScrapedItem]:
+        p = None
+        b = None
         ctx = None
         try:
-            browser = self._get_browser()
-            ctx = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36", viewport={"width":1280,"height":900}, locale="en-US")
+            from playwright.sync_api import sync_playwright as _sp
+            p = _sp().start()
+            b = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled","--no-sandbox","--disable-dev-shm-usage"])
+            ctx = b.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36", viewport={"width":1280,"height":900}, locale="en-US")
             ctx.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
             page = ctx.new_page()
             page.set_default_timeout(12_000)
@@ -254,11 +258,20 @@ class SnapchatScraper(Scraper):
             items = self._extract_video_urls_from_page(page, source, prefix)
             return items[:per]
         except Exception as exc:
-            log.error("Snapchat parallel scan failed for %r: %s", url, exc)
+            # greenlet / EPIPE errors are common in threaded playwright, log debug only
+            log.debug("Snapchat parallel scan failed for %r: %s", url, exc)
             return []
         finally:
             try:
                 if ctx: ctx.close()
+            except Exception:
+                pass
+            try:
+                if b: b.close()
+            except Exception:
+                pass
+            try:
+                if p: p.stop()
             except Exception:
                 pass
 
