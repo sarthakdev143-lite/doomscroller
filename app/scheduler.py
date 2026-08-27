@@ -22,7 +22,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import desc, func, select
 
-from .logging_config import log_job_execution
+from .logging_config import last_run_times, record_job_run
 from .config import settings
 from .db import session_scope, init_db
 from .models import Creator, Video, VideoStatus
@@ -33,22 +33,38 @@ log = logging.getLogger(__name__)
 _scheduler: BackgroundScheduler | None = None
 
 
-# ---------- Job wrappers ----------
+# ---------- Job instrumentation ----------
+def instrumented(job_id: str, fn: "callable"):
+    """Wrap a job so every run is timed, logged and recorded.
 
-_JOBS: dict[str, callable] = {}
+    The previous version of this built a ``_JOBS`` registry and a ``_run_job``
+    wrapper that ``_make_scheduler`` never used -- it registered the raw
+    functions instead. The wrapper was dead code, so no job history was ever
+    written. Anything scheduled must go through here.
+    """
+    import functools
+    import time
 
-def _register(job_id: str, fn: callable):
-    _JOBS[job_id] = fn
-    return fn
-
-
-def _run_job(job_id: str):
-    """Wrap a job to log its result."""
-    def wrapper():
-        log.info("job[%s] started", job_id)
-        result = _JOBS[job_id]()
-        log_job_execution(job_id, result)
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        started = time.monotonic()
+        log.info("job[%s] start", job_id)
+        try:
+            result = fn(*args, **kwargs)
+        except Exception as exc:
+            elapsed = time.monotonic() - started
+            log.exception("job[%s] crashed after %.1fs", job_id, elapsed)
+            record_job_run(job_id, None, duration_sec=elapsed, ok=False,
+                           error=str(exc))
+            return {"error": str(exc)}
+        elapsed = time.monotonic() - started
+        # A job that returns {"error": ...} failed without raising.
+        ok = not (isinstance(result, dict) and result.get("error"))
+        log.info("job[%s] done in %.1fs -> %s", job_id, elapsed, result)
+        record_job_run(job_id, result, duration_sec=elapsed, ok=ok,
+                       error=(result or {}).get("error") if isinstance(result, dict) else None)
         return result
+
     return wrapper
 
 
@@ -332,33 +348,150 @@ def publish_job() -> dict:
         return {"error": str(e)}
 
 
-def cleanup_job() -> dict:
-    """Delete source files older than SOURCE_VIDEO_MAX_AGE_DAYS."""
+# Files younger than this are never treated as orphans -- a download in flight
+# has no database row yet.
+_ORPHAN_GRACE = timedelta(hours=6)
+
+
+def _content_files() -> list[str]:
+    """Every media file under the content directory, including transforms."""
+    import glob
+
+    root = str(settings.content_path)
+    return [
+        path for pattern in ("*.mp4", "transformed/*.mp4")
+        for path in glob.glob(os.path.join(root, pattern))
+        # Leading underscore marks internal scaffolding such as the mock
+        # master clip, which has no database row by design.
+        if not os.path.basename(path).startswith("_")
+    ]
+
+
+def _remove(path: str) -> int:
+    """Delete a file, returning the bytes reclaimed (0 on failure)."""
     try:
-        max_age = settings.source_video_max_age_days
-        cutoff = datetime.now(timezone.utc) - timedelta(days=max_age)
-        deleted = 0
+        size = os.path.getsize(path)
+        os.remove(path)
+        return size
+    except OSError as exc:
+        log.warning("cleanup: could not delete %s: %s", path, exc)
+        return 0
+
+
+def cleanup_job(dry_run: bool = False) -> dict:
+    """Reclaim disk from finished videos and orphaned files.
+
+    Three distinct leaks, only the first of which the original handled:
+
+    1. Source files of PUBLISHED/REJECTED videos past the age limit.
+    2. Transformed outputs of PUBLISHED videos -- they were never deleted at
+       all, and they are the larger files.
+    3. Files on disk that no database row references. A download that failed
+       its quality gate, or a row deleted later, leaves bytes behind that a
+       row-driven cleanup can never see.
+    """
+    try:
+        def drop(path: str) -> int:
+            if dry_run:
+                try:
+                    return os.path.getsize(path)
+                except OSError:
+                    return 0
+            return _remove(path)
+
+        max_age_days = settings.source_video_max_age_days
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(days=max_age_days)
+        reclaimed = 0
+        removed_sources = removed_transforms = removed_orphans = 0
+        referenced: set[str] = set()
+
         with session_scope() as db:
-            rows = db.execute(
-                select(Video).where(
-                    Video.local_path.isnot(None),
-                    Video.scraped_at < cutoff,
-                    Video.status.in_([VideoStatus.PUBLISHED, VideoStatus.REJECTED]),
-                )
-            ).scalars().all()
-            for v in rows:
-                if v.local_path and os.path.exists(v.local_path):
-                    try:
-                        os.remove(v.local_path)
-                        v.local_path = None
-                        deleted += 1
-                    except OSError as e:
-                        log.warning("cleanup_job: delete failed %s: %s", v.local_path, e)
-        log.info("cleanup_job: deleted=%d", deleted)
-        return {"deleted": deleted}
-    except Exception as e:
-        log.exception("cleanup_job failure: %s", e)
-        return {"error": str(e)}
+            rows = db.execute(select(Video)).scalars().all()
+
+            for video in rows:
+                curated = video.published_at or video.curated_at or video.scraped_at
+                if curated is not None and curated.tzinfo is None:
+                    curated = curated.replace(tzinfo=timezone.utc)
+                expired = curated is not None and curated < cutoff
+                finished = video.status in (VideoStatus.PUBLISHED, VideoStatus.REJECTED)
+
+                if expired and finished and video.local_path:
+                    if os.path.exists(video.local_path):
+                        reclaimed += drop(video.local_path)
+                        removed_sources += 1
+                    if not dry_run:
+                        video.local_path = None
+
+                # A published video no longer needs its rendered output either.
+                if (expired and video.status == VideoStatus.PUBLISHED
+                        and video.transformed_path):
+                    if os.path.exists(video.transformed_path):
+                        reclaimed += drop(video.transformed_path)
+                        removed_transforms += 1
+                    if not dry_run:
+                        video.transformed_path = None
+
+                for path in (video.local_path, video.transformed_path):
+                    if path:
+                        referenced.add(os.path.normcase(os.path.abspath(path)))
+
+        # Orphans: on disk, referenced by nothing, old enough to be safe.
+        for path in _content_files():
+            key = os.path.normcase(os.path.abspath(path))
+            if key in referenced:
+                continue
+            try:
+                modified = datetime.fromtimestamp(os.path.getmtime(path), tz=timezone.utc)
+            except OSError:
+                continue
+            if now - modified < _ORPHAN_GRACE:
+                continue
+            reclaimed += drop(path)
+            removed_orphans += 1
+
+        result = {
+            "sources_deleted": removed_sources,
+            "transforms_deleted": removed_transforms,
+            "orphans_deleted": removed_orphans,
+            "mb_reclaimed": round(reclaimed / 1e6, 1),
+            "dry_run": dry_run,
+        }
+        log.info("cleanup_job: %s", result)
+        return result
+    except Exception as exc:
+        log.exception("cleanup_job failure: %s", exc)
+        return {"error": str(exc)}
+
+
+def storage_report() -> dict:
+    """Current disk usage under the content directory."""
+    referenced: set[str] = set()
+    with session_scope() as db:
+        for video in db.execute(select(Video)).scalars().all():
+            for path in (video.local_path, video.transformed_path):
+                if path:
+                    referenced.add(os.path.normcase(os.path.abspath(path)))
+
+    total = orphan_bytes = 0
+    files = orphans = 0
+    for path in _content_files():
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            continue
+        total += size
+        files += 1
+        if os.path.normcase(os.path.abspath(path)) not in referenced:
+            orphan_bytes += size
+            orphans += 1
+    return {
+        "files": files,
+        "total_mb": round(total / 1e6, 1),
+        "orphan_files": orphans,
+        "orphan_mb": round(orphan_bytes / 1e6, 1),
+        "content_dir": str(settings.content_path),
+    }
 
 
 def recompute_scores_job() -> dict:
@@ -390,8 +523,13 @@ JOB_FUNCTIONS: dict[str, "callable"] = {
 
 
 def run_job(job_id: str) -> dict:
-    """Run a registered job by id. Raises KeyError for an unknown id."""
-    return JOB_FUNCTIONS[job_id]()
+    """Run a registered job by id. Raises KeyError for an unknown id.
+
+    Manual runs are instrumented exactly like scheduled ones, so the history
+    shows everything that touched the pipeline, not just timer-driven work.
+    """
+    fn = JOB_FUNCTIONS[job_id]
+    return instrumented(job_id, fn)()
 
 
 # ---------- Scheduler lifecycle ----------
@@ -409,7 +547,7 @@ def reschedule_publish(sched: BackgroundScheduler | None = None) -> dict:
         else:
             # add if missing and publish enabled
             if settings.enable_publish:
-                target.add_job(publish_job, IntervalTrigger(hours=interval_h), id="publish", next_run_time=datetime.now(timezone.utc) + timedelta(minutes=5), max_instances=1, coalesce=True, replace_existing=True)
+                target.add_job(instrumented("publish", publish_job), IntervalTrigger(hours=interval_h), id="publish", next_run_time=datetime.now(timezone.utc) + timedelta(minutes=5), max_instances=1, coalesce=True, replace_existing=True)
                 return {"added": True, "interval_hours": interval_h}
         return {"skipped": "no publish job"}
     except Exception as e:
@@ -424,23 +562,78 @@ def _make_scheduler() -> BackgroundScheduler:
     sched = BackgroundScheduler(
         timezone="UTC",
         executors=executors,
-        job_defaults={"misfire_grace_time": 3600, "coalesce": True},
+        job_defaults={"misfire_grace_time": 6 * 3600, "coalesce": True},
     )
 
     now = datetime.now(timezone.utc)
 
-    sched.add_job(scrape_job, IntervalTrigger(hours=settings.scrape_interval_hours), id="scrape", next_run_time=now + timedelta(seconds=10), max_instances=1, coalesce=True, replace_existing=True)
+    sched.add_job(instrumented("scrape", scrape_job), IntervalTrigger(hours=settings.scrape_interval_hours), id="scrape", next_run_time=now + timedelta(seconds=10), max_instances=1, coalesce=True, replace_existing=True)
     if settings.auto_discovery:
-        sched.add_job(discovery_job, IntervalTrigger(hours=settings.discovery_interval_hours), id="discovery", next_run_time=now + timedelta(minutes=2), max_instances=1, coalesce=True, replace_existing=True)
-    sched.add_job(auto_approve_job, IntervalTrigger(minutes=15), id="auto_approve", next_run_time=now + timedelta(minutes=1), max_instances=1, coalesce=True, replace_existing=True)
-    sched.add_job(transform_job, IntervalTrigger(hours=1), id="transform", next_run_time=now + timedelta(minutes=3), max_instances=1, coalesce=True, replace_existing=True)
+        sched.add_job(instrumented("discovery", discovery_job), IntervalTrigger(hours=settings.discovery_interval_hours), id="discovery", next_run_time=now + timedelta(minutes=2), max_instances=1, coalesce=True, replace_existing=True)
+    sched.add_job(instrumented("auto_approve", auto_approve_job), IntervalTrigger(minutes=15), id="auto_approve", next_run_time=now + timedelta(minutes=1), max_instances=1, coalesce=True, replace_existing=True)
+    sched.add_job(instrumented("transform", transform_job), IntervalTrigger(hours=1), id="transform", next_run_time=now + timedelta(minutes=3), max_instances=1, coalesce=True, replace_existing=True)
     if settings.enable_publish:
         interval_h = max(1, 24 / max(1, settings.uploads_per_day))
-        sched.add_job(publish_job, IntervalTrigger(hours=interval_h), id="publish", next_run_time=now + timedelta(minutes=5), max_instances=1, coalesce=True, replace_existing=True)
-    sched.add_job(cleanup_job, IntervalTrigger(hours=24), id="cleanup", next_run_time=now + timedelta(hours=1), max_instances=1, coalesce=True, replace_existing=True)
-    sched.add_job(recompute_scores_job, IntervalTrigger(hours=1), id="recompute", next_run_time=now + timedelta(minutes=4), max_instances=1, coalesce=True, replace_existing=True)
-    sched.add_job(analytics_pull_job, IntervalTrigger(hours=6), id="analytics_pull", next_run_time=now + timedelta(minutes=10), max_instances=1, coalesce=True, replace_existing=True)
+        sched.add_job(instrumented("publish", publish_job), IntervalTrigger(hours=interval_h), id="publish", next_run_time=now + timedelta(minutes=5), max_instances=1, coalesce=True, replace_existing=True)
+    sched.add_job(instrumented("cleanup", cleanup_job), IntervalTrigger(hours=24), id="cleanup", next_run_time=now + timedelta(hours=1), max_instances=1, coalesce=True, replace_existing=True)
+    sched.add_job(instrumented("recompute", recompute_scores_job), IntervalTrigger(hours=1), id="recompute", next_run_time=now + timedelta(minutes=4), max_instances=1, coalesce=True, replace_existing=True)
+    sched.add_job(instrumented("analytics_pull", analytics_pull_job), IntervalTrigger(hours=6), id="analytics_pull", next_run_time=now + timedelta(minutes=10), max_instances=1, coalesce=True, replace_existing=True)
     return sched
+
+
+# How long after its due time a job may still be run on catch-up. Beyond this
+# the work is stale enough that running it adds nothing.
+_CATCHUP_MAX_LATE = timedelta(hours=48)
+
+# Nominal interval per job id, used only to decide what is overdue.
+def _job_intervals() -> dict[str, timedelta]:
+    return {
+        "scrape": timedelta(hours=settings.scrape_interval_hours),
+        "discovery": timedelta(hours=settings.discovery_interval_hours),
+        "auto_approve": timedelta(minutes=15),
+        "transform": timedelta(hours=1),
+        "publish": timedelta(hours=max(1, 24 / max(1, settings.uploads_per_day))),
+        "cleanup": timedelta(hours=24),
+        "recompute": timedelta(hours=1),
+        "analytics_pull": timedelta(hours=6),
+    }
+
+
+def overdue_jobs(now: datetime | None = None) -> list[str]:
+    """Jobs whose last successful run is older than their interval.
+
+    APScheduler drops a fire it missed by more than ``misfire_grace_time``
+    rather than running it late, so a laptop that slept for ten hours simply
+    skips that work. This reads the run history and reports what to catch up.
+    """
+    now = now or datetime.now(timezone.utc)
+    history = last_run_times()
+    stale: list[str] = []
+    for job_id, interval in _job_intervals().items():
+        if job_id not in JOB_FUNCTIONS:
+            continue
+        last = history.get(job_id)
+        if last is None:
+            continue  # never run: the normal first-run schedule covers it
+        age = now - last
+        if interval < age <= _CATCHUP_MAX_LATE:
+            stale.append(job_id)
+    return stale
+
+
+def schedule_catchup(sched: BackgroundScheduler) -> list[str]:
+    """Queue overdue jobs shortly after startup, staggered."""
+    stale = overdue_jobs()
+    for index, job_id in enumerate(stale):
+        run_at = datetime.now(timezone.utc) + timedelta(seconds=45 + index * 90)
+        sched.add_job(
+            instrumented(job_id, JOB_FUNCTIONS[job_id]),
+            "date", run_date=run_at, id=f"catchup_{job_id}",
+            max_instances=1, replace_existing=True,
+        )
+    if stale:
+        log.info("catch-up scheduled for overdue jobs: %s", ", ".join(stale))
+    return stale
 
 
 def start_scheduler() -> BackgroundScheduler:
@@ -460,6 +653,12 @@ def start_scheduler() -> BackgroundScheduler:
     sched = _make_scheduler()
     sched.start()
     _scheduler = sched
+
+    # Anything the machine slept through gets picked up now.
+    try:
+        schedule_catchup(sched)
+    except Exception as exc:
+        log.warning("catch-up scheduling failed: %s", exc)
 
     interval = 24 / max(1, settings.uploads_per_day) if settings.enable_publish else 0
     log.info("Scheduler started: scrape=%dh discovery=%s auto_approve=%s transform=1h publish=%.1fh±%dm (8/day jitter) cleanup=24h recompute=1h analytics=6h (enable_publish=%s auto_discovery=%s)", settings.scrape_interval_hours, "auto" if settings.auto_discovery else "manual", "on" if settings.auto_approve else "off", interval, settings.upload_jitter_minutes, settings.enable_publish, settings.auto_discovery)

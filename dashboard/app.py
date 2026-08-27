@@ -17,6 +17,7 @@ import streamlit as st
 import httpx
 from app.config import settings
 from app.db import init_db, session_scope
+from app.logging_config import configure_logging
 from app.models import Video, VideoStatus, Creator
 from sqlalchemy import desc, func, select, or_
 from datetime import datetime, timezone
@@ -66,7 +67,10 @@ document.addEventListener('keydown', (e)=>{
 """, unsafe_allow_html=True)
 
 @st.cache_resource
-def _ensure_db(): init_db(); return True
+def _ensure_db():
+    configure_logging()
+    init_db()
+    return True
 _ensure_db()
 
 @st.cache_data(ttl=4, show_spinner=False)
@@ -153,6 +157,29 @@ def sidebar_frag():
         prev=st.session_state.get("focus_preview")
         if prev:
             st.caption(f"Would keep **{prev.get('kept',0)}**, reject **{prev.get('rejected',0)}** — {prev.get('reasons',{})}")
+        st.divider()
+        st.markdown("**🩺 Health**")
+        hist=_api("GET","/scheduler/history?limit=1") or {}
+        health=hist.get("health") or {}
+        if health:
+            failing=[j for j,h in health.items() if not h.get("ok", True)]
+            with st.expander(f"Jobs • {len(health)} tracked" + (f" • {len(failing)} failing" if failing else ""), expanded=bool(failing)):
+                for job,h in sorted(health.items()):
+                    icon="✅" if h.get("ok", True) else "❌"
+                    when=(h.get("timestamp") or "")[11:19]
+                    st.caption(f"{icon} `{job}` {when} • {h.get('runs',0)} runs, {h.get('failures',0)} failed")
+        else:
+            st.caption("No job history yet.")
+        over=(_api("GET","/scheduler/overdue") or {}).get("overdue") or []
+        if over: st.warning(f"Overdue after downtime: {', '.join(over)}")
+        store=_api("GET","/storage") or {}
+        if store:
+            st.caption(f"💾 {store.get('total_mb',0)} MB • {store.get('files',0)} files"
+                       + (f" • {store.get('orphan_mb',0)} MB orphaned" if store.get('orphan_files') else ""))
+            if st.button("🧹 Reclaim disk", width="stretch"):
+                out=_api("POST","/storage/cleanup")
+                res=(out or {}).get("result",{})
+                st.toast(f"Reclaimed {res.get('mb_reclaimed',0)} MB", icon="💾"); time.sleep(0.4); st.rerun()
         st.divider()
         st.caption("Shortcuts: `Ctrl+K` search • `A` approve • `R` reject • `J/K` next/prev")
 

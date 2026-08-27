@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from .analytics import recompute_scores
 from .config import settings
 from .db import SessionLocal, get_db, init_db
+from .logging_config import configure_logging, job_health, read_job_history
 from .models import Creator, MetadataDraft, Video, VideoStatus
 from . import metadata, quota, scheduler
 from .schemas import (
@@ -29,6 +30,8 @@ from .schemas import (
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Must run before anything logs, or app-level INFO is discarded.
+    configure_logging()
     init_db()
     # Start autonomous scheduler in background
     try:
@@ -238,6 +241,38 @@ def run_job_now(job_id: str) -> dict:
 def list_available_jobs() -> dict:
     """Job ids accepted by POST /scheduler/run/{job_id}."""
     return {"jobs": sorted(scheduler.JOB_FUNCTIONS)}
+
+
+# ==================== Observability ====================
+@app.get("/scheduler/history", response_model=dict)
+def scheduler_history(limit: int = 50, job_id: str | None = None) -> dict:
+    """Recent scheduler job runs, newest last, plus per-job health."""
+    return {
+        "runs": read_job_history(limit=limit, job_id=job_id),
+        "health": job_health(),
+    }
+
+
+@app.get("/scheduler/overdue", response_model=dict)
+def scheduler_overdue() -> dict:
+    """Jobs whose last successful run is older than their interval.
+
+    A suspended machine makes APScheduler drop missed fires rather than run
+    them late, so this is how you see what sleep cost you.
+    """
+    return {"overdue": scheduler.overdue_jobs()}
+
+
+@app.get("/storage", response_model=dict)
+def storage() -> dict:
+    """Disk used by downloaded and rendered media."""
+    return scheduler.storage_report()
+
+
+@app.post("/storage/cleanup", response_model=dict)
+def run_cleanup() -> dict:
+    """Reclaim disk now instead of waiting for the daily job."""
+    return {"job": "cleanup", "result": scheduler.run_job("cleanup")}
 
 
 # ==================== Queue maintenance ====================

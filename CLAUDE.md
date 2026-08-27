@@ -245,6 +245,28 @@ Job ids are the contract for `POST /scheduler/run/{job_id}` and the dashboard si
 Every job returns a dict and swallows its own exceptions (returning `{"error": ...}`) so one failure
 never kills the scheduler.
 
+### Observability and durability
+
+| endpoint | purpose |
+|----------|---------|
+| `GET /scheduler/history` | recent job runs (timing, result, ok) plus per-job run/failure counts |
+| `GET /scheduler/overdue` | jobs whose last success is older than their interval |
+| `GET /storage` | disk used under `content/`, including orphaned files |
+| `POST /storage/cleanup` | reclaim now instead of waiting for the daily job |
+
+**Sleep drops work.** APScheduler discards a fire it missed by more than `misfire_grace_time` rather than
+running it late, so a suspended laptop silently skips jobs — observed missing cleanup by 10h49m. The grace
+is now 6h, and `schedule_catchup()` runs at startup: it reads the last successful run per job from the
+history file and queues anything overdue (staggered, and only if less than 48h late, beyond which the work
+is stale).
+
+**Cleanup reclaims three things**, only the first of which the original handled: source files of finished
+videos past `SOURCE_VIDEO_MAX_AGE_DAYS`, transformed outputs of published videos (never deleted before, and
+the larger files), and **orphans** — files on disk no row references, which a row-driven cleanup can never
+see. Orphans need a 6h grace so an in-flight download is never deleted, and files whose name starts with
+`_` are internal scaffolding (the mock master clip) and exempt. `cleanup_job(dry_run=True)` reports without
+deleting.
+
 ### Database
 
 SQLite at the repo root. `init_db()` runs `create_all` and then `_sqlite_add_missing_columns()`, an
@@ -274,12 +296,13 @@ strings** and read through `*_list` properties — add new list settings the sam
 - **Windows process control.** `os.killpg`/`os.getpgid` do not exist on Windows, and `os.kill(pid, 0)`
   there *terminates* rather than probes. `scripts/run.py` therefore branches on `os.name` and uses
   `tasklist`/`taskkill` on Windows. Keep that split if you touch it.
-- **There is effectively no operational logging.** `app/logging_config.py` defines
-  `configure_logging()` but nothing calls it, so the root logger stays at WARNING and every app-level
-  `log.info(...)` is discarded — only ERROR and above reach the uvicorn handler. Worse,
-  `_JOBS` / `_register` / `_run_job` in `app/scheduler.py` are dead code: `_make_scheduler` registers the
-  raw job functions, so the wrapper that would call `log_job_execution()` never runs and
-  `logs/job_history.jsonl` is never created. A day of unattended operation leaves no trail.
+- **Every scheduled job must go through `scheduler.instrumented()`.** It times the run, logs it, and
+  appends a line to `logs/job_history.jsonl`. The previous code had a `_run_job` wrapper that
+  `_make_scheduler` never used — it registered the raw functions — so no history was ever written and a
+  full day of operation produced 57 log lines. `test_every_registered_job_is_wrapped_when_scheduled`
+  guards against that regressing. `configure_logging()` likewise must be called once per process (it is,
+  from the FastAPI lifespan and the dashboard's cached init); without it the root logger sits at WARNING
+  and all app-level INFO is silently dropped.
 - **`POST /scheduler/run/chop_long` maps to `cleanup_job`** because no `chop_long_job` exists.
   `app/clips.py` is only reachable through `POST /videos/{id}/chop`.
 - **`dashboard/app.py` starts with a sys.path/`sys.modules` fixup** so the `dashboard/` directory does
