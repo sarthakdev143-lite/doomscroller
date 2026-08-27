@@ -148,8 +148,14 @@ def compose(
     platform: str = "",
     language: str = "en",
     source: str = "fallback",
+    require_credit: bool = False,
 ) -> GeneratedMetadata:
-    """Apply YouTube limits, tags, hashtags and creator credit to raw copy."""
+    """Apply YouTube limits, tags, hashtags and creator credit to raw copy.
+
+    ``require_credit`` is set when rendering crops away the platform's
+    burned-in attribution. The description credit is then the only attribution
+    the viewer gets, so it is emitted even when the creator handle is unknown.
+    """
     author = (author or "").lstrip("@").strip()
     tags = build_tags(keywords, author=author)
 
@@ -176,6 +182,13 @@ def compose(
         credit = f"Credit: {display} (@{author})"
         if platform:
             credit += f" on {platform.title()}"
+        if source_url:
+            credit += f"\n{source_url}"
+        blocks.append(credit)
+    elif require_credit:
+        # No handle, but the visible attribution was cropped out, so say what
+        # we can rather than shipping an uncredited reupload.
+        credit = f"Originally posted on {platform.title()}" if platform else "Reposted content"
         if source_url:
             credit += f"\n{source_url}"
         blocks.append(credit)
@@ -299,6 +312,7 @@ def generate_metadata(
     language: str = "",
     platform_title: str = "",
     platform_description: str = "",
+    require_credit: bool = False,
 ) -> GeneratedMetadata:
     """Generate YouTube metadata for a video, preserving its source language.
 
@@ -321,6 +335,7 @@ def generate_metadata(
             author=author, author_name=author_name,
             source_url=source_url, platform=platform,
             language=language, source="platform",
+            require_credit=require_credit,
         )
 
     # 2. Ask the local LLM CLI, if there is one.
@@ -347,6 +362,7 @@ def generate_metadata(
                 author=author, author_name=author_name,
                 source_url=source_url, platform=platform,
                 language=language, source="llm",
+                require_credit=require_credit,
             )
 
     # 3. Rule-based composition over whatever we have.
@@ -357,6 +373,7 @@ def generate_metadata(
         author=author, author_name=author_name,
         source_url=source_url, platform=platform,
         language=language, source="fallback",
+        require_credit=require_credit,
     )
 
 

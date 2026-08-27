@@ -188,13 +188,11 @@ def auto_approve_job() -> dict:
                     note("inside veto window")
                     continue
 
-                if not video.local_path or not os.path.exists(video.local_path):
-                    note("no local file")
-                    continue
-
-                # Re-check safety *and* channel focus. Both may have changed
-                # since this video was scraped, and unattended approval is the
-                # last gate before an upload goes out.
+                # Re-check safety and channel focus *before* touching the disk.
+                # Both may have changed since this video was scraped, and
+                # unattended approval is the last gate before an upload goes
+                # out. A disqualified video is rejected whether or not its file
+                # is still present -- otherwise it sits pending forever.
                 view = _item_view(video)
                 disqualified = content_safety_reason(view) or channel_focus_reason(view)
                 if disqualified:
@@ -205,6 +203,10 @@ def auto_approve_job() -> dict:
                         "auto_rejected": disqualified,
                     }
                     note(disqualified.split(":")[0])
+                    continue
+
+                if not video.local_path or not os.path.exists(video.local_path):
+                    note("no local file")
                     continue
 
                 height = video.height

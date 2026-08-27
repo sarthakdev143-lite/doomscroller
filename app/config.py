@@ -128,6 +128,14 @@ class Settings(BaseSettings):
     # line in the description. Off by default: enable it deliberately.
     source_crop_top_pct: float = 0.0
     source_crop_bottom_pct: float = 0.0
+    # How to get back to 9:16 after the band crop:
+    #   fill - centre-crop the width, full bleed, harder upscale
+    #   fit  - keep everything, blurred filler makes up the canvas
+    source_crop_mode: str = "fill"
+    # Which side of the width survives the fill re-crop. Snapchat stacks its
+    # attribution against the left edge, so keeping the right half spends
+    # width we were discarding anyway on removing the remnant.
+    source_crop_keep: str = "right"
 
     # Long-form chopper — turns long downloaded videos into multiple Shorts
     long_video_min_duration_sec: int = 120   # only chop videos >= 2 minutes
@@ -177,6 +185,15 @@ class Settings(BaseSettings):
             url_path = p.as_posix()
             return f"sqlite:///{url_path}"
         return url
+
+    @property
+    def source_crop_active(self) -> bool:
+        """Whether rendering removes the platform's burned-in attribution.
+
+        When this is true the description credit is the only attribution left,
+        so metadata generation treats it as mandatory.
+        """
+        return (self.source_crop_top_pct or 0) > 0 or (self.source_crop_bottom_pct or 0) > 0
 
     @property
     def content_path(self) -> Path:

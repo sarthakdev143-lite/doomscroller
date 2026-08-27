@@ -16,6 +16,24 @@ from tasks.pipeline import (
 )
 
 
+@pytest.fixture(autouse=True)
+def neutral_channel_focus():
+    """These tests exercise safety/shape/virality/ranking, not channel focus.
+
+    select_candidates also applies the language and topic filters, so leave
+    those wide open here; test_channel_focus.py covers them directly.
+    """
+    saved = (settings.target_languages, settings.target_topics,
+             settings.excluded_topics, settings.allow_unknown_language)
+    settings.target_languages = "[]"
+    settings.target_topics = "[]"
+    settings.excluded_topics = "[]"
+    settings.allow_unknown_language = True
+    yield
+    (settings.target_languages, settings.target_topics,
+     settings.excluded_topics, settings.allow_unknown_language) = saved
+
+
 def item(**kw) -> ScrapedItem:
     base = dict(
         source="snapchat",
@@ -31,6 +49,7 @@ def item(**kw) -> ScrapedItem:
         duration_sec=12,
         width=540,
         height=960,
+        language="en",
         published_at=datetime.now(timezone.utc) - timedelta(hours=6),
     )
     base.update(kw)

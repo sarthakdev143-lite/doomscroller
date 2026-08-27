@@ -430,6 +430,9 @@ def generate_metadata_for_video(video_id: str, *, force: bool = False) -> dict:
             "language": video.language or "",
             "platform_title": meta.get("llm_title") or "",
             "platform_description": meta.get("llm_description") or "",
+            # Cropping removes the on-screen credit, so the description one
+            # stops being optional.
+            "require_credit": settings.source_crop_active,
         }
 
     generated: GeneratedMetadata = generate_metadata(**params)

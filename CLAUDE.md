@@ -166,10 +166,35 @@ Two deliberate omissions, both worth preserving:
   clutter. `_WATERMARK_POSITIONS` and the end-card `y` are all inside the middle safe band for the same
   reason — overlays in the top/bottom bands landed on top of Snapchat's branding.
 
-`SOURCE_CROP_TOP_PCT` / `SOURCE_CROP_BOTTOM_PCT` (default 0) trim those branding bands. They are off by
-default on purpose: cropping produces a cleaner Short but strips the platform's visible attribution,
-leaving only the description credit. Note the bands run ~20% deep, so a crop that fully removes them costs
-a lot of frame.
+**Source branding and the crop** (`app/transformers/geometry.py`) — every Spotlight clip arrives with
+Snapchat's ghost logo, the word "Snapchat", and the original creator's handle burned into the pixels at the
+top-left. It is universal, not occasional. Measured across the downloaded library, a **22% top crop** clears
+it; 12–19% leaves legible remnants.
+
+Cropping changes the aspect ratio, so it has to be planned *with* the framing step, not before it — the
+original bug was that `plan_transform` decided framing from pre-crop dimensions, so a cropped 3:4 frame took
+the no-blur path and came out letterboxed. `plan_crop()` now returns the whole chain plus the resulting
+dimensions, and the transformer derives `needs_blur` from those.
+
+| setting | effect |
+|---------|--------|
+| `SOURCE_CROP_TOP_PCT` / `_BOTTOM_PCT` | band to remove, % of original height (22 / 0) |
+| `SOURCE_CROP_MODE` | `fill` centre-crops the width back to 9:16 (full bleed); `fit` keeps everything and lets the blur filler pad — **`fit` looks bad**, the filler surfaces inverted ghosts of the cropped band |
+| `SOURCE_CROP_KEEP` | which half of the width survives `fill`. That width is discarded either way, and the branding hugs the **left** edge, so `right` removes the remnant for free |
+
+Cost at 22% fill: canvas upscale rises from 2.00x to 2.57x. In practice output looks *better*, because the
+subject stops sitting small inside dead space.
+
+**The crop removes the creator's visible credit**, so `settings.source_crop_active` forces
+`metadata.compose(require_credit=True)`, which emits an attribution block even when the handle is unknown.
+Keep those two coupled — that text credit is the only attribution left once the pixels are gone. None of
+this makes the content original for monetisation purposes.
+
+Three watermark *auto-detectors* were tried and all failed; do not spend time re-deriving them:
+per-row temporal activity (too coarse — a corner logo cannot move a row average), per-cell temporal
+variance (the overlay is semi-transparent, so its pixels change with the content behind it), and
+per-pixel brightness frequency across clips (never reliably above the bright threshold, same reason).
+The position is consistent enough that a fixed percentage beats detection.
 
 **Text rendering is the sharp edge here.** All `drawtext` strings go through `textfile=` with
 `expansion=none`, never inline `text=`. An inline value has to survive ffmpeg's own filtergraph parser, and
@@ -249,16 +274,20 @@ strings** and read through `*_list` properties — add new list settings the sam
 - **Windows process control.** `os.killpg`/`os.getpgid` do not exist on Windows, and `os.kill(pid, 0)`
   there *terminates* rather than probes. `scripts/run.py` therefore branches on `os.name` and uses
   `tasklist`/`taskkill` on Windows. Keep that split if you touch it.
-- **`app/logging_config.py` defines `configure_logging()` but nothing calls it** — log setup is whatever
-  uvicorn/Streamlit provide. `log_job_execution()` *is* used and appends to `logs/job_history.jsonl`.
+- **There is effectively no operational logging.** `app/logging_config.py` defines
+  `configure_logging()` but nothing calls it, so the root logger stays at WARNING and every app-level
+  `log.info(...)` is discarded — only ERROR and above reach the uvicorn handler. Worse,
+  `_JOBS` / `_register` / `_run_job` in `app/scheduler.py` are dead code: `_make_scheduler` registers the
+  raw job functions, so the wrapper that would call `log_job_execution()` never runs and
+  `logs/job_history.jsonl` is never created. A day of unattended operation leaves no trail.
 - **`POST /scheduler/run/chop_long` maps to `cleanup_job`** because no `chop_long_job` exists.
   `app/clips.py` is only reachable through `POST /videos/{id}/chop`.
 - **`dashboard/app.py` starts with a sys.path/`sys.modules` fixup** so the `dashboard/` directory does
   not shadow the `app` package. `dashboard/_launch.py` is the cleaner entry point, but `scripts/run.py`
   launches `dashboard/app.py` directly — keep the fixup if you edit the top of that file.
 - **Spotlight sources carry burned-in branding.** The CDN serves the "SpotlightSharing" asset variant,
-  which has Snapchat's ghost logo and the original creator's handle rendered into the pixels, top and
-  bottom, roughly 20% deep at each end. Output overlays must stay in the middle band, and no amount of
-  variation hides the fact that the frame says "Snapchat". Factor this into any judgement about whether
-  the channel can pass monetisation review.
+  with Snapchat's ghost logo and the original creator's handle rendered into the pixels at the top-left.
+  The 22% crop removes it, but overlay positions (`_WATERMARK_POSITIONS`, the end-card `y`) still assume
+  the middle safe band, because the crop is a setting that can be turned off. Removing a watermark does
+  not make content original — factor that into any judgement about monetisation review.
 - Files under `content/`, `secrets/`, `logs/` and `doomscroller.db` are gitignored runtime state.

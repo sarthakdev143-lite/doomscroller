@@ -184,3 +184,69 @@ def test_apply_queue_filters_leaves_curated_rows_alone():
     with session_scope() as db:
         # Only PENDING rows are re-filtered; a human decision is not overridden.
         assert db.get(Video, approved).status == VideoStatus.APPROVED
+
+
+# ------------------------------------------------- unattended approval gate
+def test_auto_approve_rejects_off_focus_videos():
+    """Unattended approval is the last gate before an upload goes out.
+
+    Focus was originally only enforced at scrape time, so a backlog admitted
+    under older rules sailed straight through auto-approve in the wrong
+    language. With AUTO_PUBLISH on, that reaches the channel.
+    """
+    from app import scheduler
+
+    init_db()
+    settings.target_languages = '["en"]'
+    saved = (settings.auto_approve, settings.auto_approve_veto_hours)
+    settings.auto_approve = True
+    settings.auto_approve_veto_hours = 0
+    try:
+        with session_scope() as db:
+            off = _seed(db, source_id="auto-off-focus", language="hi")
+        scheduler.auto_approve_job()
+        with session_scope() as db:
+            assert db.get(Video, off).status == VideoStatus.REJECTED
+    finally:
+        settings.auto_approve, settings.auto_approve_veto_hours = saved
+
+
+def test_auto_approve_rejects_unsafe_videos():
+    from app import scheduler
+
+    init_db()
+    settings.target_languages = "[]"
+    saved = (settings.auto_approve, settings.auto_approve_veto_hours)
+    settings.auto_approve = True
+    settings.auto_approve_veto_hours = 0
+    try:
+        with session_scope() as db:
+            unsafe = _seed(db, source_id="auto-unsafe", title="casino bonus spins")
+        scheduler.auto_approve_job()
+        with session_scope() as db:
+            row = db.get(Video, unsafe)
+            assert row.status == VideoStatus.REJECTED
+            assert "blocked term" in (row.meta or {}).get("auto_rejected", "")
+    finally:
+        settings.auto_approve, settings.auto_approve_veto_hours = saved
+
+
+def test_auto_approve_honours_the_veto_window():
+    """A freshly scraped video is held so a human can still reject it."""
+    from app import scheduler
+
+    init_db()
+    settings.target_languages = "[]"
+    saved = (settings.auto_approve, settings.auto_approve_veto_hours)
+    settings.auto_approve = True
+    settings.auto_approve_veto_hours = 24
+    try:
+        with session_scope() as db:
+            fresh = _seed(db, source_id="auto-fresh", language="en")
+        result = scheduler.auto_approve_job()
+        assert result.get("approved") == 0
+        assert "inside veto window" in result.get("reasons", {})
+        with session_scope() as db:
+            assert db.get(Video, fresh).status == VideoStatus.PENDING
+    finally:
+        settings.auto_approve, settings.auto_approve_veto_hours = saved

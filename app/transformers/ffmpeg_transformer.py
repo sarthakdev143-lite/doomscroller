@@ -38,6 +38,7 @@ from typing import List, Optional
 
 from .base import Transformer, TransformRecipe
 from .fonts import ffmpeg_path, resolve_font
+from .geometry import CropPlan, plan_crop, upscale_factor
 from .variation import VariationPlan, watermark_position, wrap_caption
 
 log = logging.getLogger(__name__)
@@ -166,13 +167,19 @@ class FFmpegTransformer(Transformer):
         duration = _probe_duration(input_path)
         has_audio = _has_audio(input_path)
         speed = plan.speed if (plan and plan.changes_timing) else recipe.speed_factor
+        crop = self.crop_plan(source_w, source_h)
+        if crop.active:
+            log.info(
+                "crop: %s (upscale %.2fx -> %dpx canvas)",
+                crop.summary(), upscale_factor(crop.out_width, width), width,
+            )
 
         # drawtext reads its strings from files in here; both are torn down
         # together once ffmpeg has exited.
         with tempfile.TemporaryDirectory(prefix="doomscroller_text_") as text_dir:
             video_chain = self._build_video_chain(
                 recipe=recipe, plan=plan, canvas=(width, height),
-                duration=duration, speed=speed, text_dir=text_dir,
+                duration=duration, speed=speed, text_dir=text_dir, crop=crop,
             )
             filter_parts = [f"{video_chain}[vout]"]
             if has_audio:
@@ -211,45 +218,43 @@ class FFmpegTransformer(Transformer):
         return output_path
 
     # ------------------------------------------------------------------
-    def _source_crop(self) -> str:
-        """Optional crop of the top/bottom bands, as a leading filter.
+    def crop_plan(self, width: int, height: int) -> CropPlan:
+        """Plan the source crop for a frame of ``width`` x ``height``.
 
-        Spotlight sources carry Snapchat branding and the original creator
-        handle burned into bands at the top and bottom of the frame. Trimming
-        them yields a cleaner Short, but it also removes the platform's visible
-        attribution -- the description credit is then the only attribution left.
-        Off by default; enabling it is a deliberate choice.
+        Cropping changes the aspect ratio, so the framing step must be decided
+        from the *post-crop* dimensions -- otherwise a 3:4 crop goes down the
+        no-blur path and gets black bars.
         """
-        # Settings are percentages, so clamp in percent before converting.
-        top = max(0.0, min(40.0, float(self.settings.source_crop_top_pct))) / 100.0
-        bottom = max(0.0, min(40.0, float(self.settings.source_crop_bottom_pct))) / 100.0
-        if top <= 0 and bottom <= 0:
-            return ""
-        keep = 1.0 - top - bottom
-        if keep <= 0.3:
-            log.warning("source crop would remove too much frame; skipping")
-            return ""
-        # Even dimensions keep libx264 happy.
-        return (
-            f"crop=iw:floor(ih*{keep:.4f}/2)*2:0:floor(ih*{top:.4f}/2)*2,"
+        return plan_crop(
+            width, height,
+            top_pct=float(self.settings.source_crop_top_pct),
+            bottom_pct=float(self.settings.source_crop_bottom_pct),
+            mode=str(getattr(self.settings, "source_crop_mode", "fill")),
+            keep=str(getattr(self.settings, "source_crop_keep", "right")),
         )
 
     def _build_video_chain(self, *, recipe: TransformRecipe,
                            plan: Optional[VariationPlan],
                            canvas: tuple[int, int], duration: float,
-                           speed: float, text_dir: str) -> str:
+                           speed: float, text_dir: str,
+                           crop: Optional[CropPlan] = None) -> str:
         width, height = canvas
         suffix = self._post_framing_suffix(
             plan=plan, canvas=canvas, duration=duration,
             recipe=recipe, speed=speed, text_dir=text_dir,
         )
-        crop = self._source_crop()
+        crop_prefix = crop.prefix if crop else ""
+        # A crop that leaves a non-9:16 frame needs the blurred filler even if
+        # the untouched source would not have.
+        needs_blur = recipe.add_blur_background or bool(
+            crop and crop.active and not crop.matches_canvas
+        )
 
-        if recipe.add_blur_background:
+        if needs_blur:
             # Fill the canvas with a blurred cover copy, then centre the source.
             blur = self.settings.transform_blur_sigma
             return (
-                f"[0:v]{crop}split=2[bg][fg];"
+                f"[0:v]{crop_prefix}split=2[bg][fg];"
                 f"[bg]scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,"
                 f"crop={width}:{height},boxblur={blur}:1[bgb];"
                 f"[fg]scale={width}:{height}:force_original_aspect_ratio=decrease:flags=lanczos[fgs];"
@@ -257,7 +262,7 @@ class FFmpegTransformer(Transformer):
             )
 
         return (
-            f"[0:v]{crop}"
+            f"[0:v]{crop_prefix}"
             f"scale={width}:{height}:force_original_aspect_ratio=decrease:flags=lanczos,"
             f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black" + suffix
         )
