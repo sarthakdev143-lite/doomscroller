@@ -73,7 +73,15 @@ def _pid_alive(pid: int) -> bool:
         except Exception:
             return False
         # tasklist prints a "no tasks" notice rather than failing.
-        return f'"{pid}"' in out
+        if f'"{pid}"' not in out:
+            return False
+        # Windows recycles PIDs, so a stale entry can alias an unrelated
+        # process started later (observed: a dead dashboard's PID got
+        # reassigned to msedgewebview2.exe, which --stop would then kill).
+        # Both our processes are launched via `PYTHON -m ...`, so require
+        # the image name to actually be a python interpreter.
+        image_name = out.split(",", 1)[0].strip('"').lower()
+        return image_name.startswith("python")
     try:
         os.kill(pid, 0)  # POSIX: signal 0 probes without delivering
         return True
