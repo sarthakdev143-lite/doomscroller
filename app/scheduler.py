@@ -126,9 +126,9 @@ def discovery_job() -> dict:
 
 
 def transform_job() -> dict:
-    """Auto-transform up to 3 APPROVED → TRANSFORMED per run."""
+    """Auto-transform up to ``TRANSFORM_BATCH_SIZE`` APPROVED → TRANSFORMED per run."""
     from tasks.pipeline import transform_task
-    BATCH = 3
+    BATCH = max(1, settings.transform_batch_size)
     processed = 0
     errors: list[dict] = []
     try:
@@ -571,7 +571,7 @@ def _make_scheduler() -> BackgroundScheduler:
     if settings.auto_discovery:
         sched.add_job(instrumented("discovery", discovery_job), IntervalTrigger(hours=settings.discovery_interval_hours), id="discovery", next_run_time=now + timedelta(minutes=2), max_instances=1, coalesce=True, replace_existing=True)
     sched.add_job(instrumented("auto_approve", auto_approve_job), IntervalTrigger(minutes=15), id="auto_approve", next_run_time=now + timedelta(minutes=1), max_instances=1, coalesce=True, replace_existing=True)
-    sched.add_job(instrumented("transform", transform_job), IntervalTrigger(hours=1), id="transform", next_run_time=now + timedelta(minutes=3), max_instances=1, coalesce=True, replace_existing=True)
+    sched.add_job(instrumented("transform", transform_job), IntervalTrigger(minutes=max(1, settings.transform_interval_minutes)), id="transform", next_run_time=now + timedelta(minutes=3), max_instances=1, coalesce=True, replace_existing=True)
     if settings.enable_publish:
         interval_h = max(1, 24 / max(1, settings.uploads_per_day))
         sched.add_job(instrumented("publish", publish_job), IntervalTrigger(hours=interval_h), id="publish", next_run_time=now + timedelta(minutes=5), max_instances=1, coalesce=True, replace_existing=True)
@@ -591,7 +591,7 @@ def _job_intervals() -> dict[str, timedelta]:
         "scrape": timedelta(hours=settings.scrape_interval_hours),
         "discovery": timedelta(hours=settings.discovery_interval_hours),
         "auto_approve": timedelta(minutes=15),
-        "transform": timedelta(hours=1),
+        "transform": timedelta(minutes=max(1, settings.transform_interval_minutes)),
         "publish": timedelta(hours=max(1, 24 / max(1, settings.uploads_per_day))),
         "cleanup": timedelta(hours=24),
         "recompute": timedelta(hours=1),
@@ -661,7 +661,7 @@ def start_scheduler() -> BackgroundScheduler:
         log.warning("catch-up scheduling failed: %s", exc)
 
     interval = 24 / max(1, settings.uploads_per_day) if settings.enable_publish else 0
-    log.info("Scheduler started: scrape=%dh discovery=%s auto_approve=%s transform=1h publish=%.1fh±%dm (8/day jitter) cleanup=24h recompute=1h analytics=6h (enable_publish=%s auto_discovery=%s)", settings.scrape_interval_hours, "auto" if settings.auto_discovery else "manual", "on" if settings.auto_approve else "off", interval, settings.upload_jitter_minutes, settings.enable_publish, settings.auto_discovery)
+    log.info("Scheduler started: scrape=%.2fh discovery=%s auto_approve=%s transform=%dx/%dm publish=%.1fh±%dm (8/day jitter) cleanup=24h recompute=1h analytics=6h (enable_publish=%s auto_discovery=%s)", settings.scrape_interval_hours, "auto" if settings.auto_discovery else "manual", "on" if settings.auto_approve else "off", settings.transform_batch_size, settings.transform_interval_minutes, interval, settings.upload_jitter_minutes, settings.enable_publish, settings.auto_discovery)
     return sched
 
 

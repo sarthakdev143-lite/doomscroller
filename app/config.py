@@ -31,10 +31,22 @@ class Settings(BaseSettings):
     database_url: str = ""
 
     # Scheduler
-    scrape_interval_hours: int = 6
+    # Float so the scrape cadence can go sub-hourly; Spotlight rotates fresh
+    # stories faster than the BFS exhausts related ones, so frequent short runs
+    # out-yield rare deep ones.
+    scrape_interval_hours: float = 6.0
     scrape_max_per_run: int = 20
+    # HTTP requests one Spotlight crawl may spend walking the related-story
+    # graph. Each request returns ~25 stories; most are already known once
+    # the library is large, so a bigger budget is what finds fresh ones.
+    scrape_max_requests: int = 12
     scrape_target_pending: int = 20
     discovery_interval_hours: int = 24
+    # Transform throughput. Batch is how many APPROVED videos one run drains;
+    # the interval is how often that run fires. Raise both to burn down a
+    # large approved backlog faster than the default 3/hour.
+    transform_batch_size: int = 3
+    transform_interval_minutes: int = 60
     uploads_per_day: int = 8
     upload_interval_hours: int = 3
     upload_jitter_minutes: int = 45

@@ -223,3 +223,85 @@ def test_normalize_handle_accepts_every_form():
 
 def test_profile_url_shape():
     assert _scraper()._profile_url("bob") == "https://www.snapchat.com/@bob"
+
+
+# --------------------------------------------------- crawl budget / known ids
+def _page(story_ids):
+    """A __NEXT_DATA__ payload carrying the given story ids."""
+    return {"props": {"pageProps": {"spotlightFeed": {"spotlightStories": [
+        _story(story={"storyId": {"value": sid}},
+               metadata={"videoMetadata": {
+                   **_story()["metadata"]["videoMetadata"],
+                   "contentUrl": f"https://cdn/{sid}.mp4",
+               }})
+        for sid in story_ids
+    ]}}}}
+
+
+def _graph_scraper(pages, calls):
+    """A scraper whose _fetch_next_data serves a canned page graph."""
+    s = _scraper()
+
+    def fake_fetch(url, **kwargs):
+        calls.append(url)
+        for key, payload in pages.items():
+            if url.endswith(key):
+                return payload
+        return _page([])
+
+    s._fetch_next_data = fake_fetch
+    return s
+
+
+def test_known_stories_are_walked_but_do_not_fill_the_quota():
+    """Seed page is entirely known: the crawl must push on, not return empty.
+
+    This is the yield-decay bug -- a stateless crawl re-collected the same seed
+    page every run, filled max_results with stories already in the database and
+    reported them as skipped.
+    """
+    pages = {
+        "/spotlight": _page(["OLD1", "OLD2"]),
+        "/spotlight/OLD1": _page(["NEW1", "NEW2"]),
+        "/spotlight/OLD2": _page(["NEW3"]),
+    }
+    calls: list[str] = []
+    s = _graph_scraper(pages, calls)
+
+    items = s.scrape_spotlight(max_results=3, known_ids={"OLD1", "OLD2"}, max_requests=10)
+    got = {i.source_id for i in items}
+
+    assert got == {"NEW1", "NEW2", "NEW3"}, got
+    # It had to walk *through* the known stories to reach the new ones.
+    assert any(c.endswith("/spotlight/OLD1") for c in calls)
+
+
+def test_without_known_ids_seed_page_still_counts():
+    """Regression guard: default behaviour is unchanged when nothing is known."""
+    pages = {"/spotlight": _page(["A", "B"])}
+    calls: list[str] = []
+    s = _graph_scraper(pages, calls)
+
+    items = s.scrape_spotlight(max_results=2, max_requests=10)
+    assert {i.source_id for i in items} == {"A", "B"}
+    # Quota filled by the seed page alone -- no cursor requests needed.
+    assert calls == ["https://www.snapchat.com/spotlight"]
+
+
+def test_request_budget_is_honoured():
+    pages = {
+        "/spotlight": _page(["OLD1", "OLD2", "OLD3"]),
+        "/spotlight/OLD1": _page(["OLD4"]),
+        "/spotlight/OLD2": _page(["OLD5"]),
+        "/spotlight/OLD3": _page(["OLD6"]),
+    }
+    calls: list[str] = []
+    s = _graph_scraper(pages, calls)
+
+    # Everything is known, so the crawl can never fill the quota: only the
+    # request budget stops it.
+    known = {f"OLD{n}" for n in range(1, 7)}
+    items = s.scrape_spotlight(max_results=50, known_ids=known, max_requests=3)
+
+    assert items == []
+    assert len(calls) == 3

@@ -418,13 +418,26 @@ class SnapchatScraper(Scraper):
     # ------------------------------------------------------------------
     # Spotlight crawl
     # ------------------------------------------------------------------
-    def scrape_spotlight(self, max_results: int, *, max_requests: int = 12) -> list[ScrapedItem]:
+    def scrape_spotlight(self, max_results: int, *, max_requests: int | None = None,
+                         known_ids: "frozenset[str] | set[str] | None" = None) -> list[ScrapedItem]:
         """Breadth-first crawl the Spotlight feed until ``max_results`` uniques.
 
         ``/spotlight`` seeds the crawl; each story id then acts as a cursor via
         ``/spotlight/<id>``, which returns a fresh page of related stories.
+
+        ``known_ids`` are stories the caller already has. They are still walked
+        *through* -- a story we have seen before is just as good a cursor into
+        the related-story graph as a new one -- but they do not count against
+        ``max_results``. Without this the crawl spends its whole request budget
+        re-collecting the same seed page every run and reports the result as
+        "skipped": observed yield decayed 20 -> 10 -> 4 over three runs.
         """
+        known = frozenset(known_ids or ())
+        if max_requests is None:
+            from ..config import settings
+            max_requests = max(1, getattr(settings, "scrape_max_requests", 12))
         collected: dict[str, ScrapedItem] = {}
+        seen: set[str] = set()
         frontier: list[str] = []
         visited: set[str] = set()
         requests_made = 0
@@ -433,18 +446,26 @@ class SnapchatScraper(Scraper):
             added = 0
             for entry in self._stories_from(data):
                 item = self._parse_story(entry)
-                if item is None or item.source_id in collected:
+                if item is None or item.source_id in seen:
+                    continue
+                seen.add(item.source_id)
+                # Navigate through every story, new or already-known.
+                frontier.append(item.source_id)
+                if item.source_id in known:
                     continue
                 collected[item.source_id] = item
-                frontier.append(item.source_id)
                 added += 1
             return added
 
         seed = self._fetch_next_data(_SPOTLIGHT_URL)
         requests_made += 1
         added = ingest(seed)
-        log.info("snapchat spotlight: seed page -> %d items", added)
-        if not collected:
+        log.info("snapchat spotlight: seed page -> %d new items (%d parsed)", added, len(seen))
+        # Bail only when the seed page parsed nothing at all. An empty
+        # ``collected`` is normal and expected once the library is large -- it
+        # just means every seeded story is already known, and those are exactly
+        # the cursors we need to walk to reach unseen ones.
+        if not frontier:
             log.warning("snapchat spotlight: seed page yielded nothing")
             return []
 
@@ -468,8 +489,8 @@ class SnapchatScraper(Scraper):
                 time.sleep(0.4)  # be a polite client
 
         log.info(
-            "snapchat spotlight: %d unique items from %d requests",
-            len(collected), requests_made,
+            "snapchat spotlight: %d new items from %d requests (%d known stories walked)",
+            len(collected), requests_made, len(seen) - len(collected),
         )
         return list(collected.values())[:max_results]
 
@@ -555,7 +576,8 @@ class SnapchatScraper(Scraper):
         return items
 
     def scrape_hashtags(self, hashtags: list[str], max_per_run: int,
-                        download: bool = True) -> list[ScrapedItem]:
+                        download: bool = True,
+                        known_ids: "frozenset[str] | set[str] | None" = None) -> list[ScrapedItem]:
         """Scrape Spotlight, optionally biasing toward the given topics.
 
         Spotlight has no public hashtag index, so the tags *rank* the crawled
@@ -565,7 +587,10 @@ class SnapchatScraper(Scraper):
             return []
         tags = {t.lstrip("#").lower() for t in (hashtags or []) if t}
         # Over-fetch so tag ranking has something to choose between.
-        items = self.scrape_spotlight(max_results=max_per_run * 2 if tags else max_per_run)
+        items = self.scrape_spotlight(
+            max_results=max_per_run * 2 if tags else max_per_run,
+            known_ids=known_ids,
+        )
 
         if tags:
             def tag_affinity(item: ScrapedItem) -> int:

@@ -342,25 +342,47 @@ def scrape_task(handles: list[str] | None = None,
     chosen: list[ScrapedItem] = []
     rejected: dict = {}
 
+    # What the library already holds. The crawl still walks through these --
+    # a known story is a fine cursor into the related-story graph -- but they
+    # must not consume the result quota, or every run re-collects the same
+    # seed page and the yield decays toward zero.
+    with session_scope() as db:
+        known_ids = set(
+            db.execute(
+                select(Video.source_id).where(Video.source == "snapchat")
+            ).scalars().all()
+        )
+
     with SnapchatScraper() as scraper:
         # Spotlight is the firehose: one request yields 25 hydrated stories.
         try:
             fetched.extend(
-                scraper.scrape_hashtags(hashtags, max_per_run * 2, download=False)
+                scraper.scrape_hashtags(
+                    hashtags, max_per_run * 2, download=False, known_ids=known_ids
+                )
             )
         except Exception as exc:
             log.warning("scrape_task: spotlight crawl failed: %s", exc)
 
-        # Followed creators cost an extra request per video, so only top up.
-        if handles and len(fetched) < max_per_run:
+        # Top up from followed creators when Spotlight could not supply enough
+        # *new* stories. Counting total fetched here instead of new ones meant
+        # the profile crawl never ran once the library was large: refreshed
+        # duplicates alone kept len(fetched) above the threshold.
+        new_fetched = sum(1 for f in fetched if f.source_id not in known_ids)
+        if handles and new_fetched < max_per_run:
             try:
                 fetched.extend(
                     scraper.scrape_handles(
-                        handles, max_per_run - len(fetched), download=False
+                        handles, max_per_run - new_fetched, download=False
                     )
                 )
             except Exception as exc:
                 log.warning("scrape_task: profile crawl failed: %s", exc)
+        log.info(
+            "scrape_task: spotlight new=%d known=%d handles_topup=%s",
+            new_fetched, len(fetched) - new_fetched,
+            bool(handles and new_fetched < max_per_run),
+        )
 
         fetched = scraper._dedup(fetched)
         chosen, rejected = select_candidates(fetched, max_per_run)
