@@ -381,8 +381,22 @@ def main():
         else:
             for v in rows: video_card_frag(v, "approved")
     with tabs[2]:
+        # Reviewing the ready queue means picking the best of it, so rank by
+        # viral_score by default -- newest-first surfaces whatever was scraped
+        # last, which is the weak tail of a run, not the pick of it.
         with session_scope() as db:
-            rows=db.execute(select(Video).where(Video.status==VideoStatus.TRANSFORMED).order_by(desc(Video.transformed_at)).limit(12)).scalars().all()
+            total=db.scalar(select(func.count(Video.id)).where(Video.status==VideoStatus.TRANSFORMED)) or 0
+        c1,c2=st.columns([2,1])
+        with c1:
+            order=st.selectbox("Sort",["Best score","Most views","Newest"],key="ready_sort",label_visibility="collapsed")
+        with c2:
+            show=st.selectbox("Show",[12,25,50,100,"All"],key="ready_show",label_visibility="collapsed")
+        st.caption(f"{total} ready to upload")
+        order_col={"Best score":desc(Video.viral_score),"Most views":desc(Video.views),"Newest":desc(Video.transformed_at)}[order]
+        with session_scope() as db:
+            q=select(Video).where(Video.status==VideoStatus.TRANSFORMED).order_by(order_col)
+            if show!="All": q=q.limit(int(show))
+            rows=db.execute(q).scalars().all()
         if not rows: st.info("No ready. Transform hourly.")
         else:
             for v in rows: video_card_frag(v, "ready")
