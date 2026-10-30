@@ -166,15 +166,13 @@ def compose(
         clean_title = f"{clean_title} {_SHORTS_HASHTAG}"
 
     body = re.sub(r"\s+", " ", (description or "").strip())
-    blocks: list[str] = []
-    if body:
-        blocks.append(body)
+    tail_blocks: list[str] = []
 
     hashtags = _hashtags_from(tags)
     if hashtags:
-        blocks.append(" ".join([_SHORTS_HASHTAG, *hashtags]))
+        tail_blocks.append(" ".join([_SHORTS_HASHTAG, *hashtags]))
     else:
-        blocks.append(_SHORTS_HASHTAG)
+        tail_blocks.append(_SHORTS_HASHTAG)
 
     # Credit the original creator, with a link back where we have one.
     if author:
@@ -184,14 +182,25 @@ def compose(
             credit += f" on {platform.title()}"
         if source_url:
             credit += f"\n{source_url}"
-        blocks.append(credit)
+        tail_blocks.append(credit)
     elif require_credit:
         # No handle, but the visible attribution was cropped out, so say what
         # we can rather than shipping an uncredited reupload.
         credit = f"Originally posted on {platform.title()}" if platform else "Reposted content"
         if source_url:
             credit += f"\n{source_url}"
-        blocks.append(credit)
+        tail_blocks.append(credit)
+
+    # Truncate the free-form body first so the mandatory tail (hashtags +
+    # creator credit) always survives the description cap. Cutting the joined
+    # string here would silently drop the attribution on long descriptions.
+    tail = "\n\n".join(tail_blocks)
+    if body:
+        budget = _DESCRIPTION_MAX - len(tail) - len("\n\n")
+        body = body[:max(0, budget)]
+        blocks = ([body] if body else []) + tail_blocks
+    else:
+        blocks = tail_blocks
 
     description_text = "\n\n".join(blocks)[:_DESCRIPTION_MAX]
 
