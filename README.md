@@ -4,7 +4,7 @@ Autonomous YouTube Shorts factory. Scrapes viral short-form videos from
 Snapchat Spotlight and creator profiles → human approves/rejects via dashboard →
 app auto-transforms to vertical Shorts format (or chops long-form into clips) →
 auto-generates SEO metadata via LLM (preserving source language) → auto-publishes
-to your YouTube channel on a conservative 3-uploads-per-day schedule.
+to your YouTube channel on a paced 8-uploads-per-day schedule.
 
 **The user's only job: approve or reject videos. Everything else is automated.**
 
@@ -19,7 +19,7 @@ to your YouTube channel on a conservative 3-uploads-per-day schedule.
 │  │  /metadata/*   │  │  - scrape 6h │  │  /publish        │  │
 │  │  /scheduler/*  │  │  - discover  │  │  + LLM metadata  │  │
 │  │  /creators     │  │    24h       │  │  via z-ai CLI    │  │
-│  └────────────────┘  │  - publish 8h│  └──────────────────┘  │
+│  └────────────────┘  │  - publish 3h│  └──────────────────┘  │
 │                      │  - cleanup   │                         │
 │                      │    24h       │                         │
 │                      └──────────────┘                         │
@@ -44,7 +44,7 @@ No Docker. No Redis. No Celery (optional). One command starts everything.
 | `scrape`     | 6 hours  | Pull new viral videos from seed + discovered creators     |
 | `discovery`  | 24 hours | Find new creators from the authors of top viral videos    |
 | `recompute`  | 1 hour   | Refresh engagement + velocity scores                       |
-| `publish`    | 8 hours  | Auto-publish next transformed video (3/day, quota-aware)  |
+| `publish`    | 3 hours  | Auto-publish next transformed video (8/day, quota-aware)  |
 | `cleanup`    | 24 hours | Delete downloaded source files older than 7 days          |
 
 All configurable in `.env`. On startup, `scrape` runs immediately so you have
@@ -68,7 +68,7 @@ python scripts/run.py
 
 Open http://localhost:8501 — you'll see ~20 pending mock videos. Approve a
 few → the scheduler will transform them, generate LLM metadata, and publish
-on the 8-hour cadence.
+on the 3-hour cadence.
 
 For background daemon mode (logs to `logs/`):
 ```bash
@@ -89,8 +89,8 @@ python scripts/run.py --stop
    YOUTUBE_CLIENT_SECRETS=/abs/path/client_secret.json
    YOUTUBE_DEFAULT_PRIVACY=public        # or private until you trust it
    AUTO_PUBLISH=true                     # autonomous mode
-   UPLOADS_PER_DAY=3
-   UPLOAD_INTERVAL_HOURS=8
+   UPLOADS_PER_DAY=8
+   UPLOAD_INTERVAL_HOURS=3
    ```
 3. **Get YouTube OAuth credentials**:
    - Google Cloud Console → New Project
@@ -111,7 +111,7 @@ That's it. The app will now:
 - Discover new creators daily
 - Show you pending videos in the dashboard
 - When you approve, transform + generate metadata automatically (or chop long-form into Shorts clips)
-- Publish 3 videos per day, 8 hours apart, to your channel
+- Publish 8 videos per day, 3 hours apart, to your channel
 - Track quota, clean up old source files, boost creators whose videos perform well
 
 ## Project layout
@@ -196,8 +196,8 @@ doomscroller/
 
 - `QuotaUsage` table records uploads per UTC day. `MAX_UPLOADS_PER_DAY` is the
   hard cap (default 50, YouTube's daily quota).
-- `UPLOADS_PER_DAY` is your self-imposed cap (default 3, conservative for new channels).
-- The scheduler's `publish` job runs every `UPLOAD_INTERVAL_HOURS` (default 8h) and:
+- `UPLOADS_PER_DAY` is your self-imposed cap (default 8).
+- The scheduler's `publish` job runs every `UPLOAD_INTERVAL_HOURS` (default 3h) and:
   1. Checks both quotas
   2. Picks the oldest transformed video
   3. Generates metadata if missing

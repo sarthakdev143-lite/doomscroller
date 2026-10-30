@@ -7,7 +7,7 @@ Scheduled:
   - scrape      : every SCRAPE_INTERVAL_HOURS (default 6h, first run ~10s after startup)
   - discovery   : every DISCOVERY_INTERVAL_HOURS (default 24h)
   - transform   : every 1h — auto-transforms APPROVED videos
-  - publish     : every UPLOAD_INTERVAL_HOURS (default 8h)
+  - publish     : every UPLOAD_INTERVAL_HOURS (default 3h; 24 / uploads_per_day)
   - cleanup     : every 24h — removes old source files
   - recompute   : every 1h — refreshes engagement/velocity scores
 """
@@ -661,7 +661,7 @@ def start_scheduler() -> BackgroundScheduler:
         log.warning("catch-up scheduling failed: %s", exc)
 
     interval = 24 / max(1, settings.uploads_per_day) if settings.enable_publish else 0
-    log.info("Scheduler started: scrape=%dh discovery=%s auto_approve=%s transform=1h publish=%.1fh±%dm (8/day jitter) cleanup=24h recompute=1h analytics=6h (enable_publish=%s auto_discovery=%s)", settings.scrape_interval_hours, "auto" if settings.auto_discovery else "manual", "on" if settings.auto_approve else "off", interval, settings.upload_jitter_minutes, settings.enable_publish, settings.auto_discovery)
+    log.info("Scheduler started: scrape=%dh discovery=%s auto_approve=%s transform=1h publish=%.1fh±%dm (%d/day jitter) cleanup=24h recompute=1h analytics=6h (enable_publish=%s auto_discovery=%s)", settings.scrape_interval_hours, "auto" if settings.auto_discovery else "manual", "on" if settings.auto_approve else "off", interval, settings.upload_jitter_minutes, settings.uploads_per_day, settings.enable_publish, settings.auto_discovery)
     return sched
 
 
