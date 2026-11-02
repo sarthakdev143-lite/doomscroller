@@ -7,8 +7,9 @@ import sys
 from pathlib import Path
 import numpy as np
 import pytest
-from app.clipper import ai, ingest, media, timeline, transcribe
+from app.clipper import ai, ingest, media, moments, timeline, transcribe
 from app.clipper.media import Interrupted, MediaError, MediaInfo
+from app.clipper.moments import Moment, build_sentences
 from app.clipper.signals import Signals, _find_cuts
 from app.clipper.transcribe import Transcript, Word
 from app.config import settings
@@ -41,6 +42,9 @@ def _signals(seconds=120, loud_at=None, cuts=()):
     )
 
 
+INFO = MediaInfo(duration=120.0, width=1280, height=720, fps=30.0, has_audio=True)
+
+
 # ---------- Timeline ----------
 def test_pauses_are_removed_and_short_gaps_kept():
     words = [Word("a", 10.0, 10.5), Word("b", 10.6, 11.0), Word("c", 14.0, 14.5)]
@@ -67,12 +71,192 @@ def test_output_time_maps_across_a_removed_gap():
     assert timeline.output_time(segments, 99.0) is None
 
 
+# ---------- Picking moments ----------
+def test_sentences_split_on_punctuation_and_long_gaps():
+    words = _words("One two. Three four?") + [Word("Later", 50.0, 50.3)]
+    assert [s.text for s in build_sentences(words)] == ["One two.", "Three four?", "Later"]
+
+
+def _long_transcript(sentence_count=30):
+    words = []
+    now = 10.0
+    for index in range(sentence_count):
+        batch = _words(f"Sentence number {index} says something rather useful right here.", start=now)
+        words += batch
+        now = batch[-1].end + 0.2
+    return words
+
+
+def test_ai_sentence_numbers_become_clean_boundaries(monkeypatch):
+    words = _long_transcript()
+    reply = {"clips": [{"first": 2, "last": 8, "title": "Title #shorts", "hook": "A hook", "score": 90, "why": "good"}]}
+    monkeypatch.setattr(ai, "ask_json", lambda *a, **k: reply)
+    picked = moments.pick_speech(words, _signals(300), count=1)
+    sentences = build_sentences(words)
+    assert sentences[2].start - 0.1 <= picked[0].start <= sentences[2].start
+    assert picked[0].title == "Title"
+    assert any(s.end <= picked[0].end <= s.end + 0.1 for s in sentences)
+
+
+@pytest.mark.parametrize("bad", [
+    {"clips": [{"first": 999, "last": 1000}]},
+    {"clips": [{"first": "x", "last": 2}]},
+    {"clips": "not a list"},
+    {"clips": 5},
+    {"clips": [{"first": 1e999, "last": 2}]},
+    {},
+    None,
+])
+def test_bad_ai_replies_fall_back_to_rules(monkeypatch, bad):
+    monkeypatch.setattr(ai, "ask_json", lambda *a, **k: bad)
+    picked = moments.pick_speech(_long_transcript(), _signals(300), count=2)
+    assert picked and all(m.kind == "speech" for m in picked)
+    assert all(settings.clip_min_sec <= m.duration for m in picked)
+
+
+def test_ai_description_and_tags_reach_the_moment(monkeypatch):
+    reply = {"clips": [{"first": 2, "last": 8, "title": "T", "hook": "H", "score": 90,
+                        "description": "What this is about. #viral", "tags": ["#heat", "climate", ""]}]}
+    monkeypatch.setattr(ai, "ask_json", lambda *a, **k: reply)
+    moment = moments.pick_speech(_long_transcript(), _signals(300), count=1)[0]
+    assert moment.description == "What this is about."
+    assert moment.tags == ("heat", "climate")
+
+
+@pytest.mark.parametrize("tags", ["heat", 5, None, {"a": 1}])
+def test_bad_tags_are_ignored(tags):
+    assert moments.clean_tags(tags) == ()
+
+
+def test_overlong_ai_range_shrinks_to_the_limit(monkeypatch):
+    words = _long_transcript(60)
+    monkeypatch.setattr(ai, "ask_json", lambda *a, **k: {"clips": [{"first": 0, "last": 59, "score": 50}]})
+    picked = moments.pick_speech(words, _signals(600), count=1)
+    segments = timeline.keep_segments(picked[0].start, picked[0].end, words, settings.clip_silence_gap_sec)
+    assert timeline.total_duration(segments) <= settings.clip_max_sec
+
+
+def test_overlapping_moments_are_deduped():
+    kept = moments._dedupe([Moment(0, 30, score=9), Moment(5, 35, score=8), Moment(40, 70, score=7)], 5)
+    assert [m.start for m in kept] == [0, 40]
+
+
+def test_clips_may_touch_but_not_share_footage():
+    assert len(moments._dedupe([Moment(0, 30, score=2), Moment(30, 60, score=1)], 5)) == 2
+    assert len(moments._dedupe([Moment(0, 30, score=2), Moment(29, 60, score=1)], 5)) == 1
+
+
+def test_rule_based_clips_never_repeat_footage(monkeypatch):
+    monkeypatch.setattr(ai, "ask_json", lambda *a, **k: None)
+    picked = moments.pick_speech(_long_transcript(60), _signals(600), count=8)
+    assert len(picked) >= 4
+    for index, a in enumerate(picked):
+        assert not any(moments.clashes(a, b) for b in picked[index + 1:])
+
+
+def test_abbreviations_do_not_split_sentences():
+    words = _words('We met Dr. Smith at the U.S. embassy on Tuesday and it went well. '
+                   'So did I. Did he? She said "stop." J. Smith agreed.')
+    assert [s.text for s in build_sentences(words)] == [
+        "We met Dr. Smith at the U.S. embassy on Tuesday and it went well.",
+        "So did I.", "Did he?", 'She said "stop."', "J. Smith agreed.",
+    ]
+
+
+def _gapped_transcript(gap=40.0):
+    """Two passages separated by a long wordless stretch."""
+    first = _long_transcript(12)
+    second = _long_transcript(12)
+    shift = first[-1].end + gap - second[0].start
+    return first + [Word(w.text, w.start + shift, w.end + shift, w.confidence) for w in second]
+
+
+def test_ai_range_cannot_cross_a_long_silence(monkeypatch):
+    words = _gapped_transcript()
+    sentences = build_sentences(words)
+    break_at = next(i for i in range(len(sentences) - 1) if sentences[i + 1].start - sentences[i].end > 30)
+    reply = {"clips": [{"first": break_at - 6, "last": break_at + 3, "score": 90}]}
+    monkeypatch.setattr(ai, "ask_json", lambda *a, **k: reply)
+    picked = moments.pick_speech(words, _signals(300), count=1)
+    assert picked[0].end <= sentences[break_at].end + 0.2
+
+
+def test_growing_a_short_range_stops_at_a_long_silence():
+    words = _gapped_transcript()
+    sentences = build_sentences(words)
+    break_at = next(i for i in range(len(sentences) - 1) if sentences[i + 1].start - sentences[i].end > 30)
+    assert moments._fit_range(break_at, break_at, sentences, words, 300.0) is None
+
+
+def test_prompt_marks_long_silences():
+    sentences = build_sentences(_gapped_transcript())
+    assert "seconds without speech" in moments._speech_prompt(sentences, 2, "x")
+
+
+def test_non_finite_ai_scores_do_not_corrupt_ranking(monkeypatch):
+    words = _long_transcript(40)
+    monkeypatch.setattr(ai, "ask_json", lambda *a, **k: {"clips": [
+        {"first": 0, "last": 5, "score": 10}, {"first": 10, "last": 15, "score": "NaN"},
+        {"first": 20, "last": 25, "score": 95},
+    ]})
+    picked = moments.pick_speech(words, _signals(300), count=1)
+    assert picked[0].score == 95
+
+
 def test_tiny_island_does_not_keep_a_long_pause():
     words = _words("word " * 40, start=0.0) + [Word("Yes.", 44.4, 44.5)]
     segments = timeline.keep_segments(0.0, 44.6, words, 0.35)
     assert timeline.total_duration(segments) < 16
     first_word_alone = [Word("So", 0.0, 0.05)] + _words("word " * 30, start=40.0)
     assert timeline.total_duration(timeline.keep_segments(0.0, 51.0, first_word_alone, 0.35)) < 13
+
+
+def test_no_speech_ranking_follows_activity_not_position():
+    picked = moments.rank_windows(_signals(300, loud_at=(150, 180)), 1)
+    assert 140 <= picked[0].start <= 160
+
+
+def test_no_speech_windows_do_not_overlap():
+    picked = moments.rank_windows(_signals(300, loud_at=(150, 180)), 5)
+    assert len(picked) == 5
+    assert len(moments._dedupe(picked, 5)) == 5
+
+
+def test_short_video_becomes_one_clip():
+    picked = moments.rank_windows(_signals(10), 3)
+    assert len(picked) == 1 and picked[0].end == 10.0
+
+
+@pytest.mark.parametrize("duration,cuts", [(10.5, [2.25]), (2.5, [2.25]), (16.5, [2.5]), (15.7, [])])
+def test_short_fractional_sources_stay_whole(duration, cuts):
+    signals = _signals(int(np.ceil(duration)), cuts=cuts)
+    signals.duration = duration
+    picked = moments.rank_windows(signals, 3)
+    assert [(m.start, m.end) for m in picked] == [(0.0, duration)]
+
+
+@pytest.mark.parametrize("visual_sec,expected", [(58, 58), (90, 59)])
+def test_visual_clips_stay_inside_the_length_limits(monkeypatch, visual_sec, expected):
+    monkeypatch.setattr(settings, "clip_visual_sec", visual_sec)
+    picked = moments.rank_windows(_signals(300, cuts=[100.0, 150.0]), 3)
+    assert picked
+    assert all(settings.clip_min_sec <= m.duration <= settings.clip_max_sec for m in picked)
+
+
+def test_vision_reply_with_bad_candidate_number_is_ignored(monkeypatch):
+    monkeypatch.setattr(ai, "available", lambda: True)
+    monkeypatch.setattr(moments, "_ai_rank_visual", lambda *a, **k: {"clips": [
+        {"candidate": 99, "title": "x"}, {"candidate": -1, "title": "y"}, {"candidate": 1, "title": "Good", "hook": "Look", "score": 70},
+    ]})
+    picked = moments.pick_visual("x.mp4", INFO, _signals(120, loud_at=(50, 80)), count=2, title="Film")
+    assert picked[0].title == "Good"
+    assert all(m.title != "x" and m.title != "y" for m in picked)
+
+
+def test_visual_path_titles_itself_without_ai(monkeypatch):
+    monkeypatch.setattr(ai, "available", lambda: False)
+    picked = moments.pick_visual("x.mp4", INFO, _signals(120), count=2, title="Film")
+    assert picked[0].title == "Film - part 1"
 
 
 # ---------- Signals ----------
