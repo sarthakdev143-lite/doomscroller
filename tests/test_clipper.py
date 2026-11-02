@@ -457,6 +457,17 @@ def test_long_graphic_text_breaks_into_short_lines():
     assert captions._beat_lines("A BIG WIN") == ["A BIG WIN"]
 
 
+def test_sound_track_has_the_right_length_and_is_not_clipped(tmp_path):
+    import wave
+    from app.clipper import sfx
+    path = tmp_path / "sfx.wav"
+    sfx.build_track(str(path), 10.0, [sfx.Cue(0.0, sfx.IMPACT), sfx.Cue(3.0, sfx.WHOOSH), sfx.Cue(9.9, sfx.POP), sfx.Cue(99.0, sfx.POP)])
+    with wave.open(str(path)) as handle:
+        assert handle.getnframes() == 11 * sfx.RATE
+        samples = np.frombuffer(handle.readframes(handle.getnframes()), np.int16)
+    assert np.abs(samples).max() > 1000 and np.abs(samples).max() < 32767
+
+
 def test_centre_ignores_a_second_that_straddles_a_cut():
     signals = _signals(30)
     signals.centroid[:] = 0.1
