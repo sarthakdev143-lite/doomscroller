@@ -19,11 +19,13 @@ init_db()
 page = AppTest.from_file("dashboard/app.py", default_timeout=60).run()
 print("RESULT" + json.dumps({
     "exceptions": [str(e.value) for e in page.exception],
+    "tabs": [tab.label for tab in page.tabs],
+    "inputs": [box.label for box in page.text_input],
 }))
 """
 
 
-def test_dashboard_loads(tmp_path):
+def test_dashboard_loads_with_the_clip_tab(tmp_path):
     env = {**os.environ, "USE_MOCK": "true", "DATABASE_URL": f"sqlite:///{tmp_path}/d.db",
            "CONTENT_DIR": str(tmp_path / "content"), "PYTHONPATH": str(ROOT)}
     proc = subprocess.run([sys.executable, "-c", CHECK], cwd=ROOT, env=env, capture_output=True, text=True, timeout=120)
@@ -31,3 +33,5 @@ def test_dashboard_loads(tmp_path):
     assert line, proc.stderr[-2000:]
     page = json.loads(line[len("RESULT"):])
     assert not page["exceptions"], page["exceptions"]
+    assert "✂️ Clip" in page["tabs"]
+    assert "Video link or local file" in page["inputs"]

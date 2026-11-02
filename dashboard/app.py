@@ -293,6 +293,37 @@ def stats_frag():
         st.progress(s["pending"]/20, text=f"{s['pending']}/20 pending — scraper fills to 20")
     return s
 
+def clip_tab():
+    with st.form("clip_form", clear_on_submit=True):
+        source=st.text_input("Video link or local file", placeholder="https://www.youtube.com/watch?v=...")
+        c1,c2=st.columns([1,3])
+        count=c1.number_input("Clips", min_value=1, max_value=20, value=settings.max_clips_per_video)
+        auto=c2.checkbox("Skip review: send finished clips straight to the publish queue", value=settings.clip_auto_queue)
+        if st.form_submit_button("✂️ Make clips", type="primary") and source.strip():
+            out=_api("POST","/clip", json={"source":source.strip(),"count":int(count),"auto_queue":auto})
+            if out: st.toast("Queued", icon="✂️")
+    if st.button("🔄 Refresh jobs"): st.rerun()
+    jobs=_api("GET","/clip/jobs") or []
+    if not jobs: st.info("No clip jobs yet. Paste a link above.")
+    for job in jobs:
+        result=job.get("result") or {}
+        with st.container(border=True):
+            st.markdown(f"**{result.get('source') or job['source']}**")
+            if job["status"] in ("queued","running"):
+                st.caption(f"⏳ {job.get('stage') or job['status']}")
+            elif job["status"]=="failed":
+                st.error(job.get("error") or "failed")
+            for warning in result.get("warnings",[]): st.warning(warning)
+            clips=result.get("clips",[])
+            if clips:
+                where="publish queue" if result.get("queued") else "Pending tab"
+                st.caption(f"{len(clips)} {result.get('kind','')} clips • {where}")
+                for col,clip in zip(st.columns(min(len(clips),4)), clips[:4]):
+                    with col:
+                        if os.path.exists(clip["path"]): st.video(clip["path"])
+                        st.caption(f"**{clip['title']}** • {clip['duration']}s")
+
+
 def main():
     # A fragment may only write to the sidebar from inside this context.
     with st.sidebar:
@@ -342,7 +373,7 @@ def main():
     if st.button("🔄 Refresh", help="Clear cache"):
         _cached_stats.clear(); st.rerun()
 
-    tabs=st.tabs(["📥 Pending","✅ Approved","⬇️ Ready","🚀 Pipeline","✅ Published","👥 Creators","🗂 All"])
+    tabs=st.tabs(["📥 Pending","✅ Approved","⬇️ Ready","🚀 Pipeline","✅ Published","👥 Creators","🗂 All","✂️ Clip"])
     with tabs[0]:
         page=st.session_state.get("pending_page",0)
         per_page=6 if density=="Compact" else 8
@@ -419,6 +450,8 @@ def main():
             if q: base=base.where(or_(func.lower(Video.title).like(f"%{q}%"), func.lower(Video.author).like(f"%{q}%")))
             rows=db.execute(base.order_by(desc(Video.scraped_at)).limit(16)).scalars().all()
         for v in rows: video_card_frag(v, "all")
+    with tabs[7]:
+        clip_tab()
 
 if __name__=="__main__":
     main()
