@@ -7,6 +7,8 @@ import numpy as np
 import pytest
 from app.clipper import ai, broll, shots
 from app.clipper.broll import Candidate
+from app.clipper.edit import Cutaway, EditPlan, attach_stock
+from app.clipper.transcribe import Word
 from app.config import settings
 
 
@@ -44,6 +46,11 @@ def _stub_thumbnails(monkeypatch, failing=()):
 
     monkeypatch.setattr(shots, "_thumbnail", thumbnail)
     return asked
+
+
+def _plan(*cutaways):
+    words = [Word(f"w{i}", 10 + i * 0.5, 10.4 + i * 0.5, 0.99) for i in range(40)]
+    return EditPlan(words=words, segments=[(10.0, 30.0)], speed=1.0, cutaways=[Cutaway(at, 2.0, q) for at, q in cutaways])
 
 
 def _search_returns(monkeypatch, **results):
@@ -331,6 +338,226 @@ def test_next_choice_is_tried_when_the_best_will_not_download(monkeypatch):
 
     monkeypatch.setattr(broll, "_download", deliver)
     assert broll.fetch("rain", 2.0, choose=lambda found: [found[0], found[2]]).video_id == "pixabay-3"
+
+
+def test_words_after_a_cut_inside_the_shot_are_included(monkeypatch):
+    _search_returns(monkeypatch, rain=[_candidate(1)])
+    told = []
+    monkeypatch.setattr(shots, "judge", lambda found, spoken: told.append(spoken) or shots.Verdict(list(found)))
+    first = [Word(f"a{i}", 10 + i * 0.4, 10.3 + i * 0.4, 0.99) for i in range(15)]
+    second = [Word(f"c{i}", 34 + i * 0.4, 34.3 + i * 0.4, 0.99) for i in range(15)]
+    plan = EditPlan(words=first + second, segments=[(10.0, 16.0), (34.0, 40.0)], speed=1.12,
+                    cutaways=[Cutaway(14.4, 3.0, "rain")])
+    attach_stock(plan)
+    spoken = told[0].split()
+    # The shot plays over the last of the first sentence and well into the second.
+    assert "a11" in spoken and "c0" in spoken and "c5" in spoken
+    assert "a6" not in spoken and "c13" not in spoken
+
+
+def test_a_shot_with_no_position_in_the_edit_skips_the_ai(monkeypatch):
+    _search_returns(monkeypatch, rain=[_candidate(1)])
+    calls = []
+    monkeypatch.setattr(shots, "judge", lambda found, spoken: calls.append(spoken))
+    plan = _plan((99.0, "rain"))
+    attach_stock(plan)
+    assert not calls and plan.cutaways[0].clip.video_id == "pixabay-1"
+
+
+def test_chosen_shot_goes_on_the_cutaway(monkeypatch):
+    _search_returns(monkeypatch, rain=[_candidate(1), _candidate(2)])
+    monkeypatch.setattr(shots, "judge", lambda found, spoken: shots.Verdict([found[1]]))
+    plan = _plan((15.0, "rain"))
+    assert attach_stock(plan) == [] and plan.cutaways[0].clip.video_id == "pixabay-2"
+
+
+def test_better_search_is_tried_once_and_recorded(monkeypatch):
+    searches = _search_returns(monkeypatch, rain=[_candidate(1)], hot_sun=[_candidate(2)])
+
+    def judge(found, spoken):
+        if found[0].video_id == "pixabay-1":
+            return shots.Verdict([], "hot sun")
+        return shots.Verdict(list(found))
+
+    monkeypatch.setattr(shots, "judge", judge)
+    plan = _plan((15.0, "rain"))
+    attach_stock(plan)
+    assert searches == ["rain", "hot sun"]
+    assert plan.cutaways[0].clip.video_id == "pixabay-2" and plan.cutaways[0].query == "hot sun"
+
+
+def test_second_rejection_drops_the_cutaway_without_a_third_search(monkeypatch):
+    searches = _search_returns(monkeypatch, rain=[_candidate(1)], hot_sun=[_candidate(2)], snow=[_candidate(3)])
+    replies = iter(["hot sun", "snow"])
+    monkeypatch.setattr(shots, "judge", lambda found, spoken: shots.Verdict([], next(replies)))
+    plan = _plan((15.0, "rain"))
+    assert attach_stock(plan) == [] and plan.cutaways == []
+    assert searches == ["rain", "hot sun"]
+
+
+def test_suggesting_the_same_search_again_is_not_retried(monkeypatch):
+    searches = _search_returns(monkeypatch, rain=[_candidate(1)])
+    monkeypatch.setattr(shots, "judge", lambda found, spoken: shots.Verdict([], "RAIN"))
+    plan = _plan((15.0, "rain"))
+    attach_stock(plan)
+    assert searches == ["rain"] and plan.cutaways == []
+
+
+def test_rejection_without_a_suggestion_drops_the_cutaway(monkeypatch):
+    searches = _search_returns(monkeypatch, rain=[_candidate(1)])
+    monkeypatch.setattr(shots, "judge", lambda found, spoken: shots.Verdict([]))
+    plan = _plan((15.0, "rain"))
+    assert attach_stock(plan) == [] and plan.cutaways == [] and searches == ["rain"]
+
+
+def test_a_suggestion_from_one_cutaway_never_leaks_into_the_next(monkeypatch):
+    searches = _search_returns(monkeypatch, rain=[_candidate(1)], sun=[_candidate(2)], hot=[_candidate(3)])
+    replies = iter([shots.Verdict([], "hot"), shots.Verdict([]), shots.Verdict([])])
+    monkeypatch.setattr(shots, "judge", lambda found, spoken: next(replies))
+    attach_stock(_plan((12.0, "rain"), (18.0, "sun")))
+    assert searches == ["rain", "hot", "sun"]
+
+
+def test_better_search_that_is_rate_limited_stops_the_job_cleanly(monkeypatch):
+    def search(query):
+        if query == "hot":
+            raise broll.RateLimited("Pixabay rate limit reached")
+        return [_candidate(1)]
+
+    monkeypatch.setattr(broll, "search", search)
+    monkeypatch.setattr(shots, "judge", lambda found, spoken: shots.Verdict([], "hot"))
+    session = broll.StockSession()
+    plan = _plan((12.0, "rain"), (18.0, "sun"))
+    warnings = attach_stock(plan, session)
+    assert session.stopped and plan.cutaways == [] and "rate limit" in warnings[0]
+
+
+def test_used_shot_is_not_offered_again_on_the_better_search(monkeypatch):
+    _search_returns(monkeypatch, rain=[_candidate(1)], sun=[_candidate(2)], hot=[_candidate(1), _candidate(3)])
+    offered = []
+
+    def judge(found, spoken):
+        offered.append([c.video_id for c in found])
+        if found[0].video_id == "pixabay-2":
+            return shots.Verdict([], "hot")
+        return shots.Verdict(list(found))
+
+    monkeypatch.setattr(shots, "judge", judge)
+    plan = _plan((12.0, "rain"), (18.0, "sun"))
+    attach_stock(plan)
+    assert offered == [["pixabay-1"], ["pixabay-2"], ["pixabay-3"]]
+    assert [c.clip.video_id for c in plan.cutaways] == ["pixabay-1", "pixabay-3"]
+
+
+def test_when_the_ai_fails_the_first_match_is_used_and_it_is_not_asked_again(monkeypatch):
+    _search_returns(monkeypatch, rain=[_candidate(1)], sun=[_candidate(2)])
+    calls = []
+    monkeypatch.setattr(shots, "judge", lambda found, spoken: calls.append(spoken))
+    session = broll.StockSession()
+    plan = _plan((12.0, "rain"), (18.0, "sun"))
+    warnings = attach_stock(plan, session)
+    assert [c.clip.video_id for c in plan.cutaways] == ["pixabay-1", "pixabay-2"]
+    assert len(calls) == 1 and session.picking_failed
+    assert len(warnings) == 1 and "first matches" in warnings[0]
+
+    later = _plan((12.0, "rain"))
+    assert attach_stock(later, session) == [] and later.cutaways and len(calls) == 1
+
+
+def test_without_ai_the_first_match_is_used_and_nothing_extra_is_downloaded(monkeypatch):
+    _search_returns(monkeypatch, rain=[_candidate(1), _candidate(2)])
+    monkeypatch.setattr(ai, "available", lambda: False)
+    asked = _stub_thumbnails(monkeypatch)
+    plan = _plan((15.0, "rain"))
+    assert attach_stock(plan) == [] and plan.cutaways[0].clip.video_id == "pixabay-1" and not asked
+
+
+def test_dead_thumbnails_cost_one_search_and_leave_the_ai_on(monkeypatch):
+    _search_returns(monkeypatch, rain=[_candidate(1)], sun=[_candidate(2), _candidate(3)])
+    _stub_thumbnails(monkeypatch, failing={"https://cdn/1.jpg"})
+    asks = []
+
+    def ask(prompt, *, files=(), model=""):
+        asks.append(prompt)
+        return {"shots": [2]}
+
+    monkeypatch.setattr(ai, "ask_json", ask)
+    session = broll.StockSession()
+    plan = _plan((12.0, "rain"), (18.0, "sun"))
+    assert attach_stock(plan, session) == []
+    assert not session.picking_failed and len(asks) == 1
+    assert [c.clip.video_id for c in plan.cutaways] == ["pixabay-1", "pixabay-3"]
+
+
+def test_better_search_never_offers_a_shot_already_rejected(monkeypatch):
+    searches = _search_returns(monkeypatch, rain=[_candidate(1), _candidate(2)], hot=[_candidate(1), _candidate(5)])
+    _stub_thumbnails(monkeypatch)
+    offered = []
+    replies = iter([{"shots": [], "search": "hot"}, {"shots": [1]}])
+
+    def ask(prompt, *, files=(), model=""):
+        offered.append(prompt.split(" stock video shots")[0])
+        return next(replies)
+
+    monkeypatch.setattr(ai, "ask_json", ask)
+    plan = _plan((15.0, "rain"))
+    attach_stock(plan)
+    assert searches == ["rain", "hot"] and offered[1].endswith("shows 1")
+    assert plan.cutaways[0].clip.video_id == "pixabay-5"
+
+
+def test_ai_failing_on_the_better_search_does_not_bring_back_a_rejected_shot(monkeypatch):
+    _search_returns(monkeypatch, rain=[_candidate(1)], hot=[_candidate(1), _candidate(5)])
+    _stub_thumbnails(monkeypatch)
+    replies = iter([{"shots": [], "search": "hot"}, None])
+    monkeypatch.setattr(ai, "ask_json", lambda *a, **k: next(replies))
+    plan = _plan((15.0, "rain"))
+    attach_stock(plan)
+    assert plan.cutaways[0].clip.video_id == "pixabay-5"
+
+
+def _failing_downloads(monkeypatch, bad):
+    def deliver(link, path):
+        if any(f"/{n}.mp4" in link for n in bad):
+            raise broll.StockError("download returned 500")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"v" * 2000)
+
+    monkeypatch.setattr(broll, "_download", deliver)
+
+
+def test_one_bad_file_chosen_by_the_ai_costs_only_that_cutaway(monkeypatch):
+    _search_returns(monkeypatch, a=[_candidate(1)], b=[_candidate(2)], c=[_candidate(3)])
+    monkeypatch.setattr(shots, "judge", lambda found, spoken: shots.Verdict(list(found)))
+    _failing_downloads(monkeypatch, {1, 2})
+    session = broll.StockSession()
+    plan = _plan((11.0, "a"), (15.0, "b"), (19.0, "c"))
+    attach_stock(plan, session)
+    assert not session.stopped and [c.clip.video_id for c in plan.cutaways] == ["pixabay-3"]
+    assert session.failed_files == 0, "a good download clears the count"
+
+
+def test_four_bad_files_in_a_row_still_mean_a_dead_cdn(monkeypatch):
+    searches = _search_returns(monkeypatch, a=[_candidate(1)], b=[_candidate(2)], c=[_candidate(3)],
+                               d=[_candidate(4)], e=[_candidate(5)])
+    monkeypatch.setattr(shots, "judge", lambda found, spoken: shots.Verdict(list(found)))
+    _failing_downloads(monkeypatch, {1, 2, 3, 4, 5})
+    session = broll.StockSession()
+    plan = _plan((11.0, "a"), (13.0, "b"), (15.0, "c"), (17.0, "d"), (19.0, "e"))
+    attach_stock(plan, session)
+    assert session.stopped and searches == ["a", "b", "c", "d"] and plan.cutaways == []
+
+
+def test_a_crash_while_judging_costs_the_shot_but_not_the_clip(monkeypatch):
+    _search_returns(monkeypatch, rain=[_candidate(1)])
+
+    def boom(found, spoken):
+        raise RuntimeError("sheet went wrong")
+
+    monkeypatch.setattr(shots, "judge", boom)
+    plan = _plan((15.0, "rain"))
+    warnings = attach_stock(plan)
+    assert plan.cutaways == [] and "sheet went wrong" in warnings[0]
 
 
 def test_tests_cannot_reach_real_services():

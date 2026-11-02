@@ -387,6 +387,92 @@ def test_a_moving_blur_cannot_beat_a_real_size_difference_at_rest(monkeypatch):
     assert faces.speaker_in_pair(still, still)[0] == pytest.approx(1028 / 1280)
 
 
+def test_stutters_and_filler_are_marked_for_removal():
+    from app.clipper.edit import droppable_indices
+    words = _words("so we we don't um know, you know, what it means. You know that it matters.")
+    drop = {words[i].text for i in droppable_indices(words)}
+    assert "um" in drop and "we" in drop and "know," in drop
+    kept = [w.text for i, w in enumerate(words) if i not in droppable_indices(words)]
+    assert kept.count("we") == 1
+    assert "that" in kept and kept[kept.index("that") - 1] == "know", "'you know that' carries meaning"
+
+
+def _after_tidying(text):
+    from app.clipper.edit import droppable_indices
+    words = _words(text)
+    drop = droppable_indices(words)
+    return " ".join(w.text for i, w in enumerate(words) if i not in drop)
+
+
+@pytest.mark.parametrize("text", [
+    "We need to talk about money. Money is the whole problem.",
+    "Fear leads to anger. Anger leads to hate.",
+    "It's its own problem.",
+    "It was a 50 50 chance.",
+    "We flew to Bora Bora today.",
+    "Never, never, never give up.",
+    "She had had enough of it.",
+    "I knew that that was it.",
+    "Go! Go! Go!",
+    "As you know, the sun is hot.",
+    "If you know, you know.",
+    "Do you know, John?",
+    "Look, I mean it.",
+    "Honestly, you know the answer.",
+    "That is what I mean, right?",
+    "First, kind of blue is my favourite album.",
+    "Kind of, yes.",
+    "He rushed to the ER. Nobody came.",
+    "The bolt is 5 mm wide.",
+    "Did you do it? Mhm.",
+])
+def test_real_words_survive_the_tidy(text):
+    assert _after_tidying(text) == text
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("So we we left today.", "So we left today."),
+    ("I I think so.", "I think so."),
+    ("we were, you know, tired.", "we were, tired."),
+    ("it was, I mean, huge.", "it was, huge."),
+    ("You know, it matters.", "it matters."),
+    ("Um, so we left.", "so we left."),
+    ("So um we left.", "So we left."),
+    ("Well, mm, maybe not.", "Well, maybe not."),
+])
+def test_stutters_and_filler_do_go(text, expected):
+    assert _after_tidying(text) == expected
+
+
+def test_cutting_the_next_sentence_does_not_lose_a_word_from_this_one(monkeypatch):
+    from app.clipper.edit import build_edit
+    text = "We need to talk about money. Money is the whole problem here today. " + " ".join(
+        f"Sentence {i} has plenty of useful words about the thing we care about." for i in range(8))
+    words = _words(text, start=10.0)
+    _edit_reply(monkeypatch, {"keep": [0, 2, 3, 4, 5, 6, 7, 8, 9], "beats": []})
+    kept = [w.text for w in build_edit(Moment(10.0, words[-1].end), words).words]
+    assert "money." in kept
+
+
+def test_a_chant_is_not_edited_down_to_nothing(monkeypatch):
+    from app.clipper.edit import build_edit
+    words = _words("go " * 60, start=10.0)
+    _edit_reply(monkeypatch, None)
+    edit = build_edit(Moment(10.0, words[-1].end), words)
+    assert timeline.total_duration(edit.segments) >= 12
+
+
+def test_short_tightened_clip_keeps_the_ais_graphics_and_broll(monkeypatch):
+    from app.clipper.edit import build_edit
+    _edit_reply(monkeypatch, {"keep": [0], "beats": [
+        {"sentence": 5, "phrase": "useful words", "text": "USEFUL", "style": "card"}],
+        "broll": [{"sentence": 8, "phrase": "useful words", "query": "rain", "seconds": 2.5}]})
+    words = _talk()
+    edit = build_edit(Moment(10.0, words[-1].end), words)
+    assert len(edit.words) == len(words)
+    assert [b.text for b in edit.beats] == ["USEFUL"] and [c.query for c in edit.cutaways] == ["rain"]
+
+
 def test_padding_stays_inside_the_moment():
     words = [Word("why", 14.41, 14.80), Word("end", 20.0, 20.42)]
     segments = timeline.edit_segments(words, [0, 1], 0.12, start=14.41, end=20.42)
@@ -405,10 +491,114 @@ def test_nearby_kept_words_stay_joined():
     assert len(timeline.edit_segments(words, [0, 1, 2], 0.12)) == 2
 
 
+def _edit_reply(monkeypatch, reply):
+    monkeypatch.setattr(ai, "ask_json", lambda *a, **k: reply)
+
+
+def _talk():
+    text = " ".join(f"Sentence {i} has 40 useful words about the thing we care about today." for i in range(12))
+    return _words(text, start=10.0)
+
+
+def test_edit_keeps_the_chosen_sentences_and_speeds_up(monkeypatch):
+    from app.clipper.edit import build_edit
+    _edit_reply(monkeypatch, {"keep": [0, 2, 4, 6, 8, 10], "beats": []})
+    words = _talk()
+    edit = build_edit(Moment(10.0, words[-1].end), words)
+    assert len(edit.words) < len(words)
+    assert edit.speed == settings.clip_speed
+    assert edit.duration < timeline.total_duration(edit.segments)
+    assert "Sentence 1 has" not in " ".join(w.text for w in edit.words)
+
+
+def test_edit_that_guts_the_clip_is_refused(monkeypatch):
+    from app.clipper.edit import build_edit
+    _edit_reply(monkeypatch, {"keep": [0], "beats": []})
+    words = _talk()
+    edit = build_edit(Moment(10.0, words[-1].end), words)
+    assert len(edit.words) == len(words)
+
+
+@pytest.mark.parametrize("reply", [None, {}, {"keep": "all"}, {"keep": [999]}, {"keep": [1e999]}, {"beats": 5}])
+def test_bad_edit_replies_still_give_a_usable_plan(monkeypatch, reply):
+    from app.clipper.edit import build_edit
+    _edit_reply(monkeypatch, reply)
+    words = _talk()
+    edit = build_edit(Moment(10.0, words[-1].end), words)
+    assert edit.words and edit.segments and edit.duration > 0
+
+
+def test_graphics_land_on_exact_phrases_and_bad_ones_are_dropped(monkeypatch):
+    from app.clipper.edit import STAT, build_edit
+    _edit_reply(monkeypatch, {"keep": list(range(12)), "beats": [
+        {"sentence": 3, "phrase": "40 useful words", "text": "40", "label": "words", "style": "stat"},
+        {"sentence": 6, "phrase": "not in this sentence", "text": "NOPE", "style": "punch"},
+        {"sentence": 7, "phrase": "the thing", "text": "x" * 99, "style": "card"},
+        {"sentence": 8, "phrase": "the thing", "text": "THING", "style": "explode"},
+        {"sentence": "x", "phrase": "the thing", "text": "THING", "style": "punch"},
+        "not a dict",
+    ]})
+    words = _talk()
+    edit = build_edit(Moment(10.0, words[-1].end), words)
+    assert [(b.text, b.style, b.label) for b in edit.beats] == [("40", STAT, "WORDS")]
+    spoken = next(w for w in edit.words if w.start == edit.beats[0].at)
+    assert spoken.text == "40"
+
+
+def test_a_stat_without_a_number_becomes_a_punch(monkeypatch):
+    from app.clipper.edit import PUNCH, build_edit
+    _edit_reply(monkeypatch, {"keep": list(range(12)), "beats": [
+        {"sentence": 3, "phrase": "useful words", "text": "USEFUL", "style": "stat"}]})
+    words = _talk()
+    beat = build_edit(Moment(10.0, words[-1].end), words).beats[0]
+    assert beat.style == PUNCH and beat.text == ""
+
+
+@pytest.mark.parametrize("text", ["", "BIG WORD", "x" * 99, "🔥"])
+def test_a_punch_has_no_text_whatever_the_ai_wrote(monkeypatch, text):
+    from app.clipper.edit import PUNCH, build_edit
+    _edit_reply(monkeypatch, {"keep": list(range(12)), "beats": [
+        {"sentence": 3, "phrase": "useful words", "text": text, "style": "punch"}]})
+    words = _talk()
+    edit = build_edit(Moment(10.0, words[-1].end), words)
+    assert [(b.text, b.style) for b in edit.beats] == [("", PUNCH)]
+
+
+def test_big_word_text_is_gone_for_good(monkeypatch):
+    from app.clipper.edit import _edit_prompt, build_edit
+    words = _talk()
+    _edit_reply(monkeypatch, {"keep": list(range(12)), "beats": [
+        {"sentence": 3, "phrase": "useful words", "text": "BIG", "style": "slam"}]})
+    assert "BIG" not in [b.text for b in build_edit(Moment(10.0, words[-1].end), words).beats]
+    assert "slam" not in _edit_prompt([], "x")
+    assert "Dialogue" not in captions.build_ass([], "", 20.0, "Font", None, [(4.0, "BIG", "slam", "", 1.2)])
+
+
 @pytest.mark.parametrize("text", ["", "BIG"])
 def test_a_punch_draws_nothing_at_all(text):
     ass = captions.build_ass([], "", 20.0, "Font", None, [(4.0, text, "punch", "", 1.2)])
     assert "Dialogue" not in ass, "no text and no dimming"
+
+
+def test_graphics_keep_clear_of_the_hook_and_each_other(monkeypatch):
+    from app.clipper.edit import build_edit
+    _edit_reply(monkeypatch, {"keep": list(range(12)), "beats": [
+        {"sentence": s, "phrase": "useful words", "text": "CARD" if s % 2 else "", "style": "card" if s % 2 else "punch"}
+        for s in range(12)
+    ]})
+    words = _talk()
+    edit = build_edit(Moment(10.0, words[-1].end), words)
+    times = [edit.to_output(b.at) for b in edit.beats]
+    assert times and times[0] >= 3.0
+    assert all(b - a >= 2.5 for a, b in zip(times, times[1:]))
+    assert sum(1 for b in edit.beats if b.style == "card") <= 1
+
+
+def test_without_ai_numbers_still_get_graphics(monkeypatch):
+    from app.clipper.edit import build_edit
+    _edit_reply(monkeypatch, None)
+    words = _talk()
+    assert build_edit(Moment(10.0, words[-1].end), words).beats
 
 
 def _video(video_id=1, duration=10, files=None, name="Ana"):
@@ -812,6 +1002,165 @@ def test_interrupted_download_leaves_nothing_in_the_cache(tmp_path, monkeypatch)
     assert not target.exists() and not list(target.parent.iterdir())
 
 
+def _broll_reply(*shots):
+    return {"keep": list(range(12)), "beats": [], "broll": [
+        {"sentence": s, "phrase": "useful words", "query": q, "seconds": 2.5} for s, q in shots]}
+
+
+def test_ai_broll_lands_on_kept_words_inside_the_limits(monkeypatch):
+    from app.clipper.edit import build_edit
+    _edit_reply(monkeypatch, _broll_reply((2, "flooded street"), (2, "too close"), (5, "dry earth"), (11, "too late")))
+    words = _talk()
+    edit = build_edit(Moment(10.0, words[-1].end), words)
+    assert edit.cutaways
+    times = [edit.to_output(c.at) for c in edit.cutaways]
+    assert times[0] >= 2.5
+    for cutaway, when in zip(edit.cutaways, times):
+        assert 1.5 <= cutaway.seconds <= 3.2
+        assert when + cutaway.seconds <= edit.duration - 1.5
+    assert sum(c.seconds for c in edit.cutaways) <= edit.duration * 0.45
+    assert "too close" not in [c.query for c in edit.cutaways]
+
+
+@pytest.mark.parametrize("item", [
+    "junk", {"sentence": 99, "phrase": "useful words", "query": "x"}, {"sentence": 3, "phrase": "not here", "query": "x"},
+    {"sentence": 3, "phrase": "useful words", "query": ""}, {"sentence": 3, "phrase": "useful words", "query": "x" * 99},
+    {"sentence": 3, "phrase": "useful words", "query": "x", "seconds": "NaN"},
+])
+def test_bad_broll_items_are_dropped(monkeypatch, item):
+    from app.clipper.edit import build_edit
+    _edit_reply(monkeypatch, {"keep": list(range(12)), "beats": [], "broll": [item]})
+    words = _talk()
+    assert build_edit(Moment(10.0, words[-1].end), words).cutaways == []
+
+
+def _planned(monkeypatch, *shots):
+    from app.clipper.edit import build_edit
+    _edit_reply(monkeypatch, _broll_reply(*shots))
+    words = _talk()
+    return build_edit(Moment(10.0, words[-1].end), words)
+
+
+def test_no_key_means_no_broll_and_one_clear_warning(monkeypatch):
+    from app.clipper.edit import attach_stock
+    monkeypatch.setattr(settings, "pexels_api_key", "")
+    monkeypatch.setattr(settings, "pixabay_api_key", "")
+    edit = _planned(monkeypatch, (3, "rain"))
+    assert edit.cutaways
+    assert "PIXABAY_API_KEY" in attach_stock(edit)[0]
+    assert edit.cutaways == []
+
+
+def test_rate_limit_stops_searching(monkeypatch):
+    from app.clipper import broll
+    from app.clipper.edit import attach_stock
+    monkeypatch.setattr(settings, "pexels_api_key", "key")
+    edit = _planned(monkeypatch, (3, "rain"), (6, "sun"))
+    assert len(edit.cutaways) == 2
+    calls = []
+
+    def limited(query, seconds, exclude=(), choose=None):
+        calls.append(query)
+        raise broll.RateLimited("Pexels rate limit reached")
+
+    monkeypatch.setattr(broll, "fetch", limited)
+    warnings = attach_stock(edit)
+    assert len(calls) == 1 and edit.cutaways == [] and "rate limit" in warnings[0]
+
+
+def test_blocked_search_stops_every_later_clip_in_the_job(monkeypatch):
+    from app.clipper import broll
+    from app.clipper.edit import attach_stock
+    monkeypatch.setattr(settings, "pexels_api_key", "key")
+    calls = []
+
+    def limited(query, seconds, exclude=(), choose=None):
+        calls.append(query)
+        raise broll.RateLimited("Pexels rate limit reached")
+
+    monkeypatch.setattr(broll, "fetch", limited)
+    session = broll.StockSession()
+    first = attach_stock(_planned(monkeypatch, (3, "rain"), (6, "sun")), session)
+    second = attach_stock(_planned(monkeypatch, (3, "rain"), (6, "sun")), session)
+    assert len(calls) == 1 and first and second == []
+
+
+def test_dead_cdn_stops_after_two_cutaways(monkeypatch):
+    from app.clipper import broll
+    from app.clipper.edit import attach_stock
+    monkeypatch.setattr(settings, "pexels_api_key", "key")
+    calls = []
+
+    def dead(query, seconds, exclude=(), choose=None):
+        calls.append(query)
+        raise broll.DownloadsFailed("2 stock downloads failed")
+
+    monkeypatch.setattr(broll, "fetch", dead)
+    plan = _planned(monkeypatch, (2, "a"), (5, "b"), (8, "c"))
+    assert len(plan.cutaways) == 3
+    warnings = attach_stock(plan, broll.StockSession())
+    assert len(calls) == 2 and plan.cutaways == [] and len(set(warnings)) == 1
+
+
+@pytest.mark.parametrize("error", [TypeError("bad"), UnicodeEncodeError("ascii", "x", 0, 1, "bad"), RuntimeError("bad")])
+def test_any_stock_error_costs_only_the_broll(monkeypatch, error):
+    from app.clipper import broll
+    from app.clipper.edit import attach_stock
+    monkeypatch.setattr(settings, "pexels_api_key", "key")
+
+    def broken(query, seconds, exclude=(), choose=None):
+        raise error
+
+    monkeypatch.setattr(broll, "fetch", broken)
+    plan = _planned(monkeypatch, (3, "rain"))
+    assert attach_stock(plan) and plan.cutaways == []
+
+
+def test_shutdown_still_gets_through_the_stock_code(monkeypatch):
+    from app.clipper import broll
+    from app.clipper.edit import attach_stock
+    monkeypatch.setattr(settings, "pexels_api_key", "key")
+
+    def stopped(query, seconds, exclude=(), choose=None):
+        raise Interrupted("ffmpeg was stopped")
+
+    monkeypatch.setattr(broll, "fetch", stopped)
+    with pytest.raises(Interrupted):
+        attach_stock(_planned(monkeypatch, (3, "rain")))
+
+
+def test_one_failed_search_keeps_the_other_shots(monkeypatch):
+    from app.clipper import broll
+    from app.clipper.edit import attach_stock
+    monkeypatch.setattr(settings, "pexels_api_key", "key")
+    edit = _planned(monkeypatch, (3, "rain"), (6, "sun"))
+
+    def mixed(query, seconds, exclude=(), choose=None):
+        if query == "rain":
+            raise broll.StockError("Pexels returned 500")
+        return broll.StockClip("5", "/x/5.mp4", 10.0, "Ana", offset=0.4)
+
+    monkeypatch.setattr(broll, "fetch", mixed)
+    warnings = attach_stock(edit)
+    assert [c.query for c in edit.cutaways] == ["sun"] and "500" in warnings[0]
+
+
+def test_same_stock_clip_is_not_used_twice_in_a_clip(monkeypatch):
+    from app.clipper import broll
+    from app.clipper.edit import attach_stock
+    monkeypatch.setattr(settings, "pexels_api_key", "key")
+    edit = _planned(monkeypatch, (3, "rain"), (6, "sun"))
+    seen = []
+
+    def fetch(query, seconds, exclude=(), choose=None):
+        seen.append(set(exclude))
+        return broll.StockClip(query, f"/x/{query}.mp4", 10.0, offset=0.4)
+
+    monkeypatch.setattr(broll, "fetch", fetch)
+    attach_stock(edit)
+    assert seen == [set(), {"rain"}]
+
+
 def test_credit_line_names_each_videographer_once():
     from app.clipper import broll
     assert broll.credit_line(["Ana", "Ben", "Ana", ""]) == "Stock video from Pexels: Ana, Ben."
@@ -838,6 +1187,16 @@ def test_text_the_font_cannot_draw_is_refused(text):
     assert not captions.build_ass([], "", 20.0, "Font", None, [(4.0, text, "card", "", 0.9)]).count("Dialogue")
 
 
+@pytest.mark.parametrize("text", ["भूमि", "!!!", "४०"])
+def test_undrawable_graphic_gets_no_flash_or_thud(monkeypatch, text):
+    from app.clipper.edit import build_edit
+    _edit_reply(monkeypatch, {"keep": list(range(12)), "beats": [
+        {"sentence": 3, "phrase": "useful words", "text": text, "style": "card"}]})
+    # No digits in the talk, so the rule-based fallback has nothing to show either.
+    words = _words(" ".join(f"Sentence {chr(97 + i)} has plenty of useful words about things." for i in range(12)), start=10.0)
+    assert build_edit(Moment(10.0, words[-1].end), words).beats == []
+
+
 @pytest.mark.parametrize("text", ["B2B", "COVID-19", "5G", "3D", "1ST", "1990S", "MP4", "24/7", "9/11", "1990", "2024 ELECTION"])
 def test_things_that_are_not_quantities_do_not_count_up(text):
     assert captions._count_frames(text) == [text]
@@ -847,6 +1206,12 @@ def test_things_that_are_not_quantities_do_not_count_up(text):
 def test_real_quantities_count_up(text):
     frames = captions._count_frames(text)
     assert len(frames) > 1 and frames[-1] == text
+
+
+def test_no_ai_graphics_land_only_on_real_quantities(monkeypatch):
+    from app.clipper.edit import _rule_beats
+    words = [Word(t, i * 6.0, i * 6.0 + 0.3) for i, t in enumerate(["B2B", "40°C,", "COVID-19", "$2M.", "5k"])]
+    assert [b.text for b in _rule_beats(words, range(5))] == ["40°C", "$2M", "5K"]
 
 
 def test_graphics_are_written_under_captions_and_stay_escaped():
