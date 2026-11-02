@@ -5,9 +5,11 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
+import numpy as np
 import pytest
 from app.clipper import ai, ingest, media, transcribe
 from app.clipper.media import Interrupted, MediaError, MediaInfo
+from app.clipper.signals import Signals, _find_cuts
 from app.clipper.transcribe import Transcript, Word
 from app.config import settings
 
@@ -16,6 +18,47 @@ from app.config import settings
 def isolated_content(tmp_path, monkeypatch):
     """Keep test clips and transcripts out of the real content directory."""
     monkeypatch.setattr(settings, "content_dir", str(tmp_path / "content"))
+
+
+def _signals(seconds=120, loud_at=None, cuts=()):
+    loudness = np.full(seconds, -40.0)
+    motion = np.full(seconds, 0.01)
+    if loud_at:
+        loudness[loud_at[0]:loud_at[1]] = -10.0
+        motion[loud_at[0]:loud_at[1]] = 0.2
+    return Signals(
+        duration=float(seconds), motion=motion, loudness=loudness,
+        brightness=np.full(seconds, 0.5), centroid=np.full(seconds, 0.5),
+        centroid_weight=np.ones(seconds), cuts=list(cuts),
+    )
+
+
+# ---------- Signals ----------
+def test_hard_cut_is_detected_but_steady_motion_is_not():
+    diffs = np.full(100, 0.02)
+    diffs[50] = 0.5
+    assert _find_cuts(diffs) == [12.5]
+    assert _find_cuts(np.full(100, 0.2)) == []
+
+
+def test_dark_seconds_lose_interest():
+    signals = _signals(60, loud_at=(10, 20))
+    signals.brightness[10:20] = 0.0
+    assert signals.interest()[15] < signals.interest()[30]
+
+
+def test_centre_falls_back_to_middle_without_motion():
+    signals = _signals(30)
+    signals.centroid_weight[:] = 0
+    assert signals.centre_between(0, 10) == 0.5
+
+
+def test_centre_ignores_a_second_that_straddles_a_cut():
+    signals = _signals(30)
+    signals.centroid[:] = 0.1
+    signals.centroid[10] = 0.9  # the second holding the cut at 10.5
+    signals.centroid_weight[10] = 100
+    assert signals.centre_between(10.5, 20) == pytest.approx(0.1)
 
 
 # ---------- Media ----------
