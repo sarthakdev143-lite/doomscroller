@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import numpy as np
 import pytest
+from app import scheduler
 from app.clipper import ai, captions, ingest, job, media, moments, render, timeline, transcribe
 from app.clipper.media import Interrupted, MediaError, MediaInfo
 from app.clipper.moments import Moment, build_sentences
@@ -1959,6 +1960,45 @@ def _approve(video_id):
         video = db.get(Video, video_id)
         video.status = VideoStatus.APPROVED
         video.curated_at = datetime.now(timezone.utc)
+
+
+def test_scheduler_moves_an_approved_clip_to_ready_without_rendering(tmp_path, monkeypatch):
+    from tasks import pipeline
+    with session_scope() as db:
+        db.query(Video).filter(Video.status == VideoStatus.APPROVED).delete()
+    _stub_pipeline(monkeypatch)
+    result = job.clip_source(_source(tmp_path, "sched"))
+    video_id, path = result["clips"][0]["id"], result["clips"][0]["path"]
+    _approve(video_id)
+    monkeypatch.setattr(pipeline, "get_transformer", lambda: pytest.fail("clip was re-rendered"))
+    monkeypatch.setattr(settings, "use_mock", False)
+    scheduler.transform_job()
+    with session_scope() as db:
+        video = db.get(Video, video_id)
+        assert video.status == VideoStatus.TRANSFORMED and video.transformed_path == path
+
+
+def test_finished_clips_do_not_count_as_the_scrapers_backlog(tmp_path, monkeypatch):
+    _stub_pipeline(monkeypatch)
+    with session_scope() as db:
+        before = scheduler._scraper_pending(db)
+    job.clip_source(_source(tmp_path, "backlog"))
+    with session_scope() as db:
+        assert scheduler._scraper_pending(db) == before
+        db.add(Video(source="mock", source_id="plain-pending", source_url="x", status=VideoStatus.PENDING))
+        db.flush()
+        assert scheduler._scraper_pending(db) == before + 1
+
+
+def test_auto_approve_leaves_clips_for_review(tmp_path, monkeypatch):
+    _stub_pipeline(monkeypatch)
+    result = job.clip_source(_source(tmp_path, "autoapprove"))
+    monkeypatch.setattr(settings, "auto_approve", True)
+    monkeypatch.setattr(settings, "auto_approve_veto_hours", 0)
+    outcome = scheduler.auto_approve_job()
+    assert outcome["reasons"].get("clip awaits review", 0) >= 1
+    with session_scope() as db:
+        assert db.get(Video, result["clips"][0]["id"]).status == VideoStatus.PENDING
 
 
 @pytest.mark.parametrize("status", [

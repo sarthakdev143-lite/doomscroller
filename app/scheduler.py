@@ -70,6 +70,16 @@ def instrumented(job_id: str, fn: "callable"):
 
 # ---------- Job impls ----------
 
+def _scraper_pending(db) -> int:
+    """Pending rows the scraper is responsible for. Finished clips are not its backlog."""
+    return db.scalar(
+        select(func.count(Video.id)).where(
+            Video.status == VideoStatus.PENDING,
+            Video.meta["clip_rendered"].as_boolean().isnot(True),
+        )
+    ) or 0
+
+
 def scrape_job(handles: list[str] | None = None,
                hashtags: list[str] | None = None,
                max_per_run: int | None = None) -> dict:
@@ -85,7 +95,7 @@ def scrape_job(handles: list[str] | None = None,
     try:
         while attempts < max_attempts:
             with session_scope() as db:
-                pending = db.scalar(select(func.count(Video.id)).where(Video.status == VideoStatus.PENDING)) or 0
+                pending = _scraper_pending(db)
                 if pending >= target:
                     log.info("scrape_job: target reached %s/%s pending, stopping", pending, target)
                     break
@@ -105,7 +115,7 @@ def scrape_job(handles: list[str] | None = None,
             import time as _t
             _t.sleep(1)
         with session_scope() as db:
-            final_pending = db.scalar(select(func.count(Video.id)).where(Video.status == VideoStatus.PENDING)) or 0
+            final_pending = _scraper_pending(db)
         log.info("scrape_job: finished attempts=%s created=%s pending=%s/%s", attempts, total_created, final_pending, target)
         return {"created": total_created, "skipped": total_skipped, "fetched": total_fetched, "attempts": attempts, "pending": final_pending, "target": target}
     except Exception as e:
@@ -300,6 +310,13 @@ def analytics_pull_job() -> dict:
     except Exception as e:
         log.exception("analytics_pull_job failure: %s", e)
         return {"error": str(e)}
+
+
+def clip_queue_job() -> dict:
+    """Cut any queued long videos into clips."""
+    from .clipper.job import clip_queue_job as run_queue
+
+    return run_queue()
 
 
 def publish_job() -> dict:
@@ -523,6 +540,7 @@ JOB_FUNCTIONS: dict[str, "callable"] = {
     "transform": transform_job,
     "publish": publish_job,
     "cleanup": cleanup_job,
+    "clip_queue": clip_queue_job,
     "recompute": recompute_scores_job,
     "analytics_pull": analytics_pull_job,
 }
@@ -582,6 +600,7 @@ def _make_scheduler() -> BackgroundScheduler:
         interval_h = max(1, 24 / max(1, settings.uploads_per_day))
         sched.add_job(instrumented("publish", publish_job), IntervalTrigger(hours=interval_h), id="publish", next_run_time=now + timedelta(minutes=5), max_instances=1, coalesce=True, replace_existing=True)
     sched.add_job(instrumented("cleanup", cleanup_job), IntervalTrigger(hours=24), id="cleanup", next_run_time=now + timedelta(hours=1), max_instances=1, coalesce=True, replace_existing=True)
+    sched.add_job(instrumented("clip_queue", clip_queue_job), IntervalTrigger(minutes=5), id="clip_queue", next_run_time=now + timedelta(minutes=1), max_instances=1, coalesce=True, replace_existing=True)
     sched.add_job(instrumented("recompute", recompute_scores_job), IntervalTrigger(hours=1), id="recompute", next_run_time=now + timedelta(minutes=4), max_instances=1, coalesce=True, replace_existing=True)
     sched.add_job(instrumented("analytics_pull", analytics_pull_job), IntervalTrigger(hours=6), id="analytics_pull", next_run_time=now + timedelta(minutes=10), max_instances=1, coalesce=True, replace_existing=True)
     return sched
@@ -600,6 +619,7 @@ def _job_intervals() -> dict[str, timedelta]:
         "transform": timedelta(hours=1),
         "publish": timedelta(hours=max(1, 24 / max(1, settings.uploads_per_day))),
         "cleanup": timedelta(hours=24),
+        "clip_queue": timedelta(minutes=5),
         "recompute": timedelta(hours=1),
         "analytics_pull": timedelta(hours=6),
     }
