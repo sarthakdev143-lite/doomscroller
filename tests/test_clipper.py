@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 import numpy as np
 import pytest
-from app.clipper import ai, captions, ingest, media, moments, timeline, transcribe
+from app.clipper import ai, captions, ingest, media, moments, render, timeline, transcribe
 from app.clipper.media import Interrupted, MediaError, MediaInfo
 from app.clipper.moments import Moment, build_sentences
 from app.clipper.signals import Signals, _find_cuts
@@ -337,6 +337,86 @@ def test_missing_font_file_keeps_the_default_size():
     assert captions._fitted_size(["ANY TEXT"], 92, 24, 1.12, "/nope/font.ttf") == 92
 
 
+# ---------- Render planning ----------
+def test_landscape_speech_crops_to_vertical():
+    plan = render.plan_clip(Moment(10, 40), _words("a b c", start=11), _signals(), INFO, has_graphics=True)
+    assert plan.crop_width == 404 and not plan.use_blur_fill
+
+
+def test_wide_action_keeps_the_whole_picture():
+    signals = _signals()
+    signals.centroid[10:40] = np.linspace(0.05, 0.95, 30)
+    plan = render.plan_clip(Moment(10, 40, kind="visual"), [], signals, INFO, has_graphics=False)
+    assert plan.use_blur_fill
+
+
+def test_crop_follows_the_subject_per_shot():
+    signals = _signals(cuts=[25.0])
+    signals.centroid[10:25] = 0.1
+    signals.centroid[25:40] = 0.9
+    pieces = render._crop_pieces(Moment(10, 40), [(10.0, 40.0)], signals, INFO, 404)
+    assert len(pieces) == 2
+    assert pieces[0][1] < pieces[1][1]
+    assert all(0 <= x <= 1280 - 404 for _, x in pieces)
+
+
+def test_vertical_source_is_not_cropped():
+    vertical = MediaInfo(120.0, 720, 1280, 30.0, True)
+    plan = render.plan_clip(Moment(10, 40), [], _signals(), vertical, has_graphics=False)
+    assert plan.crop_width == 720
+    assert "crop=720" not in render._framing(plan, vertical)
+
+
+def test_audio_chain_is_absent_when_the_source_is_silent():
+    silent = MediaInfo(120.0, 1280, 720, 30.0, False)
+    plan = render.plan_clip(Moment(10, 40), [], _signals(), silent, has_graphics=False)
+    graph = render.build_filtergraph(plan, silent, 9.0)
+    assert "[0:a]" not in graph and "aout" not in graph
+
+
+def test_graph_has_no_paths_in_it():
+    plan = render.plan_clip(Moment(10, 40), [], _signals(), INFO, has_graphics=True)
+    assert "ass=clip.ass:fontsdir=fonts" in render.build_filtergraph(plan, INFO, 9.0)
+
+
+def test_words_at_the_edges_stay_out_of_the_clip():
+    words = [Word("tango", 14.10, 14.41), Word("why", 14.41, 14.80), Word("end", 20.0, 20.42), Word("next", 20.42, 20.9)]
+    segments = timeline.keep_segments(14.41, 20.42, words, 0.35)
+    shifted = render._shift_words(words, segments, 14.41, 20.42)
+    assert [w.text for w in shifted] == ["why", "end"]
+
+
+def test_zoom_and_crop_boundaries_sit_between_frames():
+    assert "between(t,0.983,2.983)" in render._zoom_expression([(1.0, 3.0)])
+    assert "gte(t,0.983)" in render._piecewise([(0.0, 10.0), (1.0, 20.0)])
+    assert "lt(t,0.983)" in render._piecewise([(0.0, 10.0), (1.0, 20.0)])
+
+
+def test_crop_uses_the_refined_cut_time():
+    signals = _signals(cuts=[25.0])
+    pieces = render._crop_pieces(Moment(10, 40), [(10.0, 40.0)], signals, INFO, 404, {25.0: 25.133})
+    signals.centroid[25:40] = 0.9
+    pieces = render._crop_pieces(Moment(10, 40), [(10.0, 40.0)], signals, INFO, 404, {25.0: 25.133})
+    assert abs(pieces[1][0] - 15.133) < 1e-6
+
+
+def test_crop_prefers_the_face_over_the_motion():
+    signals = _signals(cuts=[25.0])
+    signals.centroid[:] = 0.5
+    pieces = render._crop_pieces(Moment(10, 40), [(10.0, 40.0)], signals, INFO, 404, None, {25.0: 0.9})
+    assert pieces[0][1] != pieces[1][1]
+    assert pieces[1][1] == 876.0  # right edge limit: 1280 - 404
+    assert pieces[0][1] == 438.0  # no face in the first shot, so the motion decides
+
+
+def test_a_found_face_keeps_a_wide_shot_cropped_rather_than_blurred():
+    signals = _signals()
+    signals.centroid[10:40] = np.linspace(0.05, 0.95, 30)
+    assert render.plan_clip(Moment(10, 40, kind="visual"), [], signals, INFO, has_graphics=False).use_blur_fill
+    plan = render.plan_clip(Moment(10, 40, kind="visual"), [], signals, INFO, has_graphics=False, faces={10: 0.3})
+    assert not plan.use_blur_fill
+
+
 def test_no_face_in_a_blank_frame():
     from app.clipper import faces
     blank = np.zeros((360, 640), dtype=np.uint8)
@@ -578,6 +658,15 @@ def test_big_word_text_is_gone_for_good(monkeypatch):
 def test_a_punch_draws_nothing_at_all(text):
     ass = captions.build_ass([], "", 20.0, "Font", None, [(4.0, text, "punch", "", 1.2)])
     assert "Dialogue" not in ass, "no text and no dimming"
+
+
+def test_a_punch_still_flashes_shakes_thuds_and_changes_the_framing():
+    from app.clipper.edit import Beat, EditPlan, PUNCH
+    edit = EditPlan(words=_words("a b c d", start=11.0), segments=[(11.0, 19.0)], beats=[Beat(15.0, "", PUNCH)])
+    shake, flash = render._edit_effects(edit)
+    assert "between(t,4.000" in shake and "between(t,3.983" in flash
+    assert 4.0 in render.rhythm_points(edit)
+    assert any(c.at == 4.0 and c.sound is render.IMPACT for c in render.sound_cues(edit, [0.0]))
 
 
 def test_graphics_keep_clear_of_the_hook_and_each_other(monkeypatch):
@@ -1161,10 +1250,48 @@ def test_same_stock_clip_is_not_used_twice_in_a_clip(monkeypatch):
     assert seen == [set(), {"rain"}]
 
 
+def test_broll_goes_into_the_graph_under_the_graphics(monkeypatch):
+    from app.clipper.edit import Cutaway, EditPlan
+    from app.clipper.broll import StockClip
+    clip = StockClip("1", "/x/1.mp4", 10.0, offset=0.4)
+    edit = EditPlan(words=_words("a b c d", start=11.0), segments=[(11.0, 20.0)], speed=1.0,
+                    cutaways=[Cutaway(14.0, 2.0, "rain", clip), Cutaway(17.0, 1.5, "sun", clip)])
+    plan = render.plan_clip(Moment(10, 40), [], _signals(), INFO, has_graphics=True, edit=edit)
+    graph = render.build_filtergraph(plan, INFO, 1.0)
+    assert "[3:v]scale=1080:1920" in graph and "[4:v]scale=1080:1920" in graph
+    assert graph.index("overlay=eof_action=pass") < graph.index("ass=clip.ass")
+    assert "between(t,2.983,4.983)" in graph
+    points = render.rhythm_points(edit)
+    assert any(abs(p - 3.0) < 0.01 for p in points) and any(abs(p - 5.0) < 0.01 for p in points)
+    whooshes = [c for c in render.sound_cues(edit, points) if c.sound == "whoosh"]
+    assert len(whooshes) >= 4
+
+
+def test_stock_inputs_shift_when_there_is_no_sound_track(monkeypatch):
+    from app.clipper.edit import Cutaway, EditPlan
+    from app.clipper.broll import StockClip
+    edit = EditPlan(words=_words("a b", start=11.0), segments=[(11.0, 20.0)],
+                    cutaways=[Cutaway(14.0, 2.0, "rain", StockClip("1", "/x/1.mp4", 10.0))])
+    silent = MediaInfo(120.0, 1280, 720, 30.0, False)
+    plan = render.plan_clip(Moment(10, 40), [], _signals(), silent, has_graphics=True, edit=edit)
+    assert "[2:v]scale=1080:1920" in render.build_filtergraph(plan, silent, 1.0)
+
+
 def test_credit_line_names_each_videographer_once():
     from app.clipper import broll
     assert broll.credit_line(["Ana", "Ben", "Ana", ""]) == "Stock video from Pexels: Ana, Ben."
     assert broll.credit_line([""]) == "Stock video from Pexels."
+
+
+def test_framing_never_sits_still_for_long(monkeypatch):
+    from app.clipper.edit import build_edit
+    _edit_reply(monkeypatch, {"keep": list(range(12)), "beats": []})
+    words = _talk()
+    edit = build_edit(Moment(10.0, words[-1].end), words)
+    points = render.rhythm_points(edit) + [edit.duration]
+    gaps = [b - a for a, b in zip(points, points[1:])]
+    assert max(gaps) <= 3.0
+    assert min(gaps[:-1]) >= 0.5
 
 
 def test_count_up_ends_on_the_real_value():
@@ -1238,6 +1365,50 @@ def test_sound_track_has_the_right_length_and_is_not_clipped(tmp_path):
         assert handle.getnframes() == 11 * sfx.RATE
         samples = np.frombuffer(handle.readframes(handle.getnframes()), np.int16)
     assert np.abs(samples).max() > 1000 and np.abs(samples).max() < 32767
+
+
+def test_voice_is_levelled_before_the_effects_go_on():
+    from app.clipper.edit import EditPlan
+    edit = EditPlan(words=_words("a b", start=11.0), segments=[(11.0, 16.0)], speed=1.12)
+    plan = render.plan_clip(Moment(10, 40), [], _signals(), INFO, has_graphics=True, edit=edit)
+    graph = render.build_filtergraph(plan, INFO, 1.0)
+    assert graph.index("loudnorm") < graph.index("amix") < graph.index("alimiter")
+    assert "level=0" in graph
+
+
+def test_edit_plan_changes_the_graph(monkeypatch):
+    from app.clipper.edit import Beat, EditPlan
+    edit = EditPlan(words=_words("a b c d", start=11.0), segments=[(11.0, 13.0), (14.0, 16.0)],
+                    beats=[Beat(14.5, "", "punch")], speed=1.12)
+    plan = render.plan_clip(Moment(10, 40), [], _signals(), INFO, has_graphics=True, edit=edit)
+    graph = render.build_filtergraph(plan, INFO, 1.0)
+    assert plan.duration == pytest.approx(4.0 / 1.12)
+    assert "setpts=PTS/1.12" in graph and "atempo=1.12" in graph
+    assert "[2:a]amix" in graph and "drawbox=x=0:y=0" in graph and "sin(t*75)" in graph
+
+
+def test_crop_position_is_held_inside_each_frame():
+    """A shake with no margin to move into made ffmpeg read outside the image and crash."""
+    from app.clipper.edit import Beat, EditPlan
+    edit = EditPlan(words=_words("a b c d", start=11.0), segments=[(11.0, 16.0)], beats=[Beat(14.0, "", "punch")], speed=1.12)
+    plan = render.plan_clip(Moment(10, 40), [], _signals(), INFO, has_graphics=True, edit=edit)
+    assert plan.shake_expr != "0"
+    graph = render.build_filtergraph(plan, INFO, 1.0)
+    assert "x='clip(" in graph and "y='clip(" in graph
+
+
+def test_zoom_windows_cannot_double_up_or_drop_below_full_frame():
+    expression = render._edit_zoom_expression([0.0, 2.0, 4.0], 6.0)
+    assert "between" not in expression
+    assert "max(1,min(1.5," in expression
+
+
+def test_sfx_can_be_switched_off(monkeypatch):
+    from app.clipper.edit import EditPlan
+    monkeypatch.setattr(settings, "clip_sfx", False)
+    edit = EditPlan(words=_words("a b", start=11.0), segments=[(11.0, 16.0)], speed=1.12)
+    plan = render.plan_clip(Moment(10, 40), [], _signals(), INFO, has_graphics=True, edit=edit)
+    assert "amix" not in render.build_filtergraph(plan, INFO, 1.0)
 
 
 def test_centre_ignores_a_second_that_straddles_a_cut():
