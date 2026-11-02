@@ -411,6 +411,413 @@ def test_a_punch_draws_nothing_at_all(text):
     assert "Dialogue" not in ass, "no text and no dimming"
 
 
+def _video(video_id=1, duration=10, files=None, name="Ana"):
+    return {"id": video_id, "duration": duration, "url": f"https://pexels.com/video/{video_id}", "user": {"name": name},
+            "video_files": files if files is not None else [
+                {"file_type": "video/mp4", "width": 1080, "height": 1920, "link": "https://cdn/1080.mp4"},
+                {"file_type": "video/mp4", "width": 360, "height": 640, "link": "https://cdn/360.mp4"},
+            ]}
+
+
+def test_stock_file_choice_wants_portrait_mp4_near_full_hd():
+    from app.clipper import broll
+    assert broll.best_file(_video())["link"] == "https://cdn/1080.mp4"
+    landscape = _video(files=[{"file_type": "video/mp4", "width": 1920, "height": 1080, "link": "x"}])
+    assert broll.best_file(landscape) is None
+    hls = _video(files=[{"file_type": "application/x-mpegURL", "width": 1080, "height": 1920, "link": "x"}])
+    assert broll.best_file(hls) is None
+    tiny = _video(files=[{"file_type": "video/mp4", "width": 360, "height": 640, "link": "x"}])
+    assert broll.best_file(tiny) is None
+    assert broll.best_file({"video_files": ["junk", {"file_type": "video/mp4"}]}) is None
+
+
+def _stock(monkeypatch, videos):
+    from app.clipper import broll
+    monkeypatch.setattr(settings, "pexels_api_key", "key")
+    monkeypatch.setattr(broll, "search", lambda query: broll._pexels_candidates(videos))
+    monkeypatch.setattr(broll, "_playable", lambda path, seconds: True)
+    downloads = []
+
+    def fake_download(link, path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"v" * 2000)
+        downloads.append(link)
+
+    monkeypatch.setattr(broll, "_download", fake_download)
+    return downloads
+
+
+def test_stock_clip_is_long_enough_and_not_a_repeat(monkeypatch):
+    from app.clipper import broll
+    _stock(monkeypatch, [_video(1, duration=1), _video(2, duration=10), _video(3, duration=10)])
+    clip = broll.fetch("rain", 3.0, exclude={"2"})
+    assert clip.video_id == "3" and clip.author == "Ana" and os.path.exists(clip.path)
+
+
+def test_stock_clip_is_only_downloaded_once(monkeypatch):
+    from app.clipper import broll
+    downloads = _stock(monkeypatch, [_video(7)])
+    broll.fetch("rain", 3.0)
+    broll.fetch("rain", 3.0)
+    assert len(downloads) == 1
+
+
+def test_bad_cached_clip_is_thrown_away_and_replaced(monkeypatch):
+    from app.clipper import broll
+    downloads = _stock(monkeypatch, [_video(11)])
+    bad = settings.content_path / "broll" / "11.mp4"
+    bad.parent.mkdir(parents=True, exist_ok=True)
+    bad.write_bytes(b"<html>")
+    os.utime(bad, (1000, 1000))
+    verdicts = iter([False, True])
+    monkeypatch.setattr(broll, "_playable", lambda path, seconds: next(verdicts))
+    assert broll.fetch("rain", 3.0).video_id == "11"
+    assert len(downloads) == 1
+
+
+def test_bad_cached_file_does_not_renew_its_own_expiry(monkeypatch):
+    from app.clipper import broll
+    _stock(monkeypatch, [_video(12, duration=10)])
+    bad = settings.content_path / "broll" / "12.mp4"
+    bad.parent.mkdir(parents=True, exist_ok=True)
+    bad.write_bytes(b"<html>")
+    monkeypatch.setattr(broll, "_playable", lambda path, seconds: False)
+    with pytest.raises(broll.DownloadsFailed):
+        broll.fetch("rain", 3.0)
+    assert not bad.exists()
+
+
+def test_download_that_will_not_play_moves_on_to_the_next(monkeypatch):
+    from app.clipper import broll
+    _stock(monkeypatch, [_video(13), _video(14)])
+    verdicts = iter([False, True])
+    monkeypatch.setattr(broll, "_playable", lambda path, seconds: next(verdicts))
+    assert broll.fetch("rain", 3.0).video_id == "14"
+    assert not (settings.content_path / "broll" / "13.mp4").exists()
+
+
+def test_dead_cdn_gives_up_quickly(monkeypatch):
+    from app.clipper import broll
+    _stock(monkeypatch, [_video(i) for i in range(20, 35)])
+    attempts = []
+
+    def dead(link, path):
+        attempts.append(link)
+        raise broll.StockError("503")
+
+    monkeypatch.setattr(broll, "_download", dead)
+    with pytest.raises(broll.DownloadsFailed):
+        broll.fetch("rain", 3.0)
+    assert len(attempts) == 2
+
+
+def test_odd_values_in_a_stock_reply_only_cost_that_result(monkeypatch):
+    from app.clipper import broll
+    assert broll.best_file({"video_files": 5}) is None
+    assert broll.best_file({"video_files": [{"file_type": "video/mp4", "width": "1080", "height": "1920", "link": "x"}]}) is None
+
+
+def test_failed_download_tries_the_next_result(monkeypatch):
+    from app.clipper import broll
+    downloads = _stock(monkeypatch, [_video(8), _video(9)])
+    good = broll._download
+
+    def flaky(link, path):
+        if "/8" in str(path):
+            raise broll.StockError("dropped")
+        good(link, path)
+
+    monkeypatch.setattr(broll, "_download", flaky)
+    assert broll.fetch("rain", 3.0).video_id == "9"
+    assert downloads
+
+
+@pytest.mark.parametrize("videos", [[], ["junk"], [{"id": 1, "duration": "x"}], [_video(1, files=[])], [_video(0)]])
+def test_unusable_results_mean_no_clip(monkeypatch, videos):
+    from app.clipper import broll
+    _stock(monkeypatch, videos)
+    assert broll.fetch("rain", 3.0) is None
+
+
+class _Reply:
+    def __init__(self, status=200, body=None):
+        self.status_code, self._body = status, body
+
+    def json(self):
+        if self._body is None:
+            raise ValueError("not json")
+        return self._body
+
+
+@pytest.mark.parametrize("reply,error", [
+    (_Reply(429), "RateLimited"), (_Reply(401), "StockError"), (_Reply(200), "StockError"), (_Reply(200, []), "StockError"),
+])
+def test_search_failures_are_typed(monkeypatch, reply, error):
+    from app.clipper import broll
+    monkeypatch.setattr(settings, "pexels_api_key", "key")
+    monkeypatch.setattr(broll.httpx, "get", lambda *a, **k: reply)
+    with pytest.raises(getattr(broll, error)):
+        broll.search("rain")
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_refused_key_is_reported_as_such(monkeypatch, status):
+    from app.clipper import broll
+    monkeypatch.setattr(settings, "pexels_api_key", "key")
+    monkeypatch.setattr(broll.httpx, "get", lambda *a, **k: _Reply(status))
+    with pytest.raises(broll.BadKey):
+        broll.search("rain")
+
+
+def test_pasted_curly_quote_in_the_key_gets_a_clear_message(monkeypatch):
+    from app.clipper import broll
+    monkeypatch.setattr(settings, "pexels_api_key", "key")
+
+    def encode_error(*a, **k):
+        "\u201ckey".encode("ascii")
+
+    monkeypatch.setattr(broll.httpx, "get", encode_error)
+    with pytest.raises(broll.BadKey, match="paste it again"):
+        broll.search("rain")
+
+
+def test_search_asks_for_portrait_with_the_key(monkeypatch):
+    from app.clipper import broll
+    seen = {}
+
+    def fake(url, params, headers, timeout):
+        seen.update(url=url, params=params, headers=headers)
+        return _Reply(200, {"videos": [_video()]})
+
+    monkeypatch.setattr(settings, "pexels_api_key", "secret")
+    monkeypatch.setattr(broll.httpx, "get", fake)
+    assert broll.search("flooded street")[0].video_id == "1"
+    assert seen["params"]["orientation"] == "portrait" and seen["headers"]["Authorization"] == "secret"
+
+
+def _pixabay_hit(hit_id=7, large_size=50_000_000, duration=12):
+    return {"id": hit_id, "pageURL": f"https://pixabay.com/videos/x-{hit_id}/", "duration": duration, "user": "Bea",
+            "videos": {
+                "large": {"url": "https://cdn.pixabay.com/large.mp4", "width": 3840, "height": 2160, "size": large_size},
+                "medium": {"url": "https://cdn.pixabay.com/medium.mp4", "width": 1920, "height": 1080, "size": 9_000_000},
+                "small": {"url": "https://cdn.pixabay.com/small.mp4", "width": 1280, "height": 720, "size": 4_000_000},
+                "tiny": {"url": "https://cdn.pixabay.com/tiny.mp4", "width": 960, "height": 540, "size": 1_000_000},
+            }}
+
+
+def test_pixabay_prefers_4k_unless_it_is_huge():
+    from app.clipper import broll
+    assert broll.best_rendition(_pixabay_hit())["height"] == 2160
+    assert broll.best_rendition(_pixabay_hit(large_size=900_000_000))["height"] == 1080
+    empty_large = _pixabay_hit()
+    empty_large["videos"]["large"] = {"url": "", "width": 0, "height": 0, "size": 0}
+    assert broll.best_rendition(empty_large)["height"] == 1080
+
+
+def test_pixabay_skips_files_too_small_to_crop():
+    from app.clipper import broll
+    assert broll.best_rendition({"videos": {"tiny": {"url": "x", "height": 540, "size": 1}}}) is None
+    assert broll.best_rendition({"videos": "junk"}) is None
+    assert broll.best_rendition({}) is None
+
+
+def test_pixabay_results_become_candidates_with_the_download_flag(monkeypatch):
+    from app.clipper import broll
+    found = broll._pixabay_candidates([_pixabay_hit(), "junk", {"id": 2}, {"videos": {}}])
+    assert len(found) == 1
+    assert found[0].video_id == "pixabay-7" and found[0].provider == "Pixabay" and found[0].author == "Bea"
+    assert found[0].link == "https://cdn.pixabay.com/large.mp4?download=1"
+    assert broll._with_download_flag("https://x/a.mp4?token=1") == "https://x/a.mp4?token=1&download=1"
+
+
+def test_pixabay_search_sends_the_key_and_asks_for_real_footage(monkeypatch):
+    from app.clipper import broll
+    seen = {}
+
+    def fake(url, params, headers, timeout):
+        seen.update(url=url, params=params)
+        return _Reply(200, {"hits": [_pixabay_hit()]})
+
+    monkeypatch.setattr(settings, "pexels_api_key", "")
+    monkeypatch.setattr(settings, "pixabay_api_key", "secret")
+    monkeypatch.setattr(broll.httpx, "get", fake)
+    assert broll.search("flooded street")[0].provider == "Pixabay"
+    assert seen["url"].startswith("https://pixabay.com/api/videos")
+    assert seen["params"]["key"] == "secret" and seen["params"]["video_type"] == "film"
+
+
+def test_pexels_key_wins_when_both_are_set(monkeypatch):
+    from app.clipper import broll
+    monkeypatch.setattr(settings, "pixabay_api_key", "b")
+    monkeypatch.setattr(settings, "pexels_api_key", "a")
+    assert broll.provider() == "Pexels"
+    monkeypatch.setattr(settings, "pexels_api_key", "")
+    assert broll.provider() == "Pixabay"
+    monkeypatch.setattr(settings, "pixabay_api_key", "")
+    assert broll.provider() is None and not broll.available()
+
+
+def test_searches_are_cached_for_a_day_as_pixabay_requires(monkeypatch):
+    from app.clipper import broll
+    calls = []
+
+    def fake(url, params, headers, timeout):
+        calls.append(params["q"])
+        return _Reply(200, {"hits": [_pixabay_hit()]})
+
+    monkeypatch.setattr(settings, "pexels_api_key", "")
+    monkeypatch.setattr(settings, "pixabay_api_key", "secret")
+    monkeypatch.setattr(broll.httpx, "get", fake)
+    broll.search("rain")
+    broll.search("RAIN")
+    assert calls == ["rain"]
+    broll.search("snow")
+    assert calls == ["rain", "snow"]
+    later = broll.time.time() + 25 * 3600
+    monkeypatch.setattr(broll.time, "time", lambda: later)
+    broll.search("rain")
+    assert calls == ["rain", "snow", "rain"]
+
+
+def test_failed_search_is_not_cached(monkeypatch):
+    from app.clipper import broll
+    replies = iter([_Reply(500), _Reply(200, {"hits": [_pixabay_hit()]})])
+    monkeypatch.setattr(settings, "pexels_api_key", "")
+    monkeypatch.setattr(settings, "pixabay_api_key", "secret")
+    monkeypatch.setattr(broll.httpx, "get", lambda *a, **k: next(replies))
+    with pytest.raises(broll.StockError):
+        broll.search("rain")
+    assert broll.search("rain")
+
+
+@pytest.mark.parametrize("failure", [
+    "reply", "connection",
+])
+def test_pixabay_key_never_reaches_an_error_message(monkeypatch, failure):
+    from app.clipper import broll
+    monkeypatch.setattr(settings, "pexels_api_key", "")
+    monkeypatch.setattr(settings, "pixabay_api_key", "topsecret")
+
+    def fake(*a, **k):
+        if failure == "connection":
+            raise broll.httpx.ConnectError("failed https://pixabay.com/api/videos/?key=topsecret")
+        return _Reply(400)
+
+    monkeypatch.setattr(broll.httpx, "get", fake)
+    with pytest.raises(broll.StockError) as caught:
+        broll.search("rain")
+    assert "topsecret" not in str(caught.value)
+
+
+def test_request_urls_with_the_key_are_kept_out_of_the_logs(monkeypatch):
+    """Over a real connection, because httpx writes the whole URL, key included, at INFO."""
+    import http.server
+    import json
+    import logging
+    import threading
+
+    from app.clipper import broll
+
+    class Library(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            body = json.dumps({"hits": []}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    class Collect(logging.Handler):
+        def __init__(self):
+            super().__init__(logging.DEBUG)
+            self.lines = []
+
+        def emit(self, record):
+            self.lines.append(record.getMessage())
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Library)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    collect = Collect()
+    root, client = logging.getLogger(), logging.getLogger("httpx")
+    level_root, level_client = root.level, client.level
+    root.addHandler(collect)
+    root.setLevel(logging.DEBUG)
+    try:
+        monkeypatch.setattr(settings, "pexels_api_key", "")
+        monkeypatch.setattr(settings, "pixabay_api_key", "topsecret")
+        monkeypatch.setattr(broll, "_PIXABAY_URL", f"http://127.0.0.1:{server.server_address[1]}/api/videos/")
+        broll.search("rain")
+        assert not [line for line in collect.lines if "topsecret" in line]
+
+        # Without the guard the key really is written, so the check above means something.
+        client.setLevel(logging.INFO)
+        broll.search("snow")
+        assert [line for line in collect.lines if "topsecret" in line]
+    finally:
+        root.removeHandler(collect)
+        root.setLevel(level_root)
+        client.setLevel(level_client)
+        server.shutdown()
+        server.server_close()
+
+
+def test_wrong_pixabay_key_stops_the_job_with_a_clear_message(monkeypatch):
+    from app.clipper import broll
+    monkeypatch.setattr(settings, "pexels_api_key", "")
+    monkeypatch.setattr(settings, "pixabay_api_key", "wrong")
+    monkeypatch.setattr(broll.httpx, "get", lambda *a, **k: _Reply(400))
+    with pytest.raises(broll.BadKey, match="Pixabay refused"):
+        broll.search("rain")
+
+
+def test_pixabay_footage_is_fetched_and_credited(monkeypatch):
+    from app.clipper import broll
+    monkeypatch.setattr(settings, "pexels_api_key", "")
+    monkeypatch.setattr(settings, "pixabay_api_key", "secret")
+    monkeypatch.setattr(broll.httpx, "get", lambda *a, **k: _Reply(200, {"hits": [_pixabay_hit()]}))
+    monkeypatch.setattr(broll, "_playable", lambda path, seconds: True)
+    links = []
+
+    def deliver(link, path):
+        links.append(link)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"v" * 2000)
+
+    monkeypatch.setattr(broll, "_download", deliver)
+    clip = broll.fetch("rain", 3.0)
+    assert clip.provider == "Pixabay" and clip.path.endswith("pixabay-7.mp4")
+    assert links == ["https://cdn.pixabay.com/large.mp4?download=1"]
+    assert broll.credit_line([clip.author], clip.provider) == "Stock video from Pixabay: Bea."
+
+
+def test_interrupted_download_leaves_nothing_in_the_cache(tmp_path, monkeypatch):
+    from app.clipper import broll
+
+    class Stream:
+        status_code = 200
+        def __enter__(self):
+            return self
+        def __exit__(self, *exc):
+            return False
+        def iter_bytes(self):
+            yield b"partial"
+            raise broll.httpx.ReadError("dropped")
+
+    monkeypatch.setattr(broll.httpx, "stream", lambda *a, **k: Stream())
+    target = tmp_path / "broll" / "1.mp4"
+    with pytest.raises(broll.StockError):
+        broll._download("https://cdn/x.mp4", target)
+    assert not target.exists() and not list(target.parent.iterdir())
+
+
+def test_credit_line_names_each_videographer_once():
+    from app.clipper import broll
+    assert broll.credit_line(["Ana", "Ben", "Ana", ""]) == "Stock video from Pexels: Ana, Ben."
+    assert broll.credit_line([""]) == "Stock video from Pexels."
+
+
 def test_count_up_ends_on_the_real_value():
     assert captions._count_frames("40°C")[-1] == "40°C"
     assert captions._count_frames("40°C")[0] == "4°C"
