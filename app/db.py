@@ -17,7 +17,8 @@ from .config import settings
 def _engine_factory() -> Engine:
     url = settings.db_url
     if url.startswith("sqlite:///") and not url.endswith(":memory:"):
-        connect_args = {"check_same_thread": False}
+        # The scheduler thread and API requests all write, so wait out a brief lock.
+        connect_args = {"check_same_thread": False, "timeout": 30}
         db_path = url.replace("sqlite:///", "", 1)
         parent = os.path.dirname(os.path.abspath(db_path))
         if parent:
