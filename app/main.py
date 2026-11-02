@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
@@ -15,10 +15,11 @@ from .analytics import recompute_scores
 from .config import settings
 from .db import SessionLocal, get_db, init_db
 from .logging_config import configure_logging, job_health, read_job_history
-from .models import Creator, MetadataDraft, Video, VideoStatus
+from .models import ClipJob, Creator, MetadataDraft, Video, VideoStatus
 from . import metadata, quota, scheduler
 from .schemas import (
     ApproveBody,
+    ClipBody,
     HealthOut,
     PublishBody,
     QuotaOut,
@@ -389,6 +390,46 @@ def chop_long_to_shorts(video_id: str, db: Session = Depends(get_db)) -> dict:
         raise HTTPException(status_code=400, detail="source file not on disk")
     from tasks.pipeline import long_to_shorts_task
     return long_to_shorts_task(video_id)
+
+
+# ==================== Clipper ====================
+def _clip_job_view(job: ClipJob) -> dict:
+    return {
+        "id": job.id,
+        "source": job.source,
+        "status": job.status,
+        "stage": job.stage,
+        "error": job.error,
+        "result": job.result or {},
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+    }
+
+
+@app.post("/clip", response_model=dict)
+def queue_clip(body: ClipBody, background: BackgroundTasks) -> dict:
+    """Queue a link or local file for clipping and start on it right away."""
+    from .clipper.job import clip_queue_job, enqueue
+
+    if not body.source.strip():
+        raise HTTPException(status_code=400, detail="source is empty")
+    job_id = enqueue(body.source, count=body.count, auto_queue=body.auto_queue)
+    background.add_task(clip_queue_job)
+    return {"job_id": job_id, "status": "queued"}
+
+
+@app.get("/clip/jobs", response_model=list)
+def list_clip_jobs(limit: int = 20, db: Session = Depends(get_db)) -> list:
+    rows = db.execute(select(ClipJob).order_by(desc(ClipJob.created_at)).limit(limit)).scalars().all()
+    return [_clip_job_view(job) for job in rows]
+
+
+@app.get("/clip/jobs/{job_id}", response_model=dict)
+def get_clip_job(job_id: str, db: Session = Depends(get_db)) -> dict:
+    job = db.get(ClipJob, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="not found")
+    return _clip_job_view(job)
 
 
 # ==================== Stats endpoint ====================

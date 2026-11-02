@@ -6,8 +6,10 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
 import numpy as np
 import pytest
+
 from app import scheduler
 from app.clipper import ai, captions, ingest, job, media, moments, render, timeline, transcribe
 from app.clipper.media import Interrupted, MediaError, MediaInfo
@@ -15,8 +17,12 @@ from app.clipper.moments import Moment, build_sentences
 from app.clipper.signals import Signals, _find_cuts
 from app.clipper.transcribe import Transcript, Word
 from app.config import settings
-from app.db import session_scope
+from app.db import init_db, session_scope
 from app.models import ClipJob, Video, VideoStatus
+
+
+def setup_module(module):
+    init_db()
 
 
 @pytest.fixture(autouse=True)
@@ -2320,3 +2326,22 @@ def test_queue_runs_one_at_a_time():
         assert job.clip_queue_job() == {"skipped": "already running"}
     finally:
         job._queue_lock.release()
+
+
+# ---------- API ----------
+def test_clip_endpoints(monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    _clear_jobs()
+    monkeypatch.setattr(job, "clip_source", lambda source, **k: {"ok": True, "clips": [], "source": source})
+    client = TestClient(app)
+    created = client.post("/clip", json={"source": "https://youtu.be/abc", "count": 2})
+    assert created.status_code == 200
+    job_id = created.json()["job_id"]
+    fetched = client.get(f"/clip/jobs/{job_id}").json()
+    assert fetched["status"] == "done"
+    assert fetched["result"]["source"] == "https://youtu.be/abc"
+    assert any(row["id"] == job_id for row in client.get("/clip/jobs").json())
+    assert client.get("/clip/jobs/nope").status_code == 404
+    assert client.post("/clip", json={"source": "   "}).status_code == 400
+    assert client.post("/clip", json={"source": "x", "count": 99}).status_code == 422
