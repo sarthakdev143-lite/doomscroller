@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 import numpy as np
 import pytest
-from app.clipper import ai, ingest, media, transcribe
+from app.clipper import ai, ingest, media, timeline, transcribe
 from app.clipper.media import Interrupted, MediaError, MediaInfo
 from app.clipper.signals import Signals, _find_cuts
 from app.clipper.transcribe import Transcript, Word
@@ -18,6 +18,14 @@ from app.config import settings
 def isolated_content(tmp_path, monkeypatch):
     """Keep test clips and transcripts out of the real content directory."""
     monkeypatch.setattr(settings, "content_dir", str(tmp_path / "content"))
+
+
+def _words(text, start=0.0, gap=0.05, length=0.3):
+    out, now = [], start
+    for token in text.split():
+        out.append(Word(token, now, now + length, 0.99))
+        now += length + gap
+    return out
 
 
 def _signals(seconds=120, loud_at=None, cuts=()):
@@ -31,6 +39,40 @@ def _signals(seconds=120, loud_at=None, cuts=()):
         brightness=np.full(seconds, 0.5), centroid=np.full(seconds, 0.5),
         centroid_weight=np.ones(seconds), cuts=list(cuts),
     )
+
+
+# ---------- Timeline ----------
+def test_pauses_are_removed_and_short_gaps_kept():
+    words = [Word("a", 10.0, 10.5), Word("b", 10.6, 11.0), Word("c", 14.0, 14.5)]
+    segments = timeline.keep_segments(10.0, 14.5, words, max_gap=0.35)
+    assert len(segments) == 2
+    assert segments[0][1] < 12 and segments[1][0] > 13
+
+
+def test_no_words_keeps_the_whole_span():
+    assert timeline.keep_segments(5.0, 10.0, [], 0.35) == [(5.0, 10.0)]
+
+
+def test_segments_sit_on_the_frame_grid():
+    for a, b in timeline.keep_segments(1.013, 4.777, _words("one two three", start=1.1), 0.35):
+        assert abs(a * timeline.FPS - round(a * timeline.FPS)) < 1e-6
+        assert abs(b * timeline.FPS - round(b * timeline.FPS)) < 1e-6
+
+
+def test_output_time_maps_across_a_removed_gap():
+    segments = [(10.0, 12.0), (20.0, 23.0)]
+    assert timeline.output_time(segments, 11.0) == 1.0
+    assert timeline.output_time(segments, 15.0) == 2.0  # inside the gap: snaps forward
+    assert timeline.output_time(segments, 21.0) == 3.0
+    assert timeline.output_time(segments, 99.0) is None
+
+
+def test_tiny_island_does_not_keep_a_long_pause():
+    words = _words("word " * 40, start=0.0) + [Word("Yes.", 44.4, 44.5)]
+    segments = timeline.keep_segments(0.0, 44.6, words, 0.35)
+    assert timeline.total_duration(segments) < 16
+    first_word_alone = [Word("So", 0.0, 0.05)] + _words("word " * 30, start=40.0)
+    assert timeline.total_duration(timeline.keep_segments(0.0, 51.0, first_word_alone, 0.35)) < 13
 
 
 # ---------- Signals ----------
@@ -51,6 +93,24 @@ def test_centre_falls_back_to_middle_without_motion():
     signals = _signals(30)
     signals.centroid_weight[:] = 0
     assert signals.centre_between(0, 10) == 0.5
+
+
+def test_padding_stays_inside_the_moment():
+    words = [Word("why", 14.41, 14.80), Word("end", 20.0, 20.42)]
+    segments = timeline.edit_segments(words, [0, 1], 0.12, start=14.41, end=20.42)
+    assert segments[0][0] >= 14.40 and segments[-1][1] <= 20.44
+
+
+def test_removed_word_always_cuts_even_with_no_pause_around_it():
+    words = [Word("one", 1.0, 1.3), Word("um", 1.3, 1.5), Word("two", 1.5, 1.8)]
+    segments = timeline.edit_segments(words, [0, 2], 0.12)
+    assert len(segments) == 2
+    assert segments[0][1] <= 1.3 + 1 / 30 and segments[1][0] >= 1.5 - 1 / 30
+
+
+def test_nearby_kept_words_stay_joined():
+    words = [Word("one", 1.0, 1.3), Word("two", 1.35, 1.7), Word("three", 3.0, 3.3)]
+    assert len(timeline.edit_segments(words, [0, 1, 2], 0.12)) == 2
 
 
 def test_centre_ignores_a_second_that_straddles_a_cut():
