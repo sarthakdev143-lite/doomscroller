@@ -2,9 +2,11 @@
 import http.server
 import os
 import threading
+
 import cv2
 import numpy as np
 import pytest
+
 from app.clipper import ai, broll, shots
 from app.clipper.broll import Candidate
 from app.clipper.edit import Cutaway, EditPlan, attach_stock
@@ -338,6 +340,18 @@ def test_next_choice_is_tried_when_the_best_will_not_download(monkeypatch):
 
     monkeypatch.setattr(broll, "_download", deliver)
     assert broll.fetch("rain", 2.0, choose=lambda found: [found[0], found[2]]).video_id == "pixabay-3"
+
+
+# ---- the whole decision, per cutaway and across a job
+
+def test_ai_is_told_the_words_around_the_cutaway(monkeypatch):
+    _search_returns(monkeypatch, rain=[_candidate(1)])
+    told = []
+    monkeypatch.setattr(shots, "judge", lambda found, spoken: told.append(spoken) or shots.Verdict(list(found)))
+    attach_stock(_plan((15.0, "rain")))
+    words = told[0].split()
+    # Shot runs 15-17, plus a second either side, and words are half a second apart.
+    assert words[0] == "w8" and words[-1] == "w15"
 
 
 def test_words_after_a_cut_inside_the_shot_are_included(monkeypatch):

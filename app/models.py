@@ -118,6 +118,25 @@ class TransformJob(Base):
     video: Mapped[Video] = relationship(back_populates="transform_jobs")
 
 
+class ClipJob(Base):
+    """One long video waiting to be, or having been, cut into clips."""
+
+    __tablename__ = "clip_jobs"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    source: Mapped[str] = mapped_column(Text)  # link or local path
+    count: Mapped[Optional[int]] = mapped_column(Integer, default=None)
+    auto_queue: Mapped[Optional[bool]] = mapped_column(default=None)
+    status: Mapped[str] = mapped_column(String(16), default="queued", index=True)
+    stage: Mapped[str] = mapped_column(String(64), default="")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[Optional[str]] = mapped_column(Text, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), default=None)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), default=None)
+
+
 class QuotaUsage(Base):
     """Tracks daily YouTube upload quota usage."""
 

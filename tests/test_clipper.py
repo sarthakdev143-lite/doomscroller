@@ -4,15 +4,18 @@ import os
 import stat
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 import numpy as np
 import pytest
-from app.clipper import ai, captions, ingest, media, moments, render, timeline, transcribe
+from app.clipper import ai, captions, ingest, job, media, moments, render, timeline, transcribe
 from app.clipper.media import Interrupted, MediaError, MediaInfo
 from app.clipper.moments import Moment, build_sentences
 from app.clipper.signals import Signals, _find_cuts
 from app.clipper.transcribe import Transcript, Word
 from app.config import settings
+from app.db import session_scope
+from app.models import ClipJob, Video, VideoStatus
 
 
 @pytest.fixture(autouse=True)
@@ -1283,6 +1286,77 @@ def test_credit_line_names_each_videographer_once():
     assert broll.credit_line([""]) == "Stock video from Pexels."
 
 
+def test_stock_credit_reaches_the_upload_copy(tmp_path, monkeypatch):
+    from app.clipper import broll
+    from app.clipper.edit import Cutaway, EditPlan
+    moment = Moment(10, 40, title="T", kind="speech", description="About heat.")
+    _stub_pipeline(monkeypatch, [moment])
+    speech = Transcript(words=_words("word " * 400, start=1.0), language="en", duration=120.0)
+    monkeypatch.setattr(job, "transcribe", lambda path, info: speech)
+    monkeypatch.setattr(job, "pick_speech", lambda *a, **k: [moment])
+    clip = broll.StockClip("1", "/x/1.mp4", 10.0, "Ana")
+    plan = EditPlan(words=speech.words[:50], segments=[(10.0, 40.0)], cutaways=[Cutaway(12.0, 2.0, "rain", clip)])
+    monkeypatch.setattr(job, "build_edit", lambda *a, **k: plan)
+    monkeypatch.setattr(job, "attach_stock", lambda edit, stock=None: [])
+    _, description, _ = _draft(job.clip_source(_source(tmp_path, "credit"))["clips"][0]["id"])
+    assert "Stock video from Pexels: Ana." in description
+
+
+def _with_stock(monkeypatch, moment, author="Ana"):
+    from app.clipper import broll
+    from app.clipper.edit import Cutaway, EditPlan
+    _stub_pipeline(monkeypatch, [moment])
+    speech = Transcript(words=_words("word " * 400, start=1.0), language="en", duration=120.0)
+    monkeypatch.setattr(job, "transcribe", lambda path, info: speech)
+    monkeypatch.setattr(job, "pick_speech", lambda *a, **k: [moment])
+    clip = broll.StockClip("1", "/x/1.mp4", 10.0, author)
+    plan = EditPlan(words=speech.words[:50], segments=[(10.0, 40.0)], cutaways=[Cutaway(12.0, 2.0, "rain", clip)])
+    monkeypatch.setattr(job, "build_edit", lambda *a, **k: plan)
+    monkeypatch.setattr(job, "attach_stock", lambda edit, stock=None: [])
+    return plan
+
+
+def test_stock_credit_does_not_replace_the_source_description(tmp_path, monkeypatch):
+    _with_stock(monkeypatch, Moment(10, 40, title="T", kind="speech"))
+    source = _source(tmp_path, "keepdesc")
+    source.description = "The source video's own description."
+    _, description, _ = _draft(job.clip_source(source)["clips"][0]["id"])
+    assert "The source video's own description." in description and "Stock video from Pexels: Ana." in description
+
+
+def test_broll_that_will_not_render_costs_only_the_broll(tmp_path, monkeypatch):
+    plan = _with_stock(monkeypatch, Moment(10, 40, title="T", kind="speech", description="About heat."))
+    original = job.render_moment
+    calls = []
+
+    def fussy(src, info, signals, moment, words, out_path, edit=None):
+        calls.append(bool(edit.cutaways))
+        if edit.cutaways:
+            raise job.MediaError("moov atom not found")
+        return original(src, info, signals, moment, words, out_path, edit=edit)
+
+    monkeypatch.setattr(job, "render_moment", fussy)
+    result = job.clip_source(_source(tmp_path, "fallbackbroll"))
+    assert result["ok"] and calls == [True, False] and plan.cutaways == []
+    assert any("lost its B-roll" in w for w in result["warnings"])
+    _, description, _ = _draft(result["clips"][0]["id"])
+    assert "About heat." in description and "Pexels" not in description
+
+
+def test_rerendering_a_lost_file_updates_its_credit_and_length(tmp_path, monkeypatch):
+    moment = Moment(10, 40, title="T", kind="speech", description="About heat.")
+    _with_stock(monkeypatch, moment, author="First Author")
+    first = job.clip_source(_source(tmp_path, "newcredit"))["clips"][0]
+    _approve(first["id"])
+    os.unlink(first["path"])
+    _with_stock(monkeypatch, moment, author="Second Author")
+    job.clip_source(_source(tmp_path, "newcredit"))
+    _, description, _ = _draft(first["id"])
+    assert "Second Author" in description and "First Author" not in description
+    with session_scope() as db:
+        assert db.get(Video, first["id"]).status == VideoStatus.APPROVED
+
+
 def test_framing_never_sits_still_for_long(monkeypatch):
     from app.clipper.edit import build_edit
     _edit_reply(monkeypatch, {"keep": list(range(12)), "beats": []})
@@ -1811,3 +1885,369 @@ def test_youtube_sign_in_wall_says_what_to_do(monkeypatch):
     monkeypatch.setattr(yt_dlp, "YoutubeDL", Refused)
     with pytest.raises(ingest.IngestError, match="COOKIES_FROM_BROWSER"):
         ingest.fetch("https://youtube.com/watch?v=x")
+
+
+# ---------- Job and queue ----------
+def _source(tmp_path, source_id):
+    path = tmp_path / f"{source_id}.mp4"
+    path.write_bytes(b"x" * 2000)
+    return ingest.SourceVideo(path=str(path), title="Talk", url="https://example.com/v", author="me",
+                              source="local", source_id=source_id)
+
+
+def _stub_pipeline(monkeypatch, moment_list=None):
+    monkeypatch.setattr(job, "require_tools", lambda: None)
+    monkeypatch.setattr(job, "probe", lambda path: INFO)
+    monkeypatch.setattr(job, "transcribe", lambda path, info: None)
+    monkeypatch.setattr(job, "analyse", lambda path, info: _signals())
+    monkeypatch.setattr(job, "pick_visual", lambda *a, **k: list(moment_list or [Moment(10, 40, title="Clip one", kind="visual")]))
+
+    def fake_render(src, info, signals, moment, words, out_path, edit=None):
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(out_path).write_bytes(b"v" * 2000)
+        return render.ClipPlan([(moment.start, moment.end)], moment.duration, True, 404, "0", False, "1", False)
+
+    monkeypatch.setattr(job, "render_moment", fake_render)
+
+
+def test_clips_wait_for_review_by_default(tmp_path, monkeypatch):
+    _stub_pipeline(monkeypatch)
+    monkeypatch.setattr(settings, "clip_auto_queue", False)
+    result = job.clip_source(_source(tmp_path, "review"))
+    assert result["ok"] and result["kind"] == "visual"
+    with session_scope() as db:
+        video = db.get(Video, result["clips"][0]["id"])
+        assert video.status == VideoStatus.PENDING
+        assert video.meta["clip_rendered"] is True
+        assert video.transformed_path == video.local_path
+
+
+def test_auto_queue_skips_review(tmp_path, monkeypatch):
+    _stub_pipeline(monkeypatch)
+    result = job.clip_source(_source(tmp_path, "auto"), auto_queue=True)
+    with session_scope() as db:
+        video = db.get(Video, result["clips"][0]["id"])
+        assert video.status == VideoStatus.TRANSFORMED
+        assert video.transformed_at is not None
+
+
+def test_clip_title_reaches_the_metadata_draft(tmp_path, monkeypatch):
+    from app.models import MetadataDraft
+    from sqlalchemy import select
+    _stub_pipeline(monkeypatch)
+    result = job.clip_source(_source(tmp_path, "meta"))
+    with session_scope() as db:
+        draft = db.execute(select(MetadataDraft).where(MetadataDraft.video_id == result["clips"][0]["id"])).scalar_one()
+        assert "Clip one" in draft.title
+
+
+def _approve(video_id):
+    with session_scope() as db:
+        video = db.get(Video, video_id)
+        video.status = VideoStatus.APPROVED
+        video.curated_at = datetime.now(timezone.utc)
+
+
+@pytest.mark.parametrize("status", [
+    VideoStatus.REJECTED, VideoStatus.APPROVED, VideoStatus.TRANSFORMED,
+    VideoStatus.PUBLISHING, VideoStatus.PUBLISHED,
+])
+@pytest.mark.parametrize("auto_queue", [True, False])
+def test_rerun_never_undoes_a_decision_or_renders_again(tmp_path, monkeypatch, status, auto_queue):
+    _stub_pipeline(monkeypatch)
+    source_id = f"keep-{status.value}-{auto_queue}"
+    first = job.clip_source(_source(tmp_path, source_id))
+    video_id = first["clips"][0]["id"]
+    with session_scope() as db:
+        db.get(Video, video_id).status = status
+    monkeypatch.setattr(job, "render_moment", lambda *a: pytest.fail("rendered again"))
+    result = job.clip_source(_source(tmp_path, source_id), auto_queue=auto_queue)
+    assert result["ok"]
+    with session_scope() as db:
+        assert db.get(Video, video_id).status == status
+
+
+def test_rejected_and_published_clips_are_not_shown_as_new_output(tmp_path, monkeypatch):
+    _stub_pipeline(monkeypatch)
+    first = job.clip_source(_source(tmp_path, "shown"))
+    with session_scope() as db:
+        db.get(Video, first["clips"][0]["id"]).status = VideoStatus.REJECTED
+    result = job.clip_source(_source(tmp_path, "shown"))
+    assert result["ok"] and result["clips"] == []
+    assert any("already rejected" in w for w in result["warnings"])
+
+
+def test_failed_clip_renders_again(tmp_path, monkeypatch):
+    _stub_pipeline(monkeypatch)
+    first = job.clip_source(_source(tmp_path, "refail"))
+    video_id = first["clips"][0]["id"]
+    with session_scope() as db:
+        db.get(Video, video_id).status = VideoStatus.FAILED
+    assert job.clip_source(_source(tmp_path, "refail"))["clips"][0]["id"] == video_id
+    with session_scope() as db:
+        assert db.get(Video, video_id).status == VideoStatus.PENDING
+
+
+def test_unreviewed_clip_is_promoted_when_review_is_skipped(tmp_path, monkeypatch):
+    _stub_pipeline(monkeypatch)
+    first = job.clip_source(_source(tmp_path, "promote"))
+    result = job.clip_source(_source(tmp_path, "promote"), auto_queue=True)
+    assert result["queued"] is True
+    with session_scope() as db:
+        video = db.get(Video, first["clips"][0]["id"])
+        assert video.status == VideoStatus.TRANSFORMED and video.transformed_at is not None
+
+
+def test_lost_file_renders_again_and_keeps_its_status(tmp_path, monkeypatch):
+    _stub_pipeline(monkeypatch)
+    first = job.clip_source(_source(tmp_path, "lost"))
+    clip = first["clips"][0]
+    _approve(clip["id"])
+    os.unlink(clip["path"])
+    job.clip_source(_source(tmp_path, "lost"))
+    assert os.path.exists(clip["path"])
+    with session_scope() as db:
+        assert db.get(Video, clip["id"]).status == VideoStatus.APPROVED
+
+
+def test_slightly_different_moment_does_not_make_a_second_clip(tmp_path, monkeypatch):
+    _stub_pipeline(monkeypatch, [Moment(11.3, 40.0, title="Same idea", kind="visual")])
+    job.clip_source(_source(tmp_path, "repeat"), auto_queue=True)
+    _stub_pipeline(monkeypatch, [Moment(14.9, 40.0, title="Same idea again", kind="visual")])
+    result = job.clip_source(_source(tmp_path, "repeat"), auto_queue=True)
+    assert result["ok"] and result["clips"] == []
+    assert any("repeats clip" in w for w in result["warnings"])
+
+
+def test_too_little_speech_falls_back_to_visual_with_captions(tmp_path, monkeypatch):
+    _stub_pipeline(monkeypatch)
+    speech = Transcript(words=_words("short words only " * 40, start=1.0), language="en", duration=60.0)
+    monkeypatch.setattr(job, "transcribe", lambda path, info: speech)
+    monkeypatch.setattr(job, "pick_speech", lambda *a, **k: [])
+    used = {}
+    original = job.render_moment
+
+    def spy(src, info, signals, moment, words, out_path, edit=None):
+        used["words"] = len(words)
+        return original(src, info, signals, moment, words, out_path, edit=edit)
+
+    monkeypatch.setattr(job, "render_moment", spy)
+    result = job.clip_source(_source(tmp_path, "fallback"))
+    assert result["ok"] and result["kind"] == "visual"
+    assert any("too little continuous speech" in w for w in result["warnings"])
+    assert used["words"] > 0
+
+
+def test_words_past_the_end_of_the_picture_are_dropped(tmp_path, monkeypatch):
+    _stub_pipeline(monkeypatch)
+    words = _words("word " * 100, start=1.0) + [Word("late", 500.0, 500.5)]
+    monkeypatch.setattr(job, "transcribe", lambda path, info: Transcript(words=words, language="en", duration=120.0))
+    seen = {}
+    monkeypatch.setattr(job, "pick_speech", lambda w, *a, **k: seen.setdefault("words", w) and [Moment(1, 30, kind="speech")])
+    job.clip_source(_source(tmp_path, "pastend"))
+    assert all(w.end <= INFO.duration for w in seen["words"])
+
+
+def test_unexpected_error_on_one_clip_keeps_the_others(tmp_path, monkeypatch):
+    _stub_pipeline(monkeypatch, [Moment(0, 30, title="A", kind="visual"), Moment(40, 70, title="B", kind="visual"),
+                                 Moment(80, 110, title="C", kind="visual")])
+    original = job.render_moment
+
+    def flaky(src, info, signals, moment, words, out_path, edit=None):
+        if moment.title == "B":
+            raise OSError("disk trouble")
+        return original(src, info, signals, moment, words, out_path, edit=edit)
+
+    monkeypatch.setattr(job, "render_moment", flaky)
+    result = job.clip_source(_source(tmp_path, "oserror"))
+    assert result["ok"] and [c["title"] for c in result["clips"]] == ["A", "C"]
+    assert any("disk trouble" in w for w in result["warnings"])
+
+
+def test_crash_after_some_clips_still_reports_them(tmp_path, monkeypatch):
+    _stub_pipeline(monkeypatch)
+    from tasks import pipeline
+    real = job._existing_row
+    calls = []
+
+    def boom(src, moment):
+        calls.append(moment)
+        if len(calls) > 1:
+            raise RuntimeError("late crash")
+        return real(src, moment)
+
+    monkeypatch.setattr(job, "pick_visual", lambda *a, **k: [Moment(0, 30, title="A", kind="visual"), Moment(40, 70, title="B", kind="visual")])
+    monkeypatch.setattr(job, "_existing_row", boom)
+    result = job.clip_source(_source(tmp_path, "latecrash"))
+    assert result["ok"] and [c["title"] for c in result["clips"]] == ["A"]
+    assert result["error"] == "late crash"
+
+
+def test_interrupt_passes_through_clip_source(tmp_path, monkeypatch):
+    _stub_pipeline(monkeypatch)
+
+    def stopped(*a, **k):
+        raise Interrupted("ffmpeg was stopped")
+
+    monkeypatch.setattr(job, "render_moment", stopped)
+    with pytest.raises(Interrupted):
+        job.clip_source(_source(tmp_path, "stopped"))
+
+
+def _draft(video_id):
+    from app.models import MetadataDraft
+    from sqlalchemy import select
+    with session_scope() as db:
+        draft = db.execute(select(MetadataDraft).where(MetadataDraft.video_id == video_id)).scalar_one()
+        return draft.title, draft.description, list(draft.tags)
+
+
+def test_local_file_gets_no_credit_line(tmp_path, monkeypatch):
+    _stub_pipeline(monkeypatch)
+    source = _source(tmp_path, "mine")
+    source.url, source.author = "", ""
+    _, description, _ = _draft(job.clip_source(source)["clips"][0]["id"])
+    assert "Source" not in description and "mine.mp4" not in description
+
+
+def test_rerun_updates_instead_of_duplicating(tmp_path, monkeypatch):
+    _stub_pipeline(monkeypatch)
+    first = job.clip_source(_source(tmp_path, "rerun"))
+    second = job.clip_source(_source(tmp_path, "rerun"))
+    assert first["clips"][0]["id"] == second["clips"][0]["id"]
+
+
+def test_published_clip_is_not_pulled_back_by_a_rerun(tmp_path, monkeypatch):
+    _stub_pipeline(monkeypatch)
+    first = job.clip_source(_source(tmp_path, "published"))
+    with session_scope() as db:
+        db.get(Video, first["clips"][0]["id"]).status = VideoStatus.PUBLISHED
+    job.clip_source(_source(tmp_path, "published"))
+    with session_scope() as db:
+        assert db.get(Video, first["clips"][0]["id"]).status == VideoStatus.PUBLISHED
+
+
+def test_one_bad_clip_does_not_lose_the_rest(tmp_path, monkeypatch):
+    _stub_pipeline(monkeypatch, [Moment(10, 40, title="Bad", kind="visual"), Moment(50, 80, title="Good", kind="visual")])
+    original = job.render_moment
+
+    def flaky(src, info, signals, moment, words, out_path, edit=None):
+        if moment.title == "Bad":
+            raise job.MediaError("boom")
+        return original(src, info, signals, moment, words, out_path, edit=edit)
+
+    monkeypatch.setattr(job, "render_moment", flaky)
+    result = job.clip_source(_source(tmp_path, "flaky"))
+    assert [c["title"] for c in result["clips"]] == ["Good"]
+    assert any("clip 1 failed" in w for w in result["warnings"])
+
+
+def test_failed_transcription_still_makes_clips_and_warns(tmp_path, monkeypatch):
+    _stub_pipeline(monkeypatch)
+
+    def broken(path, info):
+        raise transcribe.TranscribeError("Deepgram returned 401")
+
+    monkeypatch.setattr(job, "transcribe", broken)
+    result = job.clip_source(_source(tmp_path, "nokey"))
+    assert result["ok"]
+    assert any("401" in w for w in result["warnings"])
+
+
+def test_missing_ffmpeg_is_a_clear_failure(monkeypatch):
+    def missing():
+        raise job.MediaError("ffmpeg not found on PATH")
+
+    monkeypatch.setattr(job, "require_tools", missing)
+    result = job.clip_source("/any/path.mp4")
+    assert not result["ok"] and "ffmpeg" in result["error"]
+
+
+def _clear_jobs():
+    with session_scope() as db:
+        db.query(ClipJob).delete()
+
+
+def test_queue_records_success_and_failure(monkeypatch):
+    _clear_jobs()
+    monkeypatch.setattr(job, "clip_source", lambda source, **k: {"ok": source == "good", "error": None if source == "good" else "bad link"})
+    good, bad = job.enqueue("good"), job.enqueue("bad")
+    assert job.clip_queue_job() == {"processed": 2, "failed": 1}
+    with session_scope() as db:
+        assert db.get(ClipJob, good).status == "done"
+        assert db.get(ClipJob, bad).status == "failed"
+        assert db.get(ClipJob, bad).error == "bad link"
+
+
+def test_queue_survives_a_crashing_job(monkeypatch):
+    _clear_jobs()
+
+    def explode(source, **k):
+        raise RuntimeError("kaboom")
+
+    monkeypatch.setattr(job, "clip_source", explode)
+    crashed = job.enqueue("x")
+    assert job.clip_queue_job()["failed"] == 1
+    with session_scope() as db:
+        assert "kaboom" in db.get(ClipJob, crashed).error
+
+
+def test_queue_restarts_a_job_left_running_by_a_crash(monkeypatch):
+    _clear_jobs()
+    monkeypatch.setattr(job, "clip_source", lambda source, **k: {"ok": True})
+    orphan = job.enqueue("x")
+    with session_scope() as db:
+        db.get(ClipJob, orphan).status = "running"
+    assert job.clip_queue_job()["processed"] == 1
+    with session_scope() as db:
+        assert db.get(ClipJob, orphan).status == "done"
+
+
+def test_interrupted_job_goes_back_in_the_queue(monkeypatch):
+    _clear_jobs()
+
+    def stopped(source, **k):
+        raise Interrupted("ffmpeg was stopped")
+
+    monkeypatch.setattr(job, "clip_source", stopped)
+    stopped_id = job.enqueue("x")
+    assert job.clip_queue_job()["processed"] == 0
+    with session_scope() as db:
+        row = db.get(ClipJob, stopped_id)
+        assert row.status == "queued" and not row.result
+
+
+def test_job_that_keeps_getting_stopped_eventually_fails(monkeypatch):
+    _clear_jobs()
+
+    def stopped(source, **k):
+        raise Interrupted("ffmpeg was stopped")
+
+    monkeypatch.setattr(job, "clip_source", stopped)
+    stuck = job.enqueue("x")
+    for _ in range(job._MAX_ATTEMPTS):
+        job.clip_queue_job()
+    with session_scope() as db:
+        assert db.get(ClipJob, stuck).status == "queued"
+    job.clip_queue_job()
+    with session_scope() as db:
+        row = db.get(ClipJob, stuck)
+        assert row.status == "failed" and "stopped" in row.error
+
+
+def test_locked_database_does_not_fail_on_a_progress_label(monkeypatch):
+    from sqlalchemy.exc import OperationalError
+
+    def locked():
+        raise OperationalError("UPDATE", {}, Exception("database is locked"))
+
+    monkeypatch.setattr(job, "session_scope", locked)
+    job._set_stage("any", "rendering")
+
+
+def test_queue_runs_one_at_a_time():
+    assert job._queue_lock.acquire(blocking=False)
+    try:
+        assert job.clip_queue_job() == {"skipped": "already running"}
+    finally:
+        job._queue_lock.release()
