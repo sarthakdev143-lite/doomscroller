@@ -1,8 +1,12 @@
 """Fast tests for the clipper: everything except real rendering."""
 import json
+import os
+import stat
 import subprocess
+import sys
+from pathlib import Path
 import pytest
-from app.clipper import media
+from app.clipper import ai, media
 from app.clipper.media import Interrupted, MediaError
 from app.config import settings
 
@@ -99,3 +103,90 @@ def test_rotated_non_square_pixels_are_swapped_too(monkeypatch):
     _stub_run(monkeypatch, stdout=_probe_json(video=video))
     info = media.probe("x.mp4")
     assert (info.width, info.height) == (810, 1920)
+
+
+# ---------- OpenCode ----------
+def _fake_opencode(tmp_path, reply='{"answer": 1}', code=0):
+    """A stand-in CLI that records how it was called."""
+    record = tmp_path / "call.json"
+    script = tmp_path / "opencode"
+    script.write_text(f"""#!{sys.executable}
+import json, os, sys
+stdin = "" if "--file" in sys.argv else sys.stdin.read()
+json.dump({{"argv": sys.argv[1:], "stdin": stdin, "cwd": os.getcwd(), "pwd": os.environ.get("PWD"),
+            "no_project": os.environ.get("OPENCODE_DISABLE_PROJECT_CONFIG"),
+            "config": os.environ.get("OPENCODE_CONFIG_CONTENT")}}, open({str(record)!r}, "w"))
+print(json.dumps({{"type": "step_start"}}))
+print(json.dumps({{"type": "text", "part": {{"text": {reply!r}}}}}))
+sys.exit({code})
+""")
+    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    return str(script), record
+
+
+def test_opencode_runs_locked_down(tmp_path, monkeypatch):
+    binary, record = _fake_opencode(tmp_path)
+    monkeypatch.setattr(settings, "opencode_bin", binary)
+    monkeypatch.setenv("PWD", str(tmp_path))
+    assert ai.ask_json("transcript text") == {"answer": 1}
+    call = json.loads(record.read_text())
+    config = json.loads(call["config"])
+    assert config["permission"] == {"*": "deny"}
+    assert "--standalone" in call["argv"]
+    assert "--auto" not in call["argv"]
+    assert call["stdin"] == "transcript text"
+    assert "transcript text" not in call["argv"]
+    assert Path(call["cwd"]).resolve() != Path.cwd().resolve()
+    # OpenCode roots its session in $PWD, not the real working directory.
+    assert Path(call["pwd"]).resolve() == Path(call["cwd"]).resolve()
+    assert call["no_project"] == "1"
+
+
+def test_opencode_attachments_are_passed_as_files(tmp_path, monkeypatch):
+    binary, record = _fake_opencode(tmp_path)
+    monkeypatch.setattr(settings, "opencode_bin", binary)
+    ai.ask("look", files=["/x/a.jpg"], model="vision/model")
+    argv = json.loads(record.read_text())["argv"]
+    assert argv[argv.index("--file") + 1] == "/x/a.jpg"
+    assert argv[argv.index("--model") + 1] == "vision/model"
+
+
+def test_opencode_failure_returns_none(tmp_path, monkeypatch):
+    binary, _ = _fake_opencode(tmp_path, code=3)
+    monkeypatch.setattr(settings, "opencode_bin", binary)
+    assert ai.ask("x") is None
+
+
+def test_opencode_prose_reply_returns_none(tmp_path, monkeypatch):
+    binary, _ = _fake_opencode(tmp_path, reply="sorry, I cannot")
+    monkeypatch.setattr(settings, "opencode_bin", binary)
+    assert ai.ask_json("x") is None
+
+
+@pytest.mark.parametrize("stdout", [
+    'null\n{"type":"text","part":{"text":"{\\"answer\\": 1}"}}\n',
+    '{"type":"text","part":"oops"}\n{"type":"text","part":{"text":"{\\"answer\\": 1}"}}\n',
+    '{"type":"text","part":{"text":5}}\n{"type":"text","part":{"text":"{\\"answer\\": 1}"}}\n',
+])
+def test_malformed_events_are_skipped(stdout):
+    assert ai._text_from_events(stdout) == '{"answer": 1}'
+
+
+def test_opencode_output_is_decoded_as_utf8_whatever_the_locale(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake(command, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    binary, _ = _fake_opencode(tmp_path)
+    monkeypatch.setattr(settings, "opencode_bin", binary)
+    monkeypatch.setattr(ai.subprocess, "run", fake)
+    ai.ask("x")
+    assert seen["encoding"] == "utf-8" and seen["errors"] == "replace"
+
+
+def test_missing_opencode_is_not_an_error(monkeypatch):
+    monkeypatch.setattr(settings, "opencode_bin", "definitely-not-installed")
+    assert not ai.available()
+    assert ai.ask("x") is None
