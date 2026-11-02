@@ -518,8 +518,28 @@ def transform_task(video_id: str, recipe_dict: dict | None = None) -> dict:
             video.error = "transform: source file missing from disk"
             return {"ok": False, "error": video.error}
 
-        video.status = VideoStatus.TRANSFORMING
-        video.error = None
+        # The clipper's output is already final; re-rendering would add the crop
+        # and variation made for scraped sources on top of finished graphics.
+        finished = bool((video.meta or {}).get("clip_rendered")) and bool(
+            video.transformed_path and os.path.exists(video.transformed_path)
+        )
+        if finished:
+            video.status = VideoStatus.TRANSFORMED
+            video.transformed_at = datetime.now(timezone.utc)
+            video.error = None
+            finished_path = video.transformed_path
+        else:
+            video.status = VideoStatus.TRANSFORMING
+            video.error = None
+    if finished:
+        try:
+            generate_metadata_for_video(video_id)
+        except Exception as exc:
+            log.warning("transform: metadata generation failed for %s: %s", video_id, exc)
+        return {"ok": True, "video_id": video_id, "output_path": finished_path, "action": "already rendered"}
+
+    with session_scope() as db:
+        video = db.get(Video, video_id)
         job = TransformJob(
             video_id=video.id, recipe=recipe_dict, status="running",
             started_at=datetime.now(timezone.utc),

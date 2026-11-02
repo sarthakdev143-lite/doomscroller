@@ -1931,6 +1931,19 @@ def test_auto_queue_skips_review(tmp_path, monkeypatch):
         assert video.transformed_at is not None
 
 
+def test_approving_a_clip_does_not_render_it_again(tmp_path, monkeypatch):
+    from tasks import pipeline
+    _stub_pipeline(monkeypatch)
+    result = job.clip_source(_source(tmp_path, "approve"))
+    video_id = result["clips"][0]["id"]
+    monkeypatch.setattr(pipeline, "get_transformer", lambda: pytest.fail("clip was re-rendered"))
+    monkeypatch.setattr(settings, "use_mock", False)
+    outcome = pipeline.transform_task(video_id)
+    assert outcome["ok"] and outcome["action"] == "already rendered"
+    with session_scope() as db:
+        assert db.get(Video, video_id).status == VideoStatus.TRANSFORMED
+
+
 def test_clip_title_reaches_the_metadata_draft(tmp_path, monkeypatch):
     from app.models import MetadataDraft
     from sqlalchemy import select

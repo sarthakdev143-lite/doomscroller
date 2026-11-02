@@ -20,7 +20,7 @@ from datetime import datetime, timedelta, timezone
 from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, or_, select
 
 from .logging_config import last_run_times, record_job_run
 from .config import settings
@@ -137,7 +137,8 @@ def transform_job() -> dict:
                 select(Video)
                 .where(
                     Video.status == VideoStatus.APPROVED,
-                    Video.transformed_path.is_(None),
+                    # Clips arrive already rendered, and transform_task only marks them ready.
+                    or_(Video.transformed_path.is_(None), Video.meta["clip_rendered"].as_boolean().is_(True)),
                     Video.local_path.isnot(None),
                 )
                 .order_by(Video.curated_at)
@@ -219,6 +220,11 @@ def auto_approve_job() -> dict:
                         "auto_rejected": disqualified,
                     }
                     note(disqualified.split(":")[0])
+                    continue
+
+                # Clips have no views to judge, and CLIP_AUTO_QUEUE is the switch for skipping review.
+                if (video.meta or {}).get("clip_rendered"):
+                    note("clip awaits review")
                     continue
 
                 if not video.local_path or not os.path.exists(video.local_path):
