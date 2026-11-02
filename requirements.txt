@@ -1,7 +1,7 @@
 # Web
 fastapi==0.124.1
 uvicorn[standard]==0.38.0
-streamlit==1.41.1
+streamlit==1.66.1
 
 # DB
 SQLAlchemy==2.0.49

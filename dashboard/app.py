@@ -103,85 +103,84 @@ def _badge(s):
 # Sidebar fragment — doesn't rerun main
 @st.fragment
 def sidebar_frag():
-    with st.sidebar:
-        st.markdown("## ⚡ Doomscroller")
-        st.caption(f"**{settings.uploads_per_day}/day** • {settings.upload_interval_hours}h ±{settings.upload_jitter_minutes}m • `{'auto' if settings.auto_approve else 'manual'}`")
-        jobs=_api("GET","/scheduler/jobs") or {}
-        if jobs.get("running"):
-            with st.expander(f"⏰ Scheduler • {len(jobs.get('jobs',[]))} jobs", expanded=False):
-                for j in jobs.get("jobs",[]):
-                    nxt=j.get("next_run_time","")[:19].replace("T"," ") if j.get("next_run_time") else "pending"
-                    st.caption(f"`{j['id']}` → {nxt}")
-        st.divider()
-        st.markdown("**⚡ Operate**")
-        c1,c2=st.columns(2)
-        if c1.button("🧹 Scrape", width="stretch", help="Fill to 20 pending"):
-            with st.spinner("Scraping…"):
-                out=_api("POST","/scrape", json={})
-                if out: st.toast(f"+{out.get('result',{}).get('created',0)} videos", icon="✅")
-                _cached_stats.clear()
-        if c2.button("♻️ Recompute", width="stretch"):
-            _api("POST","/scores/recompute"); st.toast("Scores updated", icon="✅"); _cached_stats.clear()
-        if st.button("🤖 Auto-approve", width="stretch"):
-            out=_api("POST","/scheduler/run/auto_approve"); st.toast(f"Approved {out.get('result',{}).get('approved',0)}" if out else "Done", icon="✅"); _cached_stats.clear()
-        st.divider()
-        st.markdown("**📤 Pacing**")
-        uploads=st.slider("Shorts / day",1,12,int(settings.uploads_per_day),1)
-        jitter=st.slider("Jitter ± min",0,90,int(settings.upload_jitter_minutes),5)
-        auto_approve=st.checkbox("Auto-approve", value=bool(settings.auto_approve))
-        if st.button("💾 Save pacing", type="primary", width="stretch"):
-            out=_api("POST","/config/publish", json={"uploads_per_day":uploads,"upload_jitter_minutes":jitter,"auto_approve":auto_approve})
-            if out and out.get("ok"):
-                st.toast(f"Saved {uploads}/day", icon="✅"); time.sleep(0.4); st.rerun()
-        st.divider()
-        st.markdown("**🎯 Channel focus**")
-        focus=_api("GET","/queue/focus") or {}
-        langs=focus.get("target_languages") or []
-        st.caption(f"Languages: `{', '.join(langs) if langs else 'any'}`")
-        by_lang=focus.get("pending_by_language") or {}
-        if by_lang:
-            off=[f"{k} {v}" for k,v in sorted(by_lang.items(), key=lambda x:-x[1])
-                 if langs and k not in langs]
-            if off:
-                st.caption(f"Off-focus pending: {', '.join(off)}")
-        c1,c2=st.columns(2)
-        if c1.button("🔍 Preview", width="stretch", help="Dry run: what the current filters would reject"):
-            out=_api("POST","/queue/apply-filters?dry_run=true")
-            if out:
-                st.session_state["focus_preview"]=out
-        if c2.button("🧽 Apply", width="stretch", help="Reject pending videos that fail the current filters"):
-            out=_api("POST","/queue/apply-filters")
-            if out:
-                st.toast(f"Rejected {out.get('rejected',0)}, kept {out.get('kept',0)}", icon="🧽")
-                _cached_stats.clear(); time.sleep(0.4); st.rerun()
-        prev=st.session_state.get("focus_preview")
-        if prev:
-            st.caption(f"Would keep **{prev.get('kept',0)}**, reject **{prev.get('rejected',0)}** — {prev.get('reasons',{})}")
-        st.divider()
-        st.markdown("**🩺 Health**")
-        hist=_api("GET","/scheduler/history?limit=1") or {}
-        health=hist.get("health") or {}
-        if health:
-            failing=[j for j,h in health.items() if not h.get("ok", True)]
-            with st.expander(f"Jobs • {len(health)} tracked" + (f" • {len(failing)} failing" if failing else ""), expanded=bool(failing)):
-                for job,h in sorted(health.items()):
-                    icon="✅" if h.get("ok", True) else "❌"
-                    when=(h.get("timestamp") or "")[11:19]
-                    st.caption(f"{icon} `{job}` {when} • {h.get('runs',0)} runs, {h.get('failures',0)} failed")
-        else:
-            st.caption("No job history yet.")
-        over=(_api("GET","/scheduler/overdue") or {}).get("overdue") or []
-        if over: st.warning(f"Overdue after downtime: {', '.join(over)}")
-        store=_api("GET","/storage") or {}
-        if store:
-            st.caption(f"💾 {store.get('total_mb',0)} MB • {store.get('files',0)} files"
-                       + (f" • {store.get('orphan_mb',0)} MB orphaned" if store.get('orphan_files') else ""))
-            if st.button("🧹 Reclaim disk", width="stretch"):
-                out=_api("POST","/storage/cleanup")
-                res=(out or {}).get("result",{})
-                st.toast(f"Reclaimed {res.get('mb_reclaimed',0)} MB", icon="💾"); time.sleep(0.4); st.rerun()
-        st.divider()
-        st.caption("Shortcuts: `Ctrl+K` search • `A` approve • `R` reject • `J/K` next/prev")
+    st.markdown("## ⚡ Doomscroller")
+    st.caption(f"**{settings.uploads_per_day}/day** • {settings.upload_interval_hours}h ±{settings.upload_jitter_minutes}m • `{'auto' if settings.auto_approve else 'manual'}`")
+    jobs=_api("GET","/scheduler/jobs") or {}
+    if jobs.get("running"):
+        with st.expander(f"⏰ Scheduler • {len(jobs.get('jobs',[]))} jobs", expanded=False):
+            for j in jobs.get("jobs",[]):
+                nxt=j.get("next_run_time","")[:19].replace("T"," ") if j.get("next_run_time") else "pending"
+                st.caption(f"`{j['id']}` → {nxt}")
+    st.divider()
+    st.markdown("**⚡ Operate**")
+    c1,c2=st.columns(2)
+    if c1.button("🧹 Scrape", width="stretch", help="Fill to 20 pending"):
+        with st.spinner("Scraping…"):
+            out=_api("POST","/scrape", json={})
+            if out: st.toast(f"+{out.get('result',{}).get('created',0)} videos", icon="✅")
+            _cached_stats.clear()
+    if c2.button("♻️ Recompute", width="stretch"):
+        _api("POST","/scores/recompute"); st.toast("Scores updated", icon="✅"); _cached_stats.clear()
+    if st.button("🤖 Auto-approve", width="stretch"):
+        out=_api("POST","/scheduler/run/auto_approve"); st.toast(f"Approved {out.get('result',{}).get('approved',0)}" if out else "Done", icon="✅"); _cached_stats.clear()
+    st.divider()
+    st.markdown("**📤 Pacing**")
+    uploads=st.slider("Shorts / day",1,12,int(settings.uploads_per_day),1)
+    jitter=st.slider("Jitter ± min",0,90,int(settings.upload_jitter_minutes),5)
+    auto_approve=st.checkbox("Auto-approve", value=bool(settings.auto_approve))
+    if st.button("💾 Save pacing", type="primary", width="stretch"):
+        out=_api("POST","/config/publish", json={"uploads_per_day":uploads,"upload_jitter_minutes":jitter,"auto_approve":auto_approve})
+        if out and out.get("ok"):
+            st.toast(f"Saved {uploads}/day", icon="✅"); time.sleep(0.4); st.rerun()
+    st.divider()
+    st.markdown("**🎯 Channel focus**")
+    focus=_api("GET","/queue/focus") or {}
+    langs=focus.get("target_languages") or []
+    st.caption(f"Languages: `{', '.join(langs) if langs else 'any'}`")
+    by_lang=focus.get("pending_by_language") or {}
+    if by_lang:
+        off=[f"{k} {v}" for k,v in sorted(by_lang.items(), key=lambda x:-x[1])
+             if langs and k not in langs]
+        if off:
+            st.caption(f"Off-focus pending: {', '.join(off)}")
+    c1,c2=st.columns(2)
+    if c1.button("🔍 Preview", width="stretch", help="Dry run: what the current filters would reject"):
+        out=_api("POST","/queue/apply-filters?dry_run=true")
+        if out:
+            st.session_state["focus_preview"]=out
+    if c2.button("🧽 Apply", width="stretch", help="Reject pending videos that fail the current filters"):
+        out=_api("POST","/queue/apply-filters")
+        if out:
+            st.toast(f"Rejected {out.get('rejected',0)}, kept {out.get('kept',0)}", icon="🧽")
+            _cached_stats.clear(); time.sleep(0.4); st.rerun()
+    prev=st.session_state.get("focus_preview")
+    if prev:
+        st.caption(f"Would keep **{prev.get('kept',0)}**, reject **{prev.get('rejected',0)}** — {prev.get('reasons',{})}")
+    st.divider()
+    st.markdown("**🩺 Health**")
+    hist=_api("GET","/scheduler/history?limit=1") or {}
+    health=hist.get("health") or {}
+    if health:
+        failing=[j for j,h in health.items() if not h.get("ok", True)]
+        with st.expander(f"Jobs • {len(health)} tracked" + (f" • {len(failing)} failing" if failing else ""), expanded=bool(failing)):
+            for job,h in sorted(health.items()):
+                icon="✅" if h.get("ok", True) else "❌"
+                when=(h.get("timestamp") or "")[11:19]
+                st.caption(f"{icon} `{job}` {when} • {h.get('runs',0)} runs, {h.get('failures',0)} failed")
+    else:
+        st.caption("No job history yet.")
+    over=(_api("GET","/scheduler/overdue") or {}).get("overdue") or []
+    if over: st.warning(f"Overdue after downtime: {', '.join(over)}")
+    store=_api("GET","/storage") or {}
+    if store:
+        st.caption(f"💾 {store.get('total_mb',0)} MB • {store.get('files',0)} files"
+                   + (f" • {store.get('orphan_mb',0)} MB orphaned" if store.get('orphan_files') else ""))
+        if st.button("🧹 Reclaim disk", width="stretch"):
+            out=_api("POST","/storage/cleanup")
+            res=(out or {}).get("result",{})
+            st.toast(f"Reclaimed {res.get('mb_reclaimed',0)} MB", icon="💾"); time.sleep(0.4); st.rerun()
+    st.divider()
+    st.caption("Shortcuts: `Ctrl+K` search • `A` approve • `R` reject • `J/K` next/prev")
 
 # Video card fragment — isolated, no full rerun
 @st.fragment
@@ -295,7 +294,9 @@ def stats_frag():
     return s
 
 def main():
-    sidebar_frag()
+    # A fragment may only write to the sidebar from inside this context.
+    with st.sidebar:
+        sidebar_frag()
     st.markdown('<div style="display:flex; align-items:center; gap:10px; margin:6px 0;"><span class="pulse"></span><span style="color:#9ca3af; font-size:11px; font-weight:700; letter-spacing:0.1em; text-transform:uppercase;">Operative • Live • 8/day ±45m</span><span style="margin-left:auto; color:#6b7280; font-size:11px;">Ctrl+K to search</span></div>', unsafe_allow_html=True)
     st.title("Doomscroller")
     st.caption(f"Snapchat → **{'Auto' if settings.auto_approve else 'Manual'}** → 1080x1920 • **{settings.uploads_per_day}/day** every {settings.upload_interval_hours}h")
