@@ -138,10 +138,38 @@ class Settings(BaseSettings):
     source_crop_keep: str = "right"
 
     # Long-form chopper — turns long downloaded videos into multiple Shorts
-    long_video_min_duration_sec: int = 120   # only chop videos >= 2 minutes
-    clip_target_sec: int = 59               # target length of each Shorts clip
-    max_clips_per_video: int = 3            # max clips per source video
-    min_clip_duration_sec: int = 30         # discard clips shorter than this
+    max_clips_per_video: int = 5
+    # Used by the old chopper until it is removed.
+    long_video_min_duration_sec: int = 120
+    clip_target_sec: int = 59
+    min_clip_duration_sec: int = 30
+    clip_min_sec: int = 15
+    clip_max_sec: int = 59
+    # No-speech clips have no sentences to end on, so they get a fixed length.
+    clip_visual_sec: int = 30
+    # Pauses longer than this are cut out of speech clips.
+    clip_silence_gap_sec: float = 0.35
+    clip_source_max_height: int = 1080
+    # Speech clips: how far to tighten. Speed is pitch-preserved.
+    clip_speed: float = 1.12
+    clip_edit_gap_sec: float = 0.12
+    clip_edit_target_sec: int = 28
+    clip_sfx: bool = True
+    # Stock cutaways over the voice. Needs either key; without one, clips simply have none.
+    clip_broll: bool = True
+    pixabay_api_key: str = ""
+    pexels_api_key: str = ""
+    # Finished clips skip review and go straight to the publish queue.
+    clip_auto_queue: bool = False
+    clip_font: str = ""
+    clip_ai_timeout_sec: int = 240
+    deepgram_api_key: str = ""
+    deepgram_model: str = "nova-3"
+    # Empty means PATH, then ~/.opencode/bin/opencode.
+    opencode_bin: str = ""
+    opencode_model: str = "opencode-go/deepseek-v4.1-flash"
+    # Must accept images: it judges frames from no-speech footage.
+    opencode_vision_model: str = "opencode-go/gemini-4-argon"
 
     # YouTube
     youtube_client_secrets: str = ""
@@ -256,7 +284,7 @@ class Settings(BaseSettings):
         "use_mock", "use_llm_metadata", "auto_publish", "enable_publish",
         "auto_discovery", "auto_approve", "allow_unknown_language",
         "transform_variation", "caption_enabled", "end_card_enabled",
-        "upscale_sharpen", mode="before",
+        "upscale_sharpen", "clip_auto_queue", "clip_sfx", "clip_broll", mode="before",
     )
     @classmethod
     def _coerce_bool(cls, v):

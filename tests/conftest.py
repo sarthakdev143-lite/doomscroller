@@ -10,3 +10,9 @@ if str(PROJECT_ROOT) not in sys.path:
 # Force in-memory SQLite + mock mode for tests
 os.environ["USE_MOCK"] = "true"
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
+
+# Tests must never spend real calls, whatever keys the developer's .env holds.
+os.environ["PIXABAY_API_KEY"] = ""
+os.environ["PEXELS_API_KEY"] = ""
+os.environ["DEEPGRAM_API_KEY"] = ""
+os.environ["OPENCODE_BIN"] = "definitely-not-installed"
