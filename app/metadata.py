@@ -188,7 +188,10 @@ def compose(
     elif require_credit:
         # No handle, but the visible attribution was cropped out, so say what
         # we can rather than shipping an uncredited reupload.
-        credit = f"Originally posted on {platform.title()}" if platform else "Reposted content"
+        if platform:
+            credit = f"Originally posted on {platform.title()}"
+        else:
+            credit = "Source" if source_url else "Reposted content"
         if source_url:
             credit += f"\n{source_url}"
         blocks.append(credit)

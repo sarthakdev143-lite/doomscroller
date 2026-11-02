@@ -419,20 +419,23 @@ def generate_metadata_for_video(video_id: str, *, force: bool = False) -> dict:
                 "title": draft.title, "tags": draft.tags,
             }
         meta = dict(video.meta or {})
+        is_clip = bool(meta.get("clip_rendered"))
+        has_link = (video.source_url or "").startswith(("http://", "https://"))
         params = {
             "source_title": video.title or "",
             "source_desc": video.description or "",
             "author": video.author or "",
             "author_name": video.author_name or "",
-            "platform": video.source or "",
-            "source_url": video.source_url or "",
+            # "generic" is yt-dlp's name for a plain file link, not a platform to credit.
+            "platform": "" if is_clip and video.source in ("generic", "local") else (video.source or ""),
+            "source_url": video.source_url or "" if has_link or not is_clip else "",
             "keywords": list(video.keywords or []),
             "language": video.language or "",
             "platform_title": meta.get("llm_title") or "",
             "platform_description": meta.get("llm_description") or "",
             # Cropping removes the on-screen credit, so the description one
-            # stops being optional.
-            "require_credit": settings.source_crop_active,
+            # stops being optional. A clip has none on screen to begin with.
+            "require_credit": has_link if is_clip else settings.source_crop_active,
         }
 
     generated: GeneratedMetadata = generate_metadata(**params)

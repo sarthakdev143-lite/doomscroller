@@ -2102,6 +2102,22 @@ def _draft(video_id):
         return draft.title, draft.description, list(draft.tags)
 
 
+def test_upload_copy_has_a_real_description_tags_and_credit(tmp_path, monkeypatch):
+    moment = Moment(10, 40, title="Heat Is a Silent Killer", kind="speech",
+                    description="Why heat is deadlier than floods.", tags=("heat", "climate"))
+    _stub_pipeline(monkeypatch, [moment])
+    monkeypatch.setattr(job, "pick_visual", lambda *a, **k: [moment])
+    source = _source(tmp_path, "copy")
+    source.source, source.author = "generic", ""
+    source.url = "https://example.com/talk.webm"
+    title, description, tags = _draft(job.clip_source(source)["clips"][0]["id"])
+    assert "Heat Is a Silent Killer" in title
+    assert "Why heat is deadlier than floods." in description
+    assert "Source\nhttps://example.com/talk.webm" in description
+    assert "Generic" not in description
+    assert tags[:2] == ["heat", "climate"]
+
+
 def test_local_file_gets_no_credit_line(tmp_path, monkeypatch):
     _stub_pipeline(monkeypatch)
     source = _source(tmp_path, "mine")
