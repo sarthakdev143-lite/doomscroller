@@ -337,6 +337,56 @@ def test_missing_font_file_keeps_the_default_size():
     assert captions._fitted_size(["ANY TEXT"], 92, 24, 1.12, "/nope/font.ttf") == 92
 
 
+def test_no_face_in_a_blank_frame():
+    from app.clipper import faces
+    blank = np.zeros((360, 640), dtype=np.uint8)
+    assert faces.speaker_in_pair(blank, blank) is None
+
+
+def test_unreadable_frames_mean_no_face(monkeypatch):
+    from app.clipper import faces
+
+    def broken(*a, **k):
+        raise MediaError("no frame")
+
+    monkeypatch.setattr(faces, "read_ffmpeg", broken)
+    assert faces.face_centre("x.mp4", 0.0, 5.0, INFO) is None
+
+
+def test_two_people_are_never_averaged_into_the_gap_between_them(monkeypatch):
+    from app.clipper import faces
+    picks = iter([(0.2, 5.0), (0.8, 9.0), (0.2, 4.0)])
+    monkeypatch.setattr(faces, "_frames_at", lambda *a: (None, None))
+    monkeypatch.setattr(faces, "speaker_in_pair", lambda a, b: next(picks))
+    assert faces.face_centre("x.mp4", 0.0, 5.0, INFO) == 0.8
+
+
+def test_the_face_that_moves_is_the_speaker(monkeypatch):
+    from app.clipper import faces
+
+    class Boxes:
+        def detectMultiScale(self, *a, **k):
+            return [(100, 100, 100, 100), (900, 100, 100, 100)]
+
+    monkeypatch.setattr(faces, "_detector", lambda: Boxes())
+    first = np.zeros((720, 1280), dtype=np.uint8)
+    second = first.copy()
+    second[100:230, 900:1000] = 200  # the right-hand person moved
+    assert faces.speaker_in_pair(first, second)[0] == pytest.approx(950 / 1280)
+
+
+def test_a_moving_blur_cannot_beat_a_real_size_difference_at_rest(monkeypatch):
+    from app.clipper import faces
+
+    class Boxes:
+        def detectMultiScale(self, *a, **k):
+            return [(100, 100, 36, 36), (900, 100, 256, 256)]
+
+    monkeypatch.setattr(faces, "_detector", lambda: Boxes())
+    still = np.zeros((720, 1280), dtype=np.uint8)
+    assert faces.speaker_in_pair(still, still)[0] == pytest.approx(1028 / 1280)
+
+
 def test_padding_stays_inside_the_moment():
     words = [Word("why", 14.41, 14.80), Word("end", 20.0, 20.42)]
     segments = timeline.edit_segments(words, [0, 1], 0.12, start=14.41, end=20.42)
