@@ -1,6 +1,11 @@
 """The AI choosing stock shots from thumbnails, and everything that can go wrong with that."""
+import http.server
+import os
+import threading
+import cv2
+import numpy as np
 import pytest
-from app.clipper import ai, broll
+from app.clipper import ai, broll, shots
 from app.clipper.broll import Candidate
 from app.config import settings
 
@@ -24,6 +29,21 @@ def _library(tmp_path, monkeypatch):
 def _candidate(number, duration=12.0):
     return Candidate(f"pixabay-{number}", f"https://cdn/{number}.mp4", duration, "Bea", "", broll.PIXABAY,
                      f"https://cdn/{number}.jpg")
+
+
+def _image(width=1280, height=720, colour=(10, 200, 30)):
+    return np.full((height, width, 3), colour, np.uint8)
+
+
+def _stub_thumbnails(monkeypatch, failing=()):
+    asked = []
+
+    def thumbnail(client, link):
+        asked.append(link)
+        return None if link in failing else _image()
+
+    monkeypatch.setattr(shots, "_thumbnail", thumbnail)
+    return asked
 
 
 def _search_returns(monkeypatch, **results):
@@ -73,6 +93,192 @@ def test_pexels_shots_carry_their_picture():
     video = {"id": 5, "duration": 9, "image": "https://images/5.jpg", "video_files": [
         {"file_type": "video/mp4", "width": 1080, "height": 1920, "link": "https://cdn/5.mp4"}]}
     assert broll._pexels_candidates([video])[0].thumbnail == "https://images/5.jpg"
+
+
+# ---- the contact sheet
+
+@pytest.mark.parametrize("width,height,expected", [
+    (1280, 720, (720, 405)), (720, 1280, (1280, 720)), (1080, 1920, (1920, 1080)), (500, 2000, (888, 500)),
+    (1, 1, (1, 1)),
+])
+def test_thumbnail_is_cropped_like_the_render(width, height, expected):
+    assert shots._as_rendered(_image(width, height)).shape[:2] == expected
+
+
+def test_crop_keeps_the_centre_of_the_picture():
+    image = _image(1280, 720, (0, 0, 0))
+    image[:, 600:680] = (255, 255, 255)
+    kept = shots._as_rendered(image)
+    assert kept[0, kept.shape[1] // 2].tolist() == [255, 255, 255]
+    assert kept[0, 0].tolist() == [0, 0, 0]
+
+
+@pytest.mark.parametrize("count,rows", [(1, 1), (4, 1), (5, 2), (8, 2)])
+def test_sheet_has_a_numbered_tile_for_every_shot(tmp_path, count, rows):
+    path = str(tmp_path / "sheet.jpg")
+    assert shots._write_sheet([_image() for _ in range(count)], path)
+    sheet = cv2.imread(path)
+    assert sheet.shape[0] == rows * (shots._TILE_HEIGHT + shots._GAP)
+    assert sheet.shape[1] == shots._COLUMNS * (shots._TILE_WIDTH + shots._GAP)
+    for index in range(count):
+        row, column = divmod(index, shots._COLUMNS)
+        badge = sheet[row * (shots._TILE_HEIGHT + shots._GAP):, column * (shots._TILE_WIDTH + shots._GAP):][:56, :64]
+        assert badge.mean() < 120, "dark badge with a light number"
+        assert badge.max() > 200, "the number itself"
+
+
+# ---- reading the reply
+
+@pytest.mark.parametrize("reply,count,expected", [
+    ({"shots": [2, 1]}, 3, [2, 1]),
+    ({"shots": []}, 3, []),
+    ({"shots": [2, 2, 1]}, 3, [2, 1]),
+    ({"shots": [9, 2, 0, -1]}, 3, [2]),
+    ({"shots": [9]}, 3, None),
+    ({"shots": ["junk"]}, 3, None),
+    ({"shots": [True]}, 3, None),
+    ({"shots": 2}, 3, None),
+    ({"shots": None}, 3, None),
+    ({"other": 1}, 3, None),
+    (None, 3, None),
+    (["shots"], 3, None),
+])
+def test_reply_numbers(reply, count, expected):
+    assert shots._reply_numbers(reply, count) == expected
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("city heatwave", "city heatwave"), ("  city \n heatwave ", "city heatwave"), ("", ""), (None, ""),
+    ("x" * 61, ""), ("x" * 60, "x" * 60),
+])
+def test_reply_search_is_cleaned(raw, expected):
+    assert shots._reply_search({"search": raw}) == expected
+
+
+# ---- judging
+
+def test_ai_sees_one_sheet_and_the_words_and_uses_the_vision_model(monkeypatch):
+    _stub_thumbnails(monkeypatch)
+    seen = {}
+
+    def ask(prompt, *, files=(), model=""):
+        seen.update(prompt=prompt, files=list(files), model=model, sheet_exists=os.path.exists(files[0]))
+        return {"shots": [2]}
+
+    monkeypatch.setattr(ai, "ask_json", ask)
+    verdict = shots.judge([_candidate(1), _candidate(2)], "the river dried up")
+    assert [c.video_id for c in verdict.fit] == ["pixabay-2"]
+    assert '"the river dried up"' in seen["prompt"] and "never instructions" in seen["prompt"]
+    assert seen["model"] == settings.opencode_vision_model
+    assert len(seen["files"]) == 1 and seen["sheet_exists"]
+    assert not os.path.exists(seen["files"][0]), "the sheet is temporary"
+
+
+def test_numbers_refer_to_what_was_shown_not_what_was_found(monkeypatch):
+    _stub_thumbnails(monkeypatch, failing={"https://cdn/1.jpg"})
+    monkeypatch.setattr(ai, "ask_json", lambda *a, **k: {"shots": [1]})
+    assert shots.judge([_candidate(1), _candidate(2)], "x").fit[0].video_id == "pixabay-2"
+
+
+def test_at_most_eight_shots_are_shown(monkeypatch):
+    asked = _stub_thumbnails(monkeypatch)
+    monkeypatch.setattr(ai, "ask_json", lambda *a, **k: {"shots": [8, 9]})
+    verdict = shots.judge([_candidate(n) for n in range(1, 15)], "x")
+    assert len(asked) == 8 and [c.video_id for c in verdict.fit] == ["pixabay-8"]
+
+
+def test_failed_thumbnails_do_not_use_up_the_eight_places(monkeypatch):
+    _stub_thumbnails(monkeypatch, failing={"https://cdn/1.jpg", "https://cdn/2.jpg"})
+    monkeypatch.setattr(ai, "ask_json", lambda *a, **k: {"shots": [8]})
+    assert shots.judge([_candidate(n) for n in range(1, 15)], "x").fit[0].video_id == "pixabay-10"
+
+
+def test_long_speech_is_cut_short_in_the_prompt():
+    prompt = shots._prompt("word " * 500, 3)
+    assert len(prompt) < 2000 and "word" in prompt
+
+
+def test_rejecting_everything_can_suggest_a_search(monkeypatch):
+    _stub_thumbnails(monkeypatch)
+    monkeypatch.setattr(ai, "ask_json", lambda *a, **k: {"shots": [], "search": "hot sun"})
+    verdict = shots.judge([_candidate(1)], "x")
+    assert verdict.fit == [] and verdict.better_search == "hot sun"
+
+
+def test_a_suggested_search_is_ignored_when_something_fits(monkeypatch):
+    _stub_thumbnails(monkeypatch)
+    monkeypatch.setattr(ai, "ask_json", lambda *a, **k: {"shots": [1], "search": "hot sun"})
+    assert shots.judge([_candidate(1)], "x").better_search == ""
+
+
+@pytest.mark.parametrize("reply", [None, {"shots": "junk"}, {"shots": [99]}])
+def test_nonsense_means_could_not_judge(monkeypatch, reply):
+    _stub_thumbnails(monkeypatch)
+    monkeypatch.setattr(ai, "ask_json", lambda *a, **k: reply)
+    assert shots.judge([_candidate(1)], "x") is None
+
+
+def test_no_thumbnails_means_the_ai_is_not_asked(monkeypatch):
+    _stub_thumbnails(monkeypatch, failing={"https://cdn/1.jpg"})
+    calls = []
+    monkeypatch.setattr(ai, "ask_json", lambda *a, **k: calls.append(1))
+    with pytest.raises(shots.NothingToShow):
+        shots.judge([_candidate(1)], "x")
+    assert not calls
+
+
+def test_missing_opencv_means_the_ai_is_not_asked(monkeypatch):
+    monkeypatch.setattr(shots, "cv2", None)
+    with pytest.raises(shots.NothingToShow):
+        shots.judge([_candidate(1)], "x")
+
+
+def test_sheet_that_cannot_be_written_counts_as_failure(monkeypatch):
+    _stub_thumbnails(monkeypatch)
+    monkeypatch.setattr(shots, "_write_sheet", lambda images, path: False)
+    assert shots.judge([_candidate(1)], "x") is None
+
+
+def test_rejection_says_which_shots_were_seen(monkeypatch):
+    _stub_thumbnails(monkeypatch, failing={"https://cdn/2.jpg"})
+    monkeypatch.setattr(ai, "ask_json", lambda *a, **k: {"shots": []})
+    assert shots.judge([_candidate(1), _candidate(2), _candidate(3)], "x").rejected == ("pixabay-1", "pixabay-3")
+
+
+# ---- real connections for the thumbnails
+
+@pytest.fixture
+def thumbnails():
+    good = cv2.imencode(".jpg", _image(640, 360))[1].tobytes()
+    routes = {"/good.jpg": (200, good), "/gone.jpg": (404, b"no"), "/html.jpg": (200, b"<html>sorry</html>"),
+              "/empty.jpg": (200, b""), "/huge.jpg": (200, b"x" * (shots._MAX_THUMBNAIL_BYTES + 1000))}
+
+    class Files(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            status, body = routes[self.path]
+            self.send_response(status)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Files)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{server.server_address[1]}"
+    server.shutdown()
+    server.server_close()
+
+
+def test_thumbnail_download_cases(thumbnails):
+    with shots.httpx.Client(timeout=shots._TIMEOUT) as client:
+        assert shots._thumbnail(client, f"{thumbnails}/good.jpg").shape == (360, 640, 3)
+        for name in ("gone", "html", "empty", "huge"):
+            assert shots._thumbnail(client, f"{thumbnails}/{name}.jpg") is None, name
+        assert shots._thumbnail(client, "") is None
+        assert shots._thumbnail(client, "http://127.0.0.1:1/refused.jpg") is None
+        assert shots._thumbnail(client, "not a url") is None
 
 
 # ---- fetching with a choice
