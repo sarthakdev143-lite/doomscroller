@@ -6,8 +6,9 @@ import subprocess
 import sys
 from pathlib import Path
 import pytest
-from app.clipper import ai, ingest, media
-from app.clipper.media import Interrupted, MediaError
+from app.clipper import ai, ingest, media, transcribe
+from app.clipper.media import Interrupted, MediaError, MediaInfo
+from app.clipper.transcribe import Transcript, Word
 from app.config import settings
 
 
@@ -103,6 +104,146 @@ def test_rotated_non_square_pixels_are_swapped_too(monkeypatch):
     _stub_run(monkeypatch, stdout=_probe_json(video=video))
     info = media.probe("x.mp4")
     assert (info.width, info.height) == (810, 1920)
+
+
+# ---------- Transcript ----------
+PAYLOAD = {"results": {"channels": [{"detected_language": "en", "alternatives": [{"words": [
+    {"word": "hello", "punctuated_word": "Hello,", "start": 1.0, "end": 1.4, "confidence": 0.98},
+    {"word": "there", "start": 1.5, "end": 1.9, "confidence": 0.9},
+]}]}]}}
+
+
+def test_deepgram_response_is_parsed():
+    parsed = transcribe.parse_response(PAYLOAD, 60.0)
+    assert [w.text for w in parsed.words] == ["Hello,", "there"]
+    assert parsed.language == "en"
+
+
+@pytest.mark.parametrize("payload", [{}, {"results": {}}, {"results": {"channels": []}}])
+def test_empty_deepgram_response_is_harmless(payload):
+    assert transcribe.parse_response(payload, 60.0).words == []
+
+
+def _speech(language="en", per_minute=150, confidence=0.95):
+    return Transcript(
+        words=[Word("w", i * 0.4, i * 0.4 + 0.3, confidence) for i in range(per_minute)],
+        language=language, duration=60.0,
+    )
+
+
+def test_english_speech_is_recognised():
+    assert _speech().is_english_speech
+
+
+@pytest.mark.parametrize("transcript", [
+    _speech(language="hi"),
+    _speech(per_minute=10),
+    _speech(confidence=0.2),
+    Transcript(),
+])
+def test_other_audio_takes_the_no_speech_path(transcript):
+    assert not transcript.is_english_speech
+
+
+def test_transcript_cache_avoids_a_second_paid_call(tmp_path, monkeypatch):
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"x")
+    monkeypatch.setattr(settings, "deepgram_api_key", "key")
+    monkeypatch.setattr(transcribe, "run_ffmpeg", lambda args: Path(args[-1]).write_bytes(b"a"))
+    calls = []
+    monkeypatch.setattr(transcribe, "_request", lambda path: calls.append(path) or PAYLOAD)
+    info = MediaInfo(60.0, 1280, 720, 30.0, True)
+    first = transcribe.transcribe(str(video), info)
+    second = transcribe.transcribe(str(video), info)
+    assert len(calls) == 1
+    assert first.words == second.words
+
+
+def test_replaced_file_is_transcribed_again(tmp_path, monkeypatch):
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"x")
+    monkeypatch.setattr(settings, "deepgram_api_key", "key")
+    monkeypatch.setattr(transcribe, "run_ffmpeg", lambda args: Path(args[-1]).write_bytes(b"a"))
+    calls = []
+    monkeypatch.setattr(transcribe, "_request", lambda path: calls.append(path) or PAYLOAD)
+    info = MediaInfo(60.0, 1280, 720, 30.0, True)
+    transcribe.transcribe(str(video), info)
+    video.write_bytes(b"different and longer")
+    transcribe.transcribe(str(video), info)
+    assert len(calls) == 2
+
+
+def test_old_cache_without_a_fingerprint_is_not_trusted(tmp_path, monkeypatch):
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"x")
+    Path(f"{video}.transcript.json").write_text(json.dumps({"language": "en", "words": []}))
+    monkeypatch.setattr(settings, "deepgram_api_key", "key")
+    monkeypatch.setattr(transcribe, "run_ffmpeg", lambda args: Path(args[-1]).write_bytes(b"a"))
+    calls = []
+    monkeypatch.setattr(transcribe, "_request", lambda path: calls.append(path) or PAYLOAD)
+    transcribe.transcribe(str(video), MediaInfo(60.0, 1280, 720, 30.0, True))
+    assert calls
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_read_only_folder_still_keeps_the_paid_transcript(tmp_path, monkeypatch):
+    folder = tmp_path / "ro"
+    folder.mkdir()
+    video = folder / "v.mp4"
+    video.write_bytes(b"x")
+    folder.chmod(0o555)
+    monkeypatch.setattr(settings, "deepgram_api_key", "key")
+    monkeypatch.setattr(transcribe, "run_ffmpeg", lambda args: Path(args[-1]).write_bytes(b"a"))
+    calls = []
+    monkeypatch.setattr(transcribe, "_request", lambda path: calls.append(path) or PAYLOAD)
+    info = MediaInfo(60.0, 1280, 720, 30.0, True)
+    try:
+        assert transcribe.transcribe(str(video), info).words
+        transcribe.transcribe(str(video), info)
+    finally:
+        folder.chmod(0o755)
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("payload", [
+    {"results": {"channels": [{"alternatives": [{"words": [{"word": "x", "start": "oops"}]}]}]}},
+    {"results": [1]},
+    [],
+])
+def test_strange_deepgram_replies_become_transcribe_errors(tmp_path, monkeypatch, payload):
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"x")
+    monkeypatch.setattr(settings, "deepgram_api_key", "key")
+    monkeypatch.setattr(transcribe, "run_ffmpeg", lambda args: Path(args[-1]).write_bytes(b"a"))
+    monkeypatch.setattr(transcribe, "_request", lambda path: payload)
+    with pytest.raises(transcribe.TranscribeError):
+        transcribe.transcribe(str(video), MediaInfo(60.0, 1280, 720, 30.0, True))
+
+
+def test_unreadable_deepgram_body_is_a_transcribe_error(tmp_path, monkeypatch):
+    audio = tmp_path / "a.mp3"
+    audio.write_bytes(b"x")
+
+    class Reply:
+        status_code = 200
+        text = "<html>"
+
+        def json(self):
+            raise ValueError("not json")
+
+    monkeypatch.setattr(transcribe.httpx, "post", lambda *a, **k: Reply())
+    with pytest.raises(transcribe.TranscribeError):
+        transcribe._request(str(audio))
+
+
+def test_no_key_and_no_audio_cost_nothing(tmp_path, monkeypatch):
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"x")
+    monkeypatch.setattr(settings, "deepgram_api_key", "")
+    monkeypatch.setattr(transcribe, "_request", lambda path: pytest.fail("should not call Deepgram"))
+    assert transcribe.transcribe(str(video), MediaInfo(60.0, 1280, 720, 30.0, True)) is None
+    monkeypatch.setattr(settings, "deepgram_api_key", "key")
+    assert transcribe.transcribe(str(video), MediaInfo(60.0, 1280, 720, 30.0, False)) is None
 
 
 # ---------- OpenCode ----------
