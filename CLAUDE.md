@@ -31,8 +31,8 @@ stop.bat
 
 # Tests. The fast tier is ~5s; the `slow` tier shells out to real ffmpeg (~3min).
 # conftest forces USE_MOCK=true + in-memory SQLite.
-venv/Scripts/python.exe -m pytest -q -m "not slow"   # 124 fast tests
-venv/Scripts/python.exe -m pytest -q                 # all 138
+venv/Scripts/python.exe -m pytest -q -m "not slow"   # fast tier
+venv/Scripts/python.exe -m pytest -q                 # everything
 venv/Scripts/python.exe -m pytest tests/test_selection.py::test_shape_rejects_landscape -q
 
 # Trigger any scheduler job by id, without waiting for its interval
@@ -40,6 +40,9 @@ curl -X POST http://localhost:8000/scheduler/run/scrape
 
 # Seed fake data (mock mode only)
 venv/Scripts/python.exe scripts/seed.py 20
+
+# Cut one long video or link into finished Shorts
+venv/Scripts/python.exe scripts/clip.py "https://www.youtube.com/watch?v=..." --count 3
 
 # YouTube OAuth (writes secrets/youtube_token.json; needs secrets/client_secret.json)
 venv/Scripts/python.exe scripts/youtube_oauth.py
@@ -211,6 +214,62 @@ so a non-existent configured path falls back to autodetecting a bold system font
 Because filter graphs only fail at ffmpeg's parser, `tests/test_render_integration.py` renders through the
 real binary (marked `slow`). Any change to the filter chain needs to run that tier.
 
+### Clipper (`app/clipper/`)
+
+A separate path from the scrape pipeline: one long video or link goes in, finished 1080x1920 clips come
+out. `job.clip_source` runs `ingest` -> `transcribe` -> `signals` -> `moments` -> `render` and saves `Video`
+rows, `PENDING` or, with `CLIP_AUTO_QUEUE`, straight to `TRANSFORMED`. `POST /clip` and the `clip_queue` job
+drive it through the `ClipJob` table, so queued work survives a restart.
+
+- **Speech vs no speech.** `Transcript.is_english_speech` decides. Speech goes to the AI as numbered sentences
+  and comes back as sentence numbers, so a clip cannot start or end mid-sentence. Everything else, including
+  non-English speech for now, is ranked on measured motion, loudness and cuts, and the AI re-ranks frame
+  strips of the best candidates. Without AI both paths fall back to rules; without a Deepgram key every video
+  takes the no-speech path.
+- **OpenCode is locked down on purpose** (`ai.py`). It is an agent with shell access and the user's MCP
+  servers, and transcripts are untrusted text. Every call uses `--standalone` (the background service would
+  ignore `OPENCODE_CONFIG_CONTENT`), all tools denied, an empty working directory, and stdin supplied or
+  closed. With an inherited stdin the CLI hangs forever.
+- **Time.** Pauses are cut from speech clips, so `timeline.py` maps source time to clip time for captions,
+  crops and zooms. Boundaries sit on a 30fps grid so audio and video cut together.
+- **The edit** (`edit.py`). Raw footage with captions reads as a clip of an interview, so each speech moment gets
+  a second AI pass that drops weak sentences and places graphics on exact phrases. Stutters and filler are cut
+  by rule. `render.py` then changes the framing every 1-2.4s, and `sfx.py` synthesises effects, so there is
+  nothing to license. `faces.py` picks the face that moves, and never averages two people: that lands on the gap.
+  Most emphasis is a `punch`: a flash, a shake and a thud, with no text. Big words over dimmed footage were tried and
+  the owner rejected them, so only real numbers (`stat`) and one turning point per clip (`card`) get on-screen text.
+- **B-roll** (`broll.py`). The AI names filmable search terms, and Pixabay or Pexels supplies clips, cached under
+  `content/broll/` and credited in the description. It is optional at every step: no key, no results or a failed
+  download just means fewer cutaways. A 429 stops further searches. Pixabay requires searches cached for 24h, and
+  its key travels in the URL, so the httpx logger stays at WARNING and errors must never include the URL.
+  Searches match tags rather than meaning, so `shots.py` shows the vision model the results, cropped as they will
+  render, with the words spoken over them. If it rejects them all it can suggest one better search; if that fails
+  too the cutaway is dropped. If it cannot judge at all, the job stops asking and takes the first matches.
+  Files are test-decoded before use, because a CDN can answer 200 with an error page, and a render that still
+  fails is retried once without B-roll.
+- **Tidying speech is conservative.** A rule that removes words changes what someone said, so `droppable_indices`
+  errs towards keeping them: "money. Money", "50 50" and "As you know, ..." all stay.
+- **Audio order.** The voice is levelled first and effects mixed on top. Mixing first lets the effects drown a quiet
+  recording.
+- **Graphics.** ASS captions via libass rather than `drawtext`: the text lives outside the filter graph, so
+  an apostrophe cannot break it. Run ffmpeg from a temp dir with relative names, for the same reason.
+- **Finished means finished.** `transform_task` short-circuits on `meta.clip_rendered`. Without that, approving
+  a clip would re-render it through the crop and variation built for scraped sources. `transform_job` selects
+  approved clips even though they already have a `transformed_path`, or they would stall at APPROVED.
+- **A re-run never undoes a decision.** Rejected, approved, queued and published rows are left alone. Only
+  unreviewed `PENDING` and `FAILED` rows re-render, and a moment that overlaps an earlier clip of the same source
+  is skipped rather than posted twice. Files are written to `.tmp.mp4` and moved into place, so a live row never
+  points at a half-written clip.
+- **Stopping is not failing.** `Interrupted` (ffmpeg exit 255 or SIGTERM/SIGINT) puts the job back in the queue,
+  up to `_MAX_ATTEMPTS`. It is deliberately not a `MediaError`.
+- **The picture sets the length.** `probe` uses the video stream's duration when audio runs longer, and skips cover
+  art. It also reports display width, so non-square pixels are handled. ffmpeg always gets a finite progress-bar
+  source and no stdin: an endless source hangs forever on a moment with no frames, and stdin reads as key presses.
+- **Cleanup.** `content/long/` and transcripts have no rows, so they age out with `SOURCE_VIDEO_MAX_AGE_DAYS`
+  rather than the 6h orphan rule, and are left alone while any `ClipJob` is queued or running. Deleting one early
+  costs a repeat download and a repeat Deepgram call.
+- Changes to the filter graph need the `slow` tier in `tests/test_clipper_render.py`.
+
 ### Metadata (`app/metadata.py`)
 
 Sources, in priority order: **platform** (Snapchat's own `llmTitle`/`llmDescription`/keywords — already
@@ -238,6 +297,7 @@ Job ids are the contract for `POST /scheduler/run/{job_id}` and the dashboard si
 | `auto_approve` | 15 min | no-ops unless `AUTO_APPROVE=true`; honours the veto window |
 | `transform` | 1 h | batches 3 APPROVED videos |
 | `publish` | `24 / UPLOADS_PER_DAY` h | only registered when `ENABLE_PUBLISH=true`; no-ops unless `AUTO_PUBLISH=true` |
+| `clip_queue` | 5 min | cuts queued long videos into clips, one at a time |
 | `cleanup` | 24 h | deletes source files of PUBLISHED/REJECTED videos older than `SOURCE_VIDEO_MAX_AGE_DAYS` |
 | `recompute` | 1 h | refreshes all four scores |
 | `analytics_pull` | 6 h | pulls YouTube stats, boosts creator scores |
@@ -303,8 +363,6 @@ strings** and read through `*_list` properties — add new list settings the sam
   guards against that regressing. `configure_logging()` likewise must be called once per process (it is,
   from the FastAPI lifespan and the dashboard's cached init); without it the root logger sits at WARNING
   and all app-level INFO is silently dropped.
-- **`POST /scheduler/run/chop_long` maps to `cleanup_job`** because no `chop_long_job` exists.
-  `app/clips.py` is only reachable through `POST /videos/{id}/chop`.
 - **`dashboard/app.py` starts with a sys.path/`sys.modules` fixup** so the `dashboard/` directory does
   not shadow the `app` package. `dashboard/_launch.py` is the cleaner entry point, but `scripts/run.py`
   launches `dashboard/app.py` directly — keep the fixup if you edit the top of that file.

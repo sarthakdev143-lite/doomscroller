@@ -37,6 +37,20 @@ to your YouTube channel on a paced 8-uploads-per-day schedule.
 
 No Docker. No Redis. No Celery (optional). One command starts everything.
 
+## Clip a long video
+
+Paste a link into the dashboard's ✂️ Clip tab, or run:
+
+```bash
+venv/bin/python scripts/clip.py "https://www.youtube.com/watch?v=..."
+```
+
+English speech gets AI-picked moments, tightened pauses and word-by-word captions.
+Video with no speech is ranked on motion, sound and scene cuts, and the AI judges
+frames from the best candidates. Needs `ffmpeg` and, for captions, `DEEPGRAM_API_KEY`.
+`PIXABAY_API_KEY` adds stock B-roll.
+The AI runs through your local `opencode` login, with its tools switched off.
+
 ## Autonomous schedule (default)
 
 | Job          | Interval | Purpose                                                    |
@@ -131,7 +145,7 @@ doomscroller/
 │   ├── scheduler.py        # APScheduler autonomous loop
 │   ├── scrapers/           # Snapchat (Playwright + CDN) + yt-dlp + mock scrapers
 │   ├── transformers/       # FFmpeg vertical Shorts transformer
-│   ├── clips.py            # Smart long-form → Shorts clip chopper
+│   ├── clipper/            # Long video or link → finished Shorts
 │   └── publishers/         # YouTube OAuth2 + mock publishers
 ├── tasks/
 │   └── pipeline.py         # scrape/transform/publish/metadata functions
@@ -161,7 +175,9 @@ doomscroller/
 | POST   | `/videos/{id}/approve`            | Approve / reject (body: `{approved: bool, note?: str}`) |
 | POST   | `/videos/{id}/transform`          | Queue transformation             |
 | POST   | `/videos/{id}/publish`            | Queue YouTube publish            |
-| POST   | `/videos/{id}/chop`               | Chop long-form into Shorts clips |
+| POST   | `/clip`                           | Queue a link or file for clipping |
+| GET    | `/clip/jobs`                      | Clip job status and results |
+| POST   | `/videos/{id}/chop`               | Clip a video already on disk |
 
 ### Metadata
 | Method | Path                              | Purpose                          |
