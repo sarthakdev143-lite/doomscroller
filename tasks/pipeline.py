@@ -759,8 +759,8 @@ def long_to_shorts_task(video_id: str) -> dict:
     Requires ffmpeg on PATH.  Returns a summary dict including the IDs and
     timestamps of each generated clip.
     """
-    from app.clips import clips_from_long
-    return clips_from_long(video_id)
+    from app.clipper.job import clip_existing_video
+    return clip_existing_video(video_id)
 
 
 # ---------- Publish ----------

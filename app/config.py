@@ -139,10 +139,6 @@ class Settings(BaseSettings):
 
     # Long-form chopper — turns long downloaded videos into multiple Shorts
     max_clips_per_video: int = 5
-    # Used by the old chopper until it is removed.
-    long_video_min_duration_sec: int = 120
-    clip_target_sec: int = 59
-    min_clip_duration_sec: int = 30
     clip_min_sec: int = 15
     clip_max_sec: int = 59
     # No-speech clips have no sentences to end on, so they get a fixed length.
