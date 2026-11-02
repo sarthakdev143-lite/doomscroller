@@ -6,7 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 import pytest
-from app.clipper import ai, media
+from app.clipper import ai, ingest, media
 from app.clipper.media import Interrupted, MediaError
 from app.config import settings
 
@@ -190,3 +190,82 @@ def test_missing_opencode_is_not_an_error(monkeypatch):
     monkeypatch.setattr(settings, "opencode_bin", "definitely-not-installed")
     assert not ai.available()
     assert ai.ask("x") is None
+
+
+# ---------- Ingest ----------
+def test_links_and_paths_are_told_apart():
+    assert ingest.is_url("https://youtu.be/x") and ingest.is_url("  HTTP://x.com/y")
+    assert not ingest.is_url("/home/me/video.mp4")
+
+
+def test_missing_file_is_reported(tmp_path):
+    with pytest.raises(ingest.IngestError):
+        ingest.fetch(str(tmp_path / "nope.mp4"))
+
+
+def test_local_file_id_is_stable(tmp_path):
+    video = tmp_path / "my_long-talk.mp4"
+    video.write_bytes(b"x")
+    assert ingest.fetch(str(video)).source_id == ingest.fetch(str(video)).source_id
+    assert ingest.fetch(str(video)).title == "my long talk"
+
+
+def _fake_ydl(monkeypatch, probe_info, downloaded=None):
+    calls = []
+
+    class FakeDL:
+        def __init__(self, options):
+            assert options["noplaylist"] is True
+            assert options["extract_flat"] == "in_playlist"
+        def __enter__(self):
+            return self
+        def __exit__(self, *exc):
+            return False
+        def extract_info(self, url, download):
+            calls.append(("extract", download))
+            return probe_info
+        def process_ie_result(self, info, download):
+            calls.append(("download", download))
+            return downloaded
+    import yt_dlp
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", FakeDL)
+    return calls
+
+
+@pytest.mark.parametrize("info,message", [
+    ({"entries": [{}, {}]}, "playlist"),
+    ({"id": "x", "is_live": True}, "live"),
+])
+def test_playlists_and_live_streams_are_refused_before_any_download(monkeypatch, info, message):
+    calls = _fake_ydl(monkeypatch, info)
+    with pytest.raises(ingest.IngestError, match=message):
+        ingest.fetch("https://youtube.com/x")
+    assert calls == [("extract", False)]
+
+
+def test_single_video_is_downloaded_and_its_age_refreshed(tmp_path, monkeypatch):
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"x")
+    os.utime(video, (1000, 1000))
+    done = {"id": "abc", "title": "Talk", "extractor_key": "Youtube", "requested_downloads": [{"filepath": str(video)}]}
+    calls = _fake_ydl(monkeypatch, {"id": "abc"}, done)
+    source = ingest.fetch("https://youtube.com/watch?v=abc")
+    assert calls == [("extract", False), ("download", True)]
+    assert source.path == str(video) and source.source == "youtube"
+    assert video.stat().st_mtime > 1000
+
+
+def test_youtube_sign_in_wall_says_what_to_do(monkeypatch):
+    class Refused:
+        def __init__(self, options):
+            pass
+        def __enter__(self):
+            return self
+        def __exit__(self, *exc):
+            return False
+        def extract_info(self, url, download):
+            raise RuntimeError("Sign in to confirm you're not a bot. Use --cookies-from-browser")
+    import yt_dlp
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", Refused)
+    with pytest.raises(ingest.IngestError, match="COOKIES_FROM_BROWSER"):
+        ingest.fetch("https://youtube.com/watch?v=x")
