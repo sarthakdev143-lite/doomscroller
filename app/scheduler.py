@@ -25,7 +25,7 @@ from sqlalchemy import desc, func, or_, select
 from .logging_config import last_run_times, record_job_run
 from .config import settings
 from .db import session_scope, init_db
-from .models import Creator, Video, VideoStatus
+from .models import ClipJob, Creator, Video, VideoStatus
 from . import discovery, quota
 from .analytics import recompute_scores
 
@@ -382,11 +382,26 @@ def _content_files() -> list[str]:
 
     root = str(settings.content_path)
     return [
-        path for pattern in ("*.mp4", "transformed/*.mp4")
+        path for pattern in ("*.mp4", "transformed/*.mp4", "clips/*/*.mp4")
         for path in glob.glob(os.path.join(root, pattern))
         # Leading underscore marks internal scaffolding such as the mock
         # master clip, which has no database row by design.
         if not os.path.basename(path).startswith("_")
+    ]
+
+
+_TRANSCRIPT_SUFFIX = ".transcript.json"
+
+
+def _source_cache_files() -> list[str]:
+    """Clipper downloads, stock footage and transcripts. No row references these, so orphan rules do not fit."""
+    import glob
+
+    root = str(settings.content_path)
+    return [
+        path for pattern in ("long/*", "broll/*", f"*{_TRANSCRIPT_SUFFIX}", "transcripts/*.json")
+        for path in glob.glob(os.path.join(root, pattern))
+        if os.path.isfile(path)
     ]
 
 
@@ -473,10 +488,43 @@ def cleanup_job(dry_run: bool = False) -> dict:
             reclaimed += drop(path)
             removed_orphans += 1
 
+        # Downloads expire like other sources: a 6h limit would throw away a paid
+        # transcript and could delete a file mid-render. They carry no job id, so
+        # leave them all alone while any clip job is waiting or running.
+        removed_cache = 0
+        with session_scope() as db:
+            clip_jobs_active = db.scalar(
+                select(func.count(ClipJob.id)).where(ClipJob.status.in_(("queued", "running")))
+            )
+        if not clip_jobs_active:
+            cache_age = max(timedelta(days=max_age_days), _ORPHAN_GRACE)
+            files = _source_cache_files()
+            gone: set[str] = set()
+
+            def too_old(path: str) -> bool:
+                try:
+                    return now - datetime.fromtimestamp(os.path.getmtime(path), tz=timezone.utc) >= cache_age
+                except OSError:
+                    return False
+
+            for path in files:
+                if not path.endswith(_TRANSCRIPT_SUFFIX) and too_old(path):
+                    reclaimed += drop(path)
+                    removed_cache += 1
+                    gone.add(path)
+            # A sidecar transcript goes with its video, and is kept for as long as the video is.
+            for path in files:
+                if path.endswith(_TRANSCRIPT_SUFFIX):
+                    video = path[:-len(_TRANSCRIPT_SUFFIX)]
+                    if video in gone or not os.path.exists(video):
+                        reclaimed += drop(path)
+                        removed_cache += 1
+
         result = {
             "sources_deleted": removed_sources,
             "transforms_deleted": removed_transforms,
             "orphans_deleted": removed_orphans,
+            "cache_deleted": removed_cache,
             "mb_reclaimed": round(reclaimed / 1e6, 1),
             "dry_run": dry_run,
         }
@@ -508,6 +556,12 @@ def storage_report() -> dict:
         if os.path.normcase(os.path.abspath(path)) not in referenced:
             orphan_bytes += size
             orphans += 1
+    for path in _source_cache_files():
+        try:
+            total += os.path.getsize(path)
+            files += 1
+        except OSError:
+            continue
     return {
         "files": files,
         "total_mb": round(total / 1e6, 1),
