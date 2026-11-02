@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 import numpy as np
 import pytest
-from app.clipper import ai, ingest, media, moments, timeline, transcribe
+from app.clipper import ai, captions, ingest, media, moments, timeline, transcribe
 from app.clipper.media import Interrupted, MediaError, MediaInfo
 from app.clipper.moments import Moment, build_sentences
 from app.clipper.signals import Signals, _find_cuts
@@ -279,6 +279,64 @@ def test_centre_falls_back_to_middle_without_motion():
     assert signals.centre_between(0, 10) == 0.5
 
 
+# ---------- Captions ----------
+def test_scraped_text_cannot_inject_ass_tags_or_break_lines():
+    ass = captions.build_ass([Word("{\\pos(0,0)}it's", 0.0, 0.5), Word("line\\Nbreak", 0.5, 1.0)], "Bad {tag}", 5.0, "Font")
+    events = [line for line in ass.splitlines() if line.startswith("Dialogue")]
+    assert not any("pos(0,0)" in event for event in events)
+    assert not any("LINE\\NBREAK" in event for event in events)
+    assert "IT'S" in ass
+
+
+def test_every_word_gets_highlighted_once():
+    words = _words("one two three four five six")
+    ass = captions.build_ass(words, "", 5.0, "Font")
+    assert sum(line.startswith("Dialogue: 1") for line in ass.splitlines()) == 6
+
+
+def test_caption_events_never_overlap():
+    words = [Word("End.", 0.0, 0.3), Word("Next", 0.4, 0.8), Word("one.", 0.9, 1.2), Word("Go", 1.3, 1.5)]
+    rows = [line.split(",") for line in captions.build_ass(words, "", 5.0, "Font").splitlines() if line.startswith("Dialogue: 1")]
+    for current, following in zip(rows, rows[1:]):
+        assert captions._seconds(current[2]) <= captions._seconds(following[1])
+
+
+def test_hook_skips_text_the_font_cannot_draw():
+    assert "Dialogue: 2" not in captions.build_ass([], "हिंदी हुक", 5.0, "Font")
+    assert "Dialogue: 2" in captions.build_ass([], "English hook", 5.0, "Font")
+
+
+def test_font_family_is_read_from_the_file():
+    path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+    if not os.path.exists(path):
+        pytest.skip("DejaVu not installed")
+    assert captions.font_family(path) == "DejaVu Sans"
+
+
+def test_unreadable_font_falls_back_to_its_file_name(tmp_path):
+    bad = tmp_path / "MyFont.ttf"
+    bad.write_bytes(b"nope")
+    assert captions.font_family(str(bad)) == "MyFont"
+
+
+def test_long_text_shrinks_to_fit_and_stays_shrunk_after_the_highlight():
+    path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+    if not os.path.exists(path):
+        pytest.skip("DejaVu not installed")
+    hook = "Most people completely misunderstand how compound interest works"
+    ass = captions.build_ass([Word("A", 0.0, 0.3), Word("Internationalization", 0.3, 1.0)], hook, 5.0, "Font", path)
+    hook_line = next(line for line in ass.splitlines() if line.startswith("Dialogue: 2"))
+    assert int(hook_line.split("\\fs")[1].split("\\")[0]) < 72
+    first_caption = next(line for line in ass.splitlines() if line.startswith("Dialogue: 1"))
+    size = first_caption.split("\\fs")[1].split("}")[0]
+    assert int(size) < 92
+    assert f"{{\\r\\fs{size}}}" in first_caption
+
+
+def test_missing_font_file_keeps_the_default_size():
+    assert captions._fitted_size(["ANY TEXT"], 92, 24, 1.12, "/nope/font.ttf") == 92
+
+
 def test_padding_stays_inside_the_moment():
     words = [Word("why", 14.41, 14.80), Word("end", 20.0, 20.42)]
     segments = timeline.edit_segments(words, [0, 1], 0.12, start=14.41, end=20.42)
@@ -295,6 +353,58 @@ def test_removed_word_always_cuts_even_with_no_pause_around_it():
 def test_nearby_kept_words_stay_joined():
     words = [Word("one", 1.0, 1.3), Word("two", 1.35, 1.7), Word("three", 3.0, 3.3)]
     assert len(timeline.edit_segments(words, [0, 1, 2], 0.12)) == 2
+
+
+@pytest.mark.parametrize("text", ["", "BIG"])
+def test_a_punch_draws_nothing_at_all(text):
+    ass = captions.build_ass([], "", 20.0, "Font", None, [(4.0, text, "punch", "", 1.2)])
+    assert "Dialogue" not in ass, "no text and no dimming"
+
+
+def test_count_up_ends_on_the_real_value():
+    assert captions._count_frames("40°C")[-1] == "40°C"
+    assert captions._count_frames("40°C")[0] == "4°C"
+    assert captions._count_frames("$1,200")[4] == "$600"
+    assert captions._count_frames("2.5M")[-2].endswith("M")
+    assert captions._count_frames("NONE") == ["NONE"]
+
+
+@pytest.mark.parametrize("text", ["40", "100%", "$1,000", "2024", "1,000,000", "3.5", "40°C", "5K", "THOUSANDS DIED"])
+def test_plain_numbers_are_really_drawn(text):
+    ass = captions.build_ass([], "", 20.0, "Font", None, [(4.0, text, "stat" if text[0] in "$1234" else "card", "", 1.6)])
+    assert any(line.startswith("Dialogue: 3") for line in ass.splitlines())
+
+
+@pytest.mark.parametrize("text", ["४०", "भूमि", "!!!", "🔥"])
+def test_text_the_font_cannot_draw_is_refused(text):
+    assert not captions.beat_is_drawable(text)
+    assert not captions.build_ass([], "", 20.0, "Font", None, [(4.0, text, "card", "", 0.9)]).count("Dialogue")
+
+
+@pytest.mark.parametrize("text", ["B2B", "COVID-19", "5G", "3D", "1ST", "1990S", "MP4", "24/7", "9/11", "1990", "2024 ELECTION"])
+def test_things_that_are_not_quantities_do_not_count_up(text):
+    assert captions._count_frames(text) == [text]
+
+
+@pytest.mark.parametrize("text", ["$2M", "40°C", "40%", "5K", "10X", "3.5M", "2,000 PEOPLE", "$5 BILLION"])
+def test_real_quantities_count_up(text):
+    frames = captions._count_frames(text)
+    assert len(frames) > 1 and frames[-1] == text
+
+
+def test_graphics_are_written_under_captions_and_stay_escaped():
+    beats = [(4.0, "THOUSANDS {DIED}", "card", "", 0.9), (8.0, "40°C", "stat", "RECORD", 1.6), (12.0, "BIG TURN", "card", "", 0.9)]
+    ass = captions.build_ass(_words("a b c"), "", 20.0, "Font", None, beats)
+    events = [line for line in ass.splitlines() if line.startswith("Dialogue")]
+    assert any("THOUSANDS" in e and e.startswith("Dialogue: 3") for e in events)
+    assert any("RECORD" in e for e in events)
+    assert sum(1 for e in events if "\\p1" in e) == 3
+    assert not any("{DIED}" in e for e in events)
+
+
+def test_long_graphic_text_breaks_into_short_lines():
+    assert captions._beat_lines("THOUSANDS DIED") == ["THOUSANDS", "DIED"]
+    assert captions._beat_lines("A BIG WIN") == ["A BIG WIN"]
 
 
 def test_centre_ignores_a_second_that_straddles_a_cut():
