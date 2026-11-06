@@ -263,3 +263,13 @@ The report and the Growth tab warn when the shelf is empty or analytics has fail
 A copyright takedown, a legal, policy or account rejection from YouTube, or three videos going missing in 90 days, pauses posting until you have looked at it and run `scripts/growth.py resume`. A video that goes missing also stops that author's feed, including one you deleted yourself; `scripts/growth.py unblock <name>` lifts it.
 
 It posts `GROWTH_UPLOADS_PER_DAY` clips in varied time windows and tests posting window, title style, format, length, source, pace, sound effects and B-roll. Half of all choices are tests for the first 30 days, then 10%.
+
+## Approving clips from your phone
+
+While `GROWTH_REQUIRE_APPROVAL=true`, every clip waits on the review page until you approve it.
+
+1. Start everything as services that survive reboots: `scripts/install_services.sh`
+2. The phone address is in `logs/tunnel_url.txt`. Open it once as `<address>/?key=<REVIEW_TOKEN from .env>`.
+3. For alerts, install the ntfy app and subscribe to the `NTFY_TOPIC` from `.env`. New clips, posts, problems and
+   any new page address arrive there.
+
