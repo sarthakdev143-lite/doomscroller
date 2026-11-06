@@ -98,7 +98,7 @@ class Settings(BaseSettings):
     # Republishing someone else's video verbatim is what YouTube's reused-content
     # policy targets. These add genuine, per-video differentiation.
     transform_variation: bool = True
-    # Channel name burned into a corner watermark. Empty disables the watermark.
+    # Channel name burned into scraped videos and clips. Empty leaves it off.
     brand_name: str = ""
     brand_watermark_opacity: float = 0.45
     # Burn the generated hook caption over the opening seconds.
@@ -137,6 +137,12 @@ class Settings(BaseSettings):
     # width we were discarding anyway on removing the remnant.
     source_crop_keep: str = "right"
 
+    # How a wide source fits the 9:16 canvas:
+    #   framed - the whole picture centred, over a zoomed and dimmed copy of itself
+    #   fill   - cropped to fill the canvas, following faces and motion
+    clip_layout: str = "framed"
+    # Blur on the framed backdrop, chosen by the owner over a sharp one. 0 keeps it sharp.
+    clip_backdrop_blur: int = 14
     # Long-form chopper — turns long downloaded videos into multiple Shorts
     max_clips_per_video: int = 5
     clip_min_sec: int = 15
@@ -151,6 +157,11 @@ class Settings(BaseSettings):
     clip_edit_gap_sec: float = 0.12
     clip_edit_target_sec: int = 28
     clip_sfx: bool = True
+    # Music under every clip, from tracks the owner puts in this folder. Empty means <CONTENT_DIR>/music.
+    clip_music: bool = True
+    clip_music_dir: str = ""
+    # How far below the levelled voice the music sits; it dips further while someone talks.
+    clip_music_db: float = -16.0
     # Stock cutaways over the voice. Needs either key; without one, clips simply have none.
     clip_broll: bool = True
     pixabay_api_key: str = ""
@@ -287,7 +298,7 @@ class Settings(BaseSettings):
         "use_mock", "use_llm_metadata", "auto_publish", "enable_publish",
         "auto_discovery", "auto_approve", "allow_unknown_language",
         "transform_variation", "caption_enabled", "end_card_enabled",
-        "upscale_sharpen", "clip_auto_queue", "clip_sfx", "clip_broll",
+        "upscale_sharpen", "clip_auto_queue", "clip_sfx", "clip_broll", "clip_music",
         "youtube_made_for_kids", "claude_fallback", mode="before",
     )
     @classmethod

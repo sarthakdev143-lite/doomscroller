@@ -71,10 +71,11 @@ def _thumbnail(client: httpx.Client, link: str) -> Optional[np.ndarray]:
 
 
 def _as_rendered(image: np.ndarray) -> np.ndarray:
-    """The centre 9:16 of the picture, which is all the render will keep of it."""
+    """The centre of the picture that the render will keep: 9:16, or about 16:9 in the framed layout."""
     height, width = image.shape[:2]
-    keep_width = max(1, min(width, height * 9 // 16))
-    keep_height = max(1, min(height, width * 16 // 9))
+    across, down = (16, 9) if settings.clip_layout == "framed" else (9, 16)
+    keep_width = max(1, min(width, height * across // down))
+    keep_height = max(1, min(height, width * down // across))
     left, top = (width - keep_width) // 2, (height - keep_height) // 2
     return image[top:top + keep_height, left:left + keep_width]
 
@@ -83,7 +84,11 @@ def _write_sheet(images: Sequence[np.ndarray], path: str) -> bool:
     rows = (len(images) + _COLUMNS - 1) // _COLUMNS
     sheet = np.zeros((rows * (_TILE_HEIGHT + _GAP), _COLUMNS * (_TILE_WIDTH + _GAP), 3), np.uint8)
     for index, image in enumerate(images):
-        tile = cv2.resize(_as_rendered(image), (_TILE_WIDTH, _TILE_HEIGHT), interpolation=cv2.INTER_AREA)
+        shown = _as_rendered(image)
+        if settings.clip_layout == "framed":  # letterbox, so the shape on the sheet is the shape on screen
+            bar = max(0, (shown.shape[1] * _TILE_HEIGHT // _TILE_WIDTH - shown.shape[0]) // 2)
+            shown = cv2.copyMakeBorder(shown, bar, bar, 0, 0, cv2.BORDER_CONSTANT, value=(0, 0, 0))
+        tile = cv2.resize(shown, (_TILE_WIDTH, _TILE_HEIGHT), interpolation=cv2.INTER_AREA)
         cv2.rectangle(tile, (0, 0), (64, 56), (0, 0, 0), -1)
         cv2.putText(tile, str(index + 1), (8, 44), cv2.FONT_HERSHEY_SIMPLEX, 1.4, (255, 255, 255), 3, cv2.LINE_AA)
         row, column = divmod(index, _COLUMNS)

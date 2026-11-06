@@ -21,14 +21,14 @@ import numpy as np
 from app.config import settings
 from app.transformers.fonts import resolve_font
 
-from .captions import build_ass, font_family
+from .captions import Layout, build_ass, font_family, framed_layout
 from .edit import BEAT_SECONDS, CARD, EditPlan
-from .faces import face_centre
+from .faces import face_centre, speaker_position
 from .media import MediaError, MediaInfo, probe, read_ffmpeg, run_ffmpeg
 from .moments import Moment
 from .sfx import IMPACT, POP, WHOOSH, Cue, build_track
 from .signals import Signals
-from .timeline import FPS, Segment, keep_segments, on_grid, output_time, total_duration
+from .timeline import FPS, Segment, keep_segments, on_grid, output_time, source_time, total_duration
 from .transcribe import Word
 
 log = logging.getLogger(__name__)
@@ -45,6 +45,20 @@ _VISUAL_PUNCH_SEC = 1.2
 # Subject moves this far across the frame (as a share of width): a static crop
 # would lose it, so keep the whole picture over a blurred fill.
 _WIDE_SPREAD = 0.22
+# A framed picture has no spare width, so its zooms stay gentle and cut off less of it.
+_FRAMED_ZOOM_SHARE = 0.5
+# With the speaker found, the framed picture moves in on them: a wide two-shot becomes a single.
+_FOCUS_ZOOM = 1.35
+# Moves smaller than this are detector jitter, not a new speaker.
+_FOCUS_STEADY = 0.08
+_FOCUS_MIN_PIECE_SEC = 0.8
+_MUSIC_FADE_IN = 0.8
+_MUSIC_FADE_OUT = 1.5
+_BACKDROP_LOOK = "eq=brightness=-0.22:saturation=0.85"
+# Share of the frame's height the backdrop is drawn from, starting this far down: clear of
+# captions in the lower third and of logos in the top corners.
+_BACKDROP_KEEP = 0.62
+_BACKDROP_TOP = 0.08
 _AUDIO_EDGE_FADE = 0.008
 # Decode from this far before the clip: some containers do not seek to keyframes.
 _PRE_ROLL_SEC = 10.0
@@ -83,6 +97,10 @@ class ClipPlan:
     anchor_y: float = 0.5
     has_sfx: bool = False
     broll: tuple[tuple[float, float, str, float], ...] = ()  # output time, seconds, path, offset
+    picture_height: int = 0  # above zero, the whole picture sits centred over its own backdrop
+    music: str = ""  # a track looped under the clip, ducked under speech
+    focus_x_expr: str = ""  # where the speaker's face is in the picture, 0 to 1, when known
+    focus_y_expr: str = ""
 
 
 def _piecewise(pieces: Sequence[tuple[float, float]]) -> str:
@@ -255,12 +273,51 @@ def _needs_side_crop(info: MediaInfo) -> bool:
     return ratio > _TARGET_RATIO + _RATIO_TOLERANCE
 
 
+def _picture_height(info: MediaInfo) -> int:
+    """Height of the centred picture, or 0 when this source fills the canvas instead."""
+    if settings.clip_layout != "framed" or not _needs_side_crop(info):
+        return 0
+    return round(WIDTH * info.height / info.width / 2) * 2
+
+
+def speaker_pieces(source: str, info: MediaInfo, signals: Signals, moment: Moment, segments: Sequence[Segment],
+                   edit: Optional[EditPlan], speed: float) -> list[tuple[float, float, float]]:
+    """(clip time, x, y) of the person talking. It changes only where the framing changes anyway:
+    at a beat of the edit or a cut in the footage, so a switch to the other speaker reads as an edit."""
+    duration = total_duration(segments) / speed
+    points = set(rhythm_points(edit)) if edit else {0.0}
+    for cut in signals.cuts:
+        if moment.start < cut < moment.end:
+            when = output_time(segments, cut)
+            if when is not None:
+                points.add(when / speed)
+    bounds: list[float] = []
+    for point in sorted(p for p in points if 0 <= p < duration):
+        if not bounds or point - bounds[-1] >= _FOCUS_MIN_PIECE_SEC:
+            bounds.append(point)
+    bounds = bounds or [0.0]
+    pieces: list[tuple[float, float, float]] = []
+    for index, start in enumerate(bounds):
+        end = bounds[index + 1] if index + 1 < len(bounds) else duration
+        found = speaker_position(source, source_time(segments, start * speed), source_time(segments, end * speed), info)
+        if found is None:
+            continue
+        if pieces and abs(found[0] - pieces[-1][1]) < _FOCUS_STEADY and abs(found[1] - pieces[-1][2]) < _FOCUS_STEADY:
+            continue
+        pieces.append((start, found[0], found[1]))
+    if pieces:
+        pieces[0] = (0.0, pieces[0][1], pieces[0][2])
+    return pieces
+
+
 def plan_clip(moment: Moment, words: Sequence[Word], signals: Signals, info: MediaInfo, *,
               has_graphics: bool, exact_cuts: Optional[dict[float, float]] = None,
-              faces: Optional[dict[float, float]] = None, edit: Optional[EditPlan] = None) -> ClipPlan:
+              faces: Optional[dict[float, float]] = None, edit: Optional[EditPlan] = None,
+              focus: Sequence[tuple[float, float, float]] = ()) -> ClipPlan:
     segments = edit.segments if edit else keep_segments(moment.start, moment.end, words, settings.clip_silence_gap_sec)
     speed = edit.speed if edit else 1.0
-    side_crop = _needs_side_crop(info)
+    picture_height = _picture_height(info)
+    side_crop = _needs_side_crop(info) and not picture_height
     crop_width = int(info.height * _TARGET_RATIO) // 2 * 2 if side_crop else info.width
     use_blur = (side_crop and moment.kind == "visual" and not faces
                 and signals.centre_spread(moment.start, moment.end) > _WIDE_SPREAD)
@@ -272,6 +329,11 @@ def plan_clip(moment: Moment, words: Sequence[Word], signals: Signals, info: Med
         shake, flash = _edit_effects(edit)
     else:
         zoom, shake, flash = _zoom_expression(_zoom_windows(moment, segments, signals)), "0", ""
+    focus = focus if picture_height else ()
+    if focus:
+        zoom = f"{_FOCUS_ZOOM:g}+(({zoom})-1)*{_FRAMED_ZOOM_SHARE:g}"
+    elif picture_height:
+        zoom = f"1+(({zoom})-1)*{_FRAMED_ZOOM_SHARE:g}"
     return ClipPlan(
         segments=segments,
         duration=duration,
@@ -284,14 +346,26 @@ def plan_clip(moment: Moment, words: Sequence[Word], signals: Signals, info: Med
         speed=speed,
         shake_expr=shake,
         flash_expr=flash,
-        anchor_y=_FACE_ANCHOR if edit else 0.5,
+        anchor_y=_FACE_ANCHOR if edit and not picture_height else 0.5,
         has_sfx=bool(edit) and info.has_audio and settings.clip_sfx,
         broll=_broll_shots(edit) if edit else (),
+        picture_height=picture_height,
+        focus_x_expr=_piecewise([(t, round(x, 3)) for t, x, _y in focus]) if focus else "",
+        focus_y_expr=_piecewise([(t, round(y, 3)) for t, _x, y in focus]) if focus else "",
     )
 
 
 def _framing(plan: ClipPlan, info: MediaInfo) -> str:
-    """Filters taking [cut] to a full canvas [canvas]."""
+    """Filters taking [cut] to a full canvas [canvas], or to [backdrop] and [picture] when framed."""
+    if plan.picture_height:
+        blur = f",boxblur={settings.clip_backdrop_blur}:1" if settings.clip_backdrop_blur > 0 else ""
+        return (f"[cut]split=2[backsrc][picsrc];"
+                # The backdrop leaves out the bottom of the frame, where a source's own captions sit: blown
+                # up behind the picture they would show every word a second time, huge and blurred.
+                f"[backsrc]crop=iw:ih*{_BACKDROP_KEEP:g}:0:ih*{_BACKDROP_TOP:g},"
+                f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase:flags=fast_bilinear,"
+                f"crop={WIDTH}:{HEIGHT},{_BACKDROP_LOOK}{blur},setsar=1[backdrop];"
+                f"[picsrc]scale={WIDTH}:{plan.picture_height}:flags=lanczos,setsar=1[picture]")
     if plan.use_blur_fill:
         return (f"[cut]split=2[bgsrc][fgsrc];"
                 f"[bgsrc]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,"
@@ -303,6 +377,13 @@ def _framing(plan: ClipPlan, info: MediaInfo) -> str:
                 f"scale={WIDTH}:{HEIGHT}:flags=lanczos,setsar=1[canvas]")
     return (f"[cut]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,"
             f"crop={WIDTH}:{HEIGHT},setsar=1[canvas]")
+
+
+def _crop_offset(focus_expr: str, size: int, zoom: str, room: str, anchor: str) -> str:
+    """Crop offset along one axis: centred on the speaker when known, else at a fixed share of the spare room."""
+    if focus_expr:
+        return f"({size}*({zoom})*({focus_expr})-{size // 2})"
+    return f"{room}*{anchor}"
 
 
 def build_filtergraph(plan: ClipPlan, info: MediaInfo, seek: float) -> str:
@@ -341,20 +422,27 @@ def build_filtergraph(plan: ClipPlan, info: MediaInfo, seek: float) -> str:
     # crop only clamps against the first frame's size, which is wrong as the zoom changes,
     # so the position must stay inside this frame's real margins. A shake past them
     # reads outside the image, and ffmpeg crashes.
+    height = plan.picture_height or HEIGHT
     room_x = f"(2*trunc({WIDTH // 2}*({zoom}))-{WIDTH})"
-    room_y = f"(2*trunc({HEIGHT // 2}*({zoom}))-{HEIGHT})"
-    chain = (f"[canvas]scale=w='2*trunc({WIDTH // 2}*({zoom}))':h='2*trunc({HEIGHT // 2}*({zoom}))':eval=frame,"
-             f"crop={WIDTH}:{HEIGHT}:x='clip({room_x}*0.5+({shake}),0,{room_x})':"
-             f"y='clip({room_y}*{plan.anchor_y:g}+({shake}),0,{room_y})',setsar=1")
-    # B-roll goes over the zoomed picture and under the graphics, so captions stay on top.
+    room_y = f"(2*trunc({height // 2}*({zoom}))-{height})"
+    chain = (f"{'[picture]' if plan.picture_height else '[canvas]'}"
+             f"scale=w='2*trunc({WIDTH // 2}*({zoom}))':h='2*trunc({height // 2}*({zoom}))':eval=frame,"
+             f"crop={WIDTH}:{height}:x='clip({_crop_offset(plan.focus_x_expr, WIDTH, zoom, room_x, '0.5')}+({shake}),0,{room_x})':"
+             f"y='clip({_crop_offset(plan.focus_y_expr, height, zoom, room_y, f'{plan.anchor_y:g}')}+({shake}),0,{room_y})',setsar=1")
+    # Cutaways replace the picture only, so a framed clip keeps its shape through them.
+    # They go under the graphics, so captions stay on top.
     first_input = 3 if plan.has_sfx else 2
+    top = (HEIGHT - height) // 2
     for index, (start, seconds, _path, _offset) in enumerate(plan.broll):
-        parts.append(f"[{first_input + index}:v]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,"
-                     f"crop={WIDTH}:{HEIGHT},setsar=1,fps={FPS},setpts=PTS-STARTPTS+{start:.3f}/TB[broll{index}]")
+        parts.append(f"[{first_input + index}:v]scale={WIDTH}:{height}:force_original_aspect_ratio=increase,"
+                     f"crop={WIDTH}:{height},setsar=1,fps={FPS},setpts=PTS-STARTPTS+{start:.3f}/TB[broll{index}]")
         parts.append(chain + f"[under{index}]")
         parts.append(f"[under{index}][broll{index}]overlay=eof_action=pass:repeatlast=0:"
                      f"enable='between(t,{start - _HALF_FRAME:.3f},{start + seconds - _HALF_FRAME:.3f})'[over{index}]")
         chain = f"[over{index}]null"
+    if plan.picture_height:
+        parts.append(chain + "[framed]")
+        chain = f"[backdrop][framed]overlay=x=0:y={top}"
     if plan.flash_expr:
         chain += f",drawbox=x=0:y=0:w=iw:h=ih:color=white@0.6:t=fill:enable='{plan.flash_expr}'"
     if plan.has_graphics:
@@ -368,7 +456,20 @@ def build_filtergraph(plan: ClipPlan, info: MediaInfo, seek: float) -> str:
             head = "[atempoed]"
         # loudnorm emits large irregular blocks, so renumber them or -t cuts one off.
         normalised = "loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,asetpts=N/SR/TB"
-        if plan.has_sfx:
+        if plan.music:
+            # The voice is levelled first and also keys the ducking, so music drops whenever someone talks.
+            music_input = first_input + len(plan.broll)
+            fade_out = max(0.0, plan.duration - _MUSIC_FADE_OUT)
+            parts.append(f"{head}{normalised}[voice]")
+            parts.append("[voice]asplit=2[vmix][vkey]")
+            parts.append(f"[{music_input}:a]aresample=48000,atrim=0:{plan.duration:.3f},asetpts=N/SR/TB,"
+                         f"volume={settings.clip_music_db:g}dB,afade=t=in:d={_MUSIC_FADE_IN},"
+                         f"afade=t=out:st={fade_out:.3f}:d={_MUSIC_FADE_OUT}[bed]")
+            parts.append("[bed][vkey]sidechaincompress=threshold=0.03:ratio=6:attack=15:release=350[ducked]")
+            mix = ["[vmix]", *(["[2:a]"] if plan.has_sfx else []), "[ducked]"]
+            parts.append(f"{''.join(mix)}amix=inputs={len(mix)}:duration=first:dropout_transition=0:normalize=0,"
+                         "alimiter=limit=0.84:attack=2:release=40:level=0:latency=1,asetpts=N/SR/TB[aout]")
+        elif plan.has_sfx:
             # Effects go on after the voice is levelled, or a quiet recording would come
             # out with the thuds louder than the speech. level=0 stops the limiter
             # raising everything back up.
@@ -432,8 +533,11 @@ def _exact_cuts(source: str, seek: float, span: float, cuts: Sequence[float]) ->
 
 
 def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment,
-                  words: Sequence[Word], out_path: str, edit: Optional[EditPlan] = None) -> ClipPlan:
-    """Write the finished clip to ``out_path`` and return its plan."""
+                  words: Sequence[Word], out_path: str, edit: Optional[EditPlan] = None, creator: str = "",
+                  music: Optional[str] = None, captions: bool = True) -> ClipPlan:
+    """Write the finished clip to ``out_path`` and return its plan.
+
+    ``captions=False`` leaves out our word captions, for a source that already has its own."""
     font = resolve_font(settings.clip_font)
     # Only speech clips close up their pauses; captions apply to either kind.
     cut_on = words if moment.kind == "speech" else []
@@ -445,13 +549,17 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
         segments = keep_segments(moment.start, moment.end, cut_on, settings.clip_silence_gap_sec)
         clip_words = _shift_words(words, segments, moment.start, moment.end)
         beats = []
-    has_text = bool(font) and bool(clip_words or moment.hook)
+    if not captions:
+        clip_words = []
+    brand = settings.brand_name
+    has_text = bool(font) and bool(clip_words or moment.hook or creator or brand)
     if total_duration(segments) <= 0:
         raise MediaError("clip has no duration")
 
     seek = max(0.0, on_grid(segments[0][0] - _PRE_ROLL_SEC))
     exact_cuts = faces = None
-    if _needs_side_crop(info):
+    # Nothing to follow when the whole picture is on screen.
+    if _needs_side_crop(info) and not _picture_height(info):
         edges = _shot_edges(moment, signals)
         exact_cuts = _exact_cuts(os.path.abspath(source), seek, segments[-1][1] - seek + 0.5, edges[1:-1])
         faces = {}
@@ -459,7 +567,14 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
             centre = face_centre(os.path.abspath(source), first, last, info)
             if centre is not None:
                 faces[first] = centre
-    plan = plan_clip(moment, cut_on, signals, info, has_graphics=has_text, exact_cuts=exact_cuts, faces=faces, edit=edit)
+    focus: list[tuple[float, float, float]] = []
+    if _picture_height(info) and moment.kind == "speech":
+        focus = speaker_pieces(os.path.abspath(source), info, signals, moment, segments, edit,
+                               edit.speed if edit else 1.0)
+    plan = plan_clip(moment, cut_on, signals, info, has_graphics=has_text, exact_cuts=exact_cuts, faces=faces,
+                     edit=edit, focus=focus)
+    if music and info.has_audio:
+        plan.music = os.path.abspath(music)
 
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     # A row may already point at out_path, so a half-written file must never appear there.
@@ -472,7 +587,8 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
                 os.makedirs(fonts_dir)
                 shutil.copy(font, fonts_dir)
                 with open(os.path.join(tmp, "clip.ass"), "w", encoding="utf-8") as handle:
-                    handle.write(build_ass(clip_words, moment.hook, plan.duration, font_family(font), font, beats))
+                    handle.write(build_ass(clip_words, moment.hook, plan.duration, font_family(font), font, beats, creator=creator, brand=brand,
+                                         layout=framed_layout(plan.picture_height) if plan.picture_height else Layout()))
             if plan.has_sfx:
                 build_track(os.path.join(tmp, "sfx.wav"), plan.duration, sound_cues(edit, rhythm_points(edit)))
             # The bar needs an end: an endless source keeps ffmpeg running forever if
@@ -482,6 +598,7 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
                     *(["-i", "sfx.wav"] if plan.has_sfx else []),
                     *[item for start, seconds, path, offset in plan.broll
                       for item in ("-ss", f"{offset:.3f}", "-t", f"{seconds + 0.2:.3f}", "-i", os.path.abspath(path))],
+                    *(["-stream_loop", "-1", "-i", plan.music] if plan.music else []),
                     "-filter_complex", build_filtergraph(plan, info, seek),
                     "-map", "[vout]"]
             if plan.has_audio:

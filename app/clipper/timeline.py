@@ -68,6 +68,17 @@ def output_time(segments: Sequence[Segment], source_time: float) -> Optional[flo
     return None
 
 
+def source_time(segments: Sequence[Segment], clip_time: float) -> float:
+    """The source moment shown at a point in the clip: the inverse of output_time, at normal speed."""
+    remaining = max(0.0, clip_time)
+    for begin, finish in segments:
+        # At a join the clip shows the next segment's first frame, not the last one's end.
+        if remaining < finish - begin:
+            return begin + remaining
+        remaining -= finish - begin
+    return segments[-1][1] if segments else 0.0
+
+
 def edit_segments(words: Sequence, kept: Sequence[int], max_gap: float, *,
                   start: Optional[float] = None, end: Optional[float] = None) -> list[Segment]:
     """Segments for hand-picked words, indexing into ``words``.

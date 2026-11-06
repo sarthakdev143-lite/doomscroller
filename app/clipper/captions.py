@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import struct
+from dataclasses import dataclass
 from functools import lru_cache
 from typing import Optional, Sequence
 
@@ -22,8 +23,6 @@ from .transcribe import Word
 log = logging.getLogger(__name__)
 
 _WIDTH, _HEIGHT = 1080, 1920
-_CAPTION_Y = 1240
-_HOOK_Y = 250
 _HOOK_SECONDS = 2.8
 _MAX_WORDS_PER_GROUP = 3
 _MAX_CHARS_PER_LINE = 16
@@ -35,7 +34,6 @@ _BEAT_SIZES = {"stat": 240, "card": 170}
 _BEAT_PAD = 60
 # Short lines let a graphic fill the width instead of shrinking to one long row.
 _BEAT_LINE_CHARS = 10
-_BEAT_Y = 720
 _COUNT_STEPS = 10
 _COUNT_SECONDS = 0.45
 _DIM_SHAPE = f"m 0 0 l {_WIDTH} 0 l {_WIDTH} {_HEIGHT} l 0 {_HEIGHT}"
@@ -44,6 +42,38 @@ _DIM_SHAPE = f"m 0 0 l {_WIDTH} 0 l {_WIDTH} {_HEIGHT} l 0 {_HEIGHT}"
 COUNTABLE = re.compile(r"^(?!(?:19|20)\d\d(?:\s|$))([$€£₹]?)(\d[\d,]*(?:\.\d+)?)((?:%|°[CF]?|[KMBX])?(?:\s+[^\d\s]+)*)$")
 # ASS colours are &HBBGGRR.
 _YELLOW = "&H00E5FF&"
+
+
+_LOWEST_CAPTION_Y = 1440  # lower than this, a second line runs under the title Shorts draws
+
+
+@dataclass(frozen=True)
+class Layout:
+    """Where each kind of text sits on the canvas."""
+
+    caption_y: int = 1240
+    hook_y: int = 250
+    # Above the title and buttons Shorts draws over the bottom of the frame.
+    credit_y: int = 1480
+    brand_y: int = 175
+    beat_y: int = 720
+
+
+def framed_layout(picture_height: int) -> Layout:
+    """Text in the bands around a centred picture. A tall picture leaves little room, so text may overlap it."""
+    top = (_HEIGHT - picture_height) // 2
+    bottom = top + picture_height
+    credit_y = min(bottom + 34, 1530)
+    # Two caption lines need this much room below the credit. Without it they go over the picture's lower edge.
+    below = credit_y + 136
+    caption_y = below if below <= _LOWEST_CAPTION_Y else min(bottom, credit_y) - 150
+    return Layout(
+        caption_y=caption_y,
+        hook_y=max(200, top - 300),
+        credit_y=credit_y,
+        brand_y=max(160, top - 48),
+        beat_y=_HEIGHT // 2 - 85,
+    )
 
 
 def _clock(seconds: float) -> str:
@@ -114,7 +144,7 @@ def _fitted_size(lines: Sequence[str], base: int, pad: int, grow: float, font_pa
     return min(base, int((_WIDTH - 2 * pad) / (widest * grow)))
 
 
-def _caption_events(words: Sequence[Word], font_path: Optional[str] = None) -> list[str]:
+def _caption_events(words: Sequence[Word], font_path: Optional[str] = None, y: int = Layout.caption_y) -> list[str]:
     events: list[str] = []
     for group in group_words(words):
         plain = [_safe(w.text).upper() for w in group]
@@ -134,7 +164,7 @@ def _caption_events(words: Sequence[Word], font_path: Optional[str] = None) -> l
             else:
                 end = word.end + _MAX_HOLD_SEC
             events.append(f"Dialogue: 1,{_clock(start)},{_clock(max(end, start + 0.05))},Caption,,0,0,0,,"
-                          f"{{\\an5\\pos({_WIDTH // 2},{_CAPTION_Y})\\fs{size}}}{line}")
+                          f"{{\\an5\\pos({_WIDTH // 2},{y})\\fs{size}}}{line}")
     # Later events must not sit on top of the next word when a hold runs long.
     return _trim_overlaps(events)
 
@@ -157,7 +187,7 @@ def _seconds(clock: str) -> float:
     return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
 
 
-def _hook_event(hook: str, duration: float, font_path: Optional[str] = None) -> list[str]:
+def _hook_event(hook: str, duration: float, font_path: Optional[str] = None, y: int = Layout.hook_y) -> list[str]:
     text = _safe(hook)
     if not text or not is_renderable(text):
         return []
@@ -166,7 +196,7 @@ def _hook_event(hook: str, duration: float, font_path: Optional[str] = None) -> 
     size = _fitted_size(broken, _HOOK_SIZE, _HOOK_PAD, 1.0, font_path)
     lines = "\\N".join(broken)
     return [f"Dialogue: 2,{_clock(0)},{_clock(end)},Hook,,0,0,0,,"
-            f"{{\\an8\\pos({_WIDTH // 2},{_HOOK_Y})\\fs{size}\\fad(60,180)\\fscx70\\fscy70"
+            f"{{\\an8\\pos({_WIDTH // 2},{y})\\fs{size}\\fad(60,180)\\fscx70\\fscy70"
             f"\\t(0,160,\\fscx100\\fscy100)}}{lines}"]
 
 
@@ -209,7 +239,7 @@ def _beat_lines(text: str) -> list[str]:
     return lines
 
 
-def _beat_events(beats: Sequence[tuple], font_path: Optional[str]) -> list[str]:
+def _beat_events(beats: Sequence[tuple], font_path: Optional[str], y: int = Layout.beat_y) -> list[str]:
     """Graphics for (output_time, text, style, label, seconds). Layer 0 sits under captions."""
     events: list[str] = []
     centre = _WIDTH // 2
@@ -237,12 +267,12 @@ def _beat_events(beats: Sequence[tuple], font_path: Optional[str]) -> list[str]:
             b = when + (index + 1) * step if index + 1 < len(frames) else when + seconds
             reading_size = min(size, _fitted_size([reading], _BEAT_SIZES[style], _BEAT_PAD, 1.0, font_path))
             events.append(f"Dialogue: 3,{_clock(a)},{_clock(b)},Beat,,0,0,0,,"
-                          f"{{\\an5\\pos({centre},{_BEAT_Y})\\fs{reading_size}\\1c{_YELLOW}}}{reading}")
+                          f"{{\\an5\\pos({centre},{y})\\fs{reading_size}\\1c{_YELLOW}}}{reading}")
         label_text = _safe(label)
         if label_text:
             label_size = _fitted_size([label_text], 76, _BEAT_PAD, 1.0, font_path)
             events.append(f"Dialogue: 3,{start},{end},Beat,,0,0,0,,"
-                          f"{{\\an5\\pos({centre},{_BEAT_Y + 170})\\fs{label_size}\\fad(120,80)}}{label_text}")
+                          f"{{\\an5\\pos({centre},{y + 170})\\fs{label_size}\\fad(120,80)}}{label_text}")
     return events
 
 
@@ -269,10 +299,23 @@ def font_family(path: str) -> str:
     return os.path.splitext(os.path.basename(path))[0]
 
 
+def _steady_text(style: str, text: str, duration: float, y: int) -> list[str]:
+    """Small text on screen for the whole clip. A name in a script the font lacks is left out."""
+    if not text or not is_renderable(text):
+        return []
+    return [f"Dialogue: 0,{_clock(0)},{_clock(duration)},{style},,0,0,0,,{{\\an5\\pos({_WIDTH // 2},{y})}}{text}"]
+
+
 def build_ass(words: Sequence[Word], hook: str, duration: float, font: str,
-              font_path: Optional[str] = None, beats: Sequence[tuple] = ()) -> str:
+              font_path: Optional[str] = None, beats: Sequence[tuple] = (), creator: str = "", brand: str = "",
+              layout: Layout = Layout()) -> str:
     """Full ASS document. ``words`` and ``beats`` must already be in output time."""
-    events = _beat_events(beats, font_path) + _hook_event(hook, duration, font_path) + _caption_events(words, font_path)
+    creator = _safe(creator)
+    events = (_steady_text("Credit", f"Credit: {creator}" if creator else "", duration, layout.credit_y)
+              + _steady_text("Brand", _safe(brand), duration, layout.brand_y)
+              + _beat_events(beats, font_path, layout.beat_y)
+              + _hook_event(hook, duration, font_path, layout.hook_y)
+              + _caption_events(words, font_path, layout.caption_y))
     return "\n".join([
         "[Script Info]",
         "ScriptType: v4.00+",
@@ -287,6 +330,8 @@ def build_ass(words: Sequence[Word], hook: str, duration: float, font: str,
         "Alignment, MarginL, MarginR, MarginV, Encoding",
         f"Style: Caption,{font},92,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,8,3,5,40,40,0,1",
         f"Style: Hook,{font},72,&H00111111,&H000000FF,&H0000E5FF,&H0000E5FF,-1,0,0,0,100,100,0,0,3,20,0,8,60,60,0,1",
+        f"Style: Brand,{font},48,&H00FFFFFF,&H000000FF,&H66000000,&H00000000,-1,0,0,0,100,100,0,0,1,4,0,5,40,40,0,1",
+        f"Style: Credit,{font},40,&H30FFFFFF,&H000000FF,&H99000000,&H00000000,-1,0,0,0,100,100,0,0,1,3,0,5,40,40,0,1",
         f"Style: Beat,{font},190,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,12,4,5,40,40,0,1",
         "",
         "[Events]",

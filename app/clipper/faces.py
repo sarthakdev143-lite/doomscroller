@@ -39,6 +39,12 @@ def _detector():
 
 def speaker_in_pair(first: np.ndarray, second: np.ndarray) -> Optional[tuple[float, float]]:
     """(horizontal centre from 0 to 1, confidence) of the likeliest speaker, if any."""
+    found = speaker_box_in_pair(first, second)
+    return (found[0], found[2]) if found else None
+
+
+def speaker_box_in_pair(first: np.ndarray, second: np.ndarray) -> Optional[tuple[float, float, float]]:
+    """(horizontal centre, vertical centre, confidence) of the likeliest speaker, each centre from 0 to 1."""
     detector = _detector()
     if detector is None:
         return None
@@ -46,7 +52,7 @@ def speaker_in_pair(first: np.ndarray, second: np.ndarray) -> Optional[tuple[flo
     smallest = max(1, int(width * _MIN_FACE_SHARE))
     found = detector.detectMultiScale(first, scaleFactor=1.1, minNeighbors=_MIN_NEIGHBOURS,
                                       minSize=(smallest, smallest))
-    best: Optional[tuple[float, float]] = None
+    best: Optional[tuple[float, float, float]] = None
     for x, y, w, h in found:
         # Take in the jaw and chin as well, where talking shows.
         top, bottom = max(0, y), min(height, y + int(h * 1.3))
@@ -55,8 +61,8 @@ def speaker_in_pair(first: np.ndarray, second: np.ndarray) -> Optional[tuple[flo
                               - second[top:bottom, left:right].astype(np.int16)).mean())
         # Bigger faces get some credit, so detector noise on a shelf cannot win.
         score = (motion + 0.5) * float(np.sqrt(w))
-        if best is None or score > best[1]:
-            best = ((x + w / 2) / width, score)
+        if best is None or score > best[2]:
+            best = ((x + w / 2) / width, (y + h / 2) / height, score)
     return best
 
 
@@ -90,3 +96,25 @@ def face_centre(source: str, start: float, end: float, info: MediaInfo) -> Optio
             picks.append(pick)
     # Never average: two people's positions average out to the empty space between them.
     return max(picks, key=lambda pick: pick[1])[0] if picks else None
+
+
+def speaker_position(source: str, start: float, end: float, info: MediaInfo) -> Optional[tuple[float, float]]:
+    """(x, y) of the face of the person talking in [start, end], each from 0 to 1, or None."""
+    if _detector() is None or not info.width:
+        return None
+    height = int(_DETECT_WIDTH * info.height / info.width) // 2 * 2
+    picks = []
+    for step in range(1, _SAMPLES_PER_SHOT + 1):
+        when = start + (end - start) * step / (_SAMPLES_PER_SHOT + 1)
+        try:
+            pick = speaker_box_in_pair(*_frames_at(source, when, height))
+        except MediaError as exc:
+            log.debug("faces: no frame at %.2f: %s", when, exc)
+            continue
+        if pick is not None:
+            picks.append(pick)
+    if not picks:
+        return None
+    x, y, _score = max(picks, key=lambda pick: pick[2])
+    return x, y
+
