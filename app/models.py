@@ -118,6 +118,63 @@ class TransformJob(Base):
     video: Mapped[Video] = relationship(back_populates="transform_jobs")
 
 
+class ClipJob(Base):
+    """One long video waiting to be, or having been, cut into clips."""
+
+    __tablename__ = "clip_jobs"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    source: Mapped[str] = mapped_column(Text)  # link or local path
+    count: Mapped[Optional[int]] = mapped_column(Integer, default=None)
+    auto_queue: Mapped[Optional[bool]] = mapped_column(default=None)
+    mined: Mapped[bool] = mapped_column(default=False)  # queued because an earlier clip of this source won
+    status: Mapped[str] = mapped_column(String(16), default="queued", index=True)
+    stage: Mapped[str] = mapped_column(String(64), default="")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[Optional[str]] = mapped_column(Text, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), default=None)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), default=None)
+
+
+class VideoSnapshot(Base):
+    """A published video's counters at one moment, so videos can be compared at the same age."""
+
+    __tablename__ = "video_snapshots"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    video_id: Mapped[str] = mapped_column(ForeignKey("videos.id"), index=True)
+    taken_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    age_hours: Mapped[float] = mapped_column(Float, default=0.0)
+    views: Mapped[int] = mapped_column(Integer, default=0)
+    likes: Mapped[int] = mapped_column(Integer, default=0)
+    comments: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class GrowthState(Base):
+    """Named values the growth loop keeps between runs: today's plan, its start date, its focus."""
+
+    __tablename__ = "growth_state"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
+class GrowthEvent(Base):
+    """What the growth loop did and why, in words a person can read."""
+
+    __tablename__ = "growth_events"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, index=True)
+    kind: Mapped[str] = mapped_column(String(32), index=True)
+    video_id: Mapped[Optional[str]] = mapped_column(String(32), default=None, index=True)
+    summary: Mapped[str] = mapped_column(Text, default="")
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
 class QuotaUsage(Base):
     """Tracks daily YouTube upload quota usage."""
 

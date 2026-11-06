@@ -18,6 +18,7 @@ doomscroller.pids
 content/
 secrets/
 logs/
+.claude-logs/
 
 # Env
 .env
@@ -29,3 +30,7 @@ logs/
 *.swp
 *.swo
 .DS_Store
+
+# Browser cookies for yt-dlp give access to a Google account.
+cookies*.txt
+.*.swp

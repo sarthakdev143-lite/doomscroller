@@ -20,12 +20,12 @@ from datetime import datetime, timedelta, timezone
 from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, or_, select
 
 from .logging_config import last_run_times, record_job_run
 from .config import settings
 from .db import session_scope, init_db
-from .models import Creator, Video, VideoStatus
+from .models import ClipJob, Creator, Video, VideoStatus
 from . import discovery, quota
 from .analytics import recompute_scores
 
@@ -70,6 +70,16 @@ def instrumented(job_id: str, fn: "callable"):
 
 # ---------- Job impls ----------
 
+def _scraper_pending(db) -> int:
+    """Pending rows the scraper is responsible for. Finished clips are not its backlog."""
+    return db.scalar(
+        select(func.count(Video.id)).where(
+            Video.status == VideoStatus.PENDING,
+            Video.meta["clip_rendered"].as_boolean().isnot(True),
+        )
+    ) or 0
+
+
 def scrape_job(handles: list[str] | None = None,
                hashtags: list[str] | None = None,
                max_per_run: int | None = None) -> dict:
@@ -85,7 +95,7 @@ def scrape_job(handles: list[str] | None = None,
     try:
         while attempts < max_attempts:
             with session_scope() as db:
-                pending = db.scalar(select(func.count(Video.id)).where(Video.status == VideoStatus.PENDING)) or 0
+                pending = _scraper_pending(db)
                 if pending >= target:
                     log.info("scrape_job: target reached %s/%s pending, stopping", pending, target)
                     break
@@ -105,7 +115,7 @@ def scrape_job(handles: list[str] | None = None,
             import time as _t
             _t.sleep(1)
         with session_scope() as db:
-            final_pending = db.scalar(select(func.count(Video.id)).where(Video.status == VideoStatus.PENDING)) or 0
+            final_pending = _scraper_pending(db)
         log.info("scrape_job: finished attempts=%s created=%s pending=%s/%s", attempts, total_created, final_pending, target)
         return {"created": total_created, "skipped": total_skipped, "fetched": total_fetched, "attempts": attempts, "pending": final_pending, "target": target}
     except Exception as e:
@@ -137,7 +147,8 @@ def transform_job() -> dict:
                 select(Video)
                 .where(
                     Video.status == VideoStatus.APPROVED,
-                    Video.transformed_path.is_(None),
+                    # Clips arrive already rendered, and transform_task only marks them ready.
+                    or_(Video.transformed_path.is_(None), Video.meta["clip_rendered"].as_boolean().is_(True)),
                     Video.local_path.isnot(None),
                 )
                 .order_by(Video.curated_at)
@@ -221,6 +232,11 @@ def auto_approve_job() -> dict:
                     note(disqualified.split(":")[0])
                     continue
 
+                # Clips have no views to judge, and CLIP_AUTO_QUEUE is the switch for skipping review.
+                if (video.meta or {}).get("clip_rendered"):
+                    note("clip awaits review")
+                    continue
+
                 if not video.local_path or not os.path.exists(video.local_path):
                     note("no local file")
                     continue
@@ -296,10 +312,29 @@ def analytics_pull_job() -> dict:
         return {"error": str(e)}
 
 
+def clip_queue_job() -> dict:
+    """Cut any queued long videos into clips."""
+    from .clipper.job import clip_queue_job as run_queue
+
+    return run_queue()
+
+
+def _recover_stuck_publishes() -> None:
+    try:
+        from tasks.pipeline import recover_stuck_publishes
+        recover_stuck_publishes()
+    except Exception as exc:
+        log.warning("publish recovery failed: %s", exc)
+
+
 def publish_job() -> dict:
     """Auto-publish next TRANSFORMED video with jittered pacing (anti-spam)."""
     if not settings.enable_publish:
         return {"skipped": "publishing disabled (enable_publish=false)"}
+    if settings.growth_enabled:
+        return {"skipped": "the growth loop owns publishing"}
+    # A claim is held for hours and the startup sweep has passed by then. This is the only later look with the loop off.
+    _recover_stuck_publishes()
     if not settings.auto_publish:
         return {"skipped": "auto_publish disabled"}
     import random
@@ -315,15 +350,16 @@ def publish_job() -> dict:
             if quota.remaining(db) <= 0:
                 return {"skipped": "quota exhausted"}
 
-            v = db.execute(
+            ready = db.execute(
                 select(Video)
                 .where(Video.status == VideoStatus.TRANSFORMED)
                 .order_by(Video.transformed_at)
-                .limit(1)
-            ).scalar_one_or_none()
+            ).scalars().all()
 
-            if v is None:
+            if not ready:
                 return {"skipped": "no transformed videos ready"}
+            from tasks.pipeline import least_failed
+            v = least_failed(ready)[0]
 
             today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
             todays = db.execute(select(Video.id).where(Video.status == VideoStatus.PUBLISHED, Video.published_at >= today_start)).scalars().all()
@@ -359,11 +395,26 @@ def _content_files() -> list[str]:
 
     root = str(settings.content_path)
     return [
-        path for pattern in ("*.mp4", "transformed/*.mp4")
+        path for pattern in ("*.mp4", "transformed/*.mp4", "clips/*/*.mp4")
         for path in glob.glob(os.path.join(root, pattern))
         # Leading underscore marks internal scaffolding such as the mock
         # master clip, which has no database row by design.
         if not os.path.basename(path).startswith("_")
+    ]
+
+
+_TRANSCRIPT_SUFFIX = ".transcript.json"
+
+
+def _source_cache_files() -> list[str]:
+    """Clipper downloads, stock footage and transcripts. No row references these, so orphan rules do not fit."""
+    import glob
+
+    root = str(settings.content_path)
+    return [
+        path for pattern in ("long/*", "broll/*", f"*{_TRANSCRIPT_SUFFIX}", "transcripts/*.json")
+        for path in glob.glob(os.path.join(root, pattern))
+        if os.path.isfile(path)
     ]
 
 
@@ -450,10 +501,43 @@ def cleanup_job(dry_run: bool = False) -> dict:
             reclaimed += drop(path)
             removed_orphans += 1
 
+        # Downloads expire like other sources: a 6h limit would throw away a paid
+        # transcript and could delete a file mid-render. They carry no job id, so
+        # leave them all alone while any clip job is waiting or running.
+        removed_cache = 0
+        with session_scope() as db:
+            clip_jobs_active = db.scalar(
+                select(func.count(ClipJob.id)).where(ClipJob.status.in_(("queued", "running")))
+            )
+        if not clip_jobs_active:
+            cache_age = max(timedelta(days=max_age_days), _ORPHAN_GRACE)
+            files = _source_cache_files()
+            gone: set[str] = set()
+
+            def too_old(path: str) -> bool:
+                try:
+                    return now - datetime.fromtimestamp(os.path.getmtime(path), tz=timezone.utc) >= cache_age
+                except OSError:
+                    return False
+
+            for path in files:
+                if not path.endswith(_TRANSCRIPT_SUFFIX) and too_old(path):
+                    reclaimed += drop(path)
+                    removed_cache += 1
+                    gone.add(path)
+            # A sidecar transcript goes with its video, and is kept for as long as the video is.
+            for path in files:
+                if path.endswith(_TRANSCRIPT_SUFFIX):
+                    video = path[:-len(_TRANSCRIPT_SUFFIX)]
+                    if video in gone or not os.path.exists(video):
+                        reclaimed += drop(path)
+                        removed_cache += 1
+
         result = {
             "sources_deleted": removed_sources,
             "transforms_deleted": removed_transforms,
             "orphans_deleted": removed_orphans,
+            "cache_deleted": removed_cache,
             "mb_reclaimed": round(reclaimed / 1e6, 1),
             "dry_run": dry_run,
         }
@@ -485,6 +569,12 @@ def storage_report() -> dict:
         if os.path.normcase(os.path.abspath(path)) not in referenced:
             orphan_bytes += size
             orphans += 1
+    for path in _source_cache_files():
+        try:
+            total += os.path.getsize(path)
+            files += 1
+        except OSError:
+            continue
     return {
         "files": files,
         "total_mb": round(total / 1e6, 1),
@@ -507,6 +597,26 @@ def recompute_scores_job() -> dict:
         return {"error": str(e)}
 
 
+def growth_autopilot_job() -> dict:
+    from .growth.autopilot import autopilot_job
+    return autopilot_job()
+
+
+def growth_collect_job() -> dict:
+    from .growth.collect import collect_job
+    return collect_job()
+
+
+def growth_learn_job() -> dict:
+    from .growth.learn import learn_job
+    return learn_job()
+
+
+def growth_supply_job() -> dict:
+    from .growth.supply import supply_job
+    return supply_job()
+
+
 # ---------- Job registry ----------
 # The single source of truth for job ids. Both _make_scheduler() and the
 # POST /scheduler/run/{job_id} endpoint read this, so the two can never drift.
@@ -517,8 +627,13 @@ JOB_FUNCTIONS: dict[str, "callable"] = {
     "transform": transform_job,
     "publish": publish_job,
     "cleanup": cleanup_job,
+    "clip_queue": clip_queue_job,
     "recompute": recompute_scores_job,
     "analytics_pull": analytics_pull_job,
+    "growth_autopilot": growth_autopilot_job,
+    "growth_collect": growth_collect_job,
+    "growth_learn": growth_learn_job,
+    "growth_supply": growth_supply_job,
 }
 
 
@@ -567,7 +682,9 @@ def _make_scheduler() -> BackgroundScheduler:
 
     now = datetime.now(timezone.utc)
 
-    sched.add_job(instrumented("scrape", scrape_job), IntervalTrigger(hours=settings.scrape_interval_hours), id="scrape", next_run_time=now + timedelta(seconds=10), max_instances=1, coalesce=True, replace_existing=True)
+    # The growth loop posts finished clips only, so scraped stock would just fill the disk.
+    if not settings.growth_enabled:
+        sched.add_job(instrumented("scrape", scrape_job), IntervalTrigger(hours=settings.scrape_interval_hours), id="scrape", next_run_time=now + timedelta(seconds=10), max_instances=1, coalesce=True, replace_existing=True)
     if settings.auto_discovery:
         sched.add_job(instrumented("discovery", discovery_job), IntervalTrigger(hours=settings.discovery_interval_hours), id="discovery", next_run_time=now + timedelta(minutes=2), max_instances=1, coalesce=True, replace_existing=True)
     sched.add_job(instrumented("auto_approve", auto_approve_job), IntervalTrigger(minutes=15), id="auto_approve", next_run_time=now + timedelta(minutes=1), max_instances=1, coalesce=True, replace_existing=True)
@@ -576,8 +693,16 @@ def _make_scheduler() -> BackgroundScheduler:
         interval_h = max(1, 24 / max(1, settings.uploads_per_day))
         sched.add_job(instrumented("publish", publish_job), IntervalTrigger(hours=interval_h), id="publish", next_run_time=now + timedelta(minutes=5), max_instances=1, coalesce=True, replace_existing=True)
     sched.add_job(instrumented("cleanup", cleanup_job), IntervalTrigger(hours=24), id="cleanup", next_run_time=now + timedelta(hours=1), max_instances=1, coalesce=True, replace_existing=True)
+    sched.add_job(instrumented("clip_queue", clip_queue_job), IntervalTrigger(minutes=5), id="clip_queue", next_run_time=now + timedelta(minutes=1), max_instances=1, coalesce=True, replace_existing=True)
     sched.add_job(instrumented("recompute", recompute_scores_job), IntervalTrigger(hours=1), id="recompute", next_run_time=now + timedelta(minutes=4), max_instances=1, coalesce=True, replace_existing=True)
-    sched.add_job(instrumented("analytics_pull", analytics_pull_job), IntervalTrigger(hours=6), id="analytics_pull", next_run_time=now + timedelta(minutes=10), max_instances=1, coalesce=True, replace_existing=True)
+    if settings.growth_enabled:
+        for job_id, every, first in (("growth_autopilot", timedelta(minutes=10), timedelta(minutes=2)),
+                                     ("growth_collect", timedelta(hours=3), timedelta(minutes=6)),
+                                     ("growth_learn", timedelta(hours=6), timedelta(minutes=8)),
+                                     ("growth_supply", timedelta(hours=1), timedelta(minutes=1))):
+            sched.add_job(instrumented(job_id, JOB_FUNCTIONS[job_id]), IntervalTrigger(seconds=int(every.total_seconds())), id=job_id, next_run_time=now + first, max_instances=1, coalesce=True, replace_existing=True)
+    else:
+        sched.add_job(instrumented("analytics_pull", analytics_pull_job), IntervalTrigger(hours=6), id="analytics_pull", next_run_time=now + timedelta(minutes=10), max_instances=1, coalesce=True, replace_existing=True)
     return sched
 
 
@@ -594,8 +719,13 @@ def _job_intervals() -> dict[str, timedelta]:
         "transform": timedelta(hours=1),
         "publish": timedelta(hours=max(1, 24 / max(1, settings.uploads_per_day))),
         "cleanup": timedelta(hours=24),
+        "clip_queue": timedelta(minutes=5),
         "recompute": timedelta(hours=1),
         "analytics_pull": timedelta(hours=6),
+        "growth_autopilot": timedelta(minutes=10),
+        "growth_collect": timedelta(hours=3),
+        "growth_learn": timedelta(hours=6),
+        "growth_supply": timedelta(hours=1),
     }
 
 
@@ -611,6 +741,10 @@ def overdue_jobs(now: datetime | None = None) -> list[str]:
     stale: list[str] = []
     for job_id, interval in _job_intervals().items():
         if job_id not in JOB_FUNCTIONS:
+            continue
+        # Only catch up on what this mode schedules.
+        if (job_id.startswith("growth_") and not settings.growth_enabled) or (
+                job_id in ("scrape", "analytics_pull") and settings.growth_enabled):
             continue
         last = history.get(job_id)
         if last is None:
@@ -649,6 +783,9 @@ def start_scheduler() -> BackgroundScheduler:
         _scheduler = None
 
     init_db()
+
+    # Rows a crash left mid-upload get settled before anything can post again.
+    _recover_stuck_publishes()
 
     sched = _make_scheduler()
     sched.start()

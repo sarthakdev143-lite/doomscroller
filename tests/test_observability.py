@@ -226,6 +226,81 @@ def test_storage_report_counts_orphans(content_dir):
     assert report["total_mb"] >= 0
 
 
+def _clear_clip_jobs():
+    from app.db import session_scope
+    from app.models import ClipJob
+    with session_scope() as db:
+        db.query(ClipJob).delete()
+
+
+def test_old_clipper_download_and_transcript_are_reclaimed(content_dir):
+    _clear_clip_jobs()
+    video = _make_file(content_dir / "long" / "Youtube_abc.mp4", age_hours=24 * 30)
+    sidecar = _make_file(content_dir / "long" / "Youtube_abc.mp4.transcript.json", age_hours=24 * 30)
+    result = scheduler.cleanup_job()
+    assert result["cache_deleted"] == 2
+    assert not os.path.exists(video) and not os.path.exists(sidecar)
+
+
+def test_recent_download_outlives_the_orphan_grace(content_dir):
+    """Deleting it after 6h would make the next re-clip pay Deepgram again."""
+    _clear_clip_jobs()
+    video = _make_file(content_dir / "long" / "Youtube_abc.mp4", age_hours=7)
+    sidecar = _make_file(content_dir / "long" / "Youtube_abc.mp4.transcript.json", age_hours=7)
+    assert scheduler.cleanup_job()["cache_deleted"] == 0
+    assert os.path.exists(video) and os.path.exists(sidecar)
+
+
+def test_old_download_is_kept_while_a_clip_job_is_active(content_dir):
+    from app.clipper.job import enqueue
+    _clear_clip_jobs()
+    video = _make_file(content_dir / "long" / "Youtube_abc.mp4", age_hours=24 * 30)
+    enqueue("https://youtu.be/abc")
+    try:
+        assert scheduler.cleanup_job()["cache_deleted"] == 0
+        assert os.path.exists(video)
+    finally:
+        _clear_clip_jobs()
+
+
+def test_old_sidecar_without_its_video_is_swept(content_dir):
+    _clear_clip_jobs()
+    sidecar = _make_file(content_dir / "gone.mp4.transcript.json", age_hours=1)
+    assert scheduler.cleanup_job()["cache_deleted"] == 1
+    assert not os.path.exists(sidecar)
+
+
+def test_cache_cleanup_honours_dry_run(content_dir):
+    _clear_clip_jobs()
+    video = _make_file(content_dir / "long" / "Youtube_abc.mp4", age_hours=24 * 30)
+    sidecar = _make_file(content_dir / "long" / "Youtube_abc.mp4.transcript.json", age_hours=24 * 30)
+    assert scheduler.cleanup_job(dry_run=True)["cache_deleted"] == 2
+    assert os.path.exists(video) and os.path.exists(sidecar)
+
+
+def test_unreferenced_clip_is_an_orphan(content_dir):
+    _clear_clip_jobs()
+    clip = _make_file(content_dir / "clips" / "youtube_abc" / "10_40.mp4")
+    assert scheduler.cleanup_job()["orphans_deleted"] >= 1
+    assert not os.path.exists(clip)
+
+
+def test_old_stock_footage_is_reclaimed_like_other_downloads(content_dir):
+    _clear_clip_jobs()
+    old = _make_file(content_dir / "broll" / "1.mp4", age_hours=24 * 30)
+    recent = _make_file(content_dir / "broll" / "2.mp4", age_hours=7)
+    assert scheduler.cleanup_job()["cache_deleted"] == 1
+    assert not os.path.exists(old) and os.path.exists(recent)
+
+
+def test_storage_report_includes_clipper_files(content_dir):
+    _make_file(content_dir / "long" / "a.mp4", size=2000)
+    _make_file(content_dir / "clips" / "src" / "b.mp4", size=2000)
+    report = scheduler.storage_report()
+    assert report["files"] == 2
+    assert report["orphan_files"] == 1, "a download is cache, not an orphan"
+
+
 # ------------------------------------------------------------------ logging
 def test_configure_logging_is_idempotent():
     root = logging.getLogger()
