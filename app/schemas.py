@@ -5,7 +5,7 @@ import json
 from datetime import datetime
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class VideoOut(BaseModel):
@@ -81,6 +81,12 @@ class VideoOut(BaseModel):
             # return raw string if we can't parse it
             return v
         return v
+
+
+class ClipBody(BaseModel):
+    source: str
+    count: Optional[int] = Field(default=None, ge=1, le=20)
+    auto_queue: Optional[bool] = None
 
 
 class ApproveBody(BaseModel):

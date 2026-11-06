@@ -1,0 +1,176 @@
+"""Turn a link or a local path into a video file on disk."""
+from __future__ import annotations
+
+import hashlib
+import logging
+import os
+import shutil
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional
+
+from app.config import settings
+from app.scrapers.yt_dlp_scraper import YtDlpScraper
+
+from .media import content_id
+
+log = logging.getLogger(__name__)
+
+
+# How yt-dlp reports a video that nobody can fetch, as opposed to this host being refused.
+_GONE = ("private video", "video is private", "video unavailable", "video is unavailable", "has been removed",
+         "no longer available", "been terminated", "premieres in", "will begin in")
+_NOT_GONE = ("try again later", "in your country")
+
+
+class IngestError(RuntimeError):
+    """The source could not be turned into a local file. `permanent` means trying again cannot help."""
+
+    def __init__(self, message: str, *, permanent: bool = False):
+        super().__init__(message)
+        self.permanent = permanent
+
+
+@dataclass
+class SourceVideo:
+    path: str
+    title: str = ""
+    description: str = ""
+    author: str = ""
+    author_name: str = ""
+    url: str = ""
+    source: str = "local"
+    source_id: str = ""
+    keywords: list = field(default_factory=list)
+    title_from_filename: bool = False
+
+
+def is_url(source: str) -> bool:
+    return source.strip().lower().startswith(("http://", "https://"))
+
+
+def file_fingerprint(path: Path) -> str:
+    """Which bytes a path holds. New contents are a new source, and a new mtime or a copy is the same one."""
+    return content_id(path.expanduser().resolve())
+
+
+def _from_file(raw: str) -> SourceVideo:
+    path = Path(raw).expanduser().resolve()
+    if not path.is_file():
+        raise IngestError(f"file not found: {path}")
+    return SourceVideo(
+        path=str(path),
+        title=path.stem.replace("_", " ").replace("-", " ").strip(),
+        source="local",
+        source_id=file_fingerprint(path),
+        title_from_filename=True,
+    )
+
+
+def network_options() -> dict:
+    """The proxy and cookies that get yt-dlp past a block on this host."""
+    options: dict = {}
+    if settings.proxy_url:
+        options["proxy"] = settings.proxy_url
+    # YouTube now hides its video formats behind a JavaScript challenge. yt-dlp solves it with a
+    # JavaScript runtime and its own solver script, which it fetches from yt-dlp's GitHub releases.
+    runtimes = {name: {"path": path} for name in ("deno", "node", "bun") if (path := shutil.which(name))}
+    if runtimes:
+        options["js_runtimes"] = runtimes
+        options["remote_components"] = {"ejs:github"}
+    if settings.cookies_file and os.path.isfile(settings.cookies_file) and os.path.getsize(settings.cookies_file):
+        options["cookiefile"] = settings.cookies_file
+        return options
+    cookies = YtDlpScraper._parse_browser_cookies(settings.cookies_from_browser or "")
+    if cookies:
+        options["cookiesfrombrowser"] = cookies[0] if isinstance(cookies[0], tuple) else (cookies[0],)
+    return options
+
+
+def _ydl_options(out_dir: Path) -> dict:
+    height = settings.clip_source_max_height
+    return {
+        "quiet": True,
+        "no_warnings": True,
+        "noprogress": True,
+        "noplaylist": True,
+        "retries": 3,
+        "fragment_retries": 3,
+        "socket_timeout": 30,
+        # Big channels ship a dozen dubbed tracks; the original is the one the captions are for.
+        "format": f"bv*[height<={height}]+ba[format_note*=original]/bv*[height<={height}]+ba/b[height<={height}]/b",
+        "merge_output_format": "mp4",
+        "outtmpl": str(out_dir / "%(extractor_key)s_%(id)s.%(ext)s"),
+        **network_options(),
+    }
+
+
+def _downloaded_path(info: dict) -> Optional[str]:
+    for item in info.get("requested_downloads") or []:
+        path = item.get("filepath")
+        if path and os.path.exists(path):
+            return path
+    path = info.get("filepath") or info.get("_filename")
+    return path if path and os.path.exists(path) else None
+
+
+def _is_gone(message: str) -> bool:
+    lowered = message.lower()
+    return any(mark in lowered for mark in _GONE) and not any(mark in lowered for mark in _NOT_GONE)
+
+
+def _from_url(url: str) -> SourceVideo:
+    import yt_dlp
+
+    out_dir = settings.content_path / "long"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    # Look before downloading: noplaylist only covers watch?v=...&list= links, so a
+    # channel link would otherwise download every video before being refused.
+    options = {**_ydl_options(out_dir), "extract_flat": "in_playlist", "playlist_items": "1"}
+    try:
+        with yt_dlp.YoutubeDL(options) as ydl:
+            info = ydl.extract_info(url, download=False)
+            if not info:
+                raise IngestError("download returned nothing")
+            if info.get("entries") is not None:
+                raise IngestError("that link is a playlist or channel; paste one video")
+            if info.get("is_live"):
+                raise IngestError("live streams are not supported", permanent=True)
+            if info.get("live_status") == "is_upcoming":
+                raise IngestError("this video has not aired yet", permanent=True)
+            info = ydl.process_ie_result(info, download=True)
+    except IngestError:
+        raise
+    except Exception as exc:
+        # A private video's message also mentions --cookies, so this comes first.
+        if _is_gone(str(exc)):
+            raise IngestError(f"source is not available: {exc}", permanent=True) from exc
+        if "confirm you" in str(exc) or "--cookies" in str(exc):
+            raise IngestError(
+                "YouTube wants a signed-in session for this download. Set "
+                "COOKIES_FROM_BROWSER=chrome (or firefox) in .env, or download the video and pass its file path."
+            ) from exc
+        raise IngestError(f"download failed: {exc}") from exc
+    path = _downloaded_path(info)
+    if path is None:
+        raise IngestError("download finished but the file is missing")
+    # Cleanup ages downloads by mtime, and a reused file keeps its old one.
+    os.utime(path, None)
+    return SourceVideo(
+        path=path,
+        title=info.get("title") or "",
+        description=(info.get("description") or "")[:4000],
+        author=info.get("uploader_id") or info.get("channel_id") or "",
+        author_name=info.get("uploader") or info.get("channel") or "",
+        url=info.get("webpage_url") or url,
+        source=(info.get("extractor_key") or "web").lower(),
+        source_id=str(info.get("id") or hashlib.sha1(url.encode()).hexdigest()[:16]),
+        keywords=list(info.get("tags") or [])[:20],
+    )
+
+
+def fetch(source: str) -> SourceVideo:
+    source = source.strip()
+    if not source:
+        raise IngestError("no link or file given")
+    return _from_url(source) if is_url(source) else _from_file(source)

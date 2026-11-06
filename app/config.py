@@ -82,6 +82,8 @@ class Settings(BaseSettings):
     # Browser cookies for yt-dlp (e.g. "edge" or "edge,Default" or "chrome,Profile 1")
     # Leave empty to skip cookie extraction.
     cookies_from_browser: str = ""
+    # A Netscape-format cookies.txt, used instead of reading a browser. Empty, or a missing file, means none.
+    cookies_file: str = ""
 
     # Storage
     content_dir: str = "./content"
@@ -98,7 +100,7 @@ class Settings(BaseSettings):
     # Republishing someone else's video verbatim is what YouTube's reused-content
     # policy targets. These add genuine, per-video differentiation.
     transform_variation: bool = True
-    # Channel name burned into a corner watermark. Empty disables the watermark.
+    # Channel name burned into scraped videos and clips. Empty leaves it off.
     brand_name: str = ""
     brand_watermark_opacity: float = 0.45
     # Burn the generated hook caption over the opening seconds.
@@ -137,11 +139,51 @@ class Settings(BaseSettings):
     # width we were discarding anyway on removing the remnant.
     source_crop_keep: str = "right"
 
+    # How a wide source fits the 9:16 canvas:
+    #   framed - the whole picture centred, over a zoomed and dimmed copy of itself
+    #   fill   - cropped to fill the canvas, following faces and motion
+    clip_layout: str = "framed"
+    # Blur on the framed backdrop, chosen by the owner over a sharp one. 0 keeps it sharp.
+    clip_backdrop_blur: int = 14
     # Long-form chopper — turns long downloaded videos into multiple Shorts
-    long_video_min_duration_sec: int = 120   # only chop videos >= 2 minutes
-    clip_target_sec: int = 59               # target length of each Shorts clip
-    max_clips_per_video: int = 3            # max clips per source video
-    min_clip_duration_sec: int = 30         # discard clips shorter than this
+    max_clips_per_video: int = 5
+    clip_min_sec: int = 15
+    clip_max_sec: int = 59
+    # No-speech clips have no sentences to end on, so they get a fixed length.
+    clip_visual_sec: int = 30
+    # Pauses longer than this are cut out of speech clips.
+    clip_silence_gap_sec: float = 0.35
+    clip_source_max_height: int = 1080
+    # Speech clips: how far to tighten. Speed is pitch-preserved.
+    clip_speed: float = 1.12
+    clip_edit_gap_sec: float = 0.12
+    clip_edit_target_sec: int = 28
+    clip_sfx: bool = True
+    # Music under every clip, from tracks the owner puts in this folder. Empty means <CONTENT_DIR>/music.
+    clip_music: bool = True
+    clip_music_dir: str = ""
+    # How far below the levelled voice the music sits; it dips further while someone talks.
+    clip_music_db: float = -16.0
+    # Stock cutaways over the voice. Needs either key; without one, clips simply have none.
+    clip_broll: bool = True
+    pixabay_api_key: str = ""
+    pexels_api_key: str = ""
+    # Finished clips skip review and go straight to the publish queue.
+    clip_auto_queue: bool = False
+    clip_font: str = ""
+    clip_ai_timeout_sec: int = 240
+    deepgram_api_key: str = ""
+    deepgram_model: str = "nova-3"
+    # Empty means PATH, then ~/.opencode/bin/opencode.
+    opencode_bin: str = ""
+    # Chosen by the owner for every call. It reads images too.
+    opencode_model: str = "opencode-go/muse-spark-1.3-contributor"
+    # Must accept images: it judges frames from no-speech footage.
+    opencode_vision_model: str = "opencode-go/muse-spark-1.3-contributor"
+    # When OpenCode fails, the Claude CLI takes the call, on the account it is logged in to.
+    claude_fallback: bool = True
+    claude_bin: str = ""
+    claude_model: str = "sonnet"
 
     # YouTube
     youtube_client_secrets: str = ""
@@ -152,6 +194,29 @@ class Settings(BaseSettings):
     youtube_default_category: int = 22
     youtube_default_privacy: str = "private"
     channel_niche: str = "general_viral"
+
+    youtube_made_for_kids: bool = False
+
+    # ---- Growth loop (app/growth) ----
+    # Posts, measures and adapts on its own. It takes over publishing from AUTO_PUBLISH.
+    growth_enabled: bool = False
+    growth_uploads_per_day: int = 3
+    # Local time for the posting windows and for where a day starts.
+    growth_timezone: str = "UTC"
+    # How long the loop tests hard, and how much of each phase goes to testing.
+    growth_explore_days: int = 30
+    growth_explore_rate: float = 0.5
+    growth_settled_explore_rate: float = 0.1
+    # A video is judged on its views at this age, so that old and new are compared fairly.
+    growth_horizon_hours: int = 72
+    growth_min_gap_minutes: int = 120
+    # Below this many finished clips, the supply job queues another source.
+    growth_min_inventory: int = 9
+    growth_clips_per_source: int = 3
+    # JSON list of channel or playlist links to cut into clips.
+    growth_feeds: str = '[]'
+    # Video files dropped here are cut into clips. Empty means <CONTENT_DIR>/inbox.
+    growth_inbox_dir: str = ""
 
     # LLM
     use_llm_metadata: bool = True
@@ -246,6 +311,17 @@ class Settings(BaseSettings):
             return []
 
     @property
+    def growth_feeds_list(self) -> List[str]:
+        try:
+            return [str(x) for x in json.loads(self.growth_feeds or "[]")]
+        except Exception:
+            return []
+
+    @property
+    def growth_inbox_path(self) -> Path:
+        return Path(self.growth_inbox_dir) if self.growth_inbox_dir else self.content_path / "inbox"
+
+    @property
     def tags_list(self) -> List[str]:
         try:
             return [str(x) for x in json.loads(self.youtube_default_tags or "[]")]
@@ -256,7 +332,8 @@ class Settings(BaseSettings):
         "use_mock", "use_llm_metadata", "auto_publish", "enable_publish",
         "auto_discovery", "auto_approve", "allow_unknown_language",
         "transform_variation", "caption_enabled", "end_card_enabled",
-        "upscale_sharpen", mode="before",
+        "upscale_sharpen", "clip_auto_queue", "clip_sfx", "clip_broll", "clip_music",
+        "growth_enabled", "youtube_made_for_kids", "claude_fallback", mode="before",
     )
     @classmethod
     def _coerce_bool(cls, v):

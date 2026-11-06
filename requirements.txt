@@ -12,12 +12,16 @@ pydantic-settings==2.12.0
 APScheduler==3.11.0
 
 # Scraping
-yt-dlp==2026.3.17
+yt-dlp==2026.10.26
 playwright==1.62.0
 
 # Video processing (ffmpeg must be on system PATH)
 moviepy==2.1.2
 pillow==10.4.0
+
+# Face-aware framing in the clipper. OpenCV 5 dropped the bundled face detector.
+opencv-python-headless==4.14.0
+numpy==2.5.4
 
 # Language detection (for source-language preservation)
 langdetect==1.0.9
