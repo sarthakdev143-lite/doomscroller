@@ -21,7 +21,7 @@ from app.config import settings
 from . import ai, broll, shots
 from .captions import COUNTABLE, beat_is_drawable
 from .media import Interrupted
-from .moments import Moment, Sentence, build_sentences
+from .moments import Moment, Sentence, build_sentences, is_finished
 from .timeline import Segment, edit_segments, output_time, total_duration
 from .transcribe import Word
 
@@ -322,7 +322,9 @@ class _ShotChooser:
         self.rejected: set[str] = set()
 
     def __call__(self, found: list[broll.Candidate]) -> list[broll.Candidate]:
-        if self.session.picking_failed or not self.spoken or not ai.available():
+        if self.session.picking_failed:
+            return []
+        if not self.spoken or not ai.available():
             return found
         try:
             verdict = shots.judge(found, self.spoken)
@@ -332,8 +334,8 @@ class _ShotChooser:
         if verdict is None:
             # A timeout costs minutes, so do not rediscover it for every shot.
             self.session.picking_failed = True
-            self.warnings.append("the AI could not judge stock shots, so this job took the first matches")
-            return found
+            self.warnings.append("the AI could not judge stock shots, so this job left them out")
+            return []
         self.better_search = verdict.better_search
         self.rejected.update(verdict.rejected)
         return verdict.fit
@@ -399,6 +401,18 @@ def attach_stock(plan: EditPlan, session: Optional[broll.StockSession] = None) -
         kept.append(cutaway)
     plan.cutaways = kept
     return warnings
+
+
+def opening_line(moment: Moment, words: Sequence[Word], plan: Optional[EditPlan]) -> str:
+    """The first sentence the clip plays, word for word from the transcript. Empty if the clip has only part of it."""
+    if not plan or not plan.words:
+        return ""
+    first = plan.words[0]
+    for sentence in build_sentences(words):
+        if sentence.start <= first.start <= sentence.end:
+            whole = moment.start <= sentence.start and sentence.end <= moment.end
+            return sentence.text if whole and is_finished(sentence.text) else ""
+    return ""
 
 
 def build_edit(moment: Moment, words: Sequence[Word], *, title: str = "") -> EditPlan:

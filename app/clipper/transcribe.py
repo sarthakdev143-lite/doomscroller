@@ -2,8 +2,8 @@
 
 The cache is what makes re-rendering free: changing the caption style or the
 moment picker should never pay to transcribe the same file twice. It is tied to
-the file's size and mtime, so a new video saved under an old name is not cut and
-captioned from the old words.
+the file's contents, so a new video saved under an old name is not cut and
+captioned from the old words, and fetching a link again is not a new video.
 
 The first release only captions English. Anything else, like music or ambience
 that Deepgram hears a few stray words in, goes down the no-speech path instead.
@@ -23,7 +23,7 @@ import httpx
 
 from app.config import settings
 
-from .media import MediaInfo, run_ffmpeg
+from .media import MediaInfo, content_id, run_ffmpeg
 
 log = logging.getLogger(__name__)
 
@@ -53,9 +53,18 @@ class Transcript:
 
     @property
     def is_english_speech(self) -> bool:
-        if not self.words or self.duration <= 0:
-            return False
         if self.language and not self.language.lower().startswith("en"):
+            return False
+        return self._is_speech
+
+    @property
+    def spoken_language(self) -> str:
+        """Empty unless this really is speech: a language detected from lyrics or noise says nothing about the video."""
+        return self.language.lower() if self._is_speech else ""
+
+    @property
+    def _is_speech(self) -> bool:
+        if not self.words or self.duration <= 0:
             return False
         per_minute = len(self.words) / (self.duration / 60)
         confidence = sum(w.confidence for w in self.words) / len(self.words)
@@ -109,13 +118,12 @@ def _request(audio_path: str) -> dict:
 
 
 def _fingerprint(video_path: str) -> dict:
-    stat = os.stat(video_path)
-    return {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+    return {"content": content_id(video_path)}
 
 
 def _cache_paths(video_path: str, fingerprint: dict) -> tuple[str, str]:
     """Next to the video, or under content/ when the video's folder is read-only."""
-    key = hashlib.sha1(f"{video_path}|{fingerprint['size']}|{fingerprint['mtime_ns']}".encode()).hexdigest()[:16]
+    key = hashlib.sha1(f"{video_path}|{fingerprint['content']}".encode()).hexdigest()[:16]
     return f"{video_path}.transcript.json", str(settings.content_path / "transcripts" / f"{key}.json")
 
 

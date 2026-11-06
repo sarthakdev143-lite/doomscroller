@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -11,11 +12,23 @@ from typing import Optional
 from app.config import settings
 from app.scrapers.yt_dlp_scraper import YtDlpScraper
 
+from .media import content_id
+
 log = logging.getLogger(__name__)
 
 
+# How yt-dlp reports a video that nobody can fetch, as opposed to this host being refused.
+_GONE = ("private video", "video is private", "video unavailable", "video is unavailable", "has been removed",
+         "no longer available", "been terminated", "premieres in", "will begin in")
+_NOT_GONE = ("try again later", "in your country")
+
+
 class IngestError(RuntimeError):
-    """The source could not be turned into a local file."""
+    """The source could not be turned into a local file. `permanent` means trying again cannot help."""
+
+    def __init__(self, message: str, *, permanent: bool = False):
+        super().__init__(message)
+        self.permanent = permanent
 
 
 @dataclass
@@ -29,29 +42,54 @@ class SourceVideo:
     source: str = "local"
     source_id: str = ""
     keywords: list = field(default_factory=list)
+    title_from_filename: bool = False
 
 
 def is_url(source: str) -> bool:
     return source.strip().lower().startswith(("http://", "https://"))
 
 
+def file_fingerprint(path: Path) -> str:
+    """Which bytes a path holds. New contents are a new source, and a new mtime or a copy is the same one."""
+    return content_id(path.expanduser().resolve())
+
+
 def _from_file(raw: str) -> SourceVideo:
     path = Path(raw).expanduser().resolve()
     if not path.is_file():
         raise IngestError(f"file not found: {path}")
-    stat = path.stat()
-    fingerprint = f"{path}|{stat.st_size}|{int(stat.st_mtime)}".encode()
     return SourceVideo(
         path=str(path),
         title=path.stem.replace("_", " ").replace("-", " ").strip(),
         source="local",
-        source_id=hashlib.sha1(fingerprint).hexdigest()[:16],
+        source_id=file_fingerprint(path),
+        title_from_filename=True,
     )
+
+
+def network_options() -> dict:
+    """The proxy and cookies that get yt-dlp past a block on this host."""
+    options: dict = {}
+    if settings.proxy_url:
+        options["proxy"] = settings.proxy_url
+    # YouTube now hides its video formats behind a JavaScript challenge. yt-dlp solves it with a
+    # JavaScript runtime and its own solver script, which it fetches from yt-dlp's GitHub releases.
+    runtimes = {name: {"path": path} for name in ("deno", "node", "bun") if (path := shutil.which(name))}
+    if runtimes:
+        options["js_runtimes"] = runtimes
+        options["remote_components"] = {"ejs:github"}
+    if settings.cookies_file and os.path.isfile(settings.cookies_file) and os.path.getsize(settings.cookies_file):
+        options["cookiefile"] = settings.cookies_file
+        return options
+    cookies = YtDlpScraper._parse_browser_cookies(settings.cookies_from_browser or "")
+    if cookies:
+        options["cookiesfrombrowser"] = cookies[0] if isinstance(cookies[0], tuple) else (cookies[0],)
+    return options
 
 
 def _ydl_options(out_dir: Path) -> dict:
     height = settings.clip_source_max_height
-    options: dict = {
+    return {
         "quiet": True,
         "no_warnings": True,
         "noprogress": True,
@@ -59,16 +97,12 @@ def _ydl_options(out_dir: Path) -> dict:
         "retries": 3,
         "fragment_retries": 3,
         "socket_timeout": 30,
-        "format": f"bv*[height<={height}]+ba/b[height<={height}]/b",
+        # Big channels ship a dozen dubbed tracks; the original is the one the captions are for.
+        "format": f"bv*[height<={height}]+ba[format_note*=original]/bv*[height<={height}]+ba/b[height<={height}]/b",
         "merge_output_format": "mp4",
         "outtmpl": str(out_dir / "%(extractor_key)s_%(id)s.%(ext)s"),
+        **network_options(),
     }
-    if settings.proxy_url:
-        options["proxy"] = settings.proxy_url
-    cookies = YtDlpScraper._parse_browser_cookies(settings.cookies_from_browser or "")
-    if cookies:
-        options["cookiesfrombrowser"] = cookies[0] if isinstance(cookies[0], tuple) else (cookies[0],)
-    return options
 
 
 def _downloaded_path(info: dict) -> Optional[str]:
@@ -78,6 +112,11 @@ def _downloaded_path(info: dict) -> Optional[str]:
             return path
     path = info.get("filepath") or info.get("_filename")
     return path if path and os.path.exists(path) else None
+
+
+def _is_gone(message: str) -> bool:
+    lowered = message.lower()
+    return any(mark in lowered for mark in _GONE) and not any(mark in lowered for mark in _NOT_GONE)
 
 
 def _from_url(url: str) -> SourceVideo:
@@ -96,12 +135,17 @@ def _from_url(url: str) -> SourceVideo:
             if info.get("entries") is not None:
                 raise IngestError("that link is a playlist or channel; paste one video")
             if info.get("is_live"):
-                raise IngestError("live streams are not supported")
+                raise IngestError("live streams are not supported", permanent=True)
+            if info.get("live_status") == "is_upcoming":
+                raise IngestError("this video has not aired yet", permanent=True)
             info = ydl.process_ie_result(info, download=True)
     except IngestError:
         raise
     except Exception as exc:
-        if "confirm you" or "--cookies" in str(exc):
+        # A private video's message also mentions --cookies, so this comes first.
+        if _is_gone(str(exc)):
+            raise IngestError(f"source is not available: {exc}", permanent=True) from exc
+        if "confirm you" in str(exc) or "--cookies" in str(exc):
             raise IngestError(
                 "YouTube wants a signed-in session for this download. Set "
                 "COOKIES_FROM_BROWSER=chrome (or firefox) in .env, or download the video and pass its file path."

@@ -1,7 +1,9 @@
 """ffmpeg and ffprobe helpers shared by the clipper."""
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -25,6 +27,21 @@ class Interrupted(Exception):
 _FFMPEG_INTERRUPTED = {255, -15, -2, -1}
 _FFPROBE_INTERRUPTED = {-15, -2, -1}
 _MIN_VIDEO_SEC = 1.0
+_CONTENT_SAMPLE_BYTES = 64 * 1024
+
+
+def content_id(path: str | os.PathLike) -> str:
+    """Identifies a file's bytes, so a new mtime or a copy is not a new file.
+
+    Runs on every dashboard refresh, so it reads only the ends, which is where a different encode shows.
+    """
+    size = os.path.getsize(path)
+    digest = hashlib.sha1(str(size).encode())
+    with open(path, "rb") as handle:
+        digest.update(handle.read(_CONTENT_SAMPLE_BYTES))
+        handle.seek(max(0, size - _CONTENT_SAMPLE_BYTES))
+        digest.update(handle.read(_CONTENT_SAMPLE_BYTES))
+    return digest.hexdigest()[:16]
 
 
 @dataclass(frozen=True)

@@ -82,6 +82,8 @@ class Settings(BaseSettings):
     # Browser cookies for yt-dlp (e.g. "edge" or "edge,Default" or "chrome,Profile 1")
     # Leave empty to skip cookie extraction.
     cookies_from_browser: str = ""
+    # A Netscape-format cookies.txt, used instead of reading a browser. Empty, or a missing file, means none.
+    cookies_file: str = ""
 
     # Storage
     content_dir: str = "./content"

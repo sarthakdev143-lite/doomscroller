@@ -463,19 +463,19 @@ def test_used_shot_is_not_offered_again_on_the_better_search(monkeypatch):
     assert [c.clip.video_id for c in plan.cutaways] == ["pixabay-1", "pixabay-3"]
 
 
-def test_when_the_ai_fails_the_first_match_is_used_and_it_is_not_asked_again(monkeypatch):
+def test_when_the_ai_fails_no_unjudged_stock_is_used_and_it_is_not_asked_again(monkeypatch):
     _search_returns(monkeypatch, rain=[_candidate(1)], sun=[_candidate(2)])
     calls = []
     monkeypatch.setattr(shots, "judge", lambda found, spoken: calls.append(spoken))
     session = broll.StockSession()
     plan = _plan((12.0, "rain"), (18.0, "sun"))
     warnings = attach_stock(plan, session)
-    assert [c.clip.video_id for c in plan.cutaways] == ["pixabay-1", "pixabay-2"]
+    assert plan.cutaways == []
     assert len(calls) == 1 and session.picking_failed
-    assert len(warnings) == 1 and "first matches" in warnings[0]
+    assert len(warnings) == 1 and "left them out" in warnings[0]
 
     later = _plan((12.0, "rain"))
-    assert attach_stock(later, session) == [] and later.cutaways and len(calls) == 1
+    assert attach_stock(later, session) == [] and later.cutaways == [] and len(calls) == 1
 
 
 def test_without_ai_the_first_match_is_used_and_nothing_extra_is_downloaded(monkeypatch):
@@ -527,7 +527,7 @@ def test_ai_failing_on_the_better_search_does_not_bring_back_a_rejected_shot(mon
     monkeypatch.setattr(ai, "ask_json", lambda *a, **k: next(replies))
     plan = _plan((15.0, "rain"))
     attach_stock(plan)
-    assert plan.cutaways[0].clip.video_id == "pixabay-5"
+    assert plan.cutaways == []  # neither the rejected shot nor an unjudged one
 
 
 def _failing_downloads(monkeypatch, bad):
