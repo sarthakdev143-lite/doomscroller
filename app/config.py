@@ -177,6 +177,8 @@ class Settings(BaseSettings):
     youtube_default_privacy: str = "private"
     channel_niche: str = "general_viral"
 
+    youtube_made_for_kids: bool = False
+
     # LLM
     use_llm_metadata: bool = True
     llm_model: str = "glm-4-plus"
@@ -280,7 +282,8 @@ class Settings(BaseSettings):
         "use_mock", "use_llm_metadata", "auto_publish", "enable_publish",
         "auto_discovery", "auto_approve", "allow_unknown_language",
         "transform_variation", "caption_enabled", "end_card_enabled",
-        "upscale_sharpen", "clip_auto_queue", "clip_sfx", "clip_broll", mode="before",
+        "upscale_sharpen", "clip_auto_queue", "clip_sfx", "clip_broll",
+        "youtube_made_for_kids", mode="before",
     )
     @classmethod
     def _coerce_bool(cls, v):

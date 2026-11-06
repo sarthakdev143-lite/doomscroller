@@ -36,6 +36,8 @@ _TAG_MAX_CHARS = 30
 _TAGS_MAX_COUNT = 15
 _TAGS_MAX_TOTAL_CHARS = 480  # the real cap is 500; leave headroom
 
+_ANGLE_BRACKETS = re.compile(r"[<>]")  # YouTube refuses these in a title or description
+
 _SHORTS_HASHTAG = "#Shorts"
 _BASE_TAGS = ("shorts", "viral", "trending", "reels")
 # Tags that add nothing and dilute relevance.
@@ -87,6 +89,26 @@ def _clean_title(title: str) -> str:
     # Otherwise cut on a word boundary.
     clipped = title[:budget].rsplit(" ", 1)[0].strip()
     return clipped or title[:budget].strip()
+
+
+def finished_title(title: str) -> str:
+    """A title as it goes out: within YouTube's limit and carrying the Shorts hashtag."""
+    clean = _clean_title(_ANGLE_BRACKETS.sub("", title or "")) or "Watch this"
+    if _SHORTS_HASHTAG.lower() not in clean.lower():
+        clean = f"{clean} {_SHORTS_HASHTAG}"
+    return clean[:_TITLE_MAX]
+
+
+def youtube_title(title: Optional[str]) -> str:
+    """The last word on a title: whatever it says, YouTube will accept it."""
+    clean = " ".join(_ANGLE_BRACKETS.sub("", title or "").split())[:_TITLE_MAX].strip()
+    return clean or finished_title("")
+
+
+def youtube_description(description: Optional[str], limit: int = _DESCRIPTION_MAX) -> str:
+    """YouTube counts bytes here, not characters, and Hindi runs to three bytes each."""
+    clean = _ANGLE_BRACKETS.sub("", description or "")
+    return clean.encode("utf-8", "ignore")[:limit].decode("utf-8", "ignore").strip()
 
 
 def _slug_tag(raw: str) -> str:
@@ -159,16 +181,15 @@ def compose(
     author = (author or "").lstrip("@").strip()
     tags = build_tags(keywords, author=author)
 
-    clean_title = _clean_title(title)
+    description = _ANGLE_BRACKETS.sub("", description or "")
+    clean_title = _clean_title(_ANGLE_BRACKETS.sub("", title or ""))
     if not clean_title:
         clean_title = _clean_title(description) or "Watch this"
     if _SHORTS_HASHTAG.lower() not in clean_title.lower():
         clean_title = f"{clean_title} {_SHORTS_HASHTAG}"
 
-    body = re.sub(r"\s+", " ", (description or "").strip())
+    body = re.sub(r"\s+", " ", description.strip())
     blocks: list[str] = []
-    if body:
-        blocks.append(body)
 
     hashtags = _hashtags_from(tags)
     if hashtags:
@@ -196,11 +217,14 @@ def compose(
             credit += f"\n{source_url}"
         blocks.append(credit)
 
-    description_text = "\n\n".join(blocks)[:_DESCRIPTION_MAX]
+    # The body gives way, so a long one cannot push the credit past the limit.
+    tail = "\n\n".join(blocks)
+    room = _DESCRIPTION_MAX - len(tail.encode("utf-8", "ignore")) - len("\n\n")
+    body = youtube_description(body, max(0, room))
 
     return GeneratedMetadata(
-        title=clean_title[:_TITLE_MAX],
-        description=description_text,
+        title=youtube_title(clean_title),
+        description=youtube_description(f"{body}\n\n{tail}" if body else tail),
         tags=tags,
         detected_language=language or "en",
         source=source,
