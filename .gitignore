@@ -30,3 +30,7 @@ logs/
 *.swp
 *.swo
 .DS_Store
+
+# Browser cookies for yt-dlp give access to a Google account.
+cookies*.txt
+.*.swp
