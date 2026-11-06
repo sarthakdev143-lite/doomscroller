@@ -44,8 +44,14 @@ venv/Scripts/python.exe scripts/seed.py 20
 # Cut one long video or link into finished Shorts
 venv/Scripts/python.exe scripts/clip.py "https://www.youtube.com/watch?v=..." --count 3
 
-# YouTube OAuth (writes secrets/youtube_token.json; needs secrets/client_secret.json)
+# YouTube OAuth (writes secrets/youtube_token.json; needs secrets/client_secret.json; steps in README.md)
 venv/Scripts/python.exe scripts/youtube_oauth.py
+
+# Growth loop: can it run, and what has it learned?
+venv/Scripts/python.exe scripts/growth.py doctor   # live: asks Google and reads feeds; --offline skips that
+venv/Scripts/python.exe scripts/growth.py report
+venv/Scripts/python.exe scripts/growth.py resume   # post again after a takedown pause
+venv/Scripts/python.exe scripts/growth.py unblock  # list takedown blocks; with a name, lift one
 ```
 
 `ffmpeg` and `ffprobe` must be on PATH for real operation. Playwright/Chromium is **optional** —
@@ -226,6 +232,12 @@ drive it through the `ClipJob` table, so queued work survives a restart.
   non-English speech for now, is ranked on measured motion, loudness and cuts, and the AI re-ranks frame
   strips of the best candidates. Without AI both paths fall back to rules; without a Deepgram key every video
   takes the no-speech path.
+- **Claude is the fallback** (`ai.py`). When OpenCode fails or times out, the call goes to the `claude` CLI and
+  OpenCode is skipped for 30 minutes, since one timeout costs four minutes. Claude runs with `--tools ""`,
+  `--strict-mcp-config`, `--safe-mode`, no session and its own system prompt, from an empty directory, and images travel
+  inside a `stream-json` message, so it never needs a tool to read a file. A clip no AI titled waits for review, so
+  `doctor` requires one of the two. `CLAUDE_FALLBACK=false` turns it off; tests set `CLAUDE_BIN` to nothing.
+- **Model.** The owner wants `opencode-go/muse-spark-1.3-contributor` for every OpenCode call, text and images alike.
 - **OpenCode is locked down on purpose** (`ai.py`). It is an agent with shell access and the user's MCP
   servers, and transcripts are untrusted text. Every call uses `--standalone` (the background service would
   ignore `OPENCODE_CONFIG_CONTENT`), all tools denied, an empty working directory, and stdin supplied or
@@ -244,7 +256,7 @@ drive it through the `ClipJob` table, so queued work survives a restart.
   its key travels in the URL, so the httpx logger stays at WARNING and errors must never include the URL.
   Searches match tags rather than meaning, so `shots.py` shows the vision model the results, cropped as they will
   render, with the words spoken over them. If it rejects them all it can suggest one better search; if that fails
-  too the cutaway is dropped. If it cannot judge at all, the job stops asking and takes the first matches.
+  too the cutaway is dropped. If it cannot judge at all, the job stops asking and uses no stock: unjudged matches put a sapphire ring and Alcatraz into a 1940 film.
   Files are test-decoded before use, because a CDN can answer 200 with an error page, and a render that still
   fails is retried once without B-roll.
 - **Tidying speech is conservative.** A rule that removes words changes what someone said, so `droppable_indices`
@@ -253,22 +265,114 @@ drive it through the `ClipJob` table, so queued work survives a restart.
   recording.
 - **Graphics.** ASS captions via libass rather than `drawtext`: the text lives outside the filter graph, so
   an apostrophe cannot break it. Run ffmpeg from a temp dir with relative names, for the same reason.
-- **Finished means finished.** `transform_task` short-circuits on `meta.clip_rendered`. Without that, approving
-  a clip would re-render it through the crop and variation built for scraped sources. `transform_job` selects
-  approved clips even though they already have a `transformed_path`, or they would stall at APPROVED.
-- **A re-run never undoes a decision.** Rejected, approved, queued and published rows are left alone. Only
-  unreviewed `PENDING` and `FAILED` rows re-render, and a moment that overlaps an earlier clip of the same source
-  is skipped rather than posted twice. Files are written to `.tmp.mp4` and moved into place, so a live row never
-  points at a half-written clip.
-- **Stopping is not failing.** `Interrupted` (ffmpeg exit 255 or SIGTERM/SIGINT) puts the job back in the queue,
-  up to `_MAX_ATTEMPTS`. It is deliberately not a `MediaError`.
-- **The picture sets the length.** `probe` uses the video stream's duration when audio runs longer, and skips cover
-  art. It also reports display width, so non-square pixels are handled. ffmpeg always gets a finite progress-bar
-  source and no stdin: an endless source hangs forever on a moment with no frames, and stdin reads as key presses.
-- **Cleanup.** `content/long/` and transcripts have no rows, so they age out with `SOURCE_VIDEO_MAX_AGE_DAYS`
-  rather than the 6h orphan rule, and are left alone while any `ClipJob` is queued or running. Deleting one early
-  costs a repeat download and a repeat Deepgram call.
+- **Layout.** `CLIP_LAYOUT=framed` (the default, chosen by the owner after watching cropped clips) centres a wide
+  source at full width over a zoomed, dimmed copy of itself, because a crop kept losing the subject. Zooms are halved,
+  the crop's face tracking is skipped (speech clips use speaker focus instead), and cutaways replace only the picture, so the shape holds. Tall sources still fill the
+  canvas. `captions.framed_layout` keeps text in the bands and above the Shorts buttons, and moves captions onto the
+  picture when a 4:3 or square source leaves no room below it.
+- **Visual picks leave out the closing 15% of a long source.** Scrolling credits score as busy motion, and without AI
+  nothing else rejects them. Any unattended clip no AI has titled stays `PENDING`: rule-based titles are a raw first
+  sentence or "<source> - part N".
+- **Speaker focus.** In the framed layout a speech clip's picture zooms to 1.35x on the face that moves most
+  (`speaker_pieces`), changing only at the edit's own beats or a cut in the footage, so a switch reads as an edit.
+- **Downloads.** YouTube serves formats only after a JavaScript challenge, so `network_options` gives yt-dlp any
+  deno/node/bun on PATH and its official solver (`remote_components: ejs:github`). Without one only storyboard images
+  come back ("Requested format is not available"). The original audio is preferred over dubs, and `COOKIES_FILE` takes
+  a cookies.txt when the host gets YouTube's bot check.
+- **Sources with their own captions** (`subtitles.py`). Big channels burn captions in, and ours on top showed every
+  word twice. One vision call per speech source looks at eight frames (some channels caption only stretches) and, if
+  any show speech captions, the clips keep the hook, graphics and credit but drop our word captions.
+- **Sound.** Effects are on for every clip (no longer an A/B arm: the owner wants them). Music comes only from
+  `content/music/` (`CLIP_MUSIC_DIR`), tracks the owner chose, because music is what draws claims. One is picked per
+  clip from its id, looped, set `CLIP_MUSIC_DB` below the levelled voice and ducked by it with `sidechaincompress`. A
+  `<track>.txt` beside a track is its credit line, added to the description. An empty folder means no music.
+- **On-screen text.** `Credit: <name>` runs the whole clip whenever the source names a creator, and `BRAND_NAME`, when
+  set, does the same for the channel.
 - Changes to the filter graph need the `slow` tier in `tests/test_clipper_render.py`.
+
+### Growth loop (`app/growth/`)
+
+Off unless `GROWTH_ENABLED=true`. When on it owns publishing (`publish_job` no-ops), and `scrape` and
+`analytics_pull` are not scheduled. It posts finished clips only (`meta.clip_rendered`), never scraped reposts.
+
+| job | every | does |
+|-----|-------|------|
+| `growth_supply` | 1h | below `GROWTH_MIN_INVENTORY`, queues a waiting winner's source, else the next unseen inbox file or feed link |
+| `growth_autopilot` | 10m | writes the day's plan, then posts whatever is due |
+| `growth_collect` | 3h | `VideoSnapshot` per video from the Data API, retention from the Analytics API |
+| `growth_learn` | 6h | diagnoses matured videos, updates the focus, mines winners, logs findings |
+
+- **A/B testing here means between videos.** Each video changes several factors (`factors.py`) at once, so
+  `model.py` fits them together: Bayesian linear regression on log views, with a trend term so a growing channel is
+  not credited to whatever ran last, and 45-day recency weighting. Thompson sampling then chooses. Do not replace it
+  with per-arm averages, which confound the factors.
+- **Arms are read from the row, not the plan** (`published_arms`): the slot comes from `published_at`, and the title
+  style and recipe record what the video really got. A plan is only an intention.
+- **Fair comparison.** A video is judged on views interpolated at `GROWTH_HORIZON_HOURS`, because older videos
+  have simply had longer. Only `yt_privacy == public` counts: a private upload says nothing about an audience.
+- **Diagnosis is against the channel's recent median**: the 30 matured videos before this one, topped up with later
+  ones only until the first few reach the 8 it needs. Until then a video stays undiagnosed, and it stops being eligible
+  14 days past the horizon. Retention is compared within a length band. `weak_hold` focuses testing on
+  the edit, `no_reach`/`low_views` on timing, title and source, and `winner` queues more clips from that source. Fixes
+  apply to later videos: published ones are never edited, because that would corrupt their own measurement. A winner
+  is mined only while stock plus clips still being cut is below `GROWTH_MIN_INVENTORY`, at most twice per source. One
+  judged on a full shelf stays owed: `supply_job` takes it ahead of a new source once stock falls, until 14 days past
+  the horizon.
+- **Two measures per arm.** The reward is a blend (log views, retention within its length band, subscribers per 1000
+  views) and drives choices. The summary's `multiplier`, `low`, `high` and `p_best` come from a separate views-only fit,
+  so anything labelled views means views, and the blend sits under `score`. A finding needs P(best) >= 0.95 for views
+  with n >= 8, held unbroken across 30 new matured videos, and is retracted below 0.7. It counts videos rather than runs
+  because runs hours apart re-read nearly the same data, and a fixed seed gives identical data an identical answer.
+- **Recipes** (`recipes.py`) override `settings.clip_*` under a lock for one render. Clipper code must read those
+  settings at call time, and a recipe may never switch on what the owner switched off.
+- **The token's `scopes` field holds what was granted**, because `youtube_oauth.py` rewrites it: Google's library
+  otherwise stores what was requested, which hides an unticked box from `doctor`. The publisher loads scopes from
+  the file, so a token from before analytics was added can still upload.
+- **Failing to read analytics never stops the loop.** Views alone still drive it; `retention` just stays `None`. That
+  also reads exactly like YouTube's two-day reporting delay ("no watch data yet"), so `collect.health` tracks
+  `analytics_failing_since` in `GrowthState`. A failure logs `analytics_failed` once a day, and from 3 days on the job returns
+  `error` too, so `instrumented` marks it failing and the report warns. Nothing gates on that `error`.
+- **`doctor()` is offline by default because the dashboard runs it on every refresh.** `doctor(live=True)` (the CLI's
+  default, `GET /growth/doctor?live=true`) adds a forced token refresh, `channels.list`, a one-row Analytics query and a
+  first link from each feed. The refresh is forced because an access token with time left hides a dead refresh token for
+  up to an hour. Any failed call is a required failure, including Analytics, even though the loop can run without it;
+  `explain_api_error` supplies the cause and next step. A feed whose videos all sit under a takedown block is only a
+  warning, because the block is working, but it stops counting towards `content source`.
+- **Problems stay apart from routine events.** `report.py`'s `_PROBLEM_KINDS` are shown for 30 days, while routine events
+  arrive about seven a day and would push a once-only `strike` off the page within days. A new failure kind belongs on
+  that list. What ended a problem (`strike_cleared`, `resumed`, `unblocked`) is listed beside it, or last week's strike
+  reads as still open. A feed that lists videos again deletes its `feed_empty`, or doctor keeps failing it. The CLI caps rows per kind, so a long run of `missed` cannot hide a takedown. Anything that repeats every run
+  goes through `note_once`.
+- **An empty shelf is not an error to the scheduler.** `{"skipped": ...}` and `{"starved": ...}` record as ok, which is
+  right for a job and useless to an owner, so `missed` (with `last_error`, the last reason the post could not go) and a
+  daily `starved` event carry it, and the report warns at zero stock. The warning gives the step that fits: approve held
+  clips, wait for clip jobs, fix what supply recorded in `supply_gap` (an unreadable feed, clip jobs failing), and only
+  then add sources. Off when `GROWTH_ENABLED` is off, since the normal pipeline uses no clip stock.
+- **Takedowns stop the loop** (`safety.py`). Nobody watches an unattended channel, and YouTube can end one at three
+  copyright strikes in 90 days, while a wrong pause costs one `resume`. So it stops rather than skipping the clip, and
+  only a person restarts it. `record_strike` quarantines the unposted clips of that `clip_parent`, and
+  supply drops that source and that author's feed links. One hard strike (`copyright`, `claim`, `termsOfUse`, `legal`,
+  `inappropriate`, `trademark`, or a suspended or closed account) or three soft ones in 90 days (`missing`, or a
+  technical rejection such as `duplicate` or `length`) sets `paused`, and only `scripts/growth.py resume` clears it.
+  Strikes keep counting after a resume, so the next problem inside the window pauses again. Collect keeps asking about
+  videos for the whole 90 days, though snapshots stop at 30, and only judges ids it really sent. Each struck video holds
+  one block: a `missing` video that comes back takes its strike and block with it, and otherwise
+  `scripts/growth.py unblock <name>` lifts it. Doctor, report and a starved supply all name what is blocked.
+- **An account failure is a hold, not a strike.** `account_level` from `publish_task` stops posting for an hour with one
+  event, and clears itself on the next good upload, because the next clip would only fail the same way. A missing or
+  revoked token (`TokenProblem`) is one too, and `check_ready` finds it before anything is spent on a title. Other retryable
+  failures retry each tick without counting an attempt, and `_LATE_GRACE` ends the window. An exception in the publish
+  step counts against the post and the clip, so `least_failed` moves on to the next clip.
+- **Last gate before an upload.** Auto-queued clips never sit in `PENDING`, so `_save_clip` flags (`meta.growth_flagged`,
+  left `PENDING`) and `_publish_next` rejects (`meta.auto_rejected`) on `clip_gate_reason`. Both judge the same text, the
+  source's words included (`meta.clip_source_text`), or a clip could pass one and fail the other. A clip someone approved
+  (`curated_at`) skips the upload gate, since a re-run never undoes a decision. `ALLOW_UNKNOWN_LANGUAGE` does not apply to
+  rendered clips: no language means no speech to judge, and every clip has none without a Deepgram key.
+- **A post cannot go out twice.** The upload stamps `meta.growth_post` before it starts, and a tick fills any waiting
+  post that a published row already names, so a plan save lost after an upload is repaired rather than repeated.
+- **A rehearsal leaves no trace.** `MOCK_` rows are left out of `tried`, and out of the gap and the last source once
+  uploads are real, and the clipper can cut them again. `started` is set by the loop's first real post only, not by a
+  clip published by hand before it; until then the policy is in its testing phase.
 
 ### Metadata (`app/metadata.py`)
 
@@ -301,6 +405,7 @@ Job ids are the contract for `POST /scheduler/run/{job_id}` and the dashboard si
 | `cleanup` | 24 h | deletes source files of PUBLISHED/REJECTED videos older than `SOURCE_VIDEO_MAX_AGE_DAYS` |
 | `recompute` | 1 h | refreshes all four scores |
 | `analytics_pull` | 6 h | pulls YouTube stats, boosts creator scores |
+| `growth_*` | see Growth loop | only registered when `GROWTH_ENABLED=true` |
 
 Every job returns a dict and swallows its own exceptions (returning `{"error": ...}`) so one failure
 never kills the scheduler.
@@ -349,10 +454,20 @@ strings** and read through `*_list` properties — add new list settings the sam
 - **Two quota caps.** `MAX_UPLOADS_PER_DAY` is the hard cap persisted in the `QuotaUsage` table and
   checked by `publish_task`; `UPLOADS_PER_DAY` is a soft daily pace enforced by `publish_job` counting
   today's PUBLISHED rows. Publishing also applies `UPLOAD_JITTER_MINUTES` of spread.
-- **Publish failures are classified.** `_is_retryable_publish_error` decides whether a failure rolls the
-  video back to `TRANSFORMED` (missing OAuth token, quota, network — it will publish once fixed) or
-  marks it `FAILED` (a real problem with the content). Do not collapse this back into one branch: a
-  missing credential must never permanently kill a video.
+- **Publish failures are classified.** `classify_publish_error` takes the exception. Only an HTTP error with a reason on
+  the `_VIDEO_REASONS` allowlist marks a video `FAILED`; everything else (network, credentials, quota, a reason nobody
+  listed) rolls it back to `TRANSFORMED`, and 401/403 and account reasons also return `account_level=True`. Do not
+  collapse this back into one branch: a missing credential must never permanently kill a video. Once `upload()` has
+  returned, the video is live, so nothing after it reaches the classifier; quota and `boost_creator` cannot change its status.
+- **Publishing is claimed.** `publish_task` moves a row to `PUBLISHING` with `UPDATE ... WHERE status='transformed'` and
+  stamps `meta.publish_claimed_at` and `meta.publish_title`. The `UPDATE` is what decides, not the status read before it:
+  writing a title can take minutes, and the dashboard is another process, so a reject or a manual publish can land in that
+  gap, and acting on the stale read would upload a rejected clip or post one twice. A crash leaves the row there, and YouTube may or may not
+  have the file, so it is never just re-uploaded: `recover_stuck_publishes` (at startup and every autopilot tick) searches
+  the channel's uploads for that title once the claim is 2h old. Found means `PUBLISHED`, not found means `TRANSFORMED`,
+  and a failed lookup leaves the row and tries again.
+- **Only `scripts/youtube_oauth.py` opens a browser.** The publisher runs on the scheduler thread, where a login would
+  hang forever, so a bad token raises a retryable error instead.
 - **Windows process control.** `os.killpg`/`os.getpgid` do not exist on Windows, and `os.kill(pid, 0)`
   there *terminates* rather than probes. `scripts/run.py` therefore branches on `os.name` and uses
   `tasklist`/`taskkill` on Windows. Keep that split if you touch it.

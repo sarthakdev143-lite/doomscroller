@@ -106,18 +106,12 @@ python scripts/run.py --stop
    UPLOADS_PER_DAY=8
    UPLOAD_INTERVAL_HOURS=3
    ```
-3. **Get YouTube OAuth credentials**:
-   - Google Cloud Console → New Project
-   - Enable **YouTube Data API v3**
-   - OAuth consent screen → External → add your Google account as test user
-   - Credentials → Create OAuth client ID → Desktop app
-   - Download JSON, save path in `YOUTUBE_CLIENT_SECRETS`
+3. **Get the YouTube token**: see [YouTube token](#youtube-token).
 4. **Run it**:
    ```bash
    python scripts/run.py --daemon
    ```
-   First publish will pop a browser for OAuth consent; token is cached at
-   `YOUTUBE_TOKEN_PATH` for subsequent runs.
+   Uploads use the token saved at `YOUTUBE_TOKEN_PATH` and refresh it on their own.
 
 That's it. The app will now:
 - Scrape Snapchat profiles + Spotlight every 6h (parallel per-URL browser contexts)
@@ -237,3 +231,35 @@ The only thing you need to provide is a YouTube OAuth client secret (free).
 Respect platform Terms of Service. Only scrape and republish content you have
 rights to, or that is licensed for reuse. This codebase provides plumbing
 only — you are responsible for how it is used.
+
+## YouTube token
+
+The token lets the app upload to, and read the analytics of, one channel. It takes about 10 minutes, once.
+
+1. Open [Google Cloud Console](https://console.cloud.google.com/) signed in as the account that owns the channel, and create a project.
+2. Enable **YouTube Data API v3** and **YouTube Analytics API** under *APIs & Services > Library*.
+3. In **Google Auth Platform**, go to *Branding* and enter an app name and your email. Under *Audience* choose **External**.
+4. On *Audience*, press **Publish app** so its status reads **In production**. Skip this and the token dies every 7 days, which stops an unattended channel. Verification is not needed for your own channel.
+5. Under *Clients*, create a client of type **Desktop app**. Download its JSON and save it as `secrets/client_secret.json`.
+6. Run this, pick the channel, and tick every permission. Google warns the app is unverified: choose *Advanced*, then *Go to (your app)*.
+   ```bash
+   venv/bin/python scripts/youtube_oauth.py
+   # On a machine with no screen, add --no-browser and follow what it prints.
+   ```
+7. Add what it prints to `.env`, then check with `venv/bin/python scripts/growth.py doctor`. It refreshes the token, reads your channel name and asks the Analytics API for one row, so a dead token or an API you forgot to enable shows up now rather than after a missed post.
+
+Lost the `.env` lines? Run the script again without `--force`: it reprints them and says what the existing token lacks. If a permission was left unticked or `doctor` reports `invalid_grant`, run it with `--force`. `invalid_grant` means the token was revoked, or expired because the app is still in Testing (step 4).
+
+`secrets/` is gitignored. The token is saved readable only by you, and it gives upload access to your channel, so never share it. Each project gets 100 uploads a day by default.
+
+## Growth loop
+
+Set `GROWTH_ENABLED=true`, `YOUTUBE_DEFAULT_PRIVACY=public` and `GROWTH_TIMEZONE`, and give it sources: video files in `content/inbox/`, or your own or permitted channels in `GROWTH_FEEDS`. Clips from inbox files need OpenCode to write their titles, or they wait for review. `ENABLE_PUBLISH` must stay on. Then `scripts/growth.py doctor`, `scripts/run.py --daemon`, and watch `scripts/growth.py report` or the dashboard's Growth tab.
+
+`doctor` asks Google and reads every feed; add `--offline` to skip that. The dashboard and `GET /growth/doctor` stay offline, and `GET /growth/doctor?live=true` runs the full check.
+
+The report and the Growth tab warn when the shelf is empty or analytics has failed for 3 days, show when numbers were last collected, and list problems from the last 30 days apart from routine events: videos gone missing, strikes, pauses, account holds, failed or missed posts, failed collects, retracted findings, stopped clip jobs, empty feeds, clips held for review, and supply running out, along with whatever has since cleared them. Check them weekly and nothing should have scrolled away.
+
+A copyright takedown, a legal, policy or account rejection from YouTube, or three videos going missing in 90 days, pauses posting until you have looked at it and run `scripts/growth.py resume`. A video that goes missing also stops that author's feed, including one you deleted yourself; `scripts/growth.py unblock <name>` lifts it.
+
+It posts `GROWTH_UPLOADS_PER_DAY` clips in varied time windows and tests posting window, title style, format, length, source, pace, sound effects and B-roll. Half of all choices are tests for the first 30 days, then 10%.
