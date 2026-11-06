@@ -197,6 +197,27 @@ class Settings(BaseSettings):
 
     youtube_made_for_kids: bool = False
 
+    # ---- Growth loop (app/growth) ----
+    # Posts, measures and adapts on its own. It takes over publishing from AUTO_PUBLISH.
+    growth_enabled: bool = False
+    growth_uploads_per_day: int = 3
+    # Local time for the posting windows and for where a day starts.
+    growth_timezone: str = "UTC"
+    # How long the loop tests hard, and how much of each phase goes to testing.
+    growth_explore_days: int = 30
+    growth_explore_rate: float = 0.5
+    growth_settled_explore_rate: float = 0.1
+    # A video is judged on its views at this age, so that old and new are compared fairly.
+    growth_horizon_hours: int = 72
+    growth_min_gap_minutes: int = 120
+    # Below this many finished clips, the supply job queues another source.
+    growth_min_inventory: int = 9
+    growth_clips_per_source: int = 3
+    # JSON list of channel or playlist links to cut into clips.
+    growth_feeds: str = '[]'
+    # Video files dropped here are cut into clips. Empty means <CONTENT_DIR>/inbox.
+    growth_inbox_dir: str = ""
+
     # LLM
     use_llm_metadata: bool = True
     llm_model: str = "glm-4-plus"
@@ -290,6 +311,17 @@ class Settings(BaseSettings):
             return []
 
     @property
+    def growth_feeds_list(self) -> List[str]:
+        try:
+            return [str(x) for x in json.loads(self.growth_feeds or "[]")]
+        except Exception:
+            return []
+
+    @property
+    def growth_inbox_path(self) -> Path:
+        return Path(self.growth_inbox_dir) if self.growth_inbox_dir else self.content_path / "inbox"
+
+    @property
     def tags_list(self) -> List[str]:
         try:
             return [str(x) for x in json.loads(self.youtube_default_tags or "[]")]
@@ -301,7 +333,7 @@ class Settings(BaseSettings):
         "auto_discovery", "auto_approve", "allow_unknown_language",
         "transform_variation", "caption_enabled", "end_card_enabled",
         "upscale_sharpen", "clip_auto_queue", "clip_sfx", "clip_broll", "clip_music",
-        "youtube_made_for_kids", "claude_fallback", mode="before",
+        "growth_enabled", "youtube_made_for_kids", "claude_fallback", mode="before",
     )
     @classmethod
     def _coerce_bool(cls, v):

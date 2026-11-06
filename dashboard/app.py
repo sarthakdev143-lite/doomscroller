@@ -293,6 +293,49 @@ def stats_frag():
         st.progress(s["pending"]/20, text=f"{s['pending']}/20 pending — scraper fills to 20")
     return s
 
+def growth_tab():
+    from app.growth import safety
+    from app.growth.report import build_report, doctor
+
+    health=doctor()
+    if not health["ready"]:
+        st.warning("The growth loop cannot run yet: "+"; ".join(f'{c["name"]} ({c["detail"]})' for c in health["checks"] if c["required"] and not c["ok"]))
+    report=build_report()
+    if report["blocks"]:
+        st.warning("Takedown blocks: "+safety.describe_blocks(report["blocks"]))
+    for warning in report["warnings"]:
+        st.warning(warning)
+    c1,c2,c3,c4=st.columns(4)
+    c1.metric("Day",report["day"])
+    c2.metric("Published",report["published"])
+    c3.metric("Judged",report["matured"])
+    c4.metric("Clips in stock",report["stock"])
+    st.caption(f'{report["phase"].capitalize()}: {report["explore_rate"]:.0%} of choices are tests.'+(f' Testing harder: {", ".join(report["focus"])}.' if report["focus"] else ""))
+    last_collect=report["collect"]["last_success"]
+    st.caption(f'Last successful collect: {last_collect[:16].replace("T"," ") if last_collect else "never"}.')
+    if report["problems"]:
+        st.markdown("**Problems in the last 30 days**")
+        st.dataframe([{"When":p["at"][:16].replace("T"," "),"What":p["kind"],"Detail":p["summary"]} for p in report["problems"]],hide_index=True)
+    if report["plan"].get("posts"):
+        st.markdown("**Today**")
+        st.dataframe([{"Window":p["slot"],"Status":p["state"]} for p in report["plan"]["posts"]],hide_index=True)
+    if report["factors"]:
+        st.markdown("**What the tests show**")
+        st.caption("Views alone against that factor's average, with the likely range and the chance of being best. Treat it as noise until the range clears 1x. Score also counts watch time and subscribers, and is what the loop chooses by.")
+        for factor,rows in report["factors"].items():
+            st.markdown(f"`{factor}`")
+            st.dataframe([{"Option":r["arm"],"Views":f'{r["multiplier"]}x',"Range":f'{r["low"]}-{r["high"]}x',"Chance best":f'{r["p_best"]:.0%}',"Score":f'{r["score"]["multiplier"]}x' if "score" in r else "","Videos":r["n"]} for r in rows],hide_index=True)
+    else:
+        st.info(f"No results yet: a video is judged {settings.growth_horizon_hours} hours after it goes out.")
+    for label,key in (("Best","best"),("Worst","worst")):
+        if report[key]:
+            st.markdown(f"**{label} videos**")
+            st.dataframe([{"Title":r["title"],"Views":r["views"],"Why":r["diagnosis"]} for r in report[key]],hide_index=True)
+    if report["events"]:
+        st.markdown("**What it did**")
+        st.dataframe([{"When":e["at"][:16].replace("T"," "),"What":e["kind"],"Detail":e["summary"]} for e in report["events"]],hide_index=True)
+
+
 def clip_tab():
     with st.form("clip_form", clear_on_submit=True):
         source=st.text_input("Video link or local file", placeholder="https://www.youtube.com/watch?v=...")
@@ -373,7 +416,7 @@ def main():
     if st.button("🔄 Refresh", help="Clear cache"):
         _cached_stats.clear(); st.rerun()
 
-    tabs=st.tabs(["📥 Pending","✅ Approved","⬇️ Ready","🚀 Pipeline","✅ Published","👥 Creators","🗂 All","✂️ Clip"])
+    tabs=st.tabs(["📥 Pending","✅ Approved","⬇️ Ready","🚀 Pipeline","✅ Published","👥 Creators","🗂 All","✂️ Clip","📈 Growth"])
     with tabs[0]:
         page=st.session_state.get("pending_page",0)
         per_page=6 if density=="Compact" else 8
@@ -452,6 +495,8 @@ def main():
         for v in rows: video_card_frag(v, "all")
     with tabs[7]:
         clip_tab()
+    with tabs[8]:
+        growth_tab()
 
 if __name__=="__main__":
     main()

@@ -9,16 +9,17 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from sqlalchemy import select
 
 from app import scheduler
-from app.clipper import ai, captions, ingest, job, media, moments, render, timeline, transcribe
+from app.clipper import ai, captions, edit, ingest, job, media, moments, render, timeline, transcribe
 from app.clipper.media import Interrupted, MediaError, MediaInfo
 from app.clipper.moments import Moment, build_sentences
 from app.clipper.signals import Signals, _find_cuts
 from app.clipper.transcribe import Transcript, Word
 from app.config import settings
 from app.db import init_db, session_scope
-from app.models import ClipJob, Video, VideoStatus
+from app.models import ClipJob, GrowthEvent, Video, VideoStatus
 
 
 def setup_module(module):
@@ -1336,7 +1337,7 @@ def test_broll_that_will_not_render_costs_only_the_broll(tmp_path, monkeypatch):
     original = job.render_moment
     calls = []
 
-    def fussy(src, info, signals, moment, words, out_path, edit=None):
+    def fussy(src, info, signals, moment, words, out_path, edit=None, creator="", music=None, captions=True):
         calls.append(bool(edit.cutaways))
         if edit.cutaways:
             raise job.MediaError("moov atom not found")
@@ -1655,6 +1656,50 @@ def test_replaced_file_is_transcribed_again(tmp_path, monkeypatch):
     assert len(calls) == 2
 
 
+def test_a_touched_file_is_not_transcribed_again(tmp_path, monkeypatch):
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"x")
+    monkeypatch.setattr(settings, "deepgram_api_key", "key")
+    monkeypatch.setattr(transcribe, "run_ffmpeg", lambda args: Path(args[-1]).write_bytes(b"a"))
+    calls = []
+    monkeypatch.setattr(transcribe, "_request", lambda path: calls.append(path) or PAYLOAD)
+    info = MediaInfo(60.0, 1280, 720, 30.0, True)
+    transcribe.transcribe(str(video), info)
+    os.utime(video, (1000, 1000))
+    assert transcribe.transcribe(str(video), info).words
+    assert len(calls) == 1
+
+
+def test_a_refetched_link_keeps_its_paid_transcript(tmp_path, monkeypatch):
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"x")
+    done = {"id": "abc", "title": "Talk", "extractor_key": "Youtube", "requested_downloads": [{"filepath": str(video)}]}
+    _fake_ydl(monkeypatch, {"id": "abc"}, done)
+    monkeypatch.setattr(settings, "deepgram_api_key", "key")
+    monkeypatch.setattr(transcribe, "run_ffmpeg", lambda args: Path(args[-1]).write_bytes(b"a"))
+    calls = []
+    monkeypatch.setattr(transcribe, "_request", lambda path: calls.append(path) or PAYLOAD)
+    info = MediaInfo(60.0, 1280, 720, 30.0, True)
+    for _ in range(3):
+        os.utime(video, (1000, 1000))  # the second fetch must have something to move
+        transcribe.transcribe(ingest.fetch("https://youtube.com/watch?v=abc").path, info)
+    assert len(calls) == 1
+
+
+def test_a_file_replaced_by_one_of_the_same_size_is_transcribed_again(tmp_path, monkeypatch):
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"one")
+    monkeypatch.setattr(settings, "deepgram_api_key", "key")
+    monkeypatch.setattr(transcribe, "run_ffmpeg", lambda args: Path(args[-1]).write_bytes(b"a"))
+    calls = []
+    monkeypatch.setattr(transcribe, "_request", lambda path: calls.append(path) or PAYLOAD)
+    info = MediaInfo(60.0, 1280, 720, 30.0, True)
+    transcribe.transcribe(str(video), info)
+    video.write_bytes(b"two")
+    transcribe.transcribe(str(video), info)
+    assert len(calls) == 2
+
+
 def test_old_cache_without_a_fingerprint_is_not_trusted(tmp_path, monkeypatch):
     video = tmp_path / "v.mp4"
     video.write_bytes(b"x")
@@ -1907,9 +1952,9 @@ def _stub_pipeline(monkeypatch, moment_list=None):
     monkeypatch.setattr(job, "probe", lambda path: INFO)
     monkeypatch.setattr(job, "transcribe", lambda path, info: None)
     monkeypatch.setattr(job, "analyse", lambda path, info: _signals())
-    monkeypatch.setattr(job, "pick_visual", lambda *a, **k: list(moment_list or [Moment(10, 40, title="Clip one", kind="visual")]))
+    monkeypatch.setattr(job, "pick_visual", lambda *a, **k: list(moment_list or [Moment(10, 40, title="Clip one", ai_title=True, kind="visual")]))
 
-    def fake_render(src, info, signals, moment, words, out_path, edit=None):
+    def fake_render(src, info, signals, moment, words, out_path, edit=None, creator="", music=None, captions=True):
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         Path(out_path).write_bytes(b"v" * 2000)
         return render.ClipPlan([(moment.start, moment.end)], moment.duration, True, 404, "0", False, "1", False)
@@ -2086,7 +2131,7 @@ def test_too_little_speech_falls_back_to_visual_with_captions(tmp_path, monkeypa
     used = {}
     original = job.render_moment
 
-    def spy(src, info, signals, moment, words, out_path, edit=None):
+    def spy(src, info, signals, moment, words, out_path, edit=None, creator="", music=None, captions=True):
         used["words"] = len(words)
         return original(src, info, signals, moment, words, out_path, edit=edit)
 
@@ -2112,7 +2157,7 @@ def test_unexpected_error_on_one_clip_keeps_the_others(tmp_path, monkeypatch):
                                  Moment(80, 110, title="C", kind="visual")])
     original = job.render_moment
 
-    def flaky(src, info, signals, moment, words, out_path, edit=None):
+    def flaky(src, info, signals, moment, words, out_path, edit=None, creator="", music=None, captions=True):
         if moment.title == "B":
             raise OSError("disk trouble")
         return original(src, info, signals, moment, words, out_path, edit=edit)
@@ -2206,7 +2251,7 @@ def test_one_bad_clip_does_not_lose_the_rest(tmp_path, monkeypatch):
     _stub_pipeline(monkeypatch, [Moment(10, 40, title="Bad", kind="visual"), Moment(50, 80, title="Good", kind="visual")])
     original = job.render_moment
 
-    def flaky(src, info, signals, moment, words, out_path, edit=None):
+    def flaky(src, info, signals, moment, words, out_path, edit=None, creator="", music=None, captions=True):
         if moment.title == "Bad":
             raise job.MediaError("boom")
         return original(src, info, signals, moment, words, out_path, edit=edit)
@@ -2345,3 +2390,1121 @@ def test_clip_endpoints(monkeypatch):
     assert client.get("/clip/jobs/nope").status_code == 404
     assert client.post("/clip", json={"source": "   "}).status_code == 400
     assert client.post("/clip", json={"source": "x", "count": 99}).status_code == 422
+
+
+@pytest.mark.parametrize("transcript, language", [
+    (_speech(language="hi"), "hi"),
+    (_speech(language="EN"), "en"),
+    (_speech(language="hi", per_minute=10), ""),  # a guess from lyrics or noise is no fact about the video
+    (_speech(language="hi", confidence=0.2), ""),
+    (Transcript(language="hi"), ""),
+])
+def test_spoken_language_is_only_reported_for_real_speech(transcript, language):
+    assert transcript.spoken_language == language
+
+
+def test_a_non_english_video_is_recorded_as_such_and_held_back_from_auto_queue(tmp_path, monkeypatch):
+    _stub_pipeline(monkeypatch)
+    monkeypatch.setattr(job, "transcribe", lambda path, info: _speech(language="hi"))
+    result = job.clip_source(_source(tmp_path, "hindi"), auto_queue=True)
+    assert result["clips"]
+    with session_scope() as db:
+        video = db.get(Video, result["clips"][0]["id"])
+        assert video.language == "hi" and video.status == VideoStatus.PENDING
+        assert video.meta["growth_flagged"] == "language: hi"
+
+
+# ---------- Cutting more from a source already used ----------
+def test_dedupe_steers_around_used_footage():
+    kept = moments._dedupe([Moment(0, 30, score=9), Moment(40, 70, score=8), Moment(80, 110, score=7)], 2,
+                           used=[Moment(10, 20)])
+    assert [m.start for m in kept] == [40, 80]
+
+
+def test_rules_give_the_next_best_speech_moments_when_the_best_are_used(monkeypatch):
+    monkeypatch.setattr(ai, "ask_json", lambda *a, **k: None)
+    words, signals = _long_transcript(60), _signals(600)
+    first = moments.pick_speech(words, signals, count=2)
+    second = moments.pick_speech(words, signals, count=2, used=first)
+    assert len(second) == 2
+    assert not any(moments.clashes(a, b) for a in first for b in second)
+
+
+def test_the_ai_is_told_what_is_used_and_asked_for_extra(monkeypatch):
+    words, signals = _long_transcript(60), _signals(600)
+    prompts = []
+    sentences = build_sentences(words)
+    used = Moment(sentences[4].start, sentences[9].end)
+
+    def reply(prompt, **kwargs):
+        prompts.append(prompt)
+        return None
+
+    monkeypatch.setattr(ai, "ask_json", reply)
+    moments.pick_speech(words, signals, count=2, used=[used])
+    assert "already" in prompts[0] and "4-9" in prompts[0]
+    assert "up to 6 clips" in prompts[0]  # (2 wanted + 1 used) * 2
+
+
+def test_the_prompt_is_unchanged_when_nothing_is_used():
+    sentences = build_sentences(_long_transcript(10))
+    assert "already" not in moments._speech_prompt(sentences, 2, "x")
+
+
+def test_ai_picks_that_repeat_used_footage_lose_to_its_other_picks(monkeypatch):
+    words, signals = _long_transcript(60), _signals(600)
+    sentences = build_sentences(words)
+    used = [Moment(sentences[2].start, sentences[8].end)]
+    reply = {"clips": [{"first": 2, "last": 8, "title": "Again", "score": 99},
+                       {"first": 20, "last": 26, "title": "Fresh", "score": 50},
+                       {"first": 30, "last": 36, "title": "Also fresh", "score": 40},
+                       {"first": 40, "last": 46, "title": "Over the cap", "score": 30}]}
+    monkeypatch.setattr(ai, "ask_json", lambda *a, **k: reply)
+    picked = moments.pick_speech(words, signals, count=2, used=used)
+    assert [m.title for m in picked] == ["Fresh", "Also fresh"]
+
+
+def test_rank_windows_skips_used_footage():
+    signals = _signals(300, loud_at=(150, 180))
+    best = moments.rank_windows(signals, 1)[0]
+    picked = moments.rank_windows(signals, 3, used=[best])
+    assert len(picked) == 3
+    assert not any(moments.clashes(m, best) for m in picked)
+
+
+def test_visual_path_gives_the_next_best_without_ai(monkeypatch):
+    monkeypatch.setattr(ai, "available", lambda: False)
+    signals = _signals(300, loud_at=(150, 180))
+    first = moments.pick_visual("x.mp4", INFO, signals, count=2, title="Film")
+    second = moments.pick_visual("x.mp4", INFO, signals, count=2, title="Film", used=first)
+    assert [m.title for m in second] == ["Film - part 3", "Film - part 4"]  # a second "part 1" would repeat a title
+    assert not any(moments.clashes(a, b) for a in first for b in second)
+
+
+def test_the_vision_prompt_names_the_used_ranges(monkeypatch):
+    sent = []
+    monkeypatch.setattr(ai, "available", lambda: True)
+    monkeypatch.setattr(ai, "ask_json", lambda prompt, **kwargs: sent.append(prompt))
+    monkeypatch.setattr(moments, "_frame_strip", lambda *a: None)
+    moments.pick_visual("x.mp4", INFO, _signals(300), count=1, title="Film", used=[Moment(10, 40)])
+    assert "10-40s" in sent[0]
+
+
+def test_visual_path_with_nothing_left_asks_nobody(monkeypatch):
+    monkeypatch.setattr(ai, "available", lambda: True)
+    monkeypatch.setattr(moments, "_ai_rank_visual", lambda *a, **k: pytest.fail("nothing to rate"))
+    assert moments.pick_visual("x.mp4", INFO, _signals(10), count=2, used=[Moment(0, 10)]) == []
+
+
+def _real_visual_picks(monkeypatch):
+    _stub_pipeline(monkeypatch)
+    monkeypatch.setattr(job, "analyse", lambda path, info: _signals(300, loud_at=(150, 180)))
+    monkeypatch.setattr(job, "pick_visual", moments.pick_visual)
+    monkeypatch.setattr(ai, "available", lambda: False)
+
+
+def _set_status(result, status):
+    with session_scope() as db:
+        for clip in result["clips"]:
+            db.get(Video, clip["id"]).status = status
+
+
+def _starts(result):
+    return sorted(clip["start"] for clip in result["clips"])
+
+
+@pytest.mark.parametrize("status", [VideoStatus.PUBLISHED, VideoStatus.TRANSFORMED, VideoStatus.REJECTED])
+def test_mining_a_used_source_makes_new_clips(tmp_path, monkeypatch, status):
+    _real_visual_picks(monkeypatch)
+    first = job.clip_source(_source(tmp_path, f"mine{status.value}"), count=2)
+    _set_status(first, status)
+    second = job.clip_source(_source(tmp_path, f"mine{status.value}"), count=2, mine=True)
+    assert second["ok"] and len(second["clips"]) == 2
+    assert set(_starts(first)).isdisjoint(_starts(second))
+    assert not any("left as it is" in w for w in second["warnings"])
+
+
+def test_mining_speech_without_ai_makes_new_clips(tmp_path, monkeypatch):
+    _stub_pipeline(monkeypatch)
+    words = _long_transcript(60)
+    monkeypatch.setattr(job, "transcribe", lambda path, info: Transcript(words=words, language="en", duration=words[-1].end))
+    monkeypatch.setattr(job, "probe", lambda path: MediaInfo(duration=600.0, width=1280, height=720, fps=30.0, has_audio=True))
+    monkeypatch.setattr(job, "analyse", lambda path, info: _signals(600))
+    monkeypatch.setattr(job, "pick_speech", moments.pick_speech)
+    monkeypatch.setattr(job, "build_edit", lambda *a, **k: None)
+    monkeypatch.setattr(ai, "ask_json", lambda *a, **k: None)
+    first = job.clip_source(_source(tmp_path, "minespeech"), count=2)
+    _set_status(first, VideoStatus.PUBLISHED)
+    second = job.clip_source(_source(tmp_path, "minespeech"), count=2, mine=True)
+    assert second["kind"] == "speech" and len(second["clips"]) == 2
+    assert set(_starts(first)).isdisjoint(_starts(second))
+
+
+def test_an_unreviewed_clip_still_renders_again_rather_than_being_passed_over(tmp_path, monkeypatch):
+    _real_visual_picks(monkeypatch)
+    first = job.clip_source(_source(tmp_path, "pending"), count=2)
+    second = job.clip_source(_source(tmp_path, "pending"), count=2)
+    assert _starts(first) == _starts(second)
+
+
+def test_a_stocked_clip_whose_file_is_gone_can_be_picked_again(tmp_path, monkeypatch):
+    _real_visual_picks(monkeypatch)
+    first = job.clip_source(_source(tmp_path, "lost"), count=2, auto_queue=True)
+    for clip in first["clips"]:
+        Path(clip["path"]).unlink()
+    second = job.clip_source(_source(tmp_path, "lost"), count=2, auto_queue=True)
+    assert _starts(first) == _starts(second)
+    assert all(Path(clip["path"]).exists() for clip in second["clips"])
+
+
+def test_a_spent_speech_source_finishes_without_cutting_silent_footage(tmp_path, monkeypatch):
+    _stub_pipeline(monkeypatch)
+    words = _long_transcript(60)
+    monkeypatch.setattr(job, "transcribe", lambda path, info: Transcript(words=words, language="en", duration=words[-1].end))
+    monkeypatch.setattr(job, "pick_speech", lambda *a, **k: [Moment(1, 30, kind="speech", title="Only")])
+    monkeypatch.setattr(job, "build_edit", lambda *a, **k: None)
+    first = job.clip_source(_source(tmp_path, "spent"), count=1)
+    _set_status(first, VideoStatus.PUBLISHED)
+    monkeypatch.setattr(job, "pick_speech", lambda *a, **k: [])
+    monkeypatch.setattr(job, "pick_visual", lambda *a, **k: pytest.fail("this source's speech has all been used"))
+    second = job.clip_source(_source(tmp_path, "spent"), count=1, mine=True)
+    assert second["ok"] and second["clips"] == []
+    assert any("already been used" in w for w in second["warnings"])
+
+
+def test_a_source_cut_visually_can_still_be_cut_visually_again(tmp_path, monkeypatch):
+    _real_visual_picks(monkeypatch)
+    first = job.clip_source(_source(tmp_path, "visualagain"), count=1)
+    _set_status(first, VideoStatus.PUBLISHED)
+    words = _long_transcript(60)
+    monkeypatch.setattr(job, "transcribe", lambda path, info: Transcript(words=words, language="en", duration=words[-1].end))
+    monkeypatch.setattr(job, "pick_speech", lambda *a, **k: [])
+    second = job.clip_source(_source(tmp_path, "visualagain"), count=1, mine=True)
+    assert second["kind"] == "visual" and len(second["clips"]) == 1
+    assert any("too little continuous speech" in w for w in second["warnings"])
+
+
+def test_a_visual_source_with_nothing_left_is_not_a_failure(tmp_path, monkeypatch):
+    _stub_pipeline(monkeypatch)
+    monkeypatch.setattr(job, "analyse", lambda path, info: _signals(10))
+    monkeypatch.setattr(job, "pick_visual", moments.pick_visual)
+    monkeypatch.setattr(ai, "available", lambda: False)
+    first = job.clip_source(_source(tmp_path, "shortone"), count=1)
+    _set_status(first, VideoStatus.PUBLISHED)
+    second = job.clip_source(_source(tmp_path, "shortone"), count=1, mine=True)
+    assert second["ok"] and second["clips"] == []
+
+
+# ---------- a job's count across restarts ----------
+def _queue_setup(tmp_path, monkeypatch, source_id):
+    _clear_jobs()
+    _real_visual_picks(monkeypatch)
+    # These tests are about stopping and resuming, not about which clips get held for review.
+    monkeypatch.setattr(job, "_untitled_reason", lambda src, moment: None)
+    src = _source(tmp_path, source_id)
+    monkeypatch.setattr(job, "fetch", lambda link: src)
+    return src
+
+
+def _stop_render_on(monkeypatch, *stopped_calls):
+    calls = []
+    real = job.render_moment
+
+    def render_or_stop(*args, **kwargs):
+        calls.append(args[3])
+        if len(calls) in stopped_calls:
+            raise Interrupted("ffmpeg was stopped")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(job, "render_moment", render_or_stop)
+    return calls
+
+
+def _rows_of(src):
+    with session_scope() as db:
+        rows = db.execute(select(Video).where(Video.source_id.startswith(f"{src.source_id}_"))).scalars().all()
+        return [(r.id, r.status) for r in rows]
+
+
+def test_a_stopped_job_finishes_its_count_rather_than_starting_over(tmp_path, monkeypatch):
+    src = _queue_setup(tmp_path, monkeypatch, "stopped3")
+    calls = _stop_render_on(monkeypatch, 3)
+    job_id = job.enqueue("https://example.com/v", count=3, auto_queue=True)
+    job.clip_queue_job()
+    assert len(_rows_of(src)) == 2
+    job.clip_queue_job()
+    assert len(_rows_of(src)) == 3 and len(calls) == 4
+    with session_scope() as db:
+        row = db.get(ClipJob, job_id)
+        assert row.status == "done"
+        # The result answers for the whole job, not for its last attempt.
+        assert {c["id"] for c in row.result["clips"]} == {video_id for video_id, _ in _rows_of(src)}
+        assert row.result["queued"] is True
+
+
+def test_a_job_stopped_repeatedly_still_makes_only_its_count(tmp_path, monkeypatch):
+    src = _queue_setup(tmp_path, monkeypatch, "stoppedtwice")
+    _stop_render_on(monkeypatch, 2, 4)
+    job.enqueue("https://example.com/v", count=3, auto_queue=True)
+    job.clip_queue_job()
+    job.clip_queue_job()
+    job.clip_queue_job()
+    assert len(_rows_of(src)) == 3
+
+
+def test_a_job_requeued_after_its_last_clip_does_no_more_work(tmp_path, monkeypatch):
+    src = _queue_setup(tmp_path, monkeypatch, "crashfinish")
+    job_id = job.enqueue("https://example.com/v", count=2, auto_queue=True)
+    job.clip_queue_job()
+    with session_scope() as db:  # as if the process died before the outcome was saved
+        row = db.get(ClipJob, job_id)
+        row.status, row.result = "running", {}
+    monkeypatch.setattr(job, "render_moment", lambda *a, **k: pytest.fail("rendered again"))
+    monkeypatch.setattr(job, "transcribe", lambda *a: pytest.fail("transcribed again"))
+    job.clip_queue_job()
+    with session_scope() as db:
+        row = db.get(ClipJob, job_id)
+        assert row.status == "done" and len(row.result["clips"]) == 2
+    assert len(_rows_of(src)) == 2
+
+
+@pytest.mark.parametrize("auto_queue", [True, False])
+def test_pasting_a_link_again_makes_nothing_new(tmp_path, monkeypatch, auto_queue):
+    src = _queue_setup(tmp_path, monkeypatch, f"repaste{auto_queue}")
+    job.enqueue("https://example.com/v", count=3, auto_queue=auto_queue)
+    job.clip_queue_job()
+    made = {video_id for video_id, _ in _rows_of(src)}
+    if not auto_queue:
+        with session_scope() as db:
+            for video_id in made:
+                db.get(Video, video_id).status = VideoStatus.APPROVED
+    job.enqueue("https://example.com/v", count=3, auto_queue=auto_queue)
+    job.clip_queue_job()
+    assert {video_id for video_id, _ in _rows_of(src)} == made
+
+
+def test_a_stopped_mining_job_counts_its_own_clips_and_still_avoids_them(tmp_path, monkeypatch):
+    src = _queue_setup(tmp_path, monkeypatch, "minestop")
+    first = job.clip_source(src, count=2, auto_queue=True)
+    _stop_render_on(monkeypatch, 2)
+    with session_scope() as db:
+        db.add(ClipJob(source="https://example.com/v", count=2, auto_queue=True, mined=True))
+    job.clip_queue_job()
+    assert len(_rows_of(src)) == 3
+    job.clip_queue_job()
+    assert len(_rows_of(src)) == 4
+    with session_scope() as db:
+        rows = db.execute(select(Video).where(Video.source_id.startswith(f"{src.source_id}_"))).scalars().all()
+        spans = [Moment(r.meta["clip_start"], r.meta["clip_end"]) for r in rows]
+        mined = db.execute(select(ClipJob).where(ClipJob.mined.is_(True))).scalar_one()
+        assert len(mined.result["clips"]) == 2
+    assert not any(moments.clashes(a, b) for i, a in enumerate(spans) for b in spans[i + 1:])
+    assert {c["id"] for c in first["clips"]}.isdisjoint(c["id"] for c in mined.result["clips"])
+
+
+def _speech_pipeline(monkeypatch):
+    _stub_pipeline(monkeypatch)
+    words = _long_transcript(60)
+    monkeypatch.setattr(job, "transcribe", lambda path, info: Transcript(words=words, language="en", duration=words[-1].end))
+    monkeypatch.setattr(job, "probe", lambda path: MediaInfo(duration=600.0, width=1280, height=720, fps=30.0, has_audio=True))
+    monkeypatch.setattr(job, "analyse", lambda path, info: _signals(600))
+    monkeypatch.setattr(job, "pick_speech", moments.pick_speech)
+    monkeypatch.setattr(job, "build_edit", lambda *a, **k: None)
+    return words
+
+
+def test_mining_steers_around_clips_awaiting_review(tmp_path, monkeypatch):
+    words = _speech_pipeline(monkeypatch)
+    sentences = build_sentences(words)
+    monkeypatch.setattr(ai, "ask_json", lambda *a, **k: None)
+    first = job.clip_source(_source(tmp_path, "minepending"), count=3)
+    _set_status({"clips": first["clips"][:1]}, VideoStatus.PUBLISHED)  # the rest stay PENDING, as a flagged clip does
+    pending = [Moment(c["start"], c["end"]) for c in first["clips"][1:]]
+
+    def inside(moment):
+        return [s.index for s in sentences if moments.clashes(Moment(s.start, s.end), moment)]
+
+    prompts = []
+
+    def reply(prompt, **kwargs):
+        prompts.append(prompt)
+        # Near repeats of the clips under review, ranked ahead of what is actually free.
+        near = [{"first": inside(m)[0] + 1, "last": inside(m)[-1] + 1, "title": "Repeat", "score": 99} for m in pending]
+        free = [{"first": 40 + 6 * n, "last": 45 + 6 * n, "title": f"New {n}", "score": 50} for n in range(3)]
+        return {"clips": near + free}
+
+    monkeypatch.setattr(ai, "ask_json", reply)
+    second = job.clip_source(_source(tmp_path, "minepending"), count=2, mine=True)
+    assert second["ok"] and len(second["clips"]) == 2
+    assert not any("repeats clip" in w for w in second["warnings"])
+    assert all(f"{inside(m)[0]}-{inside(m)[-1]}" in prompts[0] for m in pending)
+    assert not any(moments.clashes(Moment(c["start"], c["end"]), m) for c in second["clips"] for m in pending)
+
+
+# ---------- the prompt and the filter agree at clip edges ----------
+@pytest.mark.parametrize("gap", [0.0, 0.05, 0.1, 0.15, 0.2])
+def test_the_sentence_after_a_used_clip_really_is_free(monkeypatch, gap):
+    words = []
+    now = 10.0
+    for index in range(30):
+        batch = _words(f"Sentence number {index} says something rather useful right here.", start=now)
+        words += batch
+        now = batch[-1].end + gap
+    sentences = build_sentences(words)
+    reply = {"clips": [{"first": 0, "last": 8, "title": "One", "score": 50}]}
+    used = moments._moments_from_reply(reply, sentences, words, 600.0)[0]
+    assert "0-8" in moments._used_sentences(sentences, [used])
+    monkeypatch.setattr(ai, "ask_json", lambda *a, **k: {"clips": [{"first": 9, "last": 17, "title": "Two", "score": 50}]})
+    picked = moments.pick_speech(words, _signals(600), count=1, used=[used])
+    assert picked and picked[0].title == "Two"
+
+
+def test_clips_sharing_real_footage_still_clash():
+    assert moments.clashes(Moment(0, 30), Moment(29, 60))
+    assert not moments.clashes(Moment(0, 30), Moment(30, 60))
+
+
+# ---------- What a failure means for the source ----------
+def _failing_ydl(monkeypatch, message):
+    class Refused:
+        def __init__(self, options):
+            pass
+        def __enter__(self):
+            return self
+        def __exit__(self, *exc):
+            return False
+        def extract_info(self, url, download):
+            raise RuntimeError(message)
+    import yt_dlp
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", Refused)
+
+
+def test_a_download_failure_keeps_its_real_cause(monkeypatch):
+    _failing_ydl(monkeypatch, "HTTP Error 503: Service Unavailable")
+    with pytest.raises(ingest.IngestError, match="download failed: HTTP Error 503") as caught:
+        ingest.fetch("https://youtube.com/watch?v=x")
+    assert caught.value.permanent is False
+
+
+@pytest.mark.parametrize("message", [
+    "ERROR: [youtube] x: Private video. Sign in if you've been granted access to this video. Use --cookies-from-browser",
+    "ERROR: [youtube] x: This video has been removed by the uploader",
+    "ERROR: [youtube] x: Video unavailable",
+    "ERROR: [youtube] x: This video is no longer available because the YouTube account associated with it has been terminated.",
+    "ERROR: [youtube] x: Premieres in 3 hours",
+    "ERROR: [youtube] x: This live event will begin in a few moments.",
+])
+def test_a_source_that_is_gone_is_final(monkeypatch, message):
+    _failing_ydl(monkeypatch, message)
+    with pytest.raises(ingest.IngestError) as caught:
+        ingest.fetch("https://youtube.com/watch?v=x")
+    assert caught.value.permanent is True
+    assert "COOKIES_FROM_BROWSER" not in str(caught.value)
+
+
+@pytest.mark.parametrize("message", [
+    "Sign in to confirm you're not a bot. Use --cookies-from-browser",
+    "Video unavailable. This content isn't available, try again later. The current session has been rate-limited",
+    "Video unavailable. The uploader has not made this video available in your country",
+    "HTTP Error 429: Too Many Requests",
+])
+def test_a_block_on_this_host_is_not_final(monkeypatch, message):
+    _failing_ydl(monkeypatch, message)
+    with pytest.raises(ingest.IngestError) as caught:
+        ingest.fetch("https://youtube.com/watch?v=x")
+    assert caught.value.permanent is False
+
+
+@pytest.mark.parametrize("info", [{"id": "x", "is_live": True}, {"id": "x", "live_status": "is_upcoming"}])
+def test_a_live_or_upcoming_video_is_final(monkeypatch, info):
+    _fake_ydl(monkeypatch, info, None)
+    with pytest.raises(ingest.IngestError) as caught:
+        ingest.fetch("https://youtube.com/watch?v=x")
+    assert caught.value.permanent is True
+
+
+def test_clip_source_marks_a_final_failure(monkeypatch):
+    def gone(source):
+        raise ingest.IngestError("private", permanent=True)
+
+    monkeypatch.setattr(job, "require_tools", lambda: None)
+    monkeypatch.setattr(job, "fetch", gone)
+    result = job.clip_source("https://example.com/v")
+    assert result["ok"] is False and result["permanent"] is True
+
+
+def test_clip_source_does_not_mark_a_failure_that_may_clear_up(monkeypatch):
+    def down(source):
+        raise ingest.IngestError("download failed: 503")
+
+    monkeypatch.setattr(job, "require_tools", lambda: None)
+    monkeypatch.setattr(job, "fetch", down)
+    assert "permanent" not in job.clip_source("https://example.com/v")
+
+    def missing():
+        raise MediaError("ffmpeg not found on PATH")
+
+    monkeypatch.setattr(job, "require_tools", missing)
+    assert "permanent" not in job.clip_source("https://example.com/v")
+
+
+def test_no_usable_moments_is_final(tmp_path, monkeypatch):
+    _stub_pipeline(monkeypatch)
+    monkeypatch.setattr(job, "pick_visual", lambda *a, **k: [])
+    result = job.clip_source(_source(tmp_path, "empty"))
+    assert result["ok"] is False and result["permanent"] is True
+
+
+@pytest.mark.parametrize("source", ["~nosuchuser_zz/x.mp4", "a\x00b.mp4"])
+def test_a_path_that_cannot_be_read_fails_on_its_job_row(monkeypatch, source):
+    monkeypatch.setattr(job, "require_tools", lambda: None)
+    job_id = job.enqueue(source)
+    job.clip_queue_job()
+    with session_scope() as db:
+        row = db.get(ClipJob, job_id)
+        assert row.status == "failed" and row.error
+        assert "fingerprint" not in row.result
+
+
+def test_queueing_a_local_file_records_which_bytes_it_was(tmp_path):
+    clip = tmp_path / "a.mp4"
+    clip.write_bytes(b"x")
+    job_id = job.enqueue(str(clip))
+    with session_scope() as db:
+        assert db.get(ClipJob, job_id).result["fingerprint"] == ingest.fetch(str(clip)).source_id
+    before = ingest.file_fingerprint(clip)
+    clip.write_bytes(b"xx")
+    assert ingest.file_fingerprint(clip) != before
+
+
+# ---------- A transcription outage ----------
+def _deepgram_down(monkeypatch, exc=None):
+    _stub_pipeline(monkeypatch)
+    monkeypatch.setattr(settings, "deepgram_api_key", "key")
+
+    def broken(path, info):
+        raise exc or transcribe.TranscribeError("Deepgram returned 402")
+
+    monkeypatch.setattr(job, "transcribe", broken)
+
+
+def _transcribe_events():
+    with session_scope() as db:
+        return db.execute(select(GrowthEvent).where(GrowthEvent.kind == "transcribe_failed")).scalars().all()
+
+
+def _clear_events():
+    with session_scope() as db:
+        db.query(GrowthEvent).delete()
+
+
+def test_a_deepgram_outage_fails_an_unattended_job_and_saves_nothing(tmp_path, monkeypatch):
+    _clear_events()
+    _deepgram_down(monkeypatch)
+    monkeypatch.setattr(job, "render_moment", lambda *a, **k: pytest.fail("rendered without a transcript"))
+    result = job.clip_source(_source(tmp_path, "outage"), auto_queue=True)
+    assert result["ok"] is False and result["clips"] == [] and "402" in result["error"]
+    assert "permanent" not in result
+    with session_scope() as db:
+        assert db.execute(select(Video).where(Video.source_id.startswith("outage"))).first() is None
+    assert len(_transcribe_events()) == 1 and "402" in _transcribe_events()[0].summary
+
+
+def test_an_outage_event_does_not_promise_a_retry_nobody_will_make(tmp_path, monkeypatch):
+    _clear_events()
+    _deepgram_down(monkeypatch)
+    job.clip_source(_source(tmp_path, "by_hand"), auto_queue=True)
+    summary = _transcribe_events()[0].summary
+    assert "will retry" not in summary and "by hand" in summary
+
+
+def test_a_long_outage_records_one_event_a_day(tmp_path, monkeypatch):
+    _clear_events()
+    _deepgram_down(monkeypatch)
+    for name in ("first", "second"):
+        job.clip_source(_source(tmp_path, name), auto_queue=True)
+    assert len(_transcribe_events()) == 1
+
+
+def test_a_deepgram_outage_only_warns_on_a_manual_run(tmp_path, monkeypatch):
+    _clear_events()
+    _deepgram_down(monkeypatch)
+    result = job.clip_source(_source(tmp_path, "manual"), auto_queue=False)
+    assert result["ok"] is True and result["clips"]
+    assert any("402" in w for w in result["warnings"])
+    assert _transcribe_events() == []
+
+
+def test_a_failed_audio_extract_is_not_a_deepgram_outage(tmp_path, monkeypatch):
+    _clear_events()
+    _deepgram_down(monkeypatch, MediaError("could not read the audio"))
+    result = job.clip_source(_source(tmp_path, "audio"), auto_queue=True)
+    assert result["ok"] is True and result["clips"]
+    assert _transcribe_events() == []
+
+
+def test_no_key_stays_on_the_no_speech_path_when_unattended(tmp_path, monkeypatch):
+    _clear_events()
+    _stub_pipeline(monkeypatch)
+    monkeypatch.setattr(settings, "deepgram_api_key", "")
+    result = job.clip_source(_source(tmp_path, "nokey2"), auto_queue=True)
+    assert result["ok"] is True and result["kind"] == "visual" and result["clips"]
+    assert _transcribe_events() == []
+
+
+# ---------- A clip titled only by a filename ----------
+def _inbox_file(tmp_path):
+    clip = tmp_path / "VID_20260101_final2.mp4"
+    clip.write_bytes(b"x" * 2000)
+    return str(clip)
+
+
+def _saved(result):
+    with session_scope() as db:
+        video = db.get(Video, result["clips"][0]["id"])
+        return video.status, dict(video.meta)
+
+
+def test_a_filename_title_with_no_written_title_waits_for_review(tmp_path, monkeypatch):
+    _stub_pipeline(monkeypatch, [Moment(10, 40, title="VID 20260101 final2 - part 1", kind="visual")])
+    status, meta = _saved(job.clip_source(_inbox_file(tmp_path), auto_queue=True))
+    assert status == VideoStatus.PENDING
+    assert "filename" in meta["growth_flagged"]
+
+
+def test_a_filename_source_with_an_ai_title_stays_unattended(tmp_path, monkeypatch):
+    _stub_pipeline(monkeypatch, [Moment(10, 40, title="Dog catches frisbee", kind="visual", ai_title=True)])
+    status, meta = _saved(job.clip_source(_inbox_file(tmp_path), auto_queue=True))
+    assert status == VideoStatus.TRANSFORMED and "growth_flagged" not in meta
+
+
+def test_a_visual_clip_no_ai_titled_waits_for_review_even_with_a_real_source_title(tmp_path, monkeypatch):
+    # Rule-based picks took a film's end credits and titled them "<film> - part 2".
+    _stub_pipeline(monkeypatch, [Moment(10, 40, title="Talk - part 1", kind="visual")])
+    status, meta = _saved(job.clip_source(_source(tmp_path, "titled"), auto_queue=True))
+    assert status == VideoStatus.PENDING and "no AI" in meta["growth_flagged"]
+
+
+def test_a_file_source_says_its_title_is_a_filename(tmp_path):
+    assert ingest.fetch(_inbox_file(tmp_path)).title_from_filename is True
+
+
+def test_only_a_written_title_counts_as_written(monkeypatch):
+    info = MediaInfo(duration=600.0, width=1280, height=720, fps=30.0, has_audio=True)
+    monkeypatch.setattr(ai, "available", lambda: False)
+    plain = moments.pick_visual("x.mp4", info, _signals(600), count=1, title="Talk")
+    assert plain[0].ai_title is False
+    monkeypatch.setattr(ai, "available", lambda: True)
+    monkeypatch.setattr(moments, "_ai_rank_visual", lambda *a, **k: {"clips": [
+        {"candidate": 1, "title": "A dog", "score": 90}, {"candidate": 2, "title": "", "score": 80}]})
+    rated = moments.pick_visual("x.mp4", info, _signals(600), count=2, title="Talk")
+    assert [m.ai_title for m in rated] == [True, False]
+    words = _long_transcript()
+    sentences = build_sentences(words)
+    reply = {"clips": [{"first": 0, "last": 3, "title": "From the AI", "score": 90}]}
+    assert moments._moments_from_reply(reply, sentences, words, 300.0)[0].ai_title is True
+    assert moments._rule_based_speech(sentences, words, _signals(300), 1)[0].ai_title is False
+
+
+# ---------- The line a quote title may use ----------
+LINES = "Nobody told me this at all. I found out much later on. That is the whole story here."
+
+
+def _plan(words):
+    return edit.EditPlan(words=list(words), segments=[])
+
+
+def test_the_opening_line_is_the_first_sentence_word_for_word():
+    words = _words(LINES)
+    moment = Moment(0, words[-1].end, kind="speech")
+    assert edit.opening_line(moment, words, _plan(words)) == "Nobody told me this at all."
+
+
+def test_the_opening_line_follows_what_the_edit_kept():
+    words = _words(LINES)
+    moment = Moment(0, words[-1].end, kind="speech")
+    assert edit.opening_line(moment, words, _plan(words[6:])) == "I found out much later on."
+
+
+def test_a_tidied_word_does_not_change_the_quoted_sentence():
+    words = _words("Um, nobody told me this. I found out later on.")
+    moment = Moment(0, words[-1].end, kind="speech")
+    assert edit.opening_line(moment, words, _plan(words[1:])) == "Um, nobody told me this."
+
+
+def test_a_moment_opening_mid_sentence_has_no_opening_line():
+    words = _words(LINES)
+    moment = Moment(words[3].start, words[-1].end, kind="speech")
+    assert edit.opening_line(moment, words, _plan(words[3:])) == ""
+
+
+def test_an_unfinished_sentence_has_no_opening_line():
+    words = _words("nobody told me this at all", length=0.3)
+    moment = Moment(0, words[-1].end, kind="speech")
+    assert edit.opening_line(moment, words, _plan(words)) == ""
+
+
+def test_no_edit_or_no_words_has_no_opening_line():
+    words = _words(LINES)
+    moment = Moment(0, words[-1].end, kind="speech")
+    assert edit.opening_line(moment, words, None) == ""
+    assert edit.opening_line(moment, words, _plan([])) == ""
+
+
+def _talking_pipeline(monkeypatch, recipe=None, *, audio=True):
+    """A speech clip through the real edit, up to a render that reports effects the way the real plan does."""
+    _stub_pipeline(monkeypatch)
+    words = _words(LINES)
+    info = MediaInfo(duration=600.0, width=1280, height=720, fps=30.0, has_audio=audio)
+    moment = Moment(0, words[-1].end, title="Talk", hook="Made up by the AI", ai_title=True, kind="speech")
+    monkeypatch.setattr(job, "transcribe", lambda path, _: _SpeechTranscript(words))
+    monkeypatch.setattr(job, "probe", lambda path: info)
+    monkeypatch.setattr(job, "pick_speech", lambda *a, **k: [moment])
+    monkeypatch.setattr(ai, "ask_json", lambda *a, **k: None)
+    monkeypatch.setattr(job.recipes, "choose", lambda: dict(recipe or {}))
+
+    def fake_render(src, info, signals, moment, words, out_path, edit=None, creator="", music=None, captions=True):
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(out_path).write_bytes(b"v" * 2000)
+        return render.ClipPlan([(moment.start, moment.end)], moment.duration, True, 404, "0", False, "1", False,
+                               has_sfx=bool(edit) and info.has_audio and settings.clip_sfx)
+
+    monkeypatch.setattr(job, "render_moment", fake_render)
+
+
+class _SpeechTranscript(Transcript):
+    def __init__(self, words):
+        super().__init__(words=words, language="en", duration=words[-1].end)
+
+    @property
+    def is_english_speech(self):
+        return True
+
+
+def test_a_speech_clip_stores_its_opening_line_and_keeps_the_hook_apart(tmp_path, monkeypatch):
+    _talking_pipeline(monkeypatch)
+    _, meta = _saved(job.clip_source(_source(tmp_path, "line")))
+    assert meta["clip_opening_line"] == "Nobody told me this at all."
+    assert meta["clip_hook"] == "Made up by the AI"
+
+
+def test_a_picked_moment_keeps_its_first_sentence_as_the_opening_line():
+    words = _long_transcript()
+    sentences = build_sentences(words)
+    reply = {"clips": [{"first": 2, "last": 6, "title": "T", "score": 90}]}
+    moment = moments._moments_from_reply(reply, sentences, words, 300.0)[0]
+    plan = edit.EditPlan(words=[w for w in words if moment.start <= w.start < moment.end], segments=[])
+    assert edit.opening_line(moment, words, plan) == sentences[2].text
+
+
+def test_a_visual_clip_has_no_opening_line(tmp_path, monkeypatch):
+    _stub_pipeline(monkeypatch)
+    _, meta = _saved(job.clip_source(_source(tmp_path, "quiet")))
+    assert not meta.get("clip_opening_line")
+
+
+# ---------- The recipe says what the clip got ----------
+RECIPE = {"pace": "normal", "sfx": "on", "broll": "on"}
+
+
+@pytest.mark.parametrize("switch, audio, recorded", [(True, True, "on"), (False, True, "off"), (True, False, "off")])
+def test_sfx_is_recorded_as_rendered(tmp_path, monkeypatch, switch, audio, recorded):
+    _talking_pipeline(monkeypatch, RECIPE, audio=audio)
+    monkeypatch.setattr(settings, "clip_sfx", switch)
+    _, meta = _saved(job.clip_source(_source(tmp_path, f"sfx{switch}{audio}")))
+    assert meta["growth_recipe"]["sfx"] == recorded
+
+
+def test_a_recipe_asking_for_no_effects_is_recorded_off(tmp_path, monkeypatch):
+    _talking_pipeline(monkeypatch, {**RECIPE, "sfx": "off"})
+    monkeypatch.setattr(settings, "clip_sfx", True)
+    _, meta = _saved(job.clip_source(_source(tmp_path, "sfxoff")))
+    assert meta["growth_recipe"]["sfx"] == "off"
+
+
+def test_a_lost_file_rendered_again_records_its_new_recipe_and_line(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "clip_sfx", True)
+    _talking_pipeline(monkeypatch, {"pace": "tight", "sfx": "on", "broll": "off"})
+    source = _source(tmp_path, "lost")
+    first = job.clip_source(source, auto_queue=True)
+    video_id = first["clips"][0]["id"]
+    with session_scope() as db:
+        video = db.get(Video, video_id)
+        assert video.status == VideoStatus.TRANSFORMED
+        assert video.meta["growth_recipe"]["pace"] == "tight"
+        video.meta = {**video.meta, "clip_opening_line": "stale"}
+    os.unlink(first["clips"][0]["path"])
+    monkeypatch.setattr(job.recipes, "choose", lambda: {"pace": "relaxed", "sfx": "off", "broll": "off"})
+    job.clip_source(source, auto_queue=True)
+    with session_scope() as db:
+        meta = db.get(Video, video_id).meta
+    assert meta["growth_recipe"] == {"pace": "relaxed", "sfx": "off", "broll": "off"}
+    assert meta["clip_opening_line"] == "Nobody told me this at all."
+
+
+def test_creator_credit_lasts_the_whole_clip_and_is_escaped():
+    from app.clipper.captions import build_ass
+
+    ass = build_ass([], "", 30.0, "Arial", creator="{\\an8}Some Creator")
+    line = next(l for l in ass.splitlines() if ",Credit,," in l)
+    assert line.startswith("Dialogue: 0,0:00:00.00,0:00:30.00,Credit")
+    assert "Credit: (an8)Some Creator" in line
+    assert ",Credit,," not in build_ass([], "", 30.0, "Arial")
+
+
+def test_channel_branding_shows_only_when_named():
+    from app.clipper.captions import build_ass
+
+    assert ",Brand,," not in build_ass([], "", 30.0, "Arial")
+    line = next(l for l in build_ass([], "", 30.0, "Arial", brand="@MyChannel").splitlines() if ",Brand,," in l)
+    assert line.endswith("@MyChannel") and "0:00:30.00" in line
+
+
+def test_framed_text_sits_in_the_bands_around_a_wide_picture():
+    from app.clipper.captions import framed_layout
+
+    layout = framed_layout(608)  # 16:9, so the picture spans y=656 to y=1264
+    assert 1264 < layout.credit_y < layout.caption_y <= 1440
+    assert layout.hook_y < layout.brand_y < 656
+
+
+def test_framed_text_stays_clear_of_the_shorts_buttons_on_a_tall_picture():
+    from app.clipper.captions import framed_layout
+
+    layout = framed_layout(1080)  # square
+    assert layout.caption_y <= 1440 and layout.credit_y <= 1530 and layout.hook_y >= 200
+
+
+@pytest.mark.parametrize("height", [452, 608, 720, 810, 1080, 1350])
+def test_framed_captions_never_land_on_the_credit(height):
+    from app.clipper.captions import framed_layout
+
+    layout = framed_layout(height)
+    assert abs(layout.caption_y - layout.credit_y) >= 130, "two caption lines would cover the credit"
+    assert layout.caption_y <= 1440
+    assert layout.hook_y < layout.brand_y
+
+
+def test_visual_picks_leave_out_the_closing_credits():
+    busy_end = np.zeros(720, dtype=float)
+    busy_end[650:] = 1.0  # scrolling names: plenty of motion
+    busy_end[100:130] = 0.4
+
+    class Long:
+        duration = 720.0
+        cuts: list = []
+
+        @staticmethod
+        def interest():
+            return busy_end
+
+    picks = moments.rank_windows(Long, 2)
+    assert all(m.end <= 720 * 0.85 + 1 for m in picks)
+    assert picks[0].start < 130
+
+
+def test_a_short_source_can_still_use_its_ending():
+    busy_end = np.zeros(120, dtype=float)
+    busy_end[85:] = 1.0
+
+    class Short:
+        duration = 120.0
+        cuts: list = []
+
+        @staticmethod
+        def interest():
+            return busy_end
+
+    assert moments.rank_windows(Short, 1)[0].end > 110
+
+
+def test_a_visual_clip_no_ai_looked_at_is_held_back():
+    src = ingest.SourceVideo(path="x", title="Real title", source="local", source_id="s")
+    assert "no AI" in job._untitled_reason(src, moments.Moment(1, 30, kind="visual"))
+    assert job._untitled_reason(src, moments.Moment(1, 30, kind="visual", ai_title=True)) is None
+    assert "no AI" in job._untitled_reason(src, moments.Moment(1, 30, kind="speech"))
+    assert job._untitled_reason(src, moments.Moment(1, 30, kind="speech", ai_title=True)) is None
+
+
+def test_backdrop_is_blurred_by_default_and_can_be_sharp(monkeypatch):
+    monkeypatch.setattr(settings, "clip_layout", "framed")
+    plan = render.plan_clip(Moment(10, 40, kind="visual"), [], _signals(), INFO, has_graphics=True)
+    assert "boxblur=14:1" in render.build_filtergraph(plan, INFO, 0.0)
+    monkeypatch.setattr(settings, "clip_backdrop_blur", 0)
+    assert "boxblur" not in render.build_filtergraph(plan, INFO, 0.0)
+
+
+def test_source_time_undoes_output_time():
+    from app.clipper.timeline import output_time, source_time
+
+    segments = [(10.0, 14.0), (20.0, 25.0)]
+    for when in (10.5, 13.9, 20.0, 24.0):
+        assert source_time(segments, output_time(segments, when)) == pytest.approx(when)
+
+
+def test_found_speaker_moves_the_framed_picture_onto_them(monkeypatch):
+    monkeypatch.setattr(settings, "clip_layout", "framed")
+    focus = [(0.0, 0.8, 0.3), (5.0, 0.2, 0.35)]
+    plan = render.plan_clip(Moment(10, 40), [], _signals(), INFO, has_graphics=True, focus=focus)
+    assert plan.focus_x_expr.startswith("0.8*") and "0.2*" in plan.focus_x_expr
+    assert plan.zoom_expr.startswith("1.35+")
+    graph = render.build_filtergraph(plan, INFO, 0.0)
+    assert "(1080*(" in graph and plan.focus_x_expr in graph
+
+
+def test_speaker_focus_only_applies_to_the_framed_layout():
+    plan = render.plan_clip(Moment(10, 40), [], _signals(), INFO, has_graphics=True, focus=[(0.0, 0.8, 0.3)])
+    assert plan.focus_x_expr == "" and not plan.zoom_expr.startswith("1.35")
+
+
+def test_speaker_changes_only_where_the_framing_changes(monkeypatch):
+    from types import SimpleNamespace
+
+    sequence = iter([(0.2, 0.3), (0.21, 0.31), (0.8, 0.3)])
+    monkeypatch.setattr(render, "speaker_position", lambda *a: next(sequence))
+    edit = SimpleNamespace()
+    monkeypatch.setattr(render, "rhythm_points", lambda e: [0.0, 2.0, 4.0])
+    signals = SimpleNamespace(cuts=[])
+    pieces = render.speaker_pieces("x.mp4", INFO, signals, Moment(10, 16), [(10.0, 16.0)], edit, 1.0)
+    # The second reading is jitter of the first, so the picture holds until the real change at 4s.
+    assert pieces == [(0.0, 0.2, 0.3), (4.0, 0.8, 0.3)]
+
+
+def test_framed_plan_keeps_the_whole_picture(monkeypatch):
+    monkeypatch.setattr(settings, "clip_layout", "framed")
+    plan = render.plan_clip(Moment(10, 40, kind="visual"), [], _signals(), INFO, has_graphics=True)
+    assert plan.picture_height == 608 and plan.crop_width == 1280 and not plan.use_blur_fill
+    graph = render.build_filtergraph(plan, INFO, 0.0)
+    assert "[backdrop]" in graph and "crop=404" not in graph and "overlay=x=0:y=656" in graph
+
+
+def test_tall_source_still_fills_the_canvas_when_framed(monkeypatch):
+    monkeypatch.setattr(settings, "clip_layout", "framed")
+    vertical = MediaInfo(120.0, 720, 1280, 30.0, True)
+    assert render.plan_clip(Moment(10, 40), [], _signals(), vertical, has_graphics=False).picture_height == 0
+
+
+def test_framed_cutaways_replace_the_picture_and_not_the_backdrop(monkeypatch):
+    monkeypatch.setattr(settings, "clip_layout", "framed")
+    plan = render.plan_clip(Moment(10, 40, kind="visual"), [], _signals(), INFO, has_graphics=True)
+    plan.broll = ((2.0, 2.0, "/stock.mp4", 0.0),)
+    graph = render.build_filtergraph(plan, INFO, 0.0)
+    assert "scale=1080:608:force_original_aspect_ratio=increase,crop=1080:608" in graph
+    assert graph.index("[broll0]overlay") < graph.index("[backdrop][framed]")
+
+
+def test_picture_height_follows_the_layout_setting(monkeypatch):
+    monkeypatch.setattr(settings, "clip_layout", "framed")
+    assert render._picture_height(INFO) == 608
+    monkeypatch.setattr(settings, "clip_layout", "fill")
+    assert render._picture_height(INFO) == 0
+
+
+def test_the_source_creator_reaches_the_render(tmp_path, monkeypatch):
+    seen = {}
+    source = tmp_path / "long.mp4"
+    source.write_bytes(b"v" * 2000)
+    monkeypatch.setattr(settings, "content_dir", str(tmp_path))
+    monkeypatch.setattr(job, "require_tools", lambda: None)
+    monkeypatch.setattr(job, "probe", lambda path: MediaInfo(100.0, 1280, 720, 30.0, True))
+    monkeypatch.setattr(job, "transcribe", lambda path, info: None)
+    monkeypatch.setattr(job, "analyse", lambda path, info: None)
+    monkeypatch.setattr(job, "pick_visual", lambda *a, **k: [moments.Moment(10, 40, title="Clip", kind="visual")])
+
+    def fake_render(src, info, signals, moment, words, out_path, edit=None, creator="", music=None, captions=True):
+        seen["creator"] = creator
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(out_path).write_bytes(b"v" * 2000)
+        return render.ClipPlan([(10.0, 40.0)], 30.0, True, 404, "0", False, "1", False)
+
+    monkeypatch.setattr(job, "render_moment", fake_render)
+    src = ingest.SourceVideo(path=str(source), title="Long", author="handle", author_name="Display Name",
+                             source="local", source_id="credit-reaches-render")
+    assert job.clip_source(src, count=1)["ok"]
+    assert seen["creator"] == "Display Name"
+
+
+def test_audio_with_no_words_says_why_there_are_no_captions(tmp_path, monkeypatch):
+    source = tmp_path / "long.mp4"
+    source.write_bytes(b"v" * 2000)
+    monkeypatch.setattr(settings, "content_dir", str(tmp_path))
+    monkeypatch.setattr(job, "require_tools", lambda: None)
+    monkeypatch.setattr(job, "probe", lambda path: MediaInfo(100.0, 1280, 720, 30.0, True))
+    monkeypatch.setattr(job, "transcribe", lambda path, info: transcribe.Transcript(words=[], language="es", duration=100.0))
+    monkeypatch.setattr(job, "analyse", lambda path, info: None)
+    monkeypatch.setattr(job, "pick_visual", lambda *a, **k: [])
+    result = job.clip_source(ingest.SourceVideo(path=str(source), source="local", source_id="no-words"), count=1)
+    assert any("no words" in warning for warning in result["warnings"])
+
+
+def test_a_cookies_file_is_used_only_when_it_has_contents(tmp_path, monkeypatch):
+    empty, full = tmp_path / "empty.txt", tmp_path / "cookies.txt"
+    empty.write_text("")
+    full.write_text("# Netscape HTTP Cookie File\n")
+    monkeypatch.setattr(settings, "cookies_from_browser", "")
+    monkeypatch.setattr(settings, "cookies_file", str(empty))
+    assert "cookiefile" not in ingest.network_options()
+    monkeypatch.setattr(settings, "cookies_file", str(full))
+    assert ingest.network_options()["cookiefile"] == str(full)
+
+
+def test_youtube_challenge_solver_is_set_up_when_a_runtime_exists(monkeypatch):
+    monkeypatch.setattr(ingest.shutil, "which", lambda name: "/usr/bin/node" if name == "node" else None)
+    options = ingest.network_options()
+    assert options["js_runtimes"] == {"node": {"path": "/usr/bin/node"}}
+    assert options["remote_components"] == {"ejs:github"}
+    monkeypatch.setattr(ingest.shutil, "which", lambda name: None)
+    assert "js_runtimes" not in ingest.network_options()
+
+
+def test_downloads_prefer_the_original_audio_over_dubs(tmp_path):
+    assert ingest._ydl_options(tmp_path)["format"].split("/")[0].endswith("+ba[format_note*=original]")
+
+
+
+def _fake_cli(monkeypatch, *, opencode, claude):
+    """opencode/claude: a reply string, None for a failure, or 'timeout'."""
+    calls = []
+    monkeypatch.setattr(ai, "opencode_path", lambda: "/bin/opencode")
+    monkeypatch.setattr(ai, "claude_path", lambda: "/bin/claude")
+    monkeypatch.setattr(ai, "_opencode_down_until", 0.0)
+
+    def run(command, **kwargs):
+        name = "claude" if command[0] == "/bin/claude" else "opencode"
+        calls.append((name, command, kwargs))
+        reply = claude if name == "claude" else opencode
+        if reply == "timeout":
+            raise subprocess.TimeoutExpired(command, 1)
+        if reply is None:
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="boom")
+        if name == "claude":
+            out = json.dumps({"type": "result", "is_error": False, "result": reply})
+        else:
+            out = json.dumps({"type": "text", "part": {"text": reply}})
+        return subprocess.CompletedProcess(command, 0, stdout=out + "\n", stderr="")
+
+    monkeypatch.setattr(ai.subprocess, "run", run)
+    return calls
+
+
+def test_opencode_answers_first_when_it_works(monkeypatch):
+    calls = _fake_cli(monkeypatch, opencode="from opencode", claude="from claude")
+    assert ai.ask("hi") == "from opencode"
+    assert [c[0] for c in calls] == ["opencode"]
+
+
+def test_claude_takes_over_when_opencode_times_out_and_stays_on_for_a_while(monkeypatch):
+    calls = _fake_cli(monkeypatch, opencode="timeout", claude="from claude")
+    assert ai.ask("first") == "from claude"
+    assert ai.ask("second") == "from claude"
+    # One timeout costs minutes, so the second call does not wait on OpenCode again.
+    assert [c[0] for c in calls] == ["opencode", "claude", "claude"]
+
+
+def test_claude_runs_with_no_tools_no_settings_and_no_session(monkeypatch):
+    calls = _fake_cli(monkeypatch, opencode=None, claude="ok")
+    ai.ask("hi")
+    command, kwargs = calls[-1][1], calls[-1][2]
+    tools = command[command.index("--tools") + 1]
+    assert tools == "" and "--strict-mcp-config" in command and "--safe-mode" in command
+    assert "--no-session-persistence" in command and "--system-prompt" in command
+    assert kwargs["cwd"] != os.getcwd() and kwargs["env"]["PWD"] == kwargs["cwd"]
+
+
+def test_images_go_to_claude_inside_the_message(monkeypatch, tmp_path):
+    frame = tmp_path / "frame.jpg"
+    frame.write_bytes(b"\xff\xd8 jpeg bytes")
+    calls = _fake_cli(monkeypatch, opencode=None, claude="seen")
+    assert ai.ask("what is this?", files=[str(frame)]) == "seen"
+    message = json.loads(calls[-1][2]["input"])
+    image, text = message["message"]["content"]
+    assert image["source"]["media_type"] == "image/jpeg" and image["source"]["data"]
+    assert text == {"type": "text", "text": "what is this?"}
+    assert str(frame) not in " ".join(calls[-1][1])  # never a path Claude would have to open
+
+
+def test_a_claude_error_result_counts_as_no_answer(monkeypatch):
+    _fake_cli(monkeypatch, opencode=None, claude="x")
+    monkeypatch.setattr(ai.subprocess, "run", lambda command, **k: subprocess.CompletedProcess(
+        command, 0, stdout=json.dumps({"type": "result", "is_error": True, "result": "rate limited"}) + "\n", stderr=""))
+    assert ai.ask("hi") is None
+
+
+def test_no_claude_fallback_when_switched_off(monkeypatch):
+    monkeypatch.setattr(settings, "claude_fallback", False)
+    assert ai.claude_path() is None
+
+
+def test_music_is_picked_from_the_owners_folder_and_stays_the_same_per_clip(tmp_path, monkeypatch):
+    from app.clipper import music
+
+    monkeypatch.setattr(settings, "clip_music_dir", str(tmp_path))
+    assert music.pick("clip-1") is None  # an empty folder means no music, not an error
+    for name in ("a.mp3", "b.m4a", "notes.txt"):
+        (tmp_path / name).write_bytes(b"x")
+    assert {p.name for p in music.library()} == {"a.mp3", "b.m4a"}
+    assert music.pick("clip-1") == music.pick("clip-1")
+    monkeypatch.setattr(settings, "clip_music", False)
+    assert music.pick("clip-1") is None
+
+
+def test_music_credit_comes_from_a_note_beside_the_track(tmp_path):
+    from app.clipper import music
+
+    track = tmp_path / "song.mp3"
+    track.write_bytes(b"x")
+    assert music.credit(track) == ""
+    (tmp_path / "song.txt").write_text("Music: Song by Someone (CC BY 4.0)\n")
+    assert music.credit(track) == "Music: Song by Someone (CC BY 4.0)"
+
+
+def test_music_is_ducked_under_the_voice_and_mixed_with_the_effects():
+    plan = render.plan_clip(Moment(10, 40), [], _signals(), INFO, has_graphics=True)
+    plan.music, plan.has_sfx = "/music/bed.mp3", True
+    graph = render.build_filtergraph(plan, INFO, 0.0)
+    assert "sidechaincompress" in graph and "[bed][vkey]" in graph
+    assert "[vmix][2:a][ducked]amix=inputs=3" in graph
+    plan.music = ""
+    assert "sidechaincompress" not in render.build_filtergraph(plan, INFO, 0.0)
+
+
+def test_a_source_with_its_own_captions_gets_none_of_ours(tmp_path, monkeypatch):
+    from app.clipper import subtitles
+
+    seen = {}
+    monkeypatch.setattr(subtitles, "already_captioned", lambda path, info: True)
+    _talking_pipeline(monkeypatch, {})
+    real = job.render_moment
+
+    def spy(*args, **kwargs):
+        seen["captions"] = kwargs.get("captions")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(job, "render_moment", spy)
+    result = job.clip_source(_source(tmp_path, "captioned"), auto_queue=True)
+    assert seen["captions"] is False
+    assert any("already has captions" in w for w in result["warnings"])
+
+
+def test_the_caption_check_reads_the_ai_reply(monkeypatch):
+    from app.clipper import subtitles
+
+    monkeypatch.setattr(subtitles.ai, "available", lambda: True)
+    monkeypatch.setattr(subtitles, "run_ffmpeg", lambda args: open(args[-1], "wb").write(b"jpg"))
+    for reply, expected in (({"captions": True}, True), ({"captions": False}, False), (None, False), ({"captions": "yes"}, False)):
+        monkeypatch.setattr(subtitles.ai, "ask_json", lambda *a, r=reply, **k: r)
+        assert subtitles.already_captioned("x.mp4", INFO) is expected
+
+
+def test_without_ai_nothing_counts_as_captioned(monkeypatch):
+    from app.clipper import subtitles
+
+    monkeypatch.setattr(subtitles.ai, "available", lambda: False)
+    assert subtitles.already_captioned("x.mp4", INFO) is False
+
+
+def test_captions_off_drops_our_words_but_keeps_the_hook(tmp_path):
+    words = [Word("hello", 1.0, 1.4), Word("there", 1.5, 2.0)]
+    from app.clipper.captions import build_ass
+    assert ",Caption,," in build_ass(words, "Hook", 5.0, "Arial")
+    assert ",Caption,," not in build_ass([], "Hook", 5.0, "Arial") and ",Hook,," in build_ass([], "Hook", 5.0, "Arial")

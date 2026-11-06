@@ -507,3 +507,135 @@ def test_audio_stays_locked_to_video_after_jump_cuts(tmp_path):
     close = [abs(offset) for offset in offsets if abs(offset) < 0.5]
     assert len(close) >= 5
     assert max(close) < 0.06
+
+
+@pytest.mark.parametrize("recipe, speed", [
+    ({"pace": "tight", "sfx": "off", "broll": "off"}, 1.18),
+    ({"pace": "relaxed", "sfx": "on", "broll": "on"}, 1.0),
+])
+def test_growth_recipe_reaches_the_render_and_is_recorded(landscape, tmp_path, monkeypatch, recipe, speed):
+    from app.growth import recipes
+    from app.db import session_scope
+    from app.models import Video
+
+    monkeypatch.setattr(settings, "content_dir", str(tmp_path))
+    monkeypatch.setattr(ai, "ask", lambda *a, **k: None)
+    monkeypatch.setattr(job, "transcribe", lambda path, info: Transcript(words=_speech_words(start=1.0, repeat=2), language="en", duration=40.0))
+    monkeypatch.setattr(recipes, "choose", lambda: dict(recipe))
+    seen = {}
+    real_render = job.render_moment
+
+    def spy(*args, **kwargs):
+        seen["sfx"] = settings.clip_sfx
+        plan = real_render(*args, **kwargs)
+        seen["speed"] = plan.speed
+        return plan
+
+    monkeypatch.setattr(job, "render_moment", spy)
+    before = settings.clip_speed
+    source_id = f"recipe-{recipe['pace']}"
+    result = job.clip_source(SourceVideo(path=landscape, title="Lesson", source="local", source_id=source_id, url="x"), count=1)
+    assert result["ok"] and result["kind"] == "speech"
+    assert seen == {"sfx": recipe["sfx"] == "on", "speed": speed}
+    assert settings.clip_speed == before
+    _assert_valid(result["clips"][0]["path"], result["clips"][0]["duration"])
+    with session_scope() as db:
+        recorded = db.get(Video, result["clips"][0]["id"]).meta["growth_recipe"]
+    assert recorded["pace"] == recipe["pace"] and recorded["broll"] == "off"  # no stock key in tests
+
+
+def test_creator_credit_is_really_on_screen(landscape, tmp_path):
+    info = probe(landscape)
+    signals = analyse(landscape, info)
+    moment = Moment(5.0, 20.0, kind="visual")
+    plain, credited = tmp_path / "plain.mp4", tmp_path / "credited.mp4"
+    render_moment(landscape, info, signals, moment, [], str(plain))
+    render_moment(landscape, info, signals, moment, [], str(credited), creator="Some Creator")
+
+    def band(path):
+        raw = read_ffmpeg(["-ss", "3", "-i", str(path), "-frames:v", "1", "-vf", "crop=1080:80:0:1440",
+                           "-f", "rawvideo", "-pix_fmt", "gray", "-"])
+        return np.frombuffer(raw, dtype=np.uint8).astype(int)
+
+    assert np.abs(band(credited) - band(plain)).mean() > 2
+
+
+def _striped_source(path, seconds=25):
+    """Red left edge, blue right edge: both are on screen only if the width is uncropped."""
+    run_args = ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", f"color=c=0x808080:s=1280x720:d={seconds}:r=30",
+                "-vf", "drawbox=x=0:y=0:w=64:h=720:color=red:t=fill,drawbox=x=1216:y=0:w=64:h=720:color=blue:t=fill",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", str(path)]
+    subprocess.run(run_args, check=True)
+
+
+def _rgb_frame(path, when):
+    raw = read_ffmpeg(["-ss", str(when), "-i", str(path), "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+    return np.frombuffer(raw, np.uint8).reshape(1920, 1080, 3).astype(int)
+
+
+def test_framed_clip_shows_the_whole_picture_over_a_dimmer_copy(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "clip_layout", "framed")
+    source = tmp_path / "striped.mp4"
+    _striped_source(source)
+    info = probe(str(source))
+    out = tmp_path / "out.mp4"
+    plan = render_moment(str(source), info, analyse(str(source), info), Moment(5.0, 20.0, kind="visual"), [], str(out))
+    assert plan.picture_height == 608
+    _assert_valid(str(out), plan.duration, audio=False)
+    frame = _rgb_frame(out, 5)
+    middle = frame[960]
+    assert middle[10][0] > 150 and middle[10][2] < 100, "the left edge of the picture is cropped"
+    assert middle[1070][2] > 150 and middle[1070][0] < 100, "the right edge of the picture is cropped"
+    assert middle[540].mean() - frame[300, 540].mean() > 25, "the backdrop should be dimmer than the picture"
+    assert abs(frame[300, 540].mean() - frame[1700, 540].mean()) < 5, "both bands should match"
+
+
+def test_framed_clip_with_full_edit_and_branding_renders_in_sync(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "clip_layout", "framed")
+    monkeypatch.setattr(settings, "brand_name", "@MyChannel")
+    source = tmp_path / "flash.mp4"
+    _flash_and_beep_source(source)
+    info = probe(str(source))
+    words, now = [], 4.05
+    while now < 36:
+        words.append(Word("word,", now, now + 0.5, 0.99))
+        now += 0.6
+    segments = timeline.edit_segments(words, list(range(len(words))), 0.12)
+    edit = EditPlan(words=words, segments=segments, speed=1.12, beats=[
+        Beat(words[10].start, "40°C", STAT, "RECORD"), Beat(words[20].start, "", PUNCH), Beat(words[30].start, "BIG TURN", CARD),
+    ])
+    out = tmp_path / "out.mp4"
+    plan = render_moment(str(source), info, analyse(str(source), info), Moment(4.0, 36.0, hook="Heat kills", kind="speech"),
+                         words, str(out), edit=edit, creator="Some Creator")
+    assert plan.picture_height == 608 and plan.has_sfx
+    _assert_valid(str(out), plan.duration)
+
+
+def test_framed_speaker_focus_keeps_the_speaker_and_crops_the_far_side(tmp_path, monkeypatch):
+    from app.clipper import render as render_module
+
+    monkeypatch.setattr(settings, "clip_layout", "framed")
+    monkeypatch.setattr(render_module, "speaker_position", lambda *a: (0.95, 0.5))
+    source = tmp_path / "striped.mp4"
+    _striped_source(source)
+    info = probe(str(source))
+    words = [Word("word,", 5.0 + i * 0.6, 5.5 + i * 0.6, 0.99) for i in range(20)]
+    out = tmp_path / "out.mp4"
+    plan = render_moment(str(source), info, analyse(str(source), info), Moment(5.0, 17.0, kind="speech"), words, str(out))
+    assert plan.focus_x_expr
+    middle = _rgb_frame(out, 3)[960]
+    assert middle[1070][2] > 150, "the speaker's side should stay in the picture"
+    assert not (middle[10][0] > 150 and middle[10][2] < 100), "the far side should be cropped away"
+
+
+
+def test_music_bed_renders_under_the_voice(landscape, tmp_path):
+    bed = tmp_path / "bed.mp3"
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "sine=f=220:d=4", "-c:a", "libmp3lame", str(bed)],
+                   check=True)
+    info = probe(landscape)
+    out = tmp_path / "out.mp4"
+    plan = render_moment(landscape, info, analyse(landscape, info), Moment(5.0, 20.0, kind="visual"), [], str(out),
+                         music=str(bed))
+    assert plan.music
+    _assert_valid(str(out), plan.duration)  # a 4-second track loops to fill the clip

@@ -319,10 +319,22 @@ def clip_queue_job() -> dict:
     return run_queue()
 
 
+def _recover_stuck_publishes() -> None:
+    try:
+        from tasks.pipeline import recover_stuck_publishes
+        recover_stuck_publishes()
+    except Exception as exc:
+        log.warning("publish recovery failed: %s", exc)
+
+
 def publish_job() -> dict:
     """Auto-publish next TRANSFORMED video with jittered pacing (anti-spam)."""
     if not settings.enable_publish:
         return {"skipped": "publishing disabled (enable_publish=false)"}
+    if settings.growth_enabled:
+        return {"skipped": "the growth loop owns publishing"}
+    # A claim is held for hours and the startup sweep has passed by then. This is the only later look with the loop off.
+    _recover_stuck_publishes()
     if not settings.auto_publish:
         return {"skipped": "auto_publish disabled"}
     import random
@@ -338,15 +350,16 @@ def publish_job() -> dict:
             if quota.remaining(db) <= 0:
                 return {"skipped": "quota exhausted"}
 
-            v = db.execute(
+            ready = db.execute(
                 select(Video)
                 .where(Video.status == VideoStatus.TRANSFORMED)
                 .order_by(Video.transformed_at)
-                .limit(1)
-            ).scalar_one_or_none()
+            ).scalars().all()
 
-            if v is None:
+            if not ready:
                 return {"skipped": "no transformed videos ready"}
+            from tasks.pipeline import least_failed
+            v = least_failed(ready)[0]
 
             today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
             todays = db.execute(select(Video.id).where(Video.status == VideoStatus.PUBLISHED, Video.published_at >= today_start)).scalars().all()
@@ -584,6 +597,26 @@ def recompute_scores_job() -> dict:
         return {"error": str(e)}
 
 
+def growth_autopilot_job() -> dict:
+    from .growth.autopilot import autopilot_job
+    return autopilot_job()
+
+
+def growth_collect_job() -> dict:
+    from .growth.collect import collect_job
+    return collect_job()
+
+
+def growth_learn_job() -> dict:
+    from .growth.learn import learn_job
+    return learn_job()
+
+
+def growth_supply_job() -> dict:
+    from .growth.supply import supply_job
+    return supply_job()
+
+
 # ---------- Job registry ----------
 # The single source of truth for job ids. Both _make_scheduler() and the
 # POST /scheduler/run/{job_id} endpoint read this, so the two can never drift.
@@ -597,6 +630,10 @@ JOB_FUNCTIONS: dict[str, "callable"] = {
     "clip_queue": clip_queue_job,
     "recompute": recompute_scores_job,
     "analytics_pull": analytics_pull_job,
+    "growth_autopilot": growth_autopilot_job,
+    "growth_collect": growth_collect_job,
+    "growth_learn": growth_learn_job,
+    "growth_supply": growth_supply_job,
 }
 
 
@@ -645,7 +682,9 @@ def _make_scheduler() -> BackgroundScheduler:
 
     now = datetime.now(timezone.utc)
 
-    sched.add_job(instrumented("scrape", scrape_job), IntervalTrigger(hours=settings.scrape_interval_hours), id="scrape", next_run_time=now + timedelta(seconds=10), max_instances=1, coalesce=True, replace_existing=True)
+    # The growth loop posts finished clips only, so scraped stock would just fill the disk.
+    if not settings.growth_enabled:
+        sched.add_job(instrumented("scrape", scrape_job), IntervalTrigger(hours=settings.scrape_interval_hours), id="scrape", next_run_time=now + timedelta(seconds=10), max_instances=1, coalesce=True, replace_existing=True)
     if settings.auto_discovery:
         sched.add_job(instrumented("discovery", discovery_job), IntervalTrigger(hours=settings.discovery_interval_hours), id="discovery", next_run_time=now + timedelta(minutes=2), max_instances=1, coalesce=True, replace_existing=True)
     sched.add_job(instrumented("auto_approve", auto_approve_job), IntervalTrigger(minutes=15), id="auto_approve", next_run_time=now + timedelta(minutes=1), max_instances=1, coalesce=True, replace_existing=True)
@@ -656,7 +695,14 @@ def _make_scheduler() -> BackgroundScheduler:
     sched.add_job(instrumented("cleanup", cleanup_job), IntervalTrigger(hours=24), id="cleanup", next_run_time=now + timedelta(hours=1), max_instances=1, coalesce=True, replace_existing=True)
     sched.add_job(instrumented("clip_queue", clip_queue_job), IntervalTrigger(minutes=5), id="clip_queue", next_run_time=now + timedelta(minutes=1), max_instances=1, coalesce=True, replace_existing=True)
     sched.add_job(instrumented("recompute", recompute_scores_job), IntervalTrigger(hours=1), id="recompute", next_run_time=now + timedelta(minutes=4), max_instances=1, coalesce=True, replace_existing=True)
-    sched.add_job(instrumented("analytics_pull", analytics_pull_job), IntervalTrigger(hours=6), id="analytics_pull", next_run_time=now + timedelta(minutes=10), max_instances=1, coalesce=True, replace_existing=True)
+    if settings.growth_enabled:
+        for job_id, every, first in (("growth_autopilot", timedelta(minutes=10), timedelta(minutes=2)),
+                                     ("growth_collect", timedelta(hours=3), timedelta(minutes=6)),
+                                     ("growth_learn", timedelta(hours=6), timedelta(minutes=8)),
+                                     ("growth_supply", timedelta(hours=1), timedelta(minutes=1))):
+            sched.add_job(instrumented(job_id, JOB_FUNCTIONS[job_id]), IntervalTrigger(seconds=int(every.total_seconds())), id=job_id, next_run_time=now + first, max_instances=1, coalesce=True, replace_existing=True)
+    else:
+        sched.add_job(instrumented("analytics_pull", analytics_pull_job), IntervalTrigger(hours=6), id="analytics_pull", next_run_time=now + timedelta(minutes=10), max_instances=1, coalesce=True, replace_existing=True)
     return sched
 
 
@@ -676,6 +722,10 @@ def _job_intervals() -> dict[str, timedelta]:
         "clip_queue": timedelta(minutes=5),
         "recompute": timedelta(hours=1),
         "analytics_pull": timedelta(hours=6),
+        "growth_autopilot": timedelta(minutes=10),
+        "growth_collect": timedelta(hours=3),
+        "growth_learn": timedelta(hours=6),
+        "growth_supply": timedelta(hours=1),
     }
 
 
@@ -691,6 +741,10 @@ def overdue_jobs(now: datetime | None = None) -> list[str]:
     stale: list[str] = []
     for job_id, interval in _job_intervals().items():
         if job_id not in JOB_FUNCTIONS:
+            continue
+        # Only catch up on what this mode schedules.
+        if (job_id.startswith("growth_") and not settings.growth_enabled) or (
+                job_id in ("scrape", "analytics_pull") and settings.growth_enabled):
             continue
         last = history.get(job_id)
         if last is None:
@@ -729,6 +783,9 @@ def start_scheduler() -> BackgroundScheduler:
         _scheduler = None
 
     init_db()
+
+    # Rows a crash left mid-upload get settled before anything can post again.
+    _recover_stuck_publishes()
 
     sched = _make_scheduler()
     sched.start()

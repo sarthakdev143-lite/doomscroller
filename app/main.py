@@ -207,6 +207,21 @@ def get_quota(db: Session = Depends(get_db)) -> QuotaOut:
     return QuotaOut(**snap)
 
 
+# ==================== Growth loop ====================
+@app.get("/growth/report", response_model=dict)
+def growth_report() -> dict:
+    """What the loop has tested, what it found, and what it is doing next."""
+    from .growth.report import build_report
+    return build_report()
+
+
+@app.get("/growth/doctor", response_model=dict)
+def growth_doctor(live: bool = False) -> dict:
+    """Whether the loop can really run: token, scopes, privacy, stock. Live also asks Google and reads every feed."""
+    from .growth.report import doctor
+    return doctor(live=live)
+
+
 # ==================== Autonomous scheduler endpoints ====================
 @app.get("/scheduler/jobs", response_model=dict)
 def list_jobs() -> dict:

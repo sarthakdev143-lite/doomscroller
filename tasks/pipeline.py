@@ -5,27 +5,32 @@ running, `*_async` variants enqueue. Otherwise, call the function directly.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import tempfile
-from datetime import datetime, timezone
+import time
+import unicodedata
+from datetime import datetime, timedelta, timezone
+from typing import Optional, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app import analytics
 from app.analytics import recompute_scores
 from app.config import settings
 from app.db import session_scope
-from app.models import Creator, MetadataDraft, TransformJob, Video, VideoStatus
+from app.models import Creator, GrowthEvent, MetadataDraft, TransformJob, Video, VideoStatus
 from app.publishers import get_publisher
+from app.publishers.base import TokenProblem, UploadOutcomeUnknown
 from app.scrapers import get_scraper
 from app.scrapers.base import ScrapedItem
 from app.transformers import get_transformer
 from app.transformers.ffmpeg_transformer import recipe_from_dict
 from app.transformers.variation import plan_variation
 from app import discovery, quota
-from app.metadata import generate_metadata, GeneratedMetadata
+from app.metadata import generate_metadata, GeneratedMetadata, youtube_description, youtube_title
 
 log = logging.getLogger(__name__)
 
@@ -85,7 +90,8 @@ def channel_focus_reason(item: ScrapedItem) -> str | None:
     if languages:
         language = (item.language or "").lower()
         if not language:
-            if not settings.allow_unknown_language:
+            # A rendered clip has no language when it has no speech to judge, which is not the missing data this guards.
+            if not settings.allow_unknown_language and not (item.meta or {}).get("clip_rendered"):
                 return "language: unknown"
         elif language not in languages:
             return f"language: {language}"
@@ -257,6 +263,17 @@ def _item_view(video: Video) -> ScrapedItem:
         height=video.height or 0,
         meta=dict(video.meta or {}),
     )
+
+
+def clip_gate_reason(video: Video) -> str | None:
+    """Asked when a clip is saved and again before it is uploaded.
+
+    The source's words count, as the clip's may not repeat them. So does the opening line, as a title can quote it.
+    """
+    item = _item_view(video)
+    meta = video.meta or {}
+    item.title = f"{meta.get('clip_source_text', '')} {meta.get('clip_opening_line', '')} {item.title}"
+    return content_safety_reason(item) or channel_focus_reason(item)
 
 
 def apply_queue_filters(dry_run: bool = False) -> dict:
@@ -764,15 +781,17 @@ def long_to_shorts_task(video_id: str) -> dict:
 
 
 # ---------- Publish ----------
-# Substrings that mark a failure as *our configuration*, not the video. These
-# must leave the video in TRANSFORMED so it publishes on the next attempt once
-# credentials are in place -- marking it FAILED would silently drop content.
+# Substrings that mark a failure as *our configuration*, not the video, for
+# callers holding only a message. publish_task has the exception itself and uses
+# classify_publish_error.
 _RETRYABLE_ERROR_MARKERS = (
     "token missing",
     "token refresh failed",
     "oauth not configured",
     "client libs not installed",
     "quota",
+    "uploadlimitexceeded",
+    "insufficient",
     "ratelimitexceeded",
     "backenderror",
     "internalservererror",
@@ -789,6 +808,133 @@ def _is_retryable_publish_error(message: str) -> bool:
     return any(marker in lowered for marker in _RETRYABLE_ERROR_MARKERS)
 
 
+# YouTube's own words for "this account cannot upload", whatever the HTTP status says.
+_ACCOUNT_REASONS = frozenset({
+    "accessnotconfigured", "youtubesignuprequired", "forbidden",
+    "quotaexceeded", "dailylimitexceeded", "uploadlimitexceeded",
+})
+# The only failures that say the video itself is bad. Anything else keeps the clip.
+_VIDEO_REASONS = frozenset({
+    "invalidtitle", "invaliddescription", "invalidtags", "invalidfilename",
+    "invalidvideometadata", "mediabodyrequired",
+})
+
+
+def _http_reasons(exc) -> set[str]:
+    try:
+        error = json.loads(exc.content)["error"]
+        entries = (error.get("errors") or []) + (error.get("details") or [])
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return set()
+    return {str(e["reason"]).lower() for e in entries if isinstance(e, dict) and e.get("reason")}
+
+
+def classify_publish_error(exc: BaseException) -> dict:
+    """What a failed upload means. FAILED is final, so it takes YouTube naming a fault in the video."""
+    try:
+        from googleapiclient.errors import HttpError
+    except ImportError:  # pragma: no cover
+        HttpError = ()
+    if not isinstance(exc, HttpError):
+        return {"retryable": True, "account_level": isinstance(exc, TokenProblem)}
+    status, reasons = exc.resp.status, _http_reasons(exc)
+    account = status in (401, 403) or bool(reasons & _ACCOUNT_REASONS)
+    video_fault = bool(reasons & _VIDEO_REASONS) and status < 500 and status != 429
+    return {"retryable": account or not video_fault, "account_level": account}
+
+
+def _publish_failures(video: Video) -> int:
+    return (video.meta or {}).get("publish_failures", 0)
+
+
+def least_failed(videos: Sequence[Video]) -> list[Video]:
+    """Only YouTube naming a fault makes a clip FAILED, so a clip that keeps failing has to go behind the others instead."""
+    fewest = min(map(_publish_failures, videos), default=0)
+    return [v for v in videos if _publish_failures(v) == fewest]
+
+
+def count_publish_failure(video_pk: str) -> None:
+    """For a failure that never reached the publisher, so a clip that keeps raising still goes behind the others."""
+    with session_scope() as db:
+        video = db.get(Video, video_pk)
+        video.meta = {**(video.meta or {}), "publish_failures": _publish_failures(video) + 1}
+
+
+def _publish_failed(video_pk: str, exc: Exception) -> dict:
+    message = str(exc)
+    verdict = classify_publish_error(exc)
+    unknown = isinstance(exc, UploadOutcomeUnknown)
+    log.error(
+        "publish failed for %s (%s): %s",
+        video_pk[:8], "channel check pending" if unknown else "will retry" if verdict["retryable"] else "permanent", message,
+    )
+    if not verdict["retryable"]:
+        log.debug("publish traceback", exc_info=True)
+    try:
+        with session_scope() as db:
+            video = db.get(Video, video_pk)
+            if video is not None:
+                # The clip may be live, so it keeps its claim until recover_stuck_publishes has checked the channel.
+                if not unknown:
+                    # Roll back to TRANSFORMED so the scheduler picks it up again.
+                    video.status = (
+                        VideoStatus.TRANSFORMED if verdict["retryable"] else VideoStatus.FAILED
+                    )
+                video.error = f"publish: {message}"
+                if not verdict["account_level"]:
+                    video.meta = {**(video.meta or {}), "publish_failures": _publish_failures(video) + 1}
+    except Exception as write_error:
+        # The row keeps its claim, so recover_stuck_publishes settles it later.
+        log.error("publish: could not record the failure of %s: %s", video_pk[:8], write_error)
+    return {"ok": False, "error": message, **verdict, **({"retry": True} if unknown else {})}
+
+
+_RECORD_ATTEMPTS = 3
+
+
+def _record_upload(video_pk: str, youtube_id: str) -> bool:
+    """The video is live now, so the one thing that must not be lost is its id."""
+    for attempt in range(1, _RECORD_ATTEMPTS + 1):
+        try:
+            with session_scope() as db:
+                video = db.get(Video, video_pk)
+                if video is None:
+                    log.error("publish: video %s vanished; it is live as youtube %s", video_pk, youtube_id)
+                    return False
+                video.youtube_video_id = youtube_id
+                video.status = VideoStatus.PUBLISHED
+                video.published_at = datetime.now(timezone.utc)
+            return True
+        except Exception as exc:
+            log.warning("publish: recording %s failed (attempt %d): %s", video_pk[:8], attempt, exc)
+            if attempt < _RECORD_ATTEMPTS:
+                time.sleep(attempt)
+    log.error("publish: video %s is live as youtube %s but could not be recorded", video_pk, youtube_id)
+    return False
+
+
+def _settle_upload(video_pk: str, *, count_quota: bool = True) -> None:
+    """Bookkeeping for a live video. Separate transactions, so one failing cannot undo the other or the status."""
+    if count_quota:
+        try:
+            with session_scope() as db:
+                quota.consume_one(db, note=f"video {video_pk}")
+        except Exception as exc:
+            log.warning("publish: quota not counted for %s: %s", video_pk[:8], exc)
+    try:
+        with session_scope() as db:
+            video = db.get(Video, video_pk)
+            # Reward the creator whose video made it all the way through.
+            if video is not None and video.author:
+                discovery.boost_creator(db, video.source, video.author, amount=1.0)
+    except Exception as exc:
+        log.warning("publish: creator not boosted for %s: %s", video_pk[:8], exc)
+
+
+def _claim_lost(status: VideoStatus) -> dict:
+    return {"ok": False, "retryable": True, "retry": True, "error": f"cannot publish from status={status.value}"}
+
+
 def publish_task(video_id: str, meta: dict | None = None) -> dict:
     """Upload a transformed video to YouTube."""
     if not settings.enable_publish:
@@ -801,6 +947,8 @@ def publish_task(video_id: str, meta: dict | None = None) -> dict:
             return {"ok": False, "error": "video not found"}
         if not video.transformed_path:
             return {"ok": False, "error": "video not transformed yet"}
+        if video.status != VideoStatus.TRANSFORMED:
+            return _claim_lost(video.status)
         if not os.path.exists(video.transformed_path):
             video.status = VideoStatus.FAILED
             video.error = "publish: transformed file missing from disk"
@@ -808,8 +956,16 @@ def publish_task(video_id: str, meta: dict | None = None) -> dict:
         if quota.remaining(db) <= 0:
             return {"ok": False, "error": "daily quota exhausted"}
 
-        video.status = VideoStatus.PUBLISHING
-        video.error = None
+        # The read above may be stale by now: only this UPDATE decides who uploads.
+        claimed = db.execute(
+            update(Video)
+            .where(Video.id == video_id, Video.status == VideoStatus.TRANSFORMED)
+            .values(status=VideoStatus.PUBLISHING, error=None)
+            .execution_options(synchronize_session=False)
+        ).rowcount
+        db.refresh(video)
+        if not claimed:
+            return _claim_lost(video.status)
         video_pk = video.id
         file_path = video.transformed_path
 
@@ -824,7 +980,10 @@ def publish_task(video_id: str, meta: dict | None = None) -> dict:
             title = meta.get("title") or f"{video.title} #Shorts".strip()
             description = meta.get("description") or video.description or ""
             tags = meta.get("tags") or settings.tags_list
+        title, description = youtube_title(title), youtube_description(description)
         privacy = meta.get("privacy") or settings.youtube_default_privacy
+        video.meta = {**(video.meta or {}), "publish_claimed_at": datetime.now(timezone.utc).isoformat(),
+                      "publish_title": title}
 
     try:
         result = get_publisher().upload(
@@ -833,36 +992,164 @@ def publish_task(video_id: str, meta: dict | None = None) -> dict:
             category=settings.youtube_default_category,
             privacy=privacy,
         )
-        with session_scope() as db:
-            video = db.get(Video, video_pk)
-            video.youtube_video_id = result.video_id
-            video.status = VideoStatus.PUBLISHED
-            video.published_at = datetime.now(timezone.utc)
-            quota.consume_one(db, note=f"video {video_pk}")
-            # Reward the creator whose video made it all the way through.
-            if video.author:
-                discovery.boost_creator(db, video.source, video.author, amount=1.0)
-        log.info("publish: %s -> youtube %s", video_pk[:8], result.video_id)
-        return {"ok": True, "video_id": video_pk, "youtube_id": result.video_id}
-
     except Exception as exc:
-        message = str(exc)
-        retryable = _is_retryable_publish_error(message)
-        log.error(
-            "publish failed for %s (%s): %s",
-            video_pk[:8], "will retry" if retryable else "permanent", message,
-        )
-        if not retryable:
-            log.debug("publish traceback", exc_info=True)
-        with session_scope() as db:
-            video = db.get(Video, video_pk)
-            if video is not None:
-                # Roll back to TRANSFORMED so the scheduler picks it up again.
-                video.status = (
-                    VideoStatus.TRANSFORMED if retryable else VideoStatus.FAILED
-                )
-                video.error = f"publish: {message}"
-        return {"ok": False, "error": message, "retryable": retryable}
+        return _publish_failed(video_pk, exc)
+
+    # Past this point the video is live, so nothing below may be treated as an upload failure.
+    log.info("publish: %s -> youtube %s", video_pk[:8], result.video_id)
+    if not _record_upload(video_pk, result.video_id):
+        return {"ok": True, "video_id": video_pk, "youtube_id": result.video_id, "recorded": False}
+    _settle_upload(video_pk)
+    return {"ok": True, "video_id": video_pk, "youtube_id": result.video_id}
+
+
+# ---------- Stuck publishes ----------
+PUBLISH_CLAIM_TTL = timedelta(hours=2)
+_CLOCK_SKEW = timedelta(minutes=10)
+_CLAIM_META = ("publish_claimed_at", "publish_title", "publish_stuck_noted")
+_RELEASED = "An upload that stopped midway never reached the channel, so the clip went back on the shelf."
+
+
+def _claimed_at(video: Video) -> Optional[datetime]:
+    try:
+        claimed = datetime.fromisoformat((video.meta or {})["publish_claimed_at"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return claimed if claimed.tzinfo else claimed.replace(tzinfo=timezone.utc)
+
+
+def publish_claim_is_stale(video: Video, now: datetime) -> bool:
+    """A row with no stamp predates claims, so it cannot be an upload this process is still running."""
+    claimed = _claimed_at(video)
+    return claimed is None or now - claimed >= PUBLISH_CLAIM_TTL
+
+
+def _title_key(title: str) -> str:
+    return unicodedata.normalize("NFKC", " ".join(title.split())).casefold()
+
+
+def _sent_title(db: Session, video: Video) -> Optional[str]:
+    """What the upload was called. Rows from before claims have to go by what it would have been."""
+    meta = video.meta or {}
+    title = meta.get("publish_title") or meta.get("growth_title")
+    if not title:
+        draft = db.execute(select(MetadataDraft).where(MetadataDraft.video_id == video.id)).scalar_one_or_none()
+        title = (draft.title if draft else None) or (f"{video.title} #Shorts" if video.title else None)
+    return youtube_title(title) if title else None
+
+
+def _settle_stuck(video_id: str, status: VideoStatus, summary: str, **values) -> bool:
+    with session_scope() as db:
+        settled = db.execute(
+            update(Video).where(Video.id == video_id, Video.status == VideoStatus.PUBLISHING)
+            .values(status=status, **values).execution_options(synchronize_session=False)
+        ).rowcount
+        if not settled:
+            return False
+        video = db.get(Video, video_id)
+        db.refresh(video)
+        video.meta = {k: v for k, v in (video.meta or {}).items() if k not in _CLAIM_META}
+        db.add(GrowthEvent(kind="publish_recovered", video_id=video_id, summary=summary))
+    return True
+
+
+def _note_stuck_once(video_id: str, reason: str) -> None:
+    """This retries every tick, and one line in the log of events is enough."""
+    with session_scope() as db:
+        video = db.get(Video, video_id)
+        if video is None or (video.meta or {}).get("publish_stuck_noted"):
+            return
+        video.meta = {**(video.meta or {}), "publish_stuck_noted": True}
+        db.add(GrowthEvent(kind="publish_stuck", video_id=video_id, data={"reason": reason},
+                           summary=f"An upload stopped midway and could not be checked yet: {reason}"))
+
+
+def _uploads_for(stuck: list[dict]) -> list[dict]:
+    """Raises if there is no way to tell, which is different from the video not being there."""
+    from app.growth.youtube import get_insights
+
+    insights = get_insights()
+    if insights is None:
+        raise RuntimeError("no YouTube client to check the channel with")
+    claims = [row["claimed"] for row in stuck]
+    return insights.uploads_since(None if None in claims else min(claims) - _CLOCK_SKEW)
+
+
+def _matching_upload(row: dict, uploads: list[dict], taken: set[str]) -> Optional[dict]:
+    for upload in uploads:
+        if upload["id"] in taken or _title_key(upload["title"]) != _title_key(row["title"]):
+            continue
+        # Same title from before the claim means an older video, not this one.
+        when = upload.get("published_at")
+        if row["claimed"] is None or when is None or when >= row["claimed"] - _CLOCK_SKEW:
+            return upload
+    return None
+
+
+def _fill_planned_post(video_id: str, sent_at: datetime) -> None:
+    if not settings.growth_enabled:
+        return
+    from app.growth.autopilot import fill_post
+
+    try:
+        fill_post(video_id, sent_at)
+    except Exception as exc:
+        log.warning("publish recovery: could not update the plan for %s: %s", video_id[:8], exc)
+
+
+def _publish_recovered(row: dict, upload: dict, now: datetime) -> bool:
+    published_at = upload.get("published_at") or now
+    summary = f"An upload that stopped midway turned out to be live as {upload['id']}."
+    if not _settle_stuck(row["id"], VideoStatus.PUBLISHED, summary, error=None,
+                         youtube_video_id=upload["id"], published_at=published_at):
+        return False
+    # The cap is per day, so an upload from an earlier day has nothing to count against.
+    _settle_upload(row["id"], count_quota=published_at.date() == datetime.now(timezone.utc).date())
+    _fill_planned_post(row["id"], row["claimed"] or published_at)
+    return True
+
+
+def recover_stuck_publishes(now: Optional[datetime] = None) -> dict:
+    """Settle rows left in PUBLISHING by a crash. YouTube may have the file, so they are never just re-uploaded."""
+    now = now or datetime.now(timezone.utc)
+    out = {"published": 0, "released": 0, "left": 0}
+    with session_scope() as db:
+        rows = db.execute(select(Video).where(Video.status == VideoStatus.PUBLISHING)).scalars().all()
+        stale = [v for v in rows if publish_claim_is_stale(v, now)]
+        stuck = [{"id": v.id, "claimed": _claimed_at(v), "title": _sent_title(db, v),
+                  "mock": (v.youtube_video_id or "").startswith("MOCK_")} for v in stale]
+        taken = set(db.execute(select(Video.youtube_video_id).where(Video.youtube_video_id.isnot(None))).scalars())
+
+    lookups = []
+    for row in stuck:
+        # Nothing real can have gone out under a fake publisher, so there is nothing to look for.
+        if settings.use_mock or row["mock"]:
+            out["released"] += _settle_stuck(row["id"], VideoStatus.TRANSFORMED, _RELEASED, youtube_video_id=None)
+        elif row["title"]:
+            lookups.append(row)
+        else:
+            _note_stuck_once(row["id"], "nothing recorded to search the channel for")
+            out["left"] += 1
+    if not lookups:
+        return out
+
+    try:
+        uploads = _uploads_for(lookups)
+    except Exception as exc:
+        log.warning("publish recovery: could not read the channel's uploads: %s", exc)
+        for row in lookups:
+            _note_stuck_once(row["id"], str(exc))
+            out["left"] += 1
+        return out
+
+    for row in lookups:
+        upload = _matching_upload(row, uploads, taken)
+        if upload:
+            taken.add(upload["id"])
+            out["published"] += _publish_recovered(row, upload, now)
+        else:
+            out["released"] += _settle_stuck(row["id"], VideoStatus.TRANSFORMED, _RELEASED)
+    return out
 
 
 # ---------- Mock input helper ----------
