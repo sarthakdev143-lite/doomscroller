@@ -163,9 +163,14 @@ class Settings(BaseSettings):
     deepgram_model: str = "nova-3"
     # Empty means PATH, then ~/.opencode/bin/opencode.
     opencode_bin: str = ""
-    opencode_model: str = "opencode-go/deepseek-v4.1-flash"
+    # Chosen by the owner for every call. It reads images too.
+    opencode_model: str = "opencode-go/muse-spark-1.3-contributor"
     # Must accept images: it judges frames from no-speech footage.
-    opencode_vision_model: str = "opencode-go/gemini-4-argon"
+    opencode_vision_model: str = "opencode-go/muse-spark-1.3-contributor"
+    # When OpenCode fails, the Claude CLI takes the call, on the account it is logged in to.
+    claude_fallback: bool = True
+    claude_bin: str = ""
+    claude_model: str = "sonnet"
 
     # YouTube
     youtube_client_secrets: str = ""
@@ -283,7 +288,7 @@ class Settings(BaseSettings):
         "auto_discovery", "auto_approve", "allow_unknown_language",
         "transform_variation", "caption_enabled", "end_card_enabled",
         "upscale_sharpen", "clip_auto_queue", "clip_sfx", "clip_broll",
-        "youtube_made_for_kids", mode="before",
+        "youtube_made_for_kids", "claude_fallback", mode="before",
     )
     @classmethod
     def _coerce_bool(cls, v):

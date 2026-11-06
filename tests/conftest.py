@@ -16,3 +16,8 @@ os.environ["PIXABAY_API_KEY"] = ""
 os.environ["PEXELS_API_KEY"] = ""
 os.environ["DEEPGRAM_API_KEY"] = ""
 os.environ["OPENCODE_BIN"] = "definitely-not-installed"
+os.environ["CLAUDE_BIN"] = "definitely-not-installed"
+# Nor use the owner's YouTube login.
+os.environ["COOKIES_FILE"] = ""
+# Most clipper tests cover the cropped layout. Framed ones ask for it themselves.
+os.environ["CLIP_LAYOUT"] = "fill"
