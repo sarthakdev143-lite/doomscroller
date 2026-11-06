@@ -31,6 +31,8 @@ def clean(monkeypatch):
         for table in (VideoSnapshot, MetadataDraft, GrowthEvent, GrowthState, ClipJob, QuotaUsage, Video):
             db.execute(delete(table))
     monkeypatch.setattr(settings, "growth_enabled", True)
+    # Most of these tests are about the unattended loop. The approval tests switch it back on.
+    monkeypatch.setattr(settings, "growth_require_approval", False)
     monkeypatch.setattr(settings, "growth_timezone", "UTC")
     monkeypatch.setattr(settings, "enable_publish", True)
 
@@ -4975,3 +4977,163 @@ def test_live_doctor_does_not_blame_google_when_saving_the_token_fails(monkeypat
     monkeypatch.setattr(youtube_publisher, "write_token_file", full_disk)
     check = live_checks(monkeypatch, Insights(token_publisher))["token refresh"]
     assert check["ok"] is False and "could not reach Google" not in check["detail"] and "No space" in check["detail"]
+
+
+# ---------- owner approval and the review page ----------
+def test_in_approval_mode_supply_cuts_into_review_not_onto_the_shelf(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "growth_require_approval", True)
+    monkeypatch.setattr(supply, "next_source", lambda unread=None: ("https://example.com/v", "https://example.com/feed"))
+    supply.supply_job()
+    with session_scope() as db:
+        job = db.execute(select(ClipJob)).scalars().all()[-1]
+        assert job.auto_queue is False
+
+
+def test_clips_awaiting_review_count_as_stock(tmp_path, monkeypatch):
+    from app.growth import approval
+
+    monkeypatch.setattr(settings, "growth_require_approval", True)
+    monkeypatch.setattr(settings, "growth_min_inventory", 1)
+    path = tmp_path / "c.mp4"
+    path.write_bytes(b"x")
+    make_clip(path, 1, status=VideoStatus.PENDING)
+    with session_scope() as db:
+        assert len(approval.awaiting_review(db)) == 1
+    assert "queued" not in supply.supply_job()
+
+
+def test_approving_puts_a_clip_on_the_shelf_with_the_owners_title(tmp_path):
+    from app.growth import approval
+
+    path = tmp_path / "c.mp4"
+    path.write_bytes(b"x")
+    video_id = make_clip(path, 1, status=VideoStatus.PENDING)
+    approval.approve(video_id, "  My  own title ")
+    with session_scope() as db:
+        video = db.get(Video, video_id)
+        draft = db.execute(select(MetadataDraft).where(MetadataDraft.video_id == video_id)).scalar_one()
+        assert video.status == VideoStatus.TRANSFORMED and video.curated_at is not None
+        assert draft.edited and draft.title.startswith("My own title")
+        assert autopilot.ready_clips(db)[0].id == video_id
+
+
+def test_a_clip_can_be_decided_only_once(tmp_path):
+    from app.growth import approval
+
+    path = tmp_path / "c.mp4"
+    path.write_bytes(b"x")
+    video_id = make_clip(path, 1, status=VideoStatus.PENDING)
+    approval.reject(video_id)
+    with pytest.raises(approval.ReviewError):
+        approval.approve(video_id)
+
+
+def test_review_page_is_shut_without_a_token_and_locked_without_the_key(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.review import review_app
+
+    client = TestClient(review_app)
+    monkeypatch.setattr(settings, "review_token", "")
+    assert client.get("/api/queue").status_code == 503
+    monkeypatch.setattr(settings, "review_token", "s3cret-token")
+    assert client.get("/api/queue").status_code == 401
+    assert client.get("/?key=wrong", follow_redirects=False).status_code == 401
+    assert client.post("/api/clips/x/approve", json={}).status_code == 401
+
+
+def test_review_page_signs_in_once_and_approves(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.review import review_app
+
+    monkeypatch.setattr(settings, "review_token", "s3cret-token")
+    path = tmp_path / "c.mp4"
+    path.write_bytes(b"0123456789" * 100)
+    video_id = make_clip(path, 1, status=VideoStatus.PENDING)
+    client = TestClient(review_app)
+    assert client.get("/?key=s3cret-token", follow_redirects=False).status_code == 303
+    queue = client.get("/api/queue").json()
+    assert [c["id"] for c in queue["clips"]] == [video_id]
+    part = client.get(f"/media/{video_id}", headers={"Range": "bytes=0-9"})
+    assert part.status_code == 206 and part.content == b"0123456789"  # phones seek through video with ranges
+    assert client.post(f"/api/clips/{video_id}/approve", json={"title": ""}).json()["status"] == "transformed"
+    assert client.get("/api/queue").json()["clips"] == []
+
+
+def test_review_page_shows_real_posts_with_their_results(tmp_path):
+    from app.growth import approval
+
+    published_clip(tmp_path / "a.mp4", 1, 500, retention=0.62)
+    mock = published_clip(tmp_path / "b.mp4", 2, 5)
+    with session_scope() as db:
+        db.get(Video, mock).youtube_video_id = "MOCK_x"
+        real = db.execute(select(Video).where(Video.youtube_video_id == "yt1")).scalar_one()
+        real.meta = {**real.meta, "growth_diagnosis": {"code": "winner", "reason": "Well above normal."}}
+    posted = approval.queue()["posted"]
+    assert [p["url"] for p in posted] == ["https://youtube.com/shorts/yt1"]
+    assert posted[0]["watched"] == 62 and posted[0]["verdict"] == "winner"
+
+
+# ---------- phone alerts ----------
+def test_alerts_stay_off_until_a_channel_is_set(monkeypatch):
+    from app.growth import notify
+
+    monkeypatch.setattr(settings, "ntfy_topic", "")
+    monkeypatch.setattr(settings, "telegram_bot_token", "")
+    assert "skipped" in notify.notify_job()
+
+
+def test_alert_digest_names_new_clips_posts_and_problems(tmp_path, monkeypatch):
+    from app.growth import notify
+
+    since = START - timedelta(minutes=1)
+    path = tmp_path / "c.mp4"
+    path.write_bytes(b"x")
+    make_clip(path, 1, status=VideoStatus.PENDING)
+    posted = published_clip(tmp_path / "p.mp4", 2, 10)
+    with session_scope() as db:
+        for video in db.execute(select(Video)).scalars():
+            video.scraped_at = START
+        db.add(GrowthEvent(kind="posted", video_id=posted, created_at=START))
+        db.add(GrowthEvent(kind="paused", summary="Posting paused after a copyright claim", created_at=START))
+        db.add(GrowthEvent(kind="plan", summary="routine", created_at=START))
+    with session_scope() as db:  # saved first, as the jobs that write events have
+        lines = notify.digest(db, since)
+    assert lines[0].startswith("1 new clip waiting")
+    assert any(l.startswith("Posted:") and "youtube.com/shorts/yt2" in l for l in lines), lines
+    assert any("copyright claim" in l for l in lines) and not any("routine" in l for l in lines)
+
+
+def test_alerts_send_once_and_retry_when_delivery_fails(tmp_path, monkeypatch):
+    from app.growth import notify
+
+    monkeypatch.setattr(settings, "ntfy_topic", "test-topic")
+    sent = []
+    monkeypatch.setattr(notify, "send", lambda text, **k: sent.append(text) or True)
+    assert notify.notify_job(now=START)["sent"] == 0  # the first run only sets the clock
+    path = tmp_path / "c.mp4"
+    path.write_bytes(b"x")
+    video_id = make_clip(path, 1, status=VideoStatus.PENDING)
+    with session_scope() as db:
+        db.get(Video, video_id).scraped_at = START + timedelta(minutes=5)
+    monkeypatch.setattr(notify, "send", lambda text, **k: False)
+    assert "error" in notify.notify_job(now=START + timedelta(minutes=10))
+    monkeypatch.setattr(notify, "send", lambda text, **k: sent.append(text) or True)
+    assert notify.notify_job(now=START + timedelta(minutes=20))["sent"] == 1
+    assert notify.notify_job(now=START + timedelta(minutes=30))["sent"] == 0
+
+
+def test_telegram_failures_never_log_the_bot_token(monkeypatch, caplog):
+    from app.growth import notify
+    import httpx
+
+    monkeypatch.setattr(settings, "ntfy_topic", "")
+    monkeypatch.setattr(settings, "telegram_bot_token", "123:SECRET")
+    monkeypatch.setattr(settings, "telegram_chat_id", "42")
+
+    def boom(url, **kwargs):
+        raise httpx.ConnectError(f"failed to reach {url}")
+
+    monkeypatch.setattr(notify.httpx, "post", boom)
+    with caplog.at_level("WARNING"):
+        assert notify.send("hi") is False
+    assert "SECRET" not in caplog.text

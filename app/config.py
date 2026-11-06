@@ -16,7 +16,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=str(PROJECT_ROOT / ".env"),
+        # Tests set DOOMSCROLLER_ENV_FILE to empty, so the owner's .env can never change a result.
+        env_file=os.environ.get("DOOMSCROLLER_ENV_FILE", str(PROJECT_ROOT / ".env")) or None,
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -217,6 +218,15 @@ class Settings(BaseSettings):
     growth_feeds: str = '[]'
     # Video files dropped here are cut into clips. Empty means <CONTENT_DIR>/inbox.
     growth_inbox_dir: str = ""
+    # Every clip waits for the owner's approval on the review page before it can be posted.
+    growth_require_approval: bool = True
+    # Password for the review page, which can be reached from a phone. Empty keeps the page shut.
+    review_token: str = ""
+    # Phone alerts. ntfy needs only the app and a hard-to-guess topic; Telegram needs a bot.
+    ntfy_topic: str = ""
+    ntfy_server: str = "https://ntfy.sh"
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
 
     # LLM
     use_llm_metadata: bool = True
@@ -333,7 +343,7 @@ class Settings(BaseSettings):
         "auto_discovery", "auto_approve", "allow_unknown_language",
         "transform_variation", "caption_enabled", "end_card_enabled",
         "upscale_sharpen", "clip_auto_queue", "clip_sfx", "clip_broll", "clip_music",
-        "growth_enabled", "youtube_made_for_kids", "claude_fallback", mode="before",
+        "growth_enabled", "youtube_made_for_kids", "claude_fallback", "growth_require_approval", mode="before",
     )
     @classmethod
     def _coerce_bool(cls, v):

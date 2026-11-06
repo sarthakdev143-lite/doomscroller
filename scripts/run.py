@@ -45,16 +45,26 @@ IS_WINDOWS = os.name == "nt"
 
 API_PORT = int(os.environ.get("DOOMSCROLLER_API_PORT", "8000"))
 DASHBOARD_PORT = int(os.environ.get("DOOMSCROLLER_DASHBOARD_PORT", "8501"))
+REVIEW_PORT = int(os.environ.get("DOOMSCROLLER_REVIEW_PORT", "8600"))
+# The API and dashboard have no login, so they listen on this machine only. Reach them from
+# elsewhere through a tunnel; the review page has its own login and is the one meant for that.
+HOST = os.environ.get("DOOMSCROLLER_HOST", "127.0.0.1")
 
 API_CMD = [
     PYTHON, "-m", "uvicorn", "app.main:app",
-    "--host", "0.0.0.0", "--port", str(API_PORT),
+    "--host", HOST, "--port", str(API_PORT),
 ]
 DASHBOARD_CMD = [
     PYTHON, "-m", "streamlit", "run", "dashboard/app.py",
     "--server.port", str(DASHBOARD_PORT),
+    "--server.address", HOST,
     "--server.headless", "true",
 ]
+REVIEW_CMD = [
+    PYTHON, "-m", "uvicorn", "app.review:review_app",
+    "--host", HOST, "--port", str(REVIEW_PORT),
+]
+PORTS = (("API", API_PORT), ("Dashboard", DASHBOARD_PORT), ("Review", REVIEW_PORT))
 
 
 # ---------------------------------------------------------------------------
@@ -159,7 +169,7 @@ def _status() -> int:
             print(f"{name:<10} running (PID {pid})")
     else:
         print("Not running.")
-    for label, port in (("API", API_PORT), ("Dashboard", DASHBOARD_PORT)):
+    for label, port in PORTS:
         print(f"{label:<10} port {port}: {'listening' if _port_in_use(port) else 'free'}")
     return 0 if alive else 1
 
@@ -198,7 +208,7 @@ def _start(daemon: bool) -> int:
     if alive:
         print(f"Already running: {alive}. Stop it first with --stop.")
         return 1
-    for label, port in (("API", API_PORT), ("Dashboard", DASHBOARD_PORT)):
+    for label, port in PORTS:
         if _port_in_use(port):
             print(f"[ERROR] {label} port {port} is already in use.")
             return 1
@@ -209,26 +219,30 @@ def _start(daemon: bool) -> int:
         api = _spawn(API_CMD, api_log)
         time.sleep(2)  # let the API bind before the dashboard calls it
         dashboard = _spawn(DASHBOARD_CMD, dash_log)
-        _write_pids({"api": api.pid, "dashboard": dashboard.pid})
+        review = _spawn(REVIEW_CMD, LOG_DIR / "review.log")
+        _write_pids({"api": api.pid, "dashboard": dashboard.pid, "review": review.pid})
         print(f"API:       http://localhost:{API_PORT}  (PID {api.pid})")
         print(f"Dashboard: http://localhost:{DASHBOARD_PORT}  (PID {dashboard.pid})")
+        print(f"Review:    http://localhost:{REVIEW_PORT}  (PID {review.pid})")
         print("Stop with: python scripts/run.py --stop")
         return 0
 
     print("Starting Doomscroller in foreground. Press Ctrl+C to stop.")
     print(f"API:       http://localhost:{API_PORT}")
     print(f"Dashboard: http://localhost:{DASHBOARD_PORT}")
+    print(f"Review:    http://localhost:{REVIEW_PORT}")
     print("-" * 60)
 
     api = subprocess.Popen(API_CMD, cwd=PROJECT_ROOT)
     time.sleep(2)
     dashboard = subprocess.Popen(DASHBOARD_CMD, cwd=PROJECT_ROOT)
-    _write_pids({"api": api.pid, "dashboard": dashboard.pid})
+    review = subprocess.Popen(REVIEW_CMD, cwd=PROJECT_ROOT)
+    _write_pids({"api": api.pid, "dashboard": dashboard.pid, "review": review.pid})
 
     try:
         # Exit as soon as either child dies, so a crash is visible immediately.
         while True:
-            for name, proc in (("API", api), ("dashboard", dashboard)):
+            for name, proc in (("API", api), ("dashboard", dashboard), ("review", review)):
                 code = proc.poll()
                 if code is not None:
                     print(f"\n[{name}] exited with code {code}; shutting down.")
@@ -237,7 +251,7 @@ def _start(daemon: bool) -> int:
     except KeyboardInterrupt:
         print("\nShutting down...")
     finally:
-        for proc in (dashboard, api):
+        for proc in (review, dashboard, api):
             try:
                 proc.terminate()
                 proc.wait(timeout=5)

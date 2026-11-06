@@ -612,6 +612,11 @@ def growth_learn_job() -> dict:
     return learn_job()
 
 
+def growth_notify_job() -> dict:
+    from .growth.notify import notify_job
+    return notify_job()
+
+
 def growth_supply_job() -> dict:
     from .growth.supply import supply_job
     return supply_job()
@@ -634,6 +639,7 @@ JOB_FUNCTIONS: dict[str, "callable"] = {
     "growth_collect": growth_collect_job,
     "growth_learn": growth_learn_job,
     "growth_supply": growth_supply_job,
+    "growth_notify": growth_notify_job,
 }
 
 
@@ -699,7 +705,8 @@ def _make_scheduler() -> BackgroundScheduler:
         for job_id, every, first in (("growth_autopilot", timedelta(minutes=10), timedelta(minutes=2)),
                                      ("growth_collect", timedelta(hours=3), timedelta(minutes=6)),
                                      ("growth_learn", timedelta(hours=6), timedelta(minutes=8)),
-                                     ("growth_supply", timedelta(hours=1), timedelta(minutes=1))):
+                                     ("growth_supply", timedelta(hours=1), timedelta(minutes=1)),
+                                     ("growth_notify", timedelta(minutes=10), timedelta(minutes=3))):
             sched.add_job(instrumented(job_id, JOB_FUNCTIONS[job_id]), IntervalTrigger(seconds=int(every.total_seconds())), id=job_id, next_run_time=now + first, max_instances=1, coalesce=True, replace_existing=True)
     else:
         sched.add_job(instrumented("analytics_pull", analytics_pull_job), IntervalTrigger(hours=6), id="analytics_pull", next_run_time=now + timedelta(minutes=10), max_instances=1, coalesce=True, replace_existing=True)
@@ -726,6 +733,7 @@ def _job_intervals() -> dict[str, timedelta]:
         "growth_collect": timedelta(hours=3),
         "growth_learn": timedelta(hours=6),
         "growth_supply": timedelta(hours=1),
+        "growth_notify": timedelta(minutes=10),
     }
 
 
