@@ -593,7 +593,7 @@ def _talk():
 
 def test_edit_keeps_the_chosen_sentences_and_speeds_up(monkeypatch):
     from app.clipper.edit import build_edit
-    _edit_reply(monkeypatch, {"keep": [0, 2, 4, 6, 8, 10], "beats": []})
+    _edit_reply(monkeypatch, {"keep": [0, 2, 3, 4, 6, 7, 8, 10], "beats": []})
     words = _talk()
     edit = build_edit(Moment(10.0, words[-1].end), words)
     assert len(edit.words) < len(words)
@@ -1337,7 +1337,7 @@ def test_broll_that_will_not_render_costs_only_the_broll(tmp_path, monkeypatch):
     original = job.render_moment
     calls = []
 
-    def fussy(src, info, signals, moment, words, out_path, edit=None, creator="", music=None, captions=True):
+    def fussy(src, info, signals, moment, words, out_path, edit=None, creator="", music=None, captions=True, source_captioned=False):
         calls.append(bool(edit.cutaways))
         if edit.cutaways:
             raise job.MediaError("moov atom not found")
@@ -1464,7 +1464,7 @@ def test_edit_plan_changes_the_graph(monkeypatch):
                     beats=[Beat(14.5, "", "punch")], speed=1.12)
     plan = render.plan_clip(Moment(10, 40), [], _signals(), INFO, has_graphics=True, edit=edit)
     graph = render.build_filtergraph(plan, INFO, 1.0)
-    assert plan.duration == pytest.approx(4.0 / 1.12)
+    assert plan.duration == pytest.approx((4.0 + render._END_HOLD) / 1.12, abs=0.05)  # plus the closing beat
     assert "setpts=PTS/1.12" in graph and "atempo=1.12" in graph
     assert "[2:a]amix" in graph and "drawbox=x=0:y=0" in graph and "sin(t*75)" in graph
 
@@ -1954,7 +1954,7 @@ def _stub_pipeline(monkeypatch, moment_list=None):
     monkeypatch.setattr(job, "analyse", lambda path, info: _signals())
     monkeypatch.setattr(job, "pick_visual", lambda *a, **k: list(moment_list or [Moment(10, 40, title="Clip one", ai_title=True, kind="visual")]))
 
-    def fake_render(src, info, signals, moment, words, out_path, edit=None, creator="", music=None, captions=True):
+    def fake_render(src, info, signals, moment, words, out_path, edit=None, creator="", music=None, captions=True, source_captioned=False):
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         Path(out_path).write_bytes(b"v" * 2000)
         return render.ClipPlan([(moment.start, moment.end)], moment.duration, True, 404, "0", False, "1", False)
@@ -2131,7 +2131,7 @@ def test_too_little_speech_falls_back_to_visual_with_captions(tmp_path, monkeypa
     used = {}
     original = job.render_moment
 
-    def spy(src, info, signals, moment, words, out_path, edit=None, creator="", music=None, captions=True):
+    def spy(src, info, signals, moment, words, out_path, edit=None, creator="", music=None, captions=True, source_captioned=False):
         used["words"] = len(words)
         return original(src, info, signals, moment, words, out_path, edit=edit)
 
@@ -2157,7 +2157,7 @@ def test_unexpected_error_on_one_clip_keeps_the_others(tmp_path, monkeypatch):
                                  Moment(80, 110, title="C", kind="visual")])
     original = job.render_moment
 
-    def flaky(src, info, signals, moment, words, out_path, edit=None, creator="", music=None, captions=True):
+    def flaky(src, info, signals, moment, words, out_path, edit=None, creator="", music=None, captions=True, source_captioned=False):
         if moment.title == "B":
             raise OSError("disk trouble")
         return original(src, info, signals, moment, words, out_path, edit=edit)
@@ -2251,7 +2251,7 @@ def test_one_bad_clip_does_not_lose_the_rest(tmp_path, monkeypatch):
     _stub_pipeline(monkeypatch, [Moment(10, 40, title="Bad", kind="visual"), Moment(50, 80, title="Good", kind="visual")])
     original = job.render_moment
 
-    def flaky(src, info, signals, moment, words, out_path, edit=None, creator="", music=None, captions=True):
+    def flaky(src, info, signals, moment, words, out_path, edit=None, creator="", music=None, captions=True, source_captioned=False):
         if moment.title == "Bad":
             raise job.MediaError("boom")
         return original(src, info, signals, moment, words, out_path, edit=edit)
@@ -3063,7 +3063,7 @@ def _talking_pipeline(monkeypatch, recipe=None, *, audio=True):
     monkeypatch.setattr(ai, "ask_json", lambda *a, **k: None)
     monkeypatch.setattr(job.recipes, "choose", lambda: dict(recipe or {}))
 
-    def fake_render(src, info, signals, moment, words, out_path, edit=None, creator="", music=None, captions=True):
+    def fake_render(src, info, signals, moment, words, out_path, edit=None, creator="", music=None, captions=True, source_captioned=False):
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         Path(out_path).write_bytes(b"v" * 2000)
         return render.ClipPlan([(moment.start, moment.end)], moment.duration, True, 404, "0", False, "1", False,
@@ -3311,7 +3311,7 @@ def test_the_source_creator_reaches_the_render(tmp_path, monkeypatch):
     monkeypatch.setattr(job, "analyse", lambda path, info: None)
     monkeypatch.setattr(job, "pick_visual", lambda *a, **k: [moments.Moment(10, 40, title="Clip", kind="visual")])
 
-    def fake_render(src, info, signals, moment, words, out_path, edit=None, creator="", music=None, captions=True):
+    def fake_render(src, info, signals, moment, words, out_path, edit=None, creator="", music=None, captions=True, source_captioned=False):
         seen["creator"] = creator
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         Path(out_path).write_bytes(b"v" * 2000)
@@ -3468,7 +3468,7 @@ def test_music_is_ducked_under_the_voice_and_mixed_with_the_effects():
     assert "sidechaincompress" not in render.build_filtergraph(plan, INFO, 0.0)
 
 
-def test_a_source_with_its_own_captions_gets_none_of_ours(tmp_path, monkeypatch):
+def test_a_source_with_its_own_captions_is_marked_for_the_render(tmp_path, monkeypatch):
     from app.clipper import subtitles
 
     seen = {}
@@ -3477,13 +3477,13 @@ def test_a_source_with_its_own_captions_gets_none_of_ours(tmp_path, monkeypatch)
     real = job.render_moment
 
     def spy(*args, **kwargs):
-        seen["captions"] = kwargs.get("captions")
+        seen["captions"] = kwargs.get("source_captioned")
         return real(*args, **kwargs)
 
     monkeypatch.setattr(job, "render_moment", spy)
     result = job.clip_source(_source(tmp_path, "captioned"), auto_queue=True)
-    assert seen["captions"] is False
-    assert any("already has captions" in w for w in result["warnings"])
+    assert seen["captions"] is True
+    assert any("burns in its own captions" in w for w in result["warnings"])
 
 
 def test_the_caption_check_reads_the_ai_reply(monkeypatch):
@@ -3508,3 +3508,68 @@ def test_captions_off_drops_our_words_but_keeps_the_hook(tmp_path):
     from app.clipper.captions import build_ass
     assert ",Caption,," in build_ass(words, "Hook", 5.0, "Arial")
     assert ",Caption,," not in build_ass([], "Hook", 5.0, "Arial") and ",Hook,," in build_ass([], "Hook", 5.0, "Arial")
+
+
+def test_edit_never_drops_the_ending(monkeypatch):
+    from app.clipper.edit import build_edit
+    _edit_reply(monkeypatch, {"keep": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10], "beats": []})
+    words = _talk()
+    edit = build_edit(Moment(10.0, words[-1].end), words)
+    assert edit.words[-1] == words[-1]
+
+
+def test_an_edit_that_cuts_half_the_story_is_refused(monkeypatch):
+    from app.clipper.edit import build_edit
+    _edit_reply(monkeypatch, {"keep": [0, 2, 4, 6, 8, 10], "beats": []})
+    words = _talk()
+    assert len(build_edit(Moment(10.0, words[-1].end), words).words) == len(words)
+
+
+def test_payoff_pass_extends_a_clip_that_stops_on_its_setup(monkeypatch):
+    replies = iter([
+        {"clips": [{"first": 2, "last": 4, "title": "Title", "score": 90}]},
+        {"clips": [{"clip": 0, "last": 7}]},
+    ])
+    monkeypatch.setattr(ai, "ask_json", lambda *a, **k: next(replies))
+    words = _long_transcript()
+    sentences = moments.build_sentences(words)
+    picked = moments.pick_speech(words, _signals(300), count=1)
+    assert picked[0].end >= sentences[7].end - 0.01
+
+
+def test_payoff_pass_keeps_the_ending_and_drops_early_setup_when_too_long(monkeypatch):
+    monkeypatch.setattr(settings, "clip_max_sec", 25)
+    replies = iter([
+        {"clips": [{"first": 0, "last": 3, "title": "Title", "score": 90}]},
+        {"clips": [{"clip": 0, "last": 9}]},
+    ])
+    monkeypatch.setattr(ai, "ask_json", lambda *a, **k: next(replies))
+    words = _long_transcript()
+    sentences = moments.build_sentences(words)
+    picked = moments.pick_speech(words, _signals(300), count=1)
+    assert picked[0].end >= sentences[9].end - 0.01 and picked[0].start > sentences[0].start
+
+
+@pytest.mark.parametrize("answer", [{"clips": [{"clip": 0, "last": 1}]}, {"clips": [{"clip": "x", "last": 1e999}]},
+                                    {"clips": [{"clip": 0, "last": 999}]}])
+def test_payoff_pass_ignores_answers_it_cannot_use(monkeypatch, answer):
+    def pick(second):
+        replies = iter([{"clips": [{"first": 2, "last": 4, "title": "Title", "score": 90}]}, second])
+        monkeypatch.setattr(ai, "ask_json", lambda *a, **k: next(replies))
+        return moments.pick_speech(_long_transcript(), _signals(300), count=1)
+
+    assert [(m.start, m.end) for m in pick(answer)] == [(m.start, m.end) for m in pick(None)]
+
+
+def test_source_captions_are_cropped_out_of_the_framed_picture(monkeypatch):
+    monkeypatch.setattr(settings, "clip_layout", "framed")
+    plan = render.plan_clip(Moment(10, 40), [], _signals(), INFO, has_graphics=True, crop_bottom=0.2)
+    assert plan.picture_height == round(1080 * 720 * 0.8 / 1280 / 2) * 2
+    assert "crop=iw:trunc(ih*0.8/2)*2:0:0" in render.build_filtergraph(plan, INFO, 0.0)
+
+
+def test_the_last_segment_runs_on_past_the_final_word():
+    held = render.with_end_hold([(1.0, 2.0), (3.0, 4.0)], 100.0)
+    assert held[0] == (1.0, 2.0) and held[1][1] > 4.0
+    assert render.with_end_hold([(3.0, 4.0)], 4.1)[0][1] <= 4.1  # never past the end of the source
+

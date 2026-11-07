@@ -13,7 +13,7 @@ log = logging.getLogger(__name__)
 SLOTS = ("00-04", "04-08", "08-12", "12-16", "16-20", "20-24")
 TITLE_STYLES = ("plain", "question", "curiosity", "quote")
 # name -> (speed, seconds of speech the edit aims for)
-PACES = {"tight": (1.18, 22), "normal": (1.12, 28), "relaxed": (1.0, 38)}
+PACES = {"tight": (1.15, 32), "normal": (1.1, 40), "relaxed": (1.0, 50)}
 SWITCHES = ("on", "off")
 
 # Decided when a clip is rendered. They only apply to speech clips, which are the ones with an edit.

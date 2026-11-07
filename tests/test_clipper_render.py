@@ -510,7 +510,7 @@ def test_audio_stays_locked_to_video_after_jump_cuts(tmp_path):
 
 
 @pytest.mark.parametrize("recipe, speed", [
-    ({"pace": "tight", "sfx": "off", "broll": "off"}, 1.18),
+    ({"pace": "tight", "sfx": "off", "broll": "off"}, 1.15),
     ({"pace": "relaxed", "sfx": "on", "broll": "on"}, 1.0),
 ])
 def test_growth_recipe_reaches_the_render_and_is_recorded(landscape, tmp_path, monkeypatch, recipe, speed):

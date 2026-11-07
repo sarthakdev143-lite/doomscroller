@@ -251,7 +251,7 @@ def test_recipe_applies_only_during_the_render(monkeypatch):
     monkeypatch.setattr(settings, "clip_sfx", True)
     before = settings.clip_speed
     with recipes.applied({"pace": "tight", "sfx": "off", "broll": "off"}):
-        assert settings.clip_speed == 1.18 and settings.clip_sfx is False
+        assert settings.clip_speed == factors.PACES["tight"][0] and settings.clip_sfx is False
     assert settings.clip_speed == before and settings.clip_sfx is True
 
 

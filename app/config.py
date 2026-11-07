@@ -158,7 +158,8 @@ class Settings(BaseSettings):
     # Speech clips: how far to tighten. Speed is pitch-preserved.
     clip_speed: float = 1.12
     clip_edit_gap_sec: float = 0.12
-    clip_edit_target_sec: int = 28
+    # Long enough for a setup and its outcome: shorter targets cut stories off before their payoff.
+    clip_edit_target_sec: int = 40
     clip_sfx: bool = True
     # Music under every clip, from tracks the owner puts in this folder. Empty means <CONTENT_DIR>/music.
     clip_music: bool = True
