@@ -295,6 +295,24 @@ drive it through the `ClipJob` table, so queued work survives a restart.
 Off unless `GROWTH_ENABLED=true`. When on it owns publishing (`publish_job` no-ops), and `scrape` and
 `analytics_pull` are not scheduled. It posts finished clips only (`meta.clip_rendered`), never scraped reposts.
 
+**The owner approves every clip** while `GROWTH_REQUIRE_APPROVAL=true` (the default, and the owner's rule for the first
+month). Supply and winner mining cut into `PENDING`; clips waiting for review count as stock, or supply would keep
+cutting while nobody reviews. `app/review.py` is a separate small server (port 8600, started by `run.py`) with only the
+review routes, so a tunnel to it never exposes the main API. It needs `REVIEW_TOKEN`, given once as `?key=` and then
+kept in a cookie. Approving moves a clip straight to `TRANSFORMED`; a title typed there becomes an edited draft, which
+the autopilot posts as written. `run.py` binds every server to `127.0.0.1` (`DOOMSCROLLER_HOST`): the API and the
+Streamlit dashboard have no login, and this host has a public address. Tests set `DOOMSCROLLER_ENV_FILE` empty so the
+owner's `.env` (which turns real uploads on) never reaches them.
+
+The review page also lists recent real uploads with views, likes, % watched and the loop's diagnosis.
+`growth_notify` (every 10 min) sends one digest to the phone through ntfy (`NTFY_TOPIC`, no account) and/or a
+Telegram bot: new clips waiting, Shorts posted, and problem events. It keeps its clock in `GrowthState["notified"]`
+and only advances it after a delivery, so a failed send is retried. The link it sends carries no key: the phone keeps
+the sign-in cookie, and a notification server should never hold the password. The Telegram token travels in the URL,
+so failures log only the exception type. `scripts/tunnel.py` runs Cloudflare's quick tunnel to port 8600, records the
+changing address in `logs/tunnel_url.txt` and pushes it to the phone; `scripts/install_services.sh` installs it and
+the app as systemd user services that start at boot and restart after a crash.
+
 | job | every | does |
 |-----|-------|------|
 | `growth_supply` | 1h | below `GROWTH_MIN_INVENTORY`, queues a waiting winner's source, else the next unseen inbox file or feed link |

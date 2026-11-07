@@ -20,6 +20,7 @@ from app.models import ClipJob, GrowthEvent
 
 from . import learn, safety
 from .autopilot import ready_clips
+from .approval import awaiting_review
 from .factors import aware
 
 log = logging.getLogger(__name__)
@@ -243,7 +244,8 @@ def supply_job() -> dict:
     if not settings.growth_enabled:
         return {"skipped": "GROWTH_ENABLED is off"}
     with session_scope() as db:
-        stock = len(ready_clips(db))
+        # Clips waiting for the owner count as stock, or supply would keep cutting while they sit unreviewed.
+        stock = len(ready_clips(db)) + (len(awaiting_review(db)) if settings.growth_require_approval else 0)
         active = db.scalar(select(func.count(ClipJob.id)).where(ClipJob.status.in_(("queued", "running")))) or 0
     if stock >= settings.growth_min_inventory:
         return {"stock": stock}
@@ -268,5 +270,6 @@ def supply_job() -> dict:
     with session_scope() as db:
         learn.set_state(db, SUPPLY_GAP, {})
     source, feed = picked
-    job_id = enqueue(source, count=settings.growth_clips_per_source, auto_queue=True, feed=feed)
+    job_id = enqueue(source, count=settings.growth_clips_per_source,
+                     auto_queue=not settings.growth_require_approval, feed=feed)
     return {"stock": stock, "queued": source, "job": job_id}

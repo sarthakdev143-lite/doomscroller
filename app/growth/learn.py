@@ -217,7 +217,8 @@ def _mine_winner(db, result: Result) -> Optional[str]:
     spent = [job for job in mined if job.status != "failed" or (job.result or {}).get("permanent")]
     if len(spent) >= _MAX_MINED_PER_SOURCE:
         return None
-    job = ClipJob(source=result.source_url, count=settings.growth_clips_per_source, auto_queue=True, mined=True)
+    job = ClipJob(source=result.source_url, count=settings.growth_clips_per_source,
+                  auto_queue=not settings.growth_require_approval, mined=True)
     db.add(job)
     db.flush()
     return job.id

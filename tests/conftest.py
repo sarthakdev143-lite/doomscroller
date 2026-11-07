@@ -7,6 +7,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+# Ignore the owner's .env: it turns real uploads and the growth loop on.
+os.environ["DOOMSCROLLER_ENV_FILE"] = ""
+
 # Force in-memory SQLite + mock mode for tests
 os.environ["USE_MOCK"] = "true"
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
