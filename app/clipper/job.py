@@ -259,7 +259,7 @@ def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
         # The source's own captions plus ours would put every word on screen twice.
         burned_in = speech and subtitles.already_captioned(src.path, info)
         if burned_in:
-            warn("the source already has captions on screen, so these clips get none of ours")
+            warn("the source burns in its own captions, so they are cropped out where the layout allows and ours used")
 
         report("analysing")
         signals = analyse(src.path, info)
@@ -325,7 +325,7 @@ def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
                     try:
                         plan = render_moment(src.path, info, signals, moment, words, out_path, edit=edit,
                                              creator=src.author_name or src.author, music=track,
-                                             captions=not burned_in)
+                                             source_captioned=burned_in)
                     except MediaError as exc:
                         if not (edit and edit.cutaways):
                             raise
@@ -334,7 +334,7 @@ def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
                         edit.cutaways = []
                         plan = render_moment(src.path, info, signals, moment, words, out_path, edit=edit,
                                              creator=src.author_name or src.author, music=track,
-                                             captions=not burned_in)
+                                             source_captioned=burned_in)
                 if recipe:
                     # Record what the clip got: no key or no matches means no B-roll, whatever was asked for.
                     recipe["broll"] = "on" if edit and edit.cutaways else "off"

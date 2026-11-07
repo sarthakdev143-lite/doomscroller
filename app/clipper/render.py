@@ -53,6 +53,12 @@ _FOCUS_ZOOM = 1.35
 _FOCUS_STEADY = 0.08
 _FOCUS_MIN_PIECE_SEC = 0.8
 _MUSIC_FADE_IN = 0.8
+# A clip ends a beat after its last word, and the voice fades, instead of stopping on the syllable.
+_END_HOLD = 0.45
+_END_FADE = 0.35
+# The share of a framed picture cut from the bottom when the source burns in its own captions,
+# so ours can replace them instead of doubling them.
+_CAPTION_BAND = 0.2
 _MUSIC_FADE_OUT = 1.5
 _BACKDROP_LOOK = "eq=brightness=-0.22:saturation=0.85"
 # Share of the frame's height the backdrop is drawn from, starting this far down: clear of
@@ -98,6 +104,7 @@ class ClipPlan:
     has_sfx: bool = False
     broll: tuple[tuple[float, float, str, float], ...] = ()  # output time, seconds, path, offset
     picture_height: int = 0  # above zero, the whole picture sits centred over its own backdrop
+    picture_crop_bottom: float = 0.0  # share of the picture's height cut from the bottom
     music: str = ""  # a track looped under the clip, ducked under speech
     focus_x_expr: str = ""  # where the speaker's face is in the picture, 0 to 1, when known
     focus_y_expr: str = ""
@@ -273,11 +280,21 @@ def _needs_side_crop(info: MediaInfo) -> bool:
     return ratio > _TARGET_RATIO + _RATIO_TOLERANCE
 
 
-def _picture_height(info: MediaInfo) -> int:
+def _picture_height(info: MediaInfo, crop_bottom: float = 0.0) -> int:
     """Height of the centred picture, or 0 when this source fills the canvas instead."""
     if settings.clip_layout != "framed" or not _needs_side_crop(info):
         return 0
-    return round(WIDTH * info.height / info.width / 2) * 2
+    return round(WIDTH * info.height * (1 - crop_bottom) / info.width / 2) * 2
+
+
+def with_end_hold(segments: Sequence[Segment], source_duration: float) -> list[Segment]:
+    """Let the last segment run on briefly, so the clip does not stop dead on its final syllable."""
+    held = list(segments)
+    if held:
+        begin, finish = held[-1]
+        limit = source_duration if source_duration > 0 else finish + _END_HOLD
+        held[-1] = (begin, on_grid(min(finish + _END_HOLD, limit)))
+    return held
 
 
 def speaker_pieces(source: str, info: MediaInfo, signals: Signals, moment: Moment, segments: Sequence[Segment],
@@ -313,10 +330,11 @@ def speaker_pieces(source: str, info: MediaInfo, signals: Signals, moment: Momen
 def plan_clip(moment: Moment, words: Sequence[Word], signals: Signals, info: MediaInfo, *,
               has_graphics: bool, exact_cuts: Optional[dict[float, float]] = None,
               faces: Optional[dict[float, float]] = None, edit: Optional[EditPlan] = None,
-              focus: Sequence[tuple[float, float, float]] = ()) -> ClipPlan:
+              focus: Sequence[tuple[float, float, float]] = (), crop_bottom: float = 0.0) -> ClipPlan:
     segments = edit.segments if edit else keep_segments(moment.start, moment.end, words, settings.clip_silence_gap_sec)
+    segments = with_end_hold(segments, info.duration)
     speed = edit.speed if edit else 1.0
-    picture_height = _picture_height(info)
+    picture_height = _picture_height(info, crop_bottom)
     side_crop = _needs_side_crop(info) and not picture_height
     crop_width = int(info.height * _TARGET_RATIO) // 2 * 2 if side_crop else info.width
     use_blur = (side_crop and moment.kind == "visual" and not faces
@@ -350,6 +368,7 @@ def plan_clip(moment: Moment, words: Sequence[Word], signals: Signals, info: Med
         has_sfx=bool(edit) and info.has_audio and settings.clip_sfx,
         broll=_broll_shots(edit) if edit else (),
         picture_height=picture_height,
+        picture_crop_bottom=crop_bottom if picture_height else 0.0,
         focus_x_expr=_piecewise([(t, round(x, 3)) for t, x, _y in focus]) if focus else "",
         focus_y_expr=_piecewise([(t, round(y, 3)) for t, _x, y in focus]) if focus else "",
     )
@@ -365,7 +384,9 @@ def _framing(plan: ClipPlan, info: MediaInfo) -> str:
                 f"[backsrc]crop=iw:ih*{_BACKDROP_KEEP:g}:0:ih*{_BACKDROP_TOP:g},"
                 f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase:flags=fast_bilinear,"
                 f"crop={WIDTH}:{HEIGHT},{_BACKDROP_LOOK}{blur},setsar=1[backdrop];"
-                f"[picsrc]scale={WIDTH}:{plan.picture_height}:flags=lanczos,setsar=1[picture]")
+                + (f"[picsrc]crop=iw:trunc(ih*{1 - plan.picture_crop_bottom:g}/2)*2:0:0," if plan.picture_crop_bottom
+                   else "[picsrc]")
+                + f"scale={WIDTH}:{plan.picture_height}:flags=lanczos,setsar=1[picture]")
     if plan.use_blur_fill:
         return (f"[cut]split=2[bgsrc][fgsrc];"
                 f"[bgsrc]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,"
@@ -455,7 +476,9 @@ def build_filtergraph(plan: ClipPlan, info: MediaInfo, seek: float) -> str:
             parts.append(f"{head}atempo={plan.speed:g}[atempoed]")
             head = "[atempoed]"
         # loudnorm emits large irregular blocks, so renumber them or -t cuts one off.
-        normalised = "loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,asetpts=N/SR/TB"
+        fade_at = max(0.0, plan.duration - _END_FADE)
+        normalised = (f"loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,asetpts=N/SR/TB,"
+                      f"afade=t=out:st={fade_at:.3f}:d={_END_FADE}")
         if plan.music:
             # The voice is levelled first and also keys the ducking, so music drops whenever someone talks.
             music_input = first_input + len(plan.broll)
@@ -534,10 +557,12 @@ def _exact_cuts(source: str, seek: float, span: float, cuts: Sequence[float]) ->
 
 def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment,
                   words: Sequence[Word], out_path: str, edit: Optional[EditPlan] = None, creator: str = "",
-                  music: Optional[str] = None, captions: bool = True) -> ClipPlan:
+                  music: Optional[str] = None, captions: bool = True, source_captioned: bool = False) -> ClipPlan:
     """Write the finished clip to ``out_path`` and return its plan.
 
-    ``captions=False`` leaves out our word captions, for a source that already has its own."""
+    ``source_captioned`` means the footage burns in its own captions. In the framed layout their band is cut
+    from the bottom of the picture and ours replace them; otherwise ours are left out. ``captions=False``
+    always leaves ours out."""
     font = resolve_font(settings.clip_font)
     # Only speech clips close up their pauses; captions apply to either kind.
     cut_on = words if moment.kind == "speech" else []
@@ -549,7 +574,9 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
         segments = keep_segments(moment.start, moment.end, cut_on, settings.clip_silence_gap_sec)
         clip_words = _shift_words(words, segments, moment.start, moment.end)
         beats = []
-    if not captions:
+    segments = with_end_hold(segments, info.duration)
+    crop_bottom = _CAPTION_BAND if source_captioned and _picture_height(info) else 0.0
+    if not captions or (source_captioned and not crop_bottom):
         clip_words = []
     brand = settings.brand_name
     has_text = bool(font) and bool(clip_words or moment.hook or creator or brand)
@@ -571,8 +598,10 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
     if _picture_height(info) and moment.kind == "speech":
         focus = speaker_pieces(os.path.abspath(source), info, signals, moment, segments, edit,
                                edit.speed if edit else 1.0)
+        # Face heights were measured on the whole frame; the picture may have lost its bottom band.
+        focus = [(t, x, min(1.0, y / (1 - crop_bottom))) for t, x, y in focus]
     plan = plan_clip(moment, cut_on, signals, info, has_graphics=has_text, exact_cuts=exact_cuts, faces=faces,
-                     edit=edit, focus=focus)
+                     edit=edit, focus=focus, crop_bottom=crop_bottom)
     if music and info.has_audio:
         plan.music = os.path.abspath(music)
 

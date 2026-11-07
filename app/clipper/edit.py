@@ -46,6 +46,8 @@ _MIN_BEAT_GAP_SEC = 2.5
 _FIRST_BEAT_SEC = 3.0
 _RULE_BEAT_GAP_SEC = 5.0
 _MIN_KEPT_SEC = 12.0
+# Below this share of the moment's speech an edit has usually cut the story, not the padding.
+_MIN_KEPT_SHARE = 0.6
 # Open on the speaker so viewers know whose voice this is, and end on them too.
 _FIRST_CUTAWAY_SEC = 2.5
 _LAST_CUTAWAY_MARGIN_SEC = 1.5
@@ -153,7 +155,7 @@ def _edit_prompt(sentences: Sequence[Sentence], title: str) -> str:
     lines = "\n".join(f"[{s.index}] {s.text}" for s in sentences)
     return f"""You are a short-form video editor cutting one clip from a talk. Make it fast and worth finishing.
 
-Choose which sentences to keep, in order. Cut rambling, repetition, set-up and throat-clearing until about {settings.clip_edit_target_sec} seconds of speech remain, at 2.5 words per second. The first kept sentence must grab attention by itself. The result must still make sense and must not change what the speaker meant.
+Choose which sentences to keep, in order. Cut rambling, repetition, digressions and throat-clearing until about {settings.clip_edit_target_sec} seconds of speech remain, at 2.5 words per second. Keep the setup a viewer needs to follow the story, and always keep its outcome and the final sentence: a clip that stops before its result feels unfinished. The first kept sentence must grab attention by itself. The result must still make sense and must not change what the speaker meant.
 
 Then mark the words that deserve emphasis, at least one every 5 seconds of kept speech, after the first 3 seconds. Styles:
 - "stat": a number from the speech, counted up on screen. Use this whenever a kept sentence says a real number. Add a short "label".
@@ -433,12 +435,17 @@ def build_edit(moment: Moment, words: Sequence[Word], *, title: str = "") -> Edi
         return edit_segments(inside, indices, gap, start=moment.start, end=moment.end)
 
     every_sentence = [s.index for s in sentences]
+    # The ending is the payoff the moment was chosen for, so it survives any edit.
+    if keep and sentences and sentences[-1].index not in keep:
+        keep = [*keep, sentences[-1].index]
     kept = indices_for(keep, drop)
     segments = segments_for(kept)
+    whole = total_duration(segments_for(indices_for(every_sentence, drop)))
     # An edit this short has lost the point, so take back what was cut. The AI's graphics
     # and B-roll still apply: they were chosen from words that are all still here.
-    if total_duration(segments) < _MIN_KEPT_SEC and len(keep) < len(sentences):
-        log.info("edit: AI kept only %.1fs, so keeping all sentences", total_duration(segments))
+    too_short = total_duration(segments) < _MIN_KEPT_SEC or total_duration(segments) < whole * _MIN_KEPT_SHARE
+    if too_short and len(keep) < len(sentences):
+        log.info("edit: AI kept only %.1fs of %.1fs, so keeping all sentences", total_duration(segments), whole)
         kept = indices_for(every_sentence, drop)
         segments = segments_for(kept)
     # A chant is nothing but repeats, so removing them leaves nothing.
