@@ -34,6 +34,16 @@ async def lifespan(app: FastAPI):
     # Must run before anything logs, or app-level INFO is discarded.
     configure_logging()
     init_db()
+    # Reconcile channels.json into the channels/feeds tables on every boot, so editing it and
+    # restarting actually adds/updates/retires a channel (the lazy seed only fires on an empty table).
+    try:
+        from .db import session_scope
+        from .growth import channels
+        with session_scope() as db:
+            channels.sync_channels(db)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("channel sync failed: %s", e)
     # Start autonomous scheduler in background
     try:
         scheduler.start_scheduler()

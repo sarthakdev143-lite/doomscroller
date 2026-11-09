@@ -90,6 +90,19 @@ def test_a_channel_dropped_from_config_is_retired_not_deleted(tmp_path, monkeypa
         assert channels.channel_by_slug(db, "gone").enabled is False
 
 
+def test_adding_a_channel_is_picked_up_by_a_resync_the_app_runs_at_boot(tmp_path, monkeypatch):
+    _write(tmp_path, monkeypatch, {"channels": [{"slug": "tech"}]})
+    with session_scope() as db:
+        assert {c.slug for c in channels.active_channels(db)} == {"tech"}  # first lazy seed
+    _write(tmp_path, monkeypatch, {"channels": [{"slug": "tech"}, {"slug": "comedy"}]})
+    with session_scope() as db:
+        # The lazy seed only fires on an empty table, so reading alone does NOT see the new channel...
+        assert {c.slug for c in channels.active_channels(db)} == {"tech"}
+        # ...the boot-time sync_channels (wired into the app lifespan) reconciles it.
+        channels.sync_channels(db)
+        assert {c.slug for c in channels.active_channels(db)} == {"tech", "comedy"}
+
+
 def test_state_key_namespaces_per_channel(tmp_path, monkeypatch):
     _write(tmp_path, monkeypatch, {"channels": [{"slug": "tech"}, {"slug": "comedy"}]})
     with session_scope() as db:
