@@ -113,7 +113,8 @@ def _untitled_reason(src: SourceVideo, moment: Moment) -> Optional[str]:
 
 def _save_clip(src: SourceVideo, moment: Moment, path: str, duration: float, *, language: str,
                auto_queue: bool, credit: str = "", recipe: Optional[dict] = None,
-               job_id: Optional[str] = None, spoken: str = "") -> tuple[str, VideoStatus]:
+               job_id: Optional[str] = None, spoken: str = "",
+               channel_id: Optional[str] = None) -> tuple[str, VideoStatus]:
     """Record a finished render without undoing anything a person decided."""
     from tasks.pipeline import clip_gate_reason
 
@@ -140,6 +141,8 @@ def _save_clip(src: SourceVideo, moment: Moment, path: str, duration: float, *, 
         elif _rehearsed(video):
             video.youtube_video_id, video.published_at = None, None
         video.source_url = src.url or Path(src.path).name
+        if channel_id:
+            video.channel_id = channel_id
         video.author = src.author
         video.author_name = src.author_name
         video.title = moment.title or src.title or "Clip"
@@ -184,7 +187,7 @@ def _save_clip(src: SourceVideo, moment: Moment, path: str, duration: float, *, 
 
 def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
                 auto_queue: Optional[bool] = None, progress: Optional[Progress] = None,
-                job_id: Optional[str] = None, mine: bool = False) -> dict:
+                job_id: Optional[str] = None, mine: bool = False, channel_id: Optional[str] = None) -> dict:
     """Turn one long video into finished clips.
 
     Never raises for a bad input or a failed clip, and keeps any clips already
@@ -346,7 +349,8 @@ def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
                     credit = f"{credit} {music.credit(track)}".strip()
                 video_id, saved_status = _save_clip(src, moment, out_path, plan.duration, language=language,
                                                     auto_queue=auto_queue, credit=credit, recipe=recipe,
-                                                    job_id=job_id, spoken=opening_line(moment, words, edit))
+                                                    job_id=job_id, spoken=opening_line(moment, words, edit),
+                                                    channel_id=channel_id)
             except Interrupted:
                 raise
             except Exception as exc:
@@ -408,10 +412,11 @@ def _job_notes(source: str, feed: Optional[str]) -> dict:
 
 
 def enqueue(source: str, *, count: Optional[int] = None, auto_queue: Optional[bool] = None,
-            feed: Optional[str] = None) -> str:
+            feed: Optional[str] = None, channel_id: Optional[str] = None) -> str:
     source = source.strip()
     with session_scope() as db:
-        job = ClipJob(source=source, count=count, auto_queue=auto_queue, result=_job_notes(source, feed))
+        job = ClipJob(source=source, count=count, auto_queue=auto_queue, channel_id=channel_id,
+                      result=_job_notes(source, feed))
         db.add(job)
         db.flush()
         return job.id
@@ -428,7 +433,7 @@ def _set_stage(job_id: str, stage: str) -> None:
         log.warning("clipper: could not record stage %r: %s", stage, exc)
 
 
-def _next_job() -> Optional[tuple[str, str, Optional[int], Optional[bool], bool]]:
+def _next_job() -> Optional[tuple[str, str, Optional[int], Optional[bool], bool, Optional[str]]]:
     with session_scope() as db:
         stale = db.execute(select(ClipJob).where(ClipJob.status == "running")).scalars().all()
         for job in stale:
@@ -444,7 +449,7 @@ def _next_job() -> Optional[tuple[str, str, Optional[int], Optional[bool], bool]
             if job.attempts <= _MAX_ATTEMPTS:
                 job.status = "running"
                 job.started_at = datetime.now(timezone.utc)
-                return job.id, job.source, job.count, job.auto_queue, bool(job.mined)
+                return job.id, job.source, job.count, job.auto_queue, bool(job.mined), job.channel_id
             job.status = "failed"
             job.error = f"stopped {_MAX_ATTEMPTS} times without finishing"
             job.result = {**(job.result or {}), "permanent": True}
@@ -480,11 +485,11 @@ def clip_queue_job() -> dict:
             claimed = _next_job()
             if claimed is None:
                 break
-            job_id, source, count, auto_queue, mine = claimed
+            job_id, source, count, auto_queue, mine, channel_id = claimed
             try:
                 result = clip_source(source, count=count, auto_queue=auto_queue,
                                      progress=lambda stage, jid=job_id: _set_stage(jid, stage),
-                                     job_id=job_id, mine=mine)
+                                     job_id=job_id, mine=mine, channel_id=channel_id)
             except Interrupted:
                 # The app is stopping. Leave the job to run again after the restart.
                 with session_scope() as db:

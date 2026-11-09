@@ -935,6 +935,17 @@ def _claim_lost(status: VideoStatus) -> dict:
     return {"ok": False, "retryable": True, "retry": True, "error": f"cannot publish from status={status.value}"}
 
 
+def _publisher_for(channel_id: str | None):
+    """The publisher bound to a clip's managed channel, or the global one for a legacy clip."""
+    if channel_id:
+        from app.growth import channels
+        with session_scope() as db:
+            channel = channels.get_channel(db, channel_id)
+        if channel is not None:
+            return channels.publisher_for(channel)
+    return get_publisher()
+
+
 def publish_task(video_id: str, meta: dict | None = None) -> dict:
     """Upload a transformed video to YouTube."""
     if not settings.enable_publish:
@@ -968,6 +979,7 @@ def publish_task(video_id: str, meta: dict | None = None) -> dict:
             return _claim_lost(video.status)
         video_pk = video.id
         file_path = video.transformed_path
+        channel_id = video.channel_id
 
         draft = db.execute(
             select(MetadataDraft).where(MetadataDraft.video_id == video_id)
@@ -986,7 +998,7 @@ def publish_task(video_id: str, meta: dict | None = None) -> dict:
                       "publish_title": title}
 
     try:
-        result = get_publisher().upload(
+        result = _publisher_for(channel_id).upload(
             file_path=file_path,
             title=title, description=description, tags=tags,
             category=settings.youtube_default_category,

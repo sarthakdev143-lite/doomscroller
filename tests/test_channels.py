@@ -106,3 +106,14 @@ def test_publisher_is_mock_without_a_cloud_project(tmp_path, monkeypatch):
     with session_scope() as db:
         channels.sync_channels(db)
         assert isinstance(channels.publisher_for(channels.channel_by_slug(db, "tech")), MockPublisher)
+
+
+def test_a_queued_source_carries_its_channel_to_the_clip_job():
+    from app.clipper.job import enqueue
+    from app.models import ClipJob
+
+    job_id = enqueue("https://www.youtube.com/watch?v=abc", channel_id="chan-123", feed="https://feed")
+    with session_scope() as db:
+        job = db.get(ClipJob, job_id)
+        assert job.channel_id == "chan-123"
+        assert (job.result or {}).get("feed") == "https://feed"
