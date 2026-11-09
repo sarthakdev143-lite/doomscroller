@@ -622,6 +622,11 @@ def growth_supply_job() -> dict:
     return supply_job()
 
 
+def growth_watch_job() -> dict:
+    from .growth.watch import watch_job
+    return watch_job()
+
+
 # ---------- Job registry ----------
 # The single source of truth for job ids. Both _make_scheduler() and the
 # POST /scheduler/run/{job_id} endpoint read this, so the two can never drift.
@@ -640,6 +645,7 @@ JOB_FUNCTIONS: dict[str, "callable"] = {
     "growth_learn": growth_learn_job,
     "growth_supply": growth_supply_job,
     "growth_notify": growth_notify_job,
+    "growth_watch": growth_watch_job,
 }
 
 
@@ -708,6 +714,8 @@ def _make_scheduler() -> BackgroundScheduler:
                                      ("growth_supply", timedelta(hours=1), timedelta(minutes=1)),
                                      ("growth_notify", timedelta(minutes=10), timedelta(minutes=3))):
             sched.add_job(instrumented(job_id, JOB_FUNCTIONS[job_id]), IntervalTrigger(seconds=int(every.total_seconds())), id=job_id, next_run_time=now + first, max_instances=1, coalesce=True, replace_existing=True)
+        if settings.growth_watch_minutes > 0:
+            sched.add_job(instrumented("growth_watch", growth_watch_job), IntervalTrigger(minutes=settings.growth_watch_minutes), id="growth_watch", next_run_time=now + timedelta(minutes=2), max_instances=1, coalesce=True, replace_existing=True)
     else:
         sched.add_job(instrumented("analytics_pull", analytics_pull_job), IntervalTrigger(hours=6), id="analytics_pull", next_run_time=now + timedelta(minutes=10), max_instances=1, coalesce=True, replace_existing=True)
     return sched
@@ -734,6 +742,7 @@ def _job_intervals() -> dict[str, timedelta]:
         "growth_learn": timedelta(hours=6),
         "growth_supply": timedelta(hours=1),
         "growth_notify": timedelta(minutes=10),
+        "growth_watch": timedelta(minutes=max(1, settings.growth_watch_minutes)),
     }
 
 

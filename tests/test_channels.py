@@ -191,3 +191,76 @@ def test_autopilot_posts_each_channels_own_clip_to_its_own_plan(tmp_path, monkey
         # Separate plans, each marked posted.
         assert db.get(GrowthState, "tech:plan").value["posts"][0]["state"] == "posted"
         assert db.get(GrowthState, "comedy:plan").value["posts"][0]["state"] == "posted"
+
+
+def _atom(*entries):
+    rows = "".join(
+        f'<entry><yt:videoId>{vid}</yt:videoId><published>{when}</published></entry>' for vid, when in entries)
+    return ('<feed xmlns="http://www.w3.org/2005/Atom" '
+            f'xmlns:yt="http://www.youtube.com/xml/schemas/2015">{rows}</feed>')
+
+
+def test_watch_queues_a_fresh_upload_but_not_on_first_sight(tmp_path, monkeypatch):
+    from app.growth import watch
+
+    monkeypatch.setattr(settings, "growth_enabled", True)
+    monkeypatch.setattr(settings, "growth_require_approval", False)
+    monkeypatch.setattr(settings, "growth_watch_minutes", 5)
+    _write(tmp_path, monkeypatch, {"channels": [
+        {"slug": "tech", "feeds": ["https://www.youtube.com/channel/UCaaaaaaaaaaaaaaaaaaaaaa"]}]})
+
+    # First sight: only learns the watermark, cuts nothing (the back catalogue is supply's job).
+    monkeypatch.setattr(watch, "_fetch", lambda url: _atom(("VID1", "2026-11-09T08:00:00+00:00")))
+    assert watch.watch_job(now=datetime(2026, 11, 9, 9, 0, tzinfo=timezone.utc)) == {"feeds": 1, "queued": 0}
+    assert _clipjob_count() == 0
+
+    # A newer upload appears and is cut at once, with the channel's id.
+    monkeypatch.setattr(watch, "_fetch", lambda url: _atom(
+        ("VID2", "2026-11-09T09:30:00+00:00"), ("VID1", "2026-11-09T08:00:00+00:00")))
+    out = watch.watch_job(now=datetime(2026, 11, 9, 9, 45, tzinfo=timezone.utc))
+    assert out["queued"] == 1
+    with session_scope() as db:
+        tech = channels.channel_by_slug(db, "tech")
+        job = db.execute(select(ClipJob)).scalar_one()
+        assert job.channel_id == tech.id and "VID2" in job.source
+
+
+def test_watch_ignores_an_upload_older_than_the_fresh_window(tmp_path, monkeypatch):
+    from app.growth import watch
+
+    monkeypatch.setattr(settings, "growth_enabled", True)
+    monkeypatch.setattr(settings, "growth_watch_minutes", 5)
+    _write(tmp_path, monkeypatch, {"channels": [
+        {"slug": "tech", "feeds": ["https://www.youtube.com/channel/UCaaaaaaaaaaaaaaaaaaaaaa"]}]})
+    monkeypatch.setattr(watch, "_fetch", lambda url: _atom(("OLD", "2026-11-09T00:00:00+00:00")))
+    watch.watch_job(now=datetime(2026, 11, 9, 1, 0, tzinfo=timezone.utc))  # watermark
+    # 10 hours later a "new" entry appears but it was published long before the fresh window.
+    monkeypatch.setattr(watch, "_fetch", lambda url: _atom(
+        ("STALE", "2026-11-09T02:00:00+00:00"), ("OLD", "2026-11-09T00:00:00+00:00")))
+    assert watch.watch_job(now=datetime(2026, 11, 9, 11, 0, tzinfo=timezone.utc))["queued"] == 0
+    assert _clipjob_count() == 0
+
+
+def test_watch_resolves_a_handle_to_its_channel_rss(tmp_path, monkeypatch):
+    from app.growth import watch
+
+    monkeypatch.setattr(settings, "growth_enabled", True)
+    monkeypatch.setattr(settings, "growth_watch_minutes", 5)
+    _write(tmp_path, monkeypatch, {"channels": [
+        {"slug": "tech", "feeds": ["https://www.youtube.com/@sometech"]}]})
+    calls = []
+
+    def fetch(url):
+        calls.append(url)
+        if "feeds/videos.xml" in url:
+            return _atom(("VID1", "2026-11-09T08:00:00+00:00"))
+        return '<html>...{"channelId":"UCabcdefghijklmnopqrstuv"}...</html>'  # the handle page
+
+    monkeypatch.setattr(watch, "_fetch", fetch)
+    assert watch.watch_job(now=datetime(2026, 11, 9, 9, 0, tzinfo=timezone.utc))["feeds"] == 1
+    assert any("channel_id=UCabcdefghijklmnopqrstuv" in url for url in calls)
+
+
+def _clipjob_count():
+    with session_scope() as db:
+        return len(db.execute(select(ClipJob)).scalars().all())

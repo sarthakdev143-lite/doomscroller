@@ -215,6 +215,9 @@ class Settings(BaseSettings):
     # Below this many finished clips, the supply job queues another source.
     growth_min_inventory: int = 9
     growth_clips_per_source: int = 3
+    # Motion sensor: how often to poll each feed's YouTube RSS for a fresh upload and cut it at once.
+    # 0 turns watching off; supply still fills the shelf on its own schedule.
+    growth_watch_minutes: int = 5
     # JSON list of channel or playlist links to cut into clips (the legacy single-channel feed list).
     growth_feeds: str = '[]'
     # Multi-channel: a JSON file of niche channels and their feeds (one niche per channel, each its own
