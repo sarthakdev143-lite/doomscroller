@@ -14,10 +14,27 @@ from app.config import settings
 from app.db import session_scope
 from app.models import ClipJob, GrowthEvent, GrowthState, Video, VideoSnapshot, VideoStatus
 
+from . import channels
 from .factors import FACTORS, author_names, aware, published_arms
 from .model import Model, Observation
 
 log = logging.getLogger(__name__)
+
+
+def _skey(channel, name: str) -> str:
+    return name if channel is None else channels.state_key(channel, name)
+
+
+def _scope(channel):
+    return None if channel is None else channels.video_scope(channel)
+
+
+def _ev(channel) -> "Optional[str]":
+    return None if channel is None else channels.event_channel(channel)
+
+
+def _approval(channel) -> bool:
+    return settings.growth_require_approval if channel is None else channels.require_approval(channel)
 
 _RETENTION_WEIGHT = 2.0
 _SUBSCRIBER_WEIGHT = 0.3
@@ -272,9 +289,9 @@ def mine_waiting_winner(db, now: datetime, *, scope=None, channel_id: Optional[s
     return None
 
 
-def _note_findings(db, summary: dict, matured: int) -> int:
+def _note_findings(db, summary: dict, matured: int, channel=None) -> int:
     """Log an arm that stays clearly ahead for views across new videos, and take it back if that fades."""
-    state = db.get(GrowthState, "findings")
+    state = db.get(GrowthState, _skey(channel, "findings"))
     saved = state.value if state else {}
     live, held = dict(saved.get("live", {})), saved.get("since", {})
     since: dict[str, int] = {}
@@ -288,15 +305,15 @@ def _note_findings(db, summary: dict, matured: int) -> int:
                 since[key] = held.get(key, matured)
             if key in live and row["p_best"] < _FADED_P_BEST:
                 del live[key]
-                db.add(GrowthEvent(kind="finding_retracted", data=row, summary=(
+                db.add(GrowthEvent(kind="finding_retracted", data=row, channel_id=_ev(channel), summary=(
                     f"{factor} = {row['arm']} no longer looks best: its chance fell to {row['p_best']:.0%}.")))
             elif key not in live and key in since and matured - since[key] >= _CONFIRM_VIDEOS:
                 live[key] = row["multiplier"]
-                db.add(GrowthEvent(kind="finding", data=row, summary=(
+                db.add(GrowthEvent(kind="finding", data=row, channel_id=_ev(channel), summary=(
                     f"{factor} = {row['arm']} looks best: about {row['multiplier']}x the factor's average views "
                     f"(range {row['low']}-{row['high']}x, {row['n']} videos).")))
                 added += 1
-    set_state(db, "findings", {"live": live, "since": since})
+    set_state(db, _skey(channel, "findings"), {"live": live, "since": since})
     return added
 
 
@@ -317,12 +334,13 @@ def note_once(db, kind: str, summary: str, *, key: str = "", within: timedelta =
         db.add(GrowthEvent(kind=kind, summary=summary, data={"key": key}, channel_id=channel_id))
 
 
-def learn_job(now: Optional[datetime] = None) -> dict:
-    now = now or datetime.now(timezone.utc)
+def _learn_one(channel, now: datetime) -> dict:
+    """Diagnose one managed channel's matured videos and update its own focus and findings."""
     oldest_age = timedelta(hours=settings.growth_horizon_hours) + _JUDGE_WITHIN
+    scope, cid, approval = _scope(channel), _ev(channel), _approval(channel)
     counts: dict[str, int] = {}
     with session_scope() as db:
-        results = matured_results(db)
+        results = matured_results(db, scope=scope)
         for result in (r for r in results if not r.diagnosed and now - r.published_at <= oldest_age):
             found = diagnose(result, _baseline(result, results))
             counts[found.code] = counts.get(found.code, 0) + 1
@@ -330,20 +348,23 @@ def learn_job(now: Optional[datetime] = None) -> dict:
                 continue
             action = {}
             if found.code == "winner":
-                job_id = _mine_winner(db, result)
+                job_id = _mine_winner(db, result, scope=scope, channel_id=cid, require_approval=approval)
                 if job_id:
                     action = {"mined_job": job_id}
             video = db.get(Video, result.video_id)
             video.meta = {**(video.meta or {}), "growth_diagnosis": {
                 "code": found.code, "reason": found.reason, "focus": list(found.focus), "at": now.isoformat(), **action,
             }}
-            db.add(GrowthEvent(kind=f"diagnosis:{found.code}", video_id=result.video_id,
+            db.add(GrowthEvent(kind=f"diagnosis:{found.code}", video_id=result.video_id, channel_id=cid,
                                summary=f"{result.title[:60]}: {found.reason}", data=action))
         db.flush()
-        mine_waiting_winner(db, now)
+        mine_waiting_winner(db, now, scope=scope, channel_id=cid, require_approval=approval)
 
         # A run of the same problem steers extra testing to the factors that could explain it.
-        recent = db.execute(select(Video).where(Video.status == VideoStatus.PUBLISHED)
+        conds = [Video.status == VideoStatus.PUBLISHED]
+        if scope is not None:
+            conds.append(scope)
+        recent = db.execute(select(Video).where(*conds)
                             .order_by(Video.published_at.desc()).limit(_FOCUS_WINDOW * 3)).scalars().all()
         judged = [(v.meta or {})["growth_diagnosis"] for v in recent
                   if (v.meta or {}).get("growth_diagnosis", {}).get("code") not in (None, "too_early")][:_FOCUS_WINDOW]
@@ -352,9 +373,19 @@ def learn_job(now: Optional[datetime] = None) -> dict:
             for factor in item.get("focus", []):
                 tally[factor] = tally.get(factor, 0) + 1
         focus = sorted(f for f, n in tally.items() if judged and n / len(judged) >= _FOCUS_SHARE)
-        set_state(db, "focus", {"factors": focus})
+        set_state(db, _skey(channel, "focus"), {"factors": focus})
 
         summary = summarise(results) if results else {}
-        set_state(db, "summary", summary)
-        findings = _note_findings(db, summary, len(results))
+        set_state(db, _skey(channel, "summary"), summary)
+        findings = _note_findings(db, summary, len(results), channel)
     return {"matured": len(results), "diagnosed": counts, "focus": focus, "findings": findings}
+
+
+def learn_job(now: Optional[datetime] = None) -> dict:
+    now = now or datetime.now(timezone.utc)
+    with session_scope() as db:
+        active = channels.active_channels(db)
+    # A single legacy channel keeps the old flat result; several report per channel by slug.
+    if len(active) == 1 and channels.is_default(active[0]):
+        return _learn_one(active[0], now)
+    return {channel.slug: _learn_one(channel, now) for channel in active}

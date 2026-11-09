@@ -12,10 +12,10 @@ from app.db import session_scope
 from app.models import GrowthEvent, GrowthState, Video, VideoSnapshot, VideoStatus
 from app.publishers.youtube_publisher import explain_api_error
 
-from . import safety
+from . import channels, safety
 from .factors import aware
 from .learn import note_once, set_state, upload_turned_down
-from .youtube import get_insights
+from .youtube import get_insights, insights_for
 
 log = logging.getLogger(__name__)
 
@@ -41,27 +41,28 @@ def _first_report_day(published: datetime) -> date:
     return _report_day(published) - timedelta(days=1)
 
 
-def _uploads(db, since: datetime) -> list[Video]:
-    rows = db.execute(select(Video).where(
-        Video.status == VideoStatus.PUBLISHED, Video.youtube_video_id.isnot(None), Video.published_at >= since,
-    )).scalars().all()
+def _uploads(db, since: datetime, scope=None) -> list[Video]:
+    conds = [Video.status == VideoStatus.PUBLISHED, Video.youtube_video_id.isnot(None), Video.published_at >= since]
+    if scope is not None:
+        conds.append(scope)
+    rows = db.execute(select(Video).where(*conds)).scalars().all()
     return [v for v in rows if not v.youtube_video_id.startswith("MOCK_")]
 
 
-def _tracked(db, now: datetime) -> list[Video]:
-    return _uploads(db, now - _TRACK_FOR)
+def _tracked(db, now: datetime, scope=None) -> list[Video]:
+    return _uploads(db, now - _TRACK_FOR, scope)
 
 
-def _watched(db, now: datetime) -> list[Video]:
+def _watched(db, now: datetime, scope=None) -> list[Video]:
     """A takedown counts for as long as a strike does, long after the numbers stop mattering."""
-    return _uploads(db, now - safety.STRIKE_WINDOW)
+    return _uploads(db, now - safety.STRIKE_WINDOW, scope)
 
 
-def _record_stats(asked: set[str], stats: dict[str, dict], now: datetime) -> int:
+def _record_stats(asked: set[str], stats: dict[str, dict], now: datetime, scope=None) -> int:
     """Only judges what YouTube was asked about: a clip published since then would look deleted."""
     recorded = 0
     with session_scope() as db:
-        for video in (v for v in _watched(db, now) if v.youtube_video_id in asked):
+        for video in (v for v in _watched(db, now, scope) if v.youtube_video_id in asked):
             info = stats.get(video.youtube_video_id)
             meta = dict(video.meta or {})
             if info is None:
@@ -92,10 +93,10 @@ def _record_stats(asked: set[str], stats: dict[str, dict], now: datetime) -> int
     return recorded
 
 
-def _analytics_due(now: datetime) -> list[tuple[str, str, datetime]]:
+def _analytics_due(now: datetime, scope=None) -> list[tuple[str, str, datetime]]:
     with session_scope() as db:
         due = []
-        for video in _tracked(db, now):
+        for video in _tracked(db, now, scope):
             if (video.meta or {}).get("yt_missing"):
                 continue
             published = aware(video.published_at)
@@ -106,8 +107,8 @@ def _analytics_due(now: datetime) -> list[tuple[str, str, datetime]]:
         return due
 
 
-def _record_analytics(insights, now: datetime) -> int:
-    due = _analytics_due(now)
+def _record_analytics(insights, now: datetime, scope=None) -> int:
+    due = _analytics_due(now, scope)
     if not due:
         return 0
     start, end = _first_report_day(min(p for _, _, p in due)), _report_day(now)
@@ -131,15 +132,19 @@ def _record_analytics(insights, now: datetime) -> int:
     return len(numbers)
 
 
-def health(db) -> dict:
-    state = db.get(GrowthState, _HEALTH)
+def _health_key(channel=None) -> str:
+    return _HEALTH if channel is None else channels.state_key(channel, _HEALTH)
+
+
+def health(db, channel=None) -> dict:
+    state = db.get(GrowthState, _health_key(channel))
     return {"last_success": None, "analytics_failing_since": None, "analytics_error": None,
             **(state.value if state else {})}
 
 
-def _update_health(**fields) -> None:
+def _update_health(channel=None, **fields) -> None:
     with session_scope() as db:
-        set_state(db, _HEALTH, {**health(db), **fields})
+        set_state(db, _health_key(channel), {**health(db, channel), **fields})
 
 
 def analytics_warning(status: dict, now: datetime) -> Optional[str]:
@@ -151,49 +156,71 @@ def analytics_warning(status: dict, now: datetime) -> Optional[str]:
     return f"Analytics has failed for {days} days, so the loop is learning from views alone: {status['analytics_error']}"
 
 
-def _note_stats_failure(exc: Exception) -> None:
+def _ev(channel) -> Optional[str]:
+    return None if channel is None else channels.event_channel(channel)
+
+
+def _scope(channel):
+    return None if channel is None else channels.video_scope(channel)
+
+
+def _note_stats_failure(exc: Exception, channel=None) -> None:
     with session_scope() as db:
-        note_once(db, "collect_failed", f"Could not read video stats, so nothing was measured: {explain_api_error(exc)}")
+        note_once(db, "collect_failed", f"Could not read video stats, so nothing was measured: {explain_api_error(exc)}",
+                  key=channels.state_key(channel, "") if channel is not None else "", channel_id=_ev(channel))
 
 
-def _note_analytics_failure(exc: Exception, now: datetime) -> Optional[str]:
+def _note_analytics_failure(exc: Exception, now: datetime, channel=None) -> Optional[str]:
     """One failed run is logged. The return value is what the job should fail with, once it has lasted."""
     cause = explain_api_error(exc, api=_ANALYTICS_API)
     with session_scope() as db:
-        status = {**health(db), "analytics_error": cause}
+        status = {**health(db, channel), "analytics_error": cause}
         status["analytics_failing_since"] = status["analytics_failing_since"] or now.isoformat()
-        set_state(db, _HEALTH, status)
+        set_state(db, _health_key(channel), status)
         lasting = analytics_warning(status, now)
+        base = "lasting" if lasting else "failing"
         note_once(db, "analytics_failed", lasting or f"Could not read YouTube Analytics: {cause}",
-                  key="lasting" if lasting else "failing")
+                  key=channels.state_key(channel, base) if channel is not None else base, channel_id=_ev(channel))
     return lasting
+
+
+def _collect_one(channel, now: datetime) -> dict:
+    """Read one managed channel's numbers with its own token, and record them against its videos."""
+    # The legacy channel uses the module-level get_insights (what the tests patch); a named one its own token.
+    insights = get_insights() if (channel is None or channels.is_default(channel)) else insights_for(channel)
+    if insights is None:
+        return {"skipped": "no real YouTube connection"}
+    scope = _scope(channel)
+    with session_scope() as db:
+        ids = [v.youtube_video_id for v in _watched(db, now, scope)]
+    if not ids:
+        return {"skipped": "nothing published recently"}
+    try:
+        recorded = _record_stats(set(ids), insights.stats(ids), now, scope)
+    except Exception as exc:
+        log.warning("growth: could not read video stats: %s", exc)
+        _note_stats_failure(exc, channel)
+        return {"error": f"video stats: {exc}"}
+    _update_health(channel, last_success=now.isoformat())
+    result: dict = {"snapshots": recorded}
+    # Analytics adds to the signal, but views alone still drive the loop.
+    try:
+        result["analytics"] = _record_analytics(insights, now, scope)
+        _update_health(channel, analytics_failing_since=None, analytics_error=None)
+    except Exception as exc:
+        log.warning("growth: analytics unavailable: %s", exc)
+        result["analytics_error"] = str(exc)[:300]
+        lasting = _note_analytics_failure(exc, now, channel)
+        if lasting:
+            result["error"] = lasting
+    return result
 
 
 def collect_job(now: datetime | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
-    insights = get_insights()
-    if insights is None:
-        return {"skipped": "no real YouTube connection"}
     with session_scope() as db:
-        ids = [v.youtube_video_id for v in _watched(db, now)]
-    if not ids:
-        return {"skipped": "nothing published recently"}
-    try:
-        recorded = _record_stats(set(ids), insights.stats(ids), now)
-    except Exception as exc:
-        log.warning("growth: could not read video stats: %s", exc)
-        _note_stats_failure(exc)
-        return {"error": f"video stats: {exc}"}
-    _update_health(last_success=now.isoformat())
-    result: dict = {"snapshots": recorded}
-    # Analytics adds to the signal, but views alone still drive the loop.
-    try:
-        result["analytics"] = _record_analytics(insights, now)
-        _update_health(analytics_failing_since=None, analytics_error=None)
-    except Exception as exc:
-        log.warning("growth: analytics unavailable: %s", exc)
-        result["analytics_error"] = str(exc)[:300]
-        lasting = _note_analytics_failure(exc, now)
-        if lasting:
-            result["error"] = lasting
-    return result
+        active = channels.active_channels(db)
+    # A single legacy channel keeps the old flat result; several report per channel by slug.
+    if len(active) == 1 and channels.is_default(active[0]):
+        return _collect_one(active[0], now)
+    return {channel.slug: _collect_one(channel, now) for channel in active}

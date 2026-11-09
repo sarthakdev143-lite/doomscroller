@@ -123,7 +123,21 @@ def _upload(item: dict) -> dict:
             "published_at": published_at}
 
 
+def _publisher_for(channel):
+    """The legacy channel (or none) uses the global publisher; a named one its own token."""
+    from app.growth import channels
+
+    if channel is None or channels.is_default(channel):
+        return get_publisher()
+    return channels.publisher_for(channel)
+
+
+def insights_for(channel=None) -> Optional[Insights]:
+    """A reader bound to a channel's token. None under mock mode or when the channel has no Cloud project."""
+    publisher = _publisher_for(channel)
+    return None if settings.use_mock or isinstance(publisher, MockPublisher) else Insights(publisher)
+
+
 def get_insights() -> Optional[Insights]:
     """None under mock mode, where there is nothing real to read."""
-    publisher = get_publisher()
-    return None if settings.use_mock or isinstance(publisher, MockPublisher) else Insights(publisher)
+    return insights_for(None)
