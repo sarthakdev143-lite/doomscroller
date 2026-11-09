@@ -17,10 +17,10 @@ from app.db import session_scope
 from app.models import ClipJob, GrowthEvent, GrowthState, Video, VideoStatus
 from app.publishers.youtube_publisher import ANALYTICS_SCOPE, READ_SCOPE, UPLOAD_SCOPE, explain_api_error
 
-from . import collect, safety, supply
+from . import channels, collect, safety, supply
 from .autopilot import explore_rate, ready_clips, started_at
 from .learn import matured_results
-from .youtube import get_insights
+from .youtube import get_insights, insights_for
 
 # Each of these fires once for an incident that matters for weeks, while routine events arrive about seven a day.
 _PROBLEM_KINDS = ("missing", "strike", "paused", "account_hold", "publish_failed", "publish_stuck", "collect_failed",
@@ -36,8 +36,8 @@ def _check(ok: bool, name: str, detail: str, *, required: bool = True) -> dict:
     return {"ok": ok, "name": name, "detail": detail, "required": required}
 
 
-def _token_checks() -> list[dict]:
-    path = settings.youtube_token_path
+def _token_checks(path: Optional[str] = None) -> list[dict]:
+    path = path or settings.youtube_token_path
     if not os.path.exists(path):
         return [_check(False, "token", f"missing at {path}. Run: scripts/youtube_oauth.py")]
     try:
@@ -112,6 +112,28 @@ def _held_note(held: Counter) -> str:
             f"Most often: {held.most_common(1)[0][0]}")
 
 
+def _channel_rows(live: bool) -> list[dict]:
+    """One readiness block per managed named channel, so each channel's token and feeds can be checked on its own."""
+    with session_scope() as db:
+        named = [c for c in channels.active_channels(db) if not channels.is_default(c)]
+        info = [(c, channels.feeds_for(db, c), insights_for(c) if live else None) for c in named]
+    rows = []
+    for channel, feeds, insights in info:
+        checks = [
+            _check(bool(channel.client_secrets) and os.path.exists(channel.client_secrets), "client_secrets",
+                   channel.client_secrets or "not set, so this channel's uploads would be fake"),
+            *_token_checks(channel.token_path),
+            _check(bool(feeds), "feeds", f"{len(feeds)} feeds" if feeds else "none set for this channel"),
+        ]
+        if live:
+            checks += _youtube_checks(insights) if insights else [
+                _check(False, "live", "no connection: USE_MOCK or no client_secrets", required=False)]
+            checks += [_feed_check(feed) for feed in feeds]
+        rows.append({"slug": channel.slug, "name": channel.name,
+                     "ready": all(c["ok"] for c in checks if c["required"]), "checks": checks})
+    return rows
+
+
 def doctor(*, live: bool = False) -> dict:
     """Live also asks Google and reads every feed, so it comes first: what it finds about a feed counts below."""
     live_checks = _live_checks() if live else []
@@ -129,11 +151,13 @@ def doctor(*, live: bool = False) -> dict:
         paused = safety.pause_reason(db)
         blocks = safety.block_list(db)
         held = _held_reasons(db)
+        # Every enabled channel's feeds. For a single legacy channel this is just GROWTH_FEEDS.
+        all_feeds = [f for c in channels.active_channels(db) for f in channels.feeds_for(db, c)]
     # An inbox file's title is only its filename, so without AI its clips never reach the shelf on their own.
     needs_ai = files > 0 and not ai.available()
     # The dashboard runs this on every refresh, so it goes by what supply last found rather than asking YouTube.
-    feeds = [feed for feed in settings.growth_feeds_list if feed not in empty_feeds and feed not in barred]
-    no_links = sorted(set(settings.growth_feeds_list) & empty_feeds)
+    feeds = [feed for feed in all_feeds if feed not in empty_feeds and feed not in barred]
+    no_links = sorted(set(all_feeds) & empty_feeds)
     checks = [
         _check(paused is None, "pause",
                f"{paused}. Check the channel, then clear it with: scripts/growth.py resume" if paused else "not paused"),
@@ -163,7 +187,12 @@ def doctor(*, live: bool = False) -> dict:
                + " found" if ai.available() else "neither found, so every clip waits for review and nothing posts"),
         *live_checks,
     ]
-    return {"ready": all(c["ok"] for c in checks if c["required"]), "checks": checks}
+    channel_rows = _channel_rows(live)
+    ready = all(c["ok"] for c in checks if c["required"]) and all(r["ready"] for r in channel_rows)
+    result = {"ready": ready, "checks": checks}
+    if channel_rows:
+        result["channels"] = channel_rows
+    return result
 
 
 def _stock_warning(db, stock: int) -> Optional[str]:

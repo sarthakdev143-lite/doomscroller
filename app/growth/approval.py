@@ -33,6 +33,13 @@ def awaiting_review(db, scope=None) -> list[Video]:
             and os.path.exists(v.transformed_path)][:_QUEUE_LIMIT]
 
 
+def _channel_label(db, channel_id) -> str:
+    from . import channels
+
+    channel = channels.get_channel(db, channel_id)
+    return (channel.name or channel.slug) if channel else ""
+
+
 def _card(video: Video, db) -> dict:
     meta = video.meta or {}
     draft = db.execute(select(MetadataDraft).where(MetadataDraft.video_id == video.id)).scalar_one_or_none()
@@ -46,6 +53,7 @@ def _card(video: Video, db) -> dict:
         "kind": meta.get("clip_kind") or "",
         "why": meta.get("clip_reason") or "",
         "flag": meta.get("growth_flagged") or "",
+        "channel": _channel_label(db, video.channel_id),
         "made": (video.scraped_at.isoformat() if video.scraped_at else ""),
     }
 

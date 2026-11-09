@@ -264,3 +264,34 @@ def test_watch_resolves_a_handle_to_its_channel_rss(tmp_path, monkeypatch):
 def _clipjob_count():
     with session_scope() as db:
         return len(db.execute(select(ClipJob)).scalars().all())
+
+
+def test_review_card_shows_the_target_channel(tmp_path, monkeypatch):
+    from app.growth import approval
+
+    _write(tmp_path, monkeypatch, {"channels": [{"slug": "tech", "name": "Tech & Science"}]})
+    path = tmp_path / "c.mp4"
+    path.write_bytes(b"x")
+    with session_scope() as db:
+        channels.sync_channels(db)
+        tech = channels.channel_by_slug(db, "tech")
+    with session_scope() as db:
+        db.add(Video(source="youtube", source_id="c1", source_url="u", title="t", status=VideoStatus.PENDING,
+                     transformed_path=str(path), channel_id=tech.id, duration_sec=20, meta={"clip_rendered": True}))
+    card = approval.queue()["clips"][0]
+    assert card["channel"] == "Tech & Science"
+
+
+def test_doctor_reports_each_named_channels_readiness(tmp_path, monkeypatch):
+    from app.growth import report
+
+    _write(tmp_path, monkeypatch, {"channels": [
+        {"slug": "tech", "name": "Tech", "client_secrets": "secrets/nope.json",
+         "token_path": "secrets/nope_token.json", "feeds": ["https://www.youtube.com/@mkbhd"]}]})
+    with session_scope() as db:
+        channels.sync_channels(db)
+    out = report.doctor(live=False)
+    assert "channels" in out and out["channels"][0]["slug"] == "tech"
+    # Its client_secrets and token files do not exist, so the channel (and the whole doctor) is not ready.
+    assert out["channels"][0]["ready"] is False
+    assert out["ready"] is False

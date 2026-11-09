@@ -153,7 +153,7 @@ async function load(){
     const t=el('input',{value:c.id in edits?edits[c.id]:c.title,'aria-label':'Title'});
     t.addEventListener('input',()=>{edits[c.id]=t.value});
     b.append(t);
-    b.append(el('div',{className:'meta'},[c.creator&&('Credit: '+c.creator),Math.round(c.seconds)+'s',c.kind].filter(Boolean).join(' · ')));
+    b.append(el('div',{className:'meta'},[c.channel&&('Channel: '+c.channel),c.creator&&('Credit: '+c.creator),Math.round(c.seconds)+'s',c.kind].filter(Boolean).join(' · ')));
     if(c.hook)b.append(el('div',{className:'meta'},'Hook: '+c.hook));
     if(c.flag)b.append(el('div',{className:'flag'},'Flagged: '+c.flag));
     const row=el('div',{className:'row'}),yes=el('button',{className:'yes'},'Approve'),no=el('button',{className:'nope'},'Reject');
