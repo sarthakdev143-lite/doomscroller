@@ -23,8 +23,11 @@ class ReviewError(ValueError):
     pass
 
 
-def awaiting_review(db) -> list[Video]:
-    rows = db.execute(select(Video).where(Video.status == VideoStatus.PENDING)
+def awaiting_review(db, scope=None) -> list[Video]:
+    conds = [Video.status == VideoStatus.PENDING]
+    if scope is not None:
+        conds.append(scope)
+    rows = db.execute(select(Video).where(*conds)
                       .order_by(Video.scraped_at.desc()).limit(_QUEUE_LIMIT * 3)).scalars().all()
     return [v for v in rows if (v.meta or {}).get("clip_rendered") and v.transformed_path
             and os.path.exists(v.transformed_path)][:_QUEUE_LIMIT]

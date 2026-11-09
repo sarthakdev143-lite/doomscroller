@@ -133,11 +133,15 @@ def build_plan(current: Policy, now: datetime) -> dict:
     return {"day": local.date().isoformat(), "posts": sorted(posts, key=lambda p: p["due"])}
 
 
-def ready_clips(db) -> list[Video]:
-    """Only finished clips. Scraped reposts never go out through this loop, nor anything from a source with a takedown."""
-    rows = db.execute(select(Video).where(
-        Video.status == VideoStatus.TRANSFORMED, Video.transformed_path.isnot(None),
-    ).order_by(Video.transformed_at)).scalars().all()
+def ready_clips(db, scope=None) -> list[Video]:
+    """Only finished clips. Scraped reposts never go out through this loop, nor anything from a source with a takedown.
+
+    `scope` is an optional SQLAlchemy filter limiting the clips to one managed channel.
+    """
+    conds = [Video.status == VideoStatus.TRANSFORMED, Video.transformed_path.isnot(None)]
+    if scope is not None:
+        conds.append(scope)
+    rows = db.execute(select(Video).where(*conds).order_by(Video.transformed_at)).scalars().all()
     blocked = safety.blocked_parents(db)  # a job still running can finish a clip after the strike
     return [v for v in rows if (v.meta or {}).get("clip_rendered") and not (v.meta or {}).get("growth_quarantined")
             and (v.meta or {}).get("clip_parent") not in blocked]

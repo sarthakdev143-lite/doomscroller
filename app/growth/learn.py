@@ -79,12 +79,16 @@ def _subscriber_rate(analytics: dict) -> Optional[float]:
     return 1000 * gained / views if views and gained is not None else None
 
 
-def matured_results(db, *, include_diagnosed: bool = True) -> list[Result]:
-    """Public clips old enough to judge. A private test upload says nothing about an audience."""
-    rows = db.execute(select(Video).where(
-        Video.status == VideoStatus.PUBLISHED, Video.youtube_video_id.isnot(None),
-        Video.published_at.isnot(None),
-    )).scalars().all()
+def matured_results(db, *, include_diagnosed: bool = True, scope=None) -> list[Result]:
+    """Public clips old enough to judge. A private test upload says nothing about an audience.
+
+    `scope` is an optional SQLAlchemy filter limiting the videos to one managed channel.
+    """
+    conds = [Video.status == VideoStatus.PUBLISHED, Video.youtube_video_id.isnot(None),
+             Video.published_at.isnot(None)]
+    if scope is not None:
+        conds.append(scope)
+    rows = db.execute(select(Video).where(*conds)).scalars().all()
     rows = [v for v in rows if (v.meta or {}).get("clip_rendered") and (v.meta or {}).get("yt_privacy") == "public"
             and not (v.meta or {}).get("yt_missing")
             and not upload_turned_down((v.meta or {}).get("yt_upload_status"))]
@@ -193,32 +197,43 @@ def _baseline(result: Result, results: Sequence[Result]) -> list[Result]:
     return earlier + [o for o in others if o.day > result.day][:_MIN_BASELINE - len(earlier)]
 
 
-def _coming_clips(db) -> int:
+def _clipjob_scope(channel_id: Optional[str]):
+    return ClipJob.channel_id.is_(None) if channel_id is None else ClipJob.channel_id == channel_id
+
+
+def _coming_clips(db, cj_scope=None) -> int:
     """What jobs in progress will add to the shelf. One may have stocked a few already, so this can run a little high."""
-    counts = db.execute(select(ClipJob.count).where(ClipJob.status.in_(("queued", "running")))).scalars()
+    stmt = select(ClipJob.count).where(ClipJob.status.in_(("queued", "running")))
+    if cj_scope is not None:
+        stmt = stmt.where(cj_scope)
+    counts = db.execute(stmt).scalars()
     return sum(count or settings.max_clips_per_video for count in counts)
 
 
-def _mine_winner(db, result: Result) -> Optional[str]:
+def _mine_winner(db, result: Result, *, scope=None, channel_id: Optional[str] = None,
+                 require_approval: Optional[bool] = None) -> Optional[str]:
     """Cut more from a source that worked, while the shelf has room. The clipper steers around moments it has used."""
     from .autopilot import ready_clips
     from .safety import blocked_authors, blocked_sources
 
+    cj_scope = _clipjob_scope(channel_id)
+    approval = settings.growth_require_approval if require_approval is None else require_approval
     if not result.source_url.startswith(("http://", "https://")) or result.source_url in blocked_sources(db):
         return None
     if blocked_authors(db).intersection(result.authors):
         return None
     active = db.scalar(select(func.count(ClipJob.id)).where(
-        ClipJob.source == result.source_url, ClipJob.status.in_(("queued", "running"))))
-    if active or len(ready_clips(db)) + _coming_clips(db) >= settings.growth_min_inventory:
+        ClipJob.source == result.source_url, ClipJob.status.in_(("queued", "running")), cj_scope))
+    if active or len(ready_clips(db, scope)) + _coming_clips(db, cj_scope) >= settings.growth_min_inventory:
         return None
-    mined = db.execute(select(ClipJob).where(ClipJob.source == result.source_url, ClipJob.mined.is_(True))).scalars()
+    mined = db.execute(select(ClipJob).where(
+        ClipJob.source == result.source_url, ClipJob.mined.is_(True), cj_scope)).scalars()
     # A failure that may clear up cut nothing from the source, so it does not use up its turn.
     spent = [job for job in mined if job.status != "failed" or (job.result or {}).get("permanent")]
     if len(spent) >= _MAX_MINED_PER_SOURCE:
         return None
     job = ClipJob(source=result.source_url, count=settings.growth_clips_per_source,
-                  auto_queue=not settings.growth_require_approval, mined=True)
+                  auto_queue=not approval, mined=True, channel_id=channel_id)
     db.add(job)
     db.flush()
     return job.id
@@ -238,16 +253,17 @@ def _mining_due(db, result: Result, diagnosis: dict, now: datetime) -> bool:
     return can_take(failures, now)
 
 
-def mine_waiting_winner(db, now: datetime) -> Optional[str]:
+def mine_waiting_winner(db, now: datetime, *, scope=None, channel_id: Optional[str] = None,
+                        require_approval: Optional[bool] = None) -> Optional[str]:
     """A winner judged while the shelf was full is still owed its follow-up. Newest first, inside the judging window."""
     oldest = now - timedelta(hours=settings.growth_horizon_hours) - _JUDGE_WITHIN
-    recent = [r for r in matured_results(db) if r.published_at >= oldest]
+    recent = [r for r in matured_results(db, scope=scope) if r.published_at >= oldest]
     for result in sorted(recent, key=lambda r: r.published_at, reverse=True):
         video = db.get(Video, result.video_id)
         diagnosis = (video.meta or {}).get("growth_diagnosis", {})
         if diagnosis.get("code") != "winner" or not _mining_due(db, result, diagnosis, now):
             continue
-        job_id = _mine_winner(db, result)
+        job_id = _mine_winner(db, result, scope=scope, channel_id=channel_id, require_approval=require_approval)
         if job_id:
             video.meta = {**video.meta, "growth_diagnosis": {**diagnosis, "mined_job": job_id}}
             db.add(GrowthEvent(kind="winner_mined", video_id=video.id, data={"mined_job": job_id},
@@ -292,12 +308,13 @@ def set_state(db, key: str, value: dict) -> None:
         db.add(GrowthState(key=key, value=value))
 
 
-def note_once(db, kind: str, summary: str, *, key: str = "", within: timedelta = timedelta(days=1)) -> None:
+def note_once(db, kind: str, summary: str, *, key: str = "", within: timedelta = timedelta(days=1),
+              channel_id: Optional[str] = None) -> None:
     """Record a problem that repeats every run only once in a while, or it pushes everything else out of the report."""
     since = datetime.now(timezone.utc) - within
     recent = db.execute(select(GrowthEvent.data).where(GrowthEvent.kind == kind, GrowthEvent.created_at >= since)).scalars()
     if not any((data or {}).get("key") == key for data in recent):
-        db.add(GrowthEvent(kind=kind, summary=summary, data={"key": key}))
+        db.add(GrowthEvent(kind=kind, summary=summary, data={"key": key}, channel_id=channel_id))
 
 
 def learn_job(now: Optional[datetime] = None) -> dict:

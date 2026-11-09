@@ -15,8 +15,8 @@ from app.config import settings
 from app.db import init_db, session_scope
 from app.growth import autopilot, collect, factors, learn, recipes, report, safety, supply, titles
 from app.growth.model import Model, Observation
-from app.models import (ClipJob, GrowthEvent, GrowthState, MetadataDraft, QuotaUsage, Video, VideoSnapshot,
-                        VideoStatus)
+from app.models import (Channel, ClipJob, Feed, GrowthEvent, GrowthState, MetadataDraft, QuotaUsage, Video,
+                        VideoSnapshot, VideoStatus)
 from app.publishers.base import PublishResult, Publisher
 from tasks.pipeline import clip_gate_reason
 
@@ -28,7 +28,7 @@ JUDGED_AT = START + timedelta(days=5)
 def clean(monkeypatch):
     init_db()
     with session_scope() as db:
-        for table in (VideoSnapshot, MetadataDraft, GrowthEvent, GrowthState, ClipJob, QuotaUsage, Video):
+        for table in (Feed, Channel, VideoSnapshot, MetadataDraft, GrowthEvent, GrowthState, ClipJob, QuotaUsage, Video):
             db.execute(delete(table))
     monkeypatch.setattr(settings, "growth_enabled", True)
     # Most of these tests are about the unattended loop. The approval tests switch it back on.

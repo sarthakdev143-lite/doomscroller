@@ -60,7 +60,7 @@ def _legacy_channel() -> dict:
         "timezone": settings.growth_timezone,
         "require_approval": settings.growth_require_approval,
         "enabled": True,
-        "feeds": settings.growth_feeds_list,
+        # Its feeds are read live from GROWTH_FEEDS (see feeds_for), not persisted as rows.
     }
 
 
@@ -141,14 +141,59 @@ def default_channel(db) -> Optional[Channel]:
             or db.execute(select(Channel).where(Channel.enabled.is_(True)).order_by(Channel.slug)).scalar())
 
 
+def is_default(channel: Channel) -> bool:
+    return channel.slug == DEFAULT_SLUG
+
+
 def feeds_for(db, channel: Channel) -> list[str]:
+    """The legacy channel reads its feeds live from GROWTH_FEEDS; a named channel from its Feed rows."""
+    if is_default(channel):
+        return settings.growth_feeds_list
     return list(db.execute(
         select(Feed.url).where(Feed.channel_id == channel.id, Feed.enabled.is_(True))).scalars())
 
 
+# The legacy channel resolves these live from settings, so a deployment that still drives everything
+# through GROWTH_* (and the tests that monkeypatch those settings) behaves exactly as before.
+def uploads_per_day(channel: Channel) -> int:
+    return settings.growth_uploads_per_day if is_default(channel) else channel.uploads_per_day
+
+
+def timezone_of(channel: Channel) -> str:
+    return settings.growth_timezone if is_default(channel) else channel.timezone
+
+
+def require_approval(channel: Channel) -> bool:
+    return settings.growth_require_approval if is_default(channel) else channel.require_approval
+
+
 def state_key(channel: Channel, name: str) -> str:
-    """Namespace a GrowthState key by channel, so each channel keeps its own plan, focus and clocks."""
-    return f"{channel.slug}:{name}"
+    """Namespace a GrowthState key by channel, so each channel keeps its own plan, focus and clocks.
+
+    The legacy single channel keeps the un-namespaced keys it already wrote, so an existing
+    deployment's plan and start clock are read back unchanged.
+    """
+    return name if channel.slug == DEFAULT_SLUG else f"{channel.slug}:{name}"
+
+
+def video_scope(channel: Channel):
+    """A SQLAlchemy filter for the videos that belong to a channel.
+
+    The legacy channel also owns rows with no channel_id, so single-channel data written before
+    this feature needs no backfill; a named channel owns only its own clips.
+    """
+    from sqlalchemy import or_
+
+    from app.models import Video
+
+    if channel.slug == DEFAULT_SLUG:
+        return or_(Video.channel_id == channel.id, Video.channel_id.is_(None))
+    return Video.channel_id == channel.id
+
+
+def event_channel(channel: Channel) -> Optional[str]:
+    """The channel_id to stamp on an event. The legacy channel leaves it None, as before."""
+    return None if channel.slug == DEFAULT_SLUG else channel.id
 
 
 def publisher_for(channel: Channel):

@@ -2,20 +2,20 @@
 import json
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
 from app.config import settings
 from app.db import init_db, session_scope
 from app.growth import channels
-from app.models import Channel, Feed
+from app.models import Channel, ClipJob, Feed, GrowthEvent, GrowthState, Video
 
 
 @pytest.fixture(autouse=True)
 def clean(monkeypatch):
     init_db()
     with session_scope() as db:
-        db.execute(delete(Feed))
-        db.execute(delete(Channel))
+        for table in (Feed, Channel, ClipJob, GrowthEvent, GrowthState, Video):
+            db.execute(delete(table))
     monkeypatch.setattr(settings, "channels_file", "")
     monkeypatch.setattr(settings, "youtube_token_path", "./secrets/youtube_token.json")
     monkeypatch.setattr(settings, "youtube_client_secrets", "")
@@ -110,10 +110,32 @@ def test_publisher_is_mock_without_a_cloud_project(tmp_path, monkeypatch):
 
 def test_a_queued_source_carries_its_channel_to_the_clip_job():
     from app.clipper.job import enqueue
-    from app.models import ClipJob
 
     job_id = enqueue("https://www.youtube.com/watch?v=abc", channel_id="chan-123", feed="https://feed")
     with session_scope() as db:
         job = db.get(ClipJob, job_id)
         assert job.channel_id == "chan-123"
         assert (job.result or {}).get("feed") == "https://feed"
+
+
+def test_supply_feeds_each_channel_from_its_own_feeds(tmp_path, monkeypatch):
+    from app.growth import supply
+
+    monkeypatch.setattr(settings, "growth_enabled", True)
+    monkeypatch.setattr(settings, "growth_require_approval", False)
+    _write(tmp_path, monkeypatch, {"channels": [
+        {"slug": "tech", "feeds": ["https://yt/tech-feed"]},
+        {"slug": "challenges", "feeds": ["https://yt/ch-feed"]},
+    ]})
+    links = {"https://yt/tech-feed": ["https://vid/tech1"], "https://yt/ch-feed": ["https://vid/ch1"]}
+    monkeypatch.setattr(supply, "_feed_links", lambda feed: links.get(feed, []))
+
+    out = supply.supply_job()
+    assert out["tech"]["queued"] == "https://vid/tech1"
+    assert out["challenges"]["queued"] == "https://vid/ch1"
+
+    with session_scope() as db:
+        tech, chal = channels.channel_by_slug(db, "tech"), channels.channel_by_slug(db, "challenges")
+        jobs = {j.source: j.channel_id for j in db.execute(select(ClipJob)).scalars()}
+    assert jobs["https://vid/tech1"] == tech.id
+    assert jobs["https://vid/ch1"] == chal.id
