@@ -4506,7 +4506,7 @@ def test_a_window_missed_at_the_daily_cap_says_so(tmp_path, publisher, monkeypat
 def test_a_window_missed_on_the_minimum_gap_says_so(tmp_path, publisher, monkeypatch):
     ready_file_clip(tmp_path)
     add_plan(waiting_plan(hours_ago=1))
-    monkeypatch.setattr(autopilot, "_gap_is_clear", lambda db, now: False)
+    monkeypatch.setattr(autopilot, "_gap_is_clear", lambda db, now, channel=None: False)
     assert tick() == {"waiting": "minimum gap between uploads"}
     tick(60 * 6)
     assert "minimum gap" in events("missed")[0].summary

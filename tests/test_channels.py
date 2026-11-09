@@ -1,5 +1,7 @@
 """The managed-channel registry: legacy fallback, channels.json sync, routing helpers."""
 import json
+import random
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import delete, select
@@ -7,7 +9,7 @@ from sqlalchemy import delete, select
 from app.config import settings
 from app.db import init_db, session_scope
 from app.growth import channels
-from app.models import Channel, ClipJob, Feed, GrowthEvent, GrowthState, Video
+from app.models import Channel, ClipJob, Feed, GrowthEvent, GrowthState, Video, VideoStatus
 
 
 @pytest.fixture(autouse=True)
@@ -139,3 +141,53 @@ def test_supply_feeds_each_channel_from_its_own_feeds(tmp_path, monkeypatch):
         jobs = {j.source: j.channel_id for j in db.execute(select(ClipJob)).scalars()}
     assert jobs["https://vid/tech1"] == tech.id
     assert jobs["https://vid/ch1"] == chal.id
+
+
+def _ready_clip(tmp_path, name, channel_id):
+    path = tmp_path / f"{name}.mp4"
+    path.write_bytes(b"x")
+    with session_scope() as db:
+        video = Video(source="youtube", source_id=name, source_url="https://example.com/v", title=f"Clip {name}",
+                      author="a", duration_sec=30, transformed_path=str(path), local_path=str(path),
+                      status=VideoStatus.TRANSFORMED, channel_id=channel_id,
+                      meta={"clip_rendered": True, "clip_kind": "visual", "clip_parent": name, "clip_hook": "hi"})
+        db.add(video)
+        db.flush()
+        return video.id
+
+
+def _due_plan(now):
+    due = now - timedelta(hours=1)
+    return {"day": now.date().isoformat(), "posts": [
+        {"slot": "00-04", "due": due.isoformat(), "ends": (due + timedelta(hours=4)).isoformat(),
+         "state": "waiting", "attempts": 0}]}
+
+
+def test_autopilot_posts_each_channels_own_clip_to_its_own_plan(tmp_path, monkeypatch):
+    from app.growth import autopilot
+
+    monkeypatch.setattr(settings, "growth_enabled", True)
+    monkeypatch.setattr(settings, "enable_publish", True)
+    monkeypatch.setattr(settings, "use_mock", True)  # MockPublisher: a fake upload, no network
+    _write(tmp_path, monkeypatch, {"channels": [{"slug": "tech"}, {"slug": "comedy"}]})
+    now = datetime(2026, 11, 2, 1, 0, tzinfo=timezone.utc)
+    with session_scope() as db:
+        channels.sync_channels(db)
+        tech, comedy = channels.channel_by_slug(db, "tech"), channels.channel_by_slug(db, "comedy")
+    tech_clip = _ready_clip(tmp_path, "tech-clip", tech.id)
+    comedy_clip = _ready_clip(tmp_path, "comedy-clip", comedy.id)
+    with session_scope() as db:
+        db.add(GrowthState(key="tech:plan", value=_due_plan(now)))
+        db.add(GrowthState(key="comedy:plan", value=_due_plan(now)))
+
+    out = autopilot.autopilot_job(now=now, rng=random.Random(1))
+    assert out["tech"].get("ok") and out["comedy"].get("ok")
+    with session_scope() as db:
+        # Each channel posted its OWN clip, not the other's.
+        assert db.get(Video, tech_clip).status == VideoStatus.PUBLISHED
+        assert db.get(Video, comedy_clip).status == VideoStatus.PUBLISHED
+        assert out["tech"]["video_id"] == tech_clip
+        assert out["comedy"]["video_id"] == comedy_clip
+        # Separate plans, each marked posted.
+        assert db.get(GrowthState, "tech:plan").value["posts"][0]["state"] == "posted"
+        assert db.get(GrowthState, "comedy:plan").value["posts"][0]["state"] == "posted"

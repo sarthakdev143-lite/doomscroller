@@ -24,11 +24,17 @@ CLIP_FACTORS = ("kind", "length", "series", "pace", "sfx", "broll")
 FACTORS = ("slot", "title_style", *CLIP_FACTORS)
 
 
-def channel_zone() -> ZoneInfo:
+def channel_zone(channel=None) -> ZoneInfo:
+    """The posting timezone. The legacy channel (or no channel) uses GROWTH_TIMEZONE; a named one its own."""
+    if channel is None:
+        tz = settings.growth_timezone
+    else:
+        from . import channels
+        tz = channels.timezone_of(channel)
     try:
-        return ZoneInfo(settings.growth_timezone)
+        return ZoneInfo(tz)
     except Exception:
-        log.warning("growth: unknown GROWTH_TIMEZONE %r, using UTC", settings.growth_timezone)
+        log.warning("growth: unknown timezone %r, using UTC", tz)
         return ZoneInfo("UTC")
 
 
