@@ -24,6 +24,9 @@ logs/
 .env
 .env.local
 
+# Multi-channel config (points at per-channel secrets); the template channels.example.json is tracked
+channels.json
+
 # Editor
 .vscode/
 .idea/

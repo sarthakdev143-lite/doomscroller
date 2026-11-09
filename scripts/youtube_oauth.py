@@ -47,6 +47,23 @@ def _show_env(secrets: str, token: str) -> None:
     print(f"\nAdd to .env:\n  USE_MOCK=false\n  YOUTUBE_CLIENT_SECRETS={secrets}\n  YOUTUBE_TOKEN_PATH={token}\n")
 
 
+def _channel_paths(slug: str) -> tuple[str, str]:
+    """A managed channel's client_secret.json and token paths, from channels.json."""
+    from app.db import init_db, session_scope
+    from app.growth import channels
+
+    init_db()
+    with session_scope() as db:
+        channels.sync_channels(db)
+        channel = channels.channel_by_slug(db, slug)
+        if channel is None:
+            known = ", ".join(c.slug for c in channels.all_channels(db)) or "none"
+            raise SystemExit(f"ERROR: no channel {slug!r} in channels.json. Known channels: {known}.")
+        if not channel.client_secrets or not channel.token_path:
+            raise SystemExit(f"ERROR: channel {slug!r} needs client_secrets and token_path set in channels.json.")
+        return channel.client_secrets, channel.token_path
+
+
 def _show_channel(creds) -> int:
     from googleapiclient.discovery import build
 
@@ -67,11 +84,17 @@ def _show_channel(creds) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--force", action="store_true", help="Re-authorize even if a token exists")
+    ap.add_argument("--channel", help="A managed channel's slug (its secrets/token come from channels.json)")
     ap.add_argument("--secrets", default=CLIENT_SECRETS_PATH, help="Path to client_secret.json")
     ap.add_argument("--token", default=TOKEN_PATH, help="Path to save the token")
     ap.add_argument("--no-browser", action="store_true", help="Print the link instead of opening a browser")
     ap.add_argument("--port", type=int, default=8765, help="Local port Google redirects back to")
     args = ap.parse_args()
+
+    # A named channel in channels.json fills its own secrets and token paths (one Cloud project each).
+    if args.channel:
+        args.secrets, args.token = _channel_paths(args.channel)
+        print(f"Authorizing channel {args.channel!r}: secrets {args.secrets}, token {args.token}")
 
     if not os.path.exists(args.secrets):
         print(f"ERROR: missing {args.secrets}. See 'YouTube token' in README.md.")

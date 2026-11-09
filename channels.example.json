@@ -1,0 +1,86 @@
+{
+  "_comment": [
+    "Multi-channel config. Copy to channels.json and fill in each channel's creds.",
+    "One niche per channel, each with its OWN Google Cloud project, OAuth client and token,",
+    "because YouTube's Data API quota is ~6 uploads/day per Cloud project.",
+    "",
+    "For each channel: create the YouTube channel, make a Cloud project, enable the",
+    "YouTube Data API v3 and YouTube Analytics API, make an OAuth client, download its",
+    "client_secret.json to the client_secrets path below, then run:",
+    "   venv/bin/python scripts/youtube_oauth.py --channel <slug> --force",
+    "which writes that channel's token. Doctor (scripts/growth.py doctor) reports each channel.",
+    "",
+    "Set CHANNELS_FILE=channels.json in .env. A channel with enabled=false is skipped;",
+    "set it true once its token is in place. Feeds are the source creators clipped for that niche."
+  ],
+  "channels": [
+    {
+      "slug": "tech",
+      "name": "Tech & Science",
+      "niche": "tech reviews, gadgets, science and engineering",
+      "brand_name": "@your-tech-handle",
+      "client_secrets": "secrets/tech_client_secret.json",
+      "token_path": "secrets/tech_token.json",
+      "uploads_per_day": 3,
+      "timezone": "Asia/Kolkata",
+      "require_approval": true,
+      "enabled": false,
+      "feeds": [
+        "https://www.youtube.com/@mkbhd",
+        "https://www.youtube.com/@Mrwhosetheboss",
+        "https://www.youtube.com/@MarkRober"
+      ]
+    },
+    {
+      "slug": "challenges",
+      "name": "Challenges & Stunts",
+      "niche": "challenges, stunts, big-budget dares",
+      "brand_name": "@your-challenges-handle",
+      "client_secrets": "secrets/challenges_client_secret.json",
+      "token_path": "secrets/challenges_token.json",
+      "uploads_per_day": 3,
+      "timezone": "Asia/Kolkata",
+      "require_approval": true,
+      "enabled": false,
+      "feeds": [
+        "https://www.youtube.com/@MrBeast",
+        "https://www.youtube.com/@ryan",
+        "https://www.youtube.com/@airrack"
+      ]
+    },
+    {
+      "slug": "live",
+      "name": "Live & Reactions",
+      "niche": "livestream highlights and reactions",
+      "brand_name": "@your-live-handle",
+      "client_secrets": "secrets/live_client_secret.json",
+      "token_path": "secrets/live_token.json",
+      "uploads_per_day": 3,
+      "timezone": "Asia/Kolkata",
+      "require_approval": true,
+      "enabled": false,
+      "feeds": [
+        "https://www.youtube.com/@IShowSpeed",
+        "https://www.youtube.com/@KaiCenat"
+      ]
+    },
+    {
+      "slug": "comedy",
+      "name": "Comedy & Entertainment",
+      "niche": "comedy, pranks and entertainment",
+      "brand_name": "@your-comedy-handle",
+      "client_secrets": "secrets/comedy_client_secret.json",
+      "token_path": "secrets/comedy_token.json",
+      "uploads_per_day": 3,
+      "timezone": "Asia/Kolkata",
+      "require_approval": true,
+      "enabled": false,
+      "feeds": [
+        "https://www.youtube.com/@KSI",
+        "https://www.youtube.com/@Sidemen",
+        "https://www.youtube.com/@loganpaulvlogs",
+        "https://www.youtube.com/@JiDion"
+      ]
+    }
+  ]
+}
