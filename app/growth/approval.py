@@ -76,11 +76,12 @@ def recent_posts(db) -> list[dict]:
 
 def queue() -> dict:
     from .autopilot import ready_clips
+    from .factors import channel_zone
 
     with session_scope() as db:
         cards = [_card(v, db) for v in awaiting_review(db)]
         approved = len(ready_clips(db))
-        today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        today = datetime.now(channel_zone()).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
         posted = db.execute(select(Video).where(Video.status == VideoStatus.PUBLISHED,
                                                 Video.published_at >= today)).scalars().all()
         plan = db.get(GrowthState, "plan")

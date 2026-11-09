@@ -47,7 +47,7 @@ def page(request: Request, key: str = ""):
     if key and settings.review_token and hmac.compare_digest(key.encode(), settings.review_token.encode()):
         response = RedirectResponse("/", status_code=303)
         secure = request.headers.get("x-forwarded-proto") == "https" or request.url.scheme == "https"
-        response.set_cookie(_COOKIE, key, max_age=90 * 24 * 3600, httponly=True, samesite="strict", secure=secure)
+        response.set_cookie(_COOKIE, key, max_age=90 * 24 * 3600, httponly=True, samesite="lax", secure=secure)
         return response
     if not _allowed(request):
         return HTMLResponse(_LOCKED, status_code=401 if settings.review_token else 503)
@@ -120,6 +120,7 @@ h2{font-size:16px;margin:8px 0 0}.post{background:var(--card);border:1px solid v
 <main id="posted"></main>
 <script>
 const list=document.getElementById('list'),stats=document.getElementById('stats'),postedBox=document.getElementById('posted');
+const edits={};
 function showPosted(items){
   postedBox.replaceChildren(el('h2',{},'Posted'));
   if(!items.length){postedBox.append(el('div',{className:'empty'},'Nothing posted yet.'));return}
@@ -142,13 +143,15 @@ async function load(){
   const next=d.next_post?new Date(d.next_post).toLocaleString():'not planned yet';
   stats.textContent=`${d.clips.length} waiting · ${d.approved_waiting} approved and queued · ${d.posted_today} posted today · next post ${next}`;
   showPosted(d.posted||[]);
+  for(const id of Object.keys(edits))if(!d.clips.some(c=>c.id===id))delete edits[id];
   list.replaceChildren();
   if(!d.clips.length){list.append(el('div',{className:'empty'},'Nothing to review right now.'));return}
   for(const c of d.clips){
     const card=el('div',{className:'card'});
     card.append(el('video',{src:'/media/'+encodeURIComponent(c.id),controls:true,playsInline:true,preload:'metadata'}));
     const b=el('div',{className:'body'});
-    const t=el('input',{value:c.title,'aria-label':'Title'});
+    const t=el('input',{value:c.id in edits?edits[c.id]:c.title,'aria-label':'Title'});
+    t.addEventListener('input',()=>{edits[c.id]=t.value});
     b.append(t);
     b.append(el('div',{className:'meta'},[c.creator&&('Credit: '+c.creator),Math.round(c.seconds)+'s',c.kind].filter(Boolean).join(' · ')));
     if(c.hook)b.append(el('div',{className:'meta'},'Hook: '+c.hook));
@@ -157,7 +160,7 @@ async function load(){
     async function decide(path,body){yes.disabled=no.disabled=true;
       const r=await fetch('/api/clips/'+encodeURIComponent(c.id)+'/'+path,{method:'POST',credentials:'same-origin',
         headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
-      if(r.ok){card.remove();load()}else{yes.disabled=no.disabled=false;alert((await r.json()).detail||'Failed')}}
+      if(r.ok){delete edits[c.id];card.remove();load()}else{yes.disabled=no.disabled=false;alert((await r.json()).detail||'Failed')}}
     yes.onclick=()=>decide('approve',{title:t.value});no.onclick=()=>decide('reject');
     row.append(yes,no);b.append(row);card.append(b);list.append(card)}
 }

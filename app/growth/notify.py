@@ -24,7 +24,7 @@ log = logging.getLogger(__name__)
 
 _STATE = "notified"
 TUNNEL_URL_FILE = PROJECT_ROOT / "logs" / "tunnel_url.txt"
-_ALERT_KINDS = ("strike", "paused", "account_hold", "publish_failed", "publish_stuck", "missing", "starved")
+_ALERT_KINDS = ("strike", "paused", "account_hold", "publish_failed", "publish_stuck", "missing", "starved", "missed")
 _MAX_LINES = 12
 
 
