@@ -93,9 +93,11 @@ def _send(request):
 
 
 class YouTubePublisher(Publisher):
-    def __init__(self) -> None:
+    def __init__(self, token_path: Optional[str] = None) -> None:
         from ..config import settings
-        self.token_path = settings.youtube_token_path
+        # A per-channel token path lets several channels publish to their own accounts;
+        # falling back to the global path keeps single-channel setups working.
+        self.token_path = token_path or settings.youtube_token_path
         self._youtube: Optional[Any] = None
         self._analytics: Optional[Any] = None
 
