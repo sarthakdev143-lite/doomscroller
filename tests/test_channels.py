@@ -282,6 +282,34 @@ def test_review_card_shows_the_target_channel(tmp_path, monkeypatch):
     assert card["channel"] == "Tech & Science"
 
 
+def test_review_queue_has_a_per_channel_status_strip_when_multi(tmp_path, monkeypatch):
+    from app.growth import approval
+
+    _write(tmp_path, monkeypatch, {"channels": [
+        {"slug": "tech", "name": "Tech"}, {"slug": "comedy", "name": "Comedy"}]})
+    with session_scope() as db:
+        channels.sync_channels(db)
+        tech = channels.channel_by_slug(db, "tech")
+    path = tmp_path / "t.mp4"
+    path.write_bytes(b"x")
+    with session_scope() as db:
+        db.add(Video(source="youtube", source_id="t1", source_url="u", title="t", status=VideoStatus.PENDING,
+                     transformed_path=str(path), channel_id=tech.id, duration_sec=20, meta={"clip_rendered": True}))
+    q = approval.queue()
+    strip = {c["slug"]: c for c in q["channels"]}
+    assert set(strip) == {"tech", "comedy"}
+    assert strip["tech"]["waiting"] == 1 and strip["comedy"]["waiting"] == 0
+    assert q["clips"][0]["channel_slug"] == "tech"
+
+
+def test_a_single_legacy_channel_keeps_the_flat_review_view(monkeypatch):
+    from app.growth import approval
+
+    monkeypatch.setattr(settings, "channels_file", "")  # legacy single default channel
+    q = approval.queue()
+    assert q["channels"] == []  # no per-channel strip for one legacy channel
+
+
 def test_doctor_reports_each_named_channels_readiness(tmp_path, monkeypatch):
     from app.growth import report
 

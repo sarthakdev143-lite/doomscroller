@@ -10,7 +10,7 @@ import os
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.db import session_scope
 from app.metadata import finished_title
@@ -33,16 +33,18 @@ def awaiting_review(db, scope=None) -> list[Video]:
             and os.path.exists(v.transformed_path)][:_QUEUE_LIMIT]
 
 
-def _channel_label(db, channel_id) -> str:
+def _channel_of(db, channel_id) -> tuple[str, str]:
+    """(display name, slug) for a clip's channel; empty for a legacy clip with none."""
     from . import channels
 
     channel = channels.get_channel(db, channel_id)
-    return (channel.name or channel.slug) if channel else ""
+    return ((channel.name or channel.slug), channel.slug) if channel else ("", "")
 
 
 def _card(video: Video, db) -> dict:
     meta = video.meta or {}
     draft = db.execute(select(MetadataDraft).where(MetadataDraft.video_id == video.id)).scalar_one_or_none()
+    name, slug = _channel_of(db, video.channel_id)
     return {
         "id": video.id,
         "title": (draft.title if draft and draft.title else video.title) or "",
@@ -53,7 +55,8 @@ def _card(video: Video, db) -> dict:
         "kind": meta.get("clip_kind") or "",
         "why": meta.get("clip_reason") or "",
         "flag": meta.get("growth_flagged") or "",
-        "channel": _channel_label(db, video.channel_id),
+        "channel": name,
+        "channel_slug": slug,
         "made": (video.scraped_at.isoformat() if video.scraped_at else ""),
     }
 
@@ -85,25 +88,47 @@ def recent_posts(db) -> list[dict]:
     return [_result(v) for v in rows if not v.youtube_video_id.startswith("MOCK_")][:_POSTED_LIMIT]
 
 
-def queue() -> dict:
+def _channel_status(db, channel) -> dict:
+    """One channel's at-a-glance numbers for the review page's status strip."""
+    from . import channels
     from .autopilot import ready_clips
     from .factors import channel_zone
 
+    scope = channels.video_scope(channel)
+    today = datetime.now(channel_zone(channel)).replace(
+        hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+    posted_today = db.scalar(select(func.count(Video.id)).where(
+        Video.status == VideoStatus.PUBLISHED, Video.published_at >= today, scope)) or 0
+    plan = db.get(GrowthState, channels.state_key(channel, "plan"))
+    waiting = [p for p in (plan.value or {}).get("posts", []) if p.get("state") == "waiting"] if plan else []
+    return {
+        "slug": channel.slug,
+        "name": channel.name or channel.slug,
+        "waiting": len(awaiting_review(db, scope)),
+        "approved": len(ready_clips(db, scope)),
+        "posted_today": posted_today,
+        "next_post": min((p["due"] for p in waiting), default=""),
+    }
+
+
+def queue() -> dict:
+    from . import channels
+
     with session_scope() as db:
+        active = channels.active_channels(db)
         cards = [_card(v, db) for v in awaiting_review(db)]
-        approved = len(ready_clips(db))
-        today = datetime.now(channel_zone()).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
-        posted = db.execute(select(Video).where(Video.status == VideoStatus.PUBLISHED,
-                                                Video.published_at >= today)).scalars().all()
-        plan = db.get(GrowthState, "plan")
-        waiting = [p for p in (plan.value or {}).get("posts", []) if p.get("state") == "waiting"] if plan else []
-        return {
-            "clips": cards,
-            "approved_waiting": approved,
-            "posted_today": len(posted),
-            "next_post": min((p["due"] for p in waiting), default=""),
-            "posted": recent_posts(db),
-        }
+        per = [_channel_status(db, c) for c in active]
+        posted = recent_posts(db)
+    # A single legacy channel keeps the flat view; several add a per-channel status strip and filter chips.
+    multi = len(active) > 1 or (len(active) == 1 and not channels.is_default(active[0]))
+    return {
+        "clips": cards,
+        "channels": per if multi else [],
+        "approved_waiting": sum(c["approved"] for c in per),
+        "posted_today": sum(c["posted_today"] for c in per),
+        "next_post": min((c["next_post"] for c in per if c["next_post"]), default=""),
+        "posted": posted,
+    }
 
 
 def _pending_clip(db, video_id: str) -> Video:
