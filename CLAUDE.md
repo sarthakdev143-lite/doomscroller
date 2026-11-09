@@ -319,6 +319,28 @@ the app as systemd user services that start at boot and restart after a crash.
 | `growth_autopilot` | 10m | writes the day's plan, then posts whatever is due |
 | `growth_collect` | 3h | `VideoSnapshot` per video from the Data API, retention from the Analytics API |
 | `growth_learn` | 6h | diagnoses matured videos, updates the focus, mines winners, logs findings |
+| `growth_watch` | `GROWTH_WATCH_MINUTES` (5) | polls each feed's YouTube RSS; a fresh upload is cut at once rather than waiting on supply |
+
+**Multiple channels** (`app/growth/channels.py`). The loop can manage several YouTube channels at once, one niche
+each, so each channel's audience sees a focused feed. `channels.json` (path `CHANNELS_FILE`, or the repo root by
+default; `channels.example.json` is the template) declares each channel — its slug, niche, `brand_name`, its own
+`client_secrets` and `token_path` (one Google Cloud project each, because the Data API gives ~6 uploads/day per
+project), `uploads_per_day`, `timezone`, `require_approval`, `enabled`, and its `feeds`. It is synced into the
+`channels` and `feeds` tables (the runtime source of truth) on first use. `scripts/youtube_oauth.py --channel <slug>`
+authorizes one channel into its own token; `doctor()` reports a readiness block per channel.
+
+Every growth job (`supply`, `autopilot`, `collect`, `learn`, `watch`) loops the enabled channels and scopes its work:
+a clip carries its source feed's `channel_id` from `enqueue` through the pipeline and is published with that channel's
+token; each channel keeps its own plan, start clock, focus, findings and analytics health in `GrowthState`, namespaced
+by `channels.state_key`. **Collection must stay per-channel** — reading one channel's videos through another's token
+would make them look deleted and fire false copyright strikes. The A/B model is fit per channel, so niches do not
+confound each other.
+
+**Backward compatible by design.** With no `channels.json` the loop seeds a single legacy channel (slug `default`)
+from the flat `GROWTH_*` settings, `YOUTUBE_TOKEN_PATH` and `GROWTH_FEEDS`. That default channel resolves its config
+live from settings, owns rows with no `channel_id`, keeps the un-namespaced state keys, and makes each job return its
+old flat result shape — so an existing single-channel deployment, and the whole test suite, behave exactly as before.
+`channels.is_default`, `video_scope`, `state_key` and `event_channel` encode this special-casing.
 
 - **A/B testing here means between videos.** Each video changes several factors (`factors.py`) at once, so
   `model.py` fits them together: Bayesian linear regression on log views, with a trend term so a growing channel is
