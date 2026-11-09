@@ -88,6 +88,24 @@ def recent_posts(db) -> list[dict]:
     return [_result(v) for v in rows if not v.youtube_video_id.startswith("MOCK_")][:_POSTED_LIMIT]
 
 
+def _attention(db, channel, waiting: int, approved: int, now: datetime) -> str:
+    """Why this channel needs the owner, or '' when it is fine. A halted channel must not read as merely idle."""
+    from . import channels, safety, supply
+
+    paused = safety.pause_reason(db)
+    if paused:
+        return "Paused — run resume"
+    if safety.active_hold(db, now):
+        return "Posting on hold"
+    gap = db.get(GrowthState, channels.state_key(channel, supply.SUPPLY_GAP))
+    cause = (gap.value or {}).get("cause") if gap else None
+    if cause:
+        return f"Supply: {cause[:80]}"
+    if not waiting and not approved:
+        return "No clips in stock"
+    return ""
+
+
 def _channel_status(db, channel) -> dict:
     """One channel's at-a-glance numbers for the review page's status strip."""
     from . import channels
@@ -95,19 +113,23 @@ def _channel_status(db, channel) -> dict:
     from .factors import channel_zone
 
     scope = channels.video_scope(channel)
+    now = datetime.now(timezone.utc)
     today = datetime.now(channel_zone(channel)).replace(
         hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
     posted_today = db.scalar(select(func.count(Video.id)).where(
         Video.status == VideoStatus.PUBLISHED, Video.published_at >= today, scope)) or 0
     plan = db.get(GrowthState, channels.state_key(channel, "plan"))
-    waiting = [p for p in (plan.value or {}).get("posts", []) if p.get("state") == "waiting"] if plan else []
+    waiting_posts = [p for p in (plan.value or {}).get("posts", []) if p.get("state") == "waiting"] if plan else []
+    waiting = len(awaiting_review(db, scope))
+    approved = len(ready_clips(db, scope))
     return {
         "slug": channel.slug,
         "name": channel.name or channel.slug,
-        "waiting": len(awaiting_review(db, scope)),
-        "approved": len(ready_clips(db, scope)),
+        "waiting": waiting,
+        "approved": approved,
         "posted_today": posted_today,
-        "next_post": min((p["due"] for p in waiting), default=""),
+        "next_post": min((p["due"] for p in waiting_posts), default=""),
+        "attention": _attention(db, channel, waiting, approved, now),
     }
 
 

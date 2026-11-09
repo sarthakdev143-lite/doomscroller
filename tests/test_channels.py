@@ -315,6 +315,17 @@ def test_review_queue_has_a_per_channel_status_strip_when_multi(tmp_path, monkey
     assert q["clips"][0]["channel_slug"] == "tech"
 
 
+def test_channel_status_flags_a_channel_that_needs_attention(tmp_path, monkeypatch):
+    from app.growth import approval
+
+    _write(tmp_path, monkeypatch, {"channels": [{"slug": "tech", "name": "Tech"}]})
+    with session_scope() as db:
+        channels.sync_channels(db)
+    # No clips in stock and nothing waiting -> the strip must say so, not look like a healthy idle channel.
+    tech = next(c for c in approval.queue()["channels"] if c["slug"] == "tech")
+    assert tech["attention"] == "No clips in stock"
+
+
 def test_a_single_legacy_channel_keeps_the_flat_review_view(monkeypatch):
     from app.growth import approval
 

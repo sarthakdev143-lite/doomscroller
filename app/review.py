@@ -96,72 +96,83 @@ _PAGE = """<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Review clips</title>
 <style>
-:root{--bg:#0f0f10;--card:#1b1b1e;--text:#f2f2f2;--dim:#a0a0a8;--ok:#2fbf71;--no:#e5484d;--line:#2a2a2e;--accent:#4f8cff}
+:root{--bg:#0f0f10;--card:#1b1b1e;--text:#f2f2f2;--dim:#a0a0a8;--ok:#2fbf71;--no:#e5484d;--line:#2a2a2e;--accent:#4f8cff;--warn:#f5a524}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.4 system-ui,-apple-system,sans-serif}
-header{position:sticky;top:0;background:var(--bg);padding:12px 16px 8px;border-bottom:1px solid var(--line);z-index:2}
+header{position:sticky;top:0;background:var(--bg);padding:10px 16px 6px;border-bottom:1px solid var(--line);z-index:2}
 .hwrap{max-width:560px;margin:0 auto}
-h1{font-size:18px;margin:0 0 4px}.stats{color:var(--dim);font-size:13px}
-.chips{display:flex;gap:8px;overflow-x:auto;padding:10px 0 2px;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+h1{font-size:15px;margin:0;display:inline}.stats{color:var(--dim);font-size:12px;margin-top:2px}
+.chips{display:flex;gap:8px;overflow-x:auto;padding:8px 0 2px;-webkit-overflow-scrolling:touch;scrollbar-width:none}
 .chips::-webkit-scrollbar{display:none}
-.chip{padding:6px 12px;border-radius:999px;border:1px solid var(--line);background:var(--card);color:var(--dim);
+.chip{padding:7px 13px;border-radius:999px;border:1px solid var(--line);background:var(--card);color:var(--dim);
  white-space:nowrap;font-size:13px;cursor:pointer;user-select:none}
 .chip.on{background:var(--text);color:var(--bg);border-color:var(--text);font-weight:600}
-.chip .n{opacity:.6;margin-left:5px;font-variant-numeric:tabular-nums}
-main{padding:12px 16px 48px;display:grid;gap:14px;max-width:560px;margin:0 auto}
-.strip{display:flex;gap:10px;overflow-x:auto;padding:2px 0 2px;-webkit-overflow-scrolling:touch;scrollbar-width:none}
-.strip::-webkit-scrollbar{display:none}
-.cc{min-width:150px;flex:0 0 auto;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 12px}
-.cc h3{font-size:14px;margin:0 0 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.cc .big{font-size:22px;font-weight:700}.cc .sub{color:var(--dim);font-size:12px;margin-top:2px}
+.chip.att{border-color:var(--warn)}
+.chip .n{opacity:.75;margin-left:5px;font-variant-numeric:tabular-nums}
+main{padding:10px 16px 40px;display:grid;gap:12px;max-width:560px;margin:0 auto}
+#strip{display:flex;gap:10px;overflow-x:auto;padding:2px 0;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+#strip::-webkit-scrollbar{display:none}
+.cc{min-width:150px;flex:0 0 auto;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:9px 11px}
+.cc.att{border-color:var(--warn)}
+.cc h3{font-size:13px;margin:0 0 3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cc .sub{color:var(--dim);font-size:12px;font-variant-numeric:tabular-nums}
+.cc .attn{color:var(--warn);font-size:12px;font-weight:600;margin-top:3px}
+.banner{background:#3a1416;border:1px solid var(--no);color:#ffb4b4;border-radius:10px;padding:10px 12px;font-size:13px;font-weight:600}
 .card{background:var(--card);border-radius:14px;overflow:hidden;border:1px solid var(--line)}
-video{width:100%;aspect-ratio:9/16;max-height:70vh;background:#000;display:block}
+.card.flagged{border-color:var(--warn)}
+video{width:100%;aspect-ratio:9/16;max-height:62vh;background:#000;display:block}
 .body{padding:12px;display:grid;gap:8px}.meta{color:var(--dim);font-size:13px}
 .pill{display:inline-block;font-size:11px;font-weight:600;color:var(--accent);border:1px solid var(--accent);
  border-radius:999px;padding:2px 8px;letter-spacing:.02em}
-.flag{color:#f5a524;font-size:13px}
+.warnbox{background:#3a2a10;border:1px solid var(--warn);color:#f5d58a;border-radius:8px;padding:8px 10px;font-size:13px;font-weight:600}
+.err{color:var(--no);font-size:13px}
 input{width:100%;padding:10px;border-radius:10px;border:1px solid var(--line);background:#111;color:var(--text);font-size:15px}
-.row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-button{padding:14px;border:0;border-radius:10px;font-size:16px;font-weight:600;color:#fff;cursor:pointer}
-.yes{background:var(--ok)}.nope{background:var(--no)}button:disabled{opacity:.5}
+.actions{display:grid;gap:8px}
+button{border:0;border-radius:10px;font-weight:600;cursor:pointer}
+.yes{background:var(--ok);color:#06240f;padding:15px;font-size:16px}
+.nope{background:transparent;color:var(--no);border:1px solid var(--no);padding:11px;font-size:14px}
+.card.flagged .yes{background:transparent;color:var(--dim);border:1px solid var(--line);padding:11px;font-size:14px;order:2}
+.card.flagged .nope{background:var(--no);color:#fff;border:0;padding:15px;font-size:16px;order:1}
+button:disabled{opacity:.5}
 .empty{color:var(--dim);text-align:center;padding:40px 0}
-h2{font-size:16px;margin:4px 0 0}.post{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;display:grid;gap:4px}
+h2{font-size:15px;margin:4px 0 0}.post{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;display:grid;gap:4px}
 .post a{color:var(--text);font-weight:600;text-decoration:none}.nums{display:flex;gap:14px;flex-wrap:wrap;color:var(--dim);font-size:13px}
 .verdict{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.04em}.winner{color:var(--ok)}
-.weak_hold,.no_reach,.low_views{color:#f5a524}.why{color:var(--dim);font-size:13px}
+.weak_hold,.no_reach,.low_views{color:var(--warn)}.why{color:var(--dim);font-size:13px}
 </style></head><body>
 <header><div class="hwrap"><h1>Review clips</h1><div class="stats" id="stats">Loading…</div>
 <div class="chips" id="chips"></div></div></header>
+<main id="banner" hidden></main>
 <main id="strip" hidden></main>
 <main id="list"></main>
 <main id="posted"></main>
 <script>
-const stats=document.getElementById('stats'),chipsBox=document.getElementById('chips'),
+const stats=document.getElementById('stats'),chipsBox=document.getElementById('chips'),bannerBox=document.getElementById('banner'),
       stripBox=document.getElementById('strip'),list=document.getElementById('list'),postedBox=document.getElementById('posted');
-const edits={};let last=null,filter='all';
+const edits={},cards=new Map();let last=null,filter='all',stale=false;
 try{filter=localStorage.getItem('reviewFilter')||'all'}catch(e){}
 function el(tag,attrs,text){const e=document.createElement(tag);Object.assign(e,attrs||{});if(text!=null)e.textContent=text;return e}
 function fmt(iso){return iso?new Date(iso).toLocaleString([],{weekday:'short',hour:'2-digit',minute:'2-digit'}):'—'}
 function setFilter(f){filter=f;try{localStorage.setItem('reviewFilter',f)}catch(e){}render()}
+function busy(){const a=document.activeElement;return(a&&a.tagName==='INPUT'&&list.contains(a))||[...list.querySelectorAll('video')].some(v=>!v.paused&&!v.ended)}
 
 function renderChips(channels){
   chipsBox.replaceChildren();
   if(!channels.length){return}
   const total=channels.reduce((n,c)=>n+c.waiting,0);
-  const mk=(slug,label,n)=>{const c=el('div',{className:'chip'+(filter===slug?' on':'')});c.append(el('span',{},label));
+  const mk=(slug,label,n,att)=>{const c=el('div',{className:'chip'+(filter===slug?' on':'')+(att?' att':'')});c.append(el('span',{},label));
     if(n)c.append(el('span',{className:'n'},n));c.onclick=()=>setFilter(slug);return c};
-  chipsBox.append(mk('all','All',total));
-  for(const c of channels)chipsBox.append(mk(c.slug,c.name,c.waiting));
+  chipsBox.append(mk('all','All',total,false));
+  for(const c of channels)chipsBox.append(mk(c.slug,c.name,c.waiting,!!c.attention));
 }
 function renderStrip(channels){
   if(!channels.length){stripBox.hidden=true;return}
   stripBox.hidden=false;stripBox.replaceChildren();
   for(const c of channels){
-    const card=el('div',{className:'cc'});
+    const card=el('div',{className:'cc'+(c.attention?' att':'')});
     card.append(el('h3',{},c.name));
-    card.append(el('div',{className:'big'},c.waiting));
-    card.append(el('div',{className:'sub'},'waiting to review'));
-    card.append(el('div',{className:'sub'},`${c.approved} queued · ${c.posted_today} posted today`));
-    card.append(el('div',{className:'sub'},'next '+fmt(c.next_post)));
+    card.append(el('div',{className:'sub'},`${c.waiting} to review · ${c.approved} queued`));
+    card.append(el('div',{className:'sub'},`${c.posted_today} today · next ${fmt(c.next_post)}`));
+    if(c.attention)card.append(el('div',{className:'attn'},c.attention));
     stripBox.append(card)}
 }
 function renderPosted(items){
@@ -179,41 +190,75 @@ function renderPosted(items){
     postedBox.append(card)}
 }
 function clipCard(c){
-  const card=el('div',{className:'card'});
+  const card=el('div',{className:'card'+(c.flag?' flagged':'')});
   card.append(el('video',{src:'/media/'+encodeURIComponent(c.id),controls:true,playsInline:true,preload:'metadata'}));
   const b=el('div',{className:'body'});
+  if(c.flag)b.append(el('div',{className:'warnbox'},'Flagged — probably should NOT post: '+c.flag));
   if(c.channel)b.append(el('span',{className:'pill'},c.channel));
-  const t=el('input',{value:c.id in edits?edits[c.id]:c.title,'aria-label':'Title'});
+  const t=el('input',{value:c.id in edits?edits[c.id]:c.title,'aria-label':'Clip title'});
   t.addEventListener('input',()=>{edits[c.id]=t.value});
   b.append(t);
   b.append(el('div',{className:'meta'},[c.creator&&('Credit: '+c.creator),Math.round(c.seconds)+'s',c.kind].filter(Boolean).join(' · ')));
   if(c.hook)b.append(el('div',{className:'meta'},'Hook: '+c.hook));
-  if(c.flag)b.append(el('div',{className:'flag'},'Flagged: '+c.flag));
-  const row=el('div',{className:'row'}),yes=el('button',{className:'yes'},'Approve'),no=el('button',{className:'nope'},'Reject');
-  async function decide(path,body){yes.disabled=no.disabled=true;
-    const r=await fetch('/api/clips/'+encodeURIComponent(c.id)+'/'+path,{method:'POST',credentials:'same-origin',
-      headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
-    if(r.ok){delete edits[c.id];load()}else{yes.disabled=no.disabled=false;alert((await r.json()).detail||'Failed')}}
-  yes.onclick=()=>decide('approve',{title:t.value});no.onclick=()=>decide('reject');
-  row.append(yes,no);b.append(row);card.append(b);return card;
+  const errLine=el('div',{className:'err'});errLine.hidden=true;
+  const actions=el('div',{className:'actions'}),yes=el('button',{className:'yes','aria-label':'Approve clip'},'Approve'),
+        no=el('button',{className:'nope','aria-label':'Reject clip'},'Reject');
+  let armed=false;
+  async function decide(path,body){
+    yes.disabled=no.disabled=true;errLine.hidden=true;
+    try{
+      const r=await fetch('/api/clips/'+encodeURIComponent(c.id)+'/'+path,{method:'POST',credentials:'same-origin',
+        headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
+      if(r.ok){delete edits[c.id];cards.delete(c.id);card.remove();load();return}
+      let msg='Failed ('+r.status+')';
+      try{msg=(await r.json()).detail||msg}catch(e){}
+      if(r.status===401)msg='Session expired — reopen your ?key= link.';
+      errLine.textContent=msg;errLine.hidden=false;
+    }catch(e){errLine.textContent='Network error — not sent. Check your connection and try again.';errLine.hidden=false;}
+    yes.disabled=no.disabled=false;
+  }
+  // Approving a flagged clip (the gate says it probably should not post) takes a confirming second tap.
+  yes.onclick=()=>{if(c.flag&&!armed){armed=true;yes.textContent='Tap again to approve anyway';
+      setTimeout(()=>{armed=false;yes.textContent='Approve'},3000);return}decide('approve',{title:t.value})};
+  no.onclick=()=>decide('reject');
+  actions.append(yes,no);b.append(actions,errLine);card.append(b);return card;
+}
+function renderList(clips){
+  const want=new Map(clips.map(c=>[c.id,c]));
+  for(const [id,card] of cards){if(!want.has(id)){card.remove();cards.delete(id)}}
+  const emptyEl=list.querySelector('.empty');
+  if(!clips.length){if(!emptyEl)list.append(el('div',{className:'empty'},'Nothing to review here right now.'));return}
+  if(emptyEl)emptyEl.remove();
+  let prev=null;
+  for(const c of clips){
+    let card=cards.get(c.id);
+    if(!card){card=clipCard(c);cards.set(c.id,card);prev?prev.after(card):list.prepend(card)}
+    prev=card;
+  }
 }
 function render(){
   if(!last)return;
   const d=last,channels=d.channels||[];
   if(channels.length&&filter!=='all'&&!channels.some(c=>c.slug===filter))filter='all';
   const next=d.next_post?fmt(d.next_post):'not planned yet';
-  stats.textContent=`${d.clips.length} to review · ${d.approved_waiting} queued · ${d.posted_today} posted today · next ${next}`;
+  stats.textContent=(stale?'OFFLINE — showing older data · ':'')+
+    `${d.clips.length} to review · ${d.approved_waiting} queued · ${d.posted_today} posted today · next ${next}`;
+  stats.style.color=stale?'var(--warn)':'';
+  const paused=(channels.find(c=>c.attention&&/paused|hold/i.test(c.attention))||{}).attention;
+  if(paused){bannerBox.hidden=false;bannerBox.replaceChildren(el('div',{className:'banner'},paused+' — some channels are not posting.'))}
+  else bannerBox.hidden=true;
   renderChips(channels);renderStrip(channels);renderPosted(d.posted||[]);
   const clips=(filter==='all')?d.clips:d.clips.filter(c=>c.channel_slug===filter);
   for(const id of Object.keys(edits))if(!d.clips.some(c=>c.id===id))delete edits[id];
-  list.replaceChildren();
-  if(!clips.length){list.append(el('div',{className:'empty'},'Nothing to review here right now.'));return}
-  for(const c of clips)list.append(clipCard(c));
+  renderList(clips);
 }
 async function load(){
-  const r=await fetch('/api/queue',{credentials:'same-origin'});
-  if(!r.ok){stats.textContent='Not signed in. Open the link with ?key= again.';return}
-  last=await r.json();render();
+  try{
+    const r=await fetch('/api/queue',{credentials:'same-origin'});
+    if(!r.ok){stats.textContent='Not signed in. Open the link with ?key= again.';stats.style.color='var(--warn)';return}
+    last=await r.json();stale=false;render();
+  }catch(e){stale=true;if(last)render();else{stats.textContent='Offline — could not load. Retrying…';stats.style.color='var(--warn)'}}
 }
-load();setInterval(load,60000);
+// The background refresh never rebuilds a card you are watching or typing in; the list is diffed by id.
+load();setInterval(()=>{if(!busy())load()},60000);
 </script></body></html>"""
