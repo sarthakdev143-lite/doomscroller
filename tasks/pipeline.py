@@ -918,7 +918,8 @@ def _settle_upload(video_pk: str, *, count_quota: bool = True) -> None:
     if count_quota:
         try:
             with session_scope() as db:
-                quota.consume_one(db, note=f"video {video_pk}")
+                video = db.get(Video, video_pk)
+                quota.consume_one(db, note=f"video {video_pk}", channel_id=video.channel_id if video else None)
         except Exception as exc:
             log.warning("publish: quota not counted for %s: %s", video_pk[:8], exc)
     try:
@@ -964,7 +965,7 @@ def publish_task(video_id: str, meta: dict | None = None) -> dict:
             video.status = VideoStatus.FAILED
             video.error = "publish: transformed file missing from disk"
             return {"ok": False, "error": video.error}
-        if quota.remaining(db) <= 0:
+        if quota.remaining(db, video.channel_id) <= 0:
             return {"ok": False, "error": "daily quota exhausted"}
 
         # The read above may be stale by now: only this UPDATE decides who uploads.

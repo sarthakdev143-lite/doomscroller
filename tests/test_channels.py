@@ -9,14 +9,14 @@ from sqlalchemy import delete, select
 from app.config import settings
 from app.db import init_db, session_scope
 from app.growth import channels
-from app.models import Channel, ClipJob, Feed, GrowthEvent, GrowthState, Video, VideoStatus
+from app.models import Channel, ClipJob, Feed, GrowthEvent, GrowthState, QuotaUsage, Video, VideoStatus
 
 
 @pytest.fixture(autouse=True)
 def clean(monkeypatch):
     init_db()
     with session_scope() as db:
-        for table in (Feed, Channel, ClipJob, GrowthEvent, GrowthState, Video):
+        for table in (Feed, Channel, ClipJob, GrowthEvent, GrowthState, QuotaUsage, Video):
             db.execute(delete(table))
     monkeypatch.setattr(settings, "channels_file", "")
     monkeypatch.setattr(settings, "youtube_token_path", "./secrets/youtube_token.json")
@@ -130,6 +130,19 @@ def test_adding_a_channel_is_picked_up_by_a_resync_the_app_runs_at_boot(tmp_path
         # ...the boot-time sync_channels (wired into the app lifespan) reconciles it.
         channels.sync_channels(db)
         assert {c.slug for c in channels.active_channels(db)} == {"tech", "comedy"}
+
+
+def test_each_channel_counts_its_own_uploads():
+    from app import quota
+
+    with session_scope() as db:
+        quota.consume_one(db, channel_id="channel-a")
+        quota.consume_one(db, channel_id="channel-a")
+        quota.consume_one(db)
+    with session_scope() as db:
+        assert quota.snapshot(db, "channel-a")["uploads"] == 2
+        assert quota.snapshot(db, "channel-b")["uploads"] == 0   # another channel's project is untouched
+        assert quota.snapshot(db)["uploads"] == 1                # and so is the legacy count
 
 
 def test_one_channel_failing_does_not_stop_the_others(tmp_path, monkeypatch):

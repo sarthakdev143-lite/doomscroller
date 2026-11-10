@@ -579,7 +579,7 @@ def test_a_simulated_month_learns_the_best_window(tmp_path, monkeypatch, publish
     """A world where one posting window truly gets 4x the views. The loop is never told."""
     best_slot = "16-20"
     world = np.random.default_rng(7)
-    monkeypatch.setattr(quota, "remaining", lambda db: 99)
+    monkeypatch.setattr(quota, "remaining", lambda db, channel_id=None: 99)
     monkeypatch.setattr(settings, "growth_min_inventory", 0)
     path = tmp_path / "clip.mp4"
     path.write_bytes(b"x")
@@ -793,7 +793,7 @@ def test_claim_is_decided_by_the_update_not_the_earlier_read(tmp_path, publisher
     video_id = ready_file_clip(tmp_path)
     real_remaining = quota.remaining
 
-    def rejected_meanwhile(db):
+    def rejected_meanwhile(db, channel_id=None):
         db.execute(update(Video).where(Video.id == video_id).values(status=VideoStatus.REJECTED)
                    .execution_options(synchronize_session=False))
         return real_remaining(db)
@@ -4516,7 +4516,7 @@ def test_a_window_missed_on_a_hold_says_so(tmp_path, publisher):
 def test_a_window_missed_at_the_daily_cap_says_so(tmp_path, publisher, monkeypatch):
     ready_file_clip(tmp_path)
     add_plan(waiting_plan(hours_ago=1))
-    monkeypatch.setattr(quota, "remaining", lambda db: 0)
+    monkeypatch.setattr(quota, "remaining", lambda db, channel_id=None: 0)
     tick()
     tick(60 * 6)
     assert "daily upload cap" in events("missed")[0].summary

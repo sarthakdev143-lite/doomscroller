@@ -186,6 +186,7 @@ class QuotaUsage(Base):
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
     day: Mapped[str] = mapped_column(String(10), index=True)  # YYYY-MM-DD
+    channel_id: Mapped[Optional[str]] = mapped_column(String(32), default=None, index=True)  # None = the legacy count
     uploads: Mapped[int] = mapped_column(Integer, default=0)
     cap: Mapped[int] = mapped_column(Integer, default=50)
     notes: Mapped[Optional[str]] = mapped_column(Text, default=None)

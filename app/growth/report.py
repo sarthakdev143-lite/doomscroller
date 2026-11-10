@@ -29,6 +29,8 @@ _PROBLEM_KINDS = ("missing", "strike", "paused", "account_hold", "publish_failed
 # What ended a problem stays beside it, or a week-old strike reads as still open and its advice does nothing.
 _RESOLUTION_KINDS = ("strike_cleared", "resumed", "unblocked")
 _LISTED_KINDS = _PROBLEM_KINDS + _RESOLUTION_KINDS
+# 10,000 quota units a day per Cloud project, about 1,600 per upload.
+_PROJECT_UPLOADS = 6
 PROBLEM_WINDOW = timedelta(days=30)
 
 
@@ -166,6 +168,11 @@ def _channel_rows(live: bool) -> list[dict]:
             _check(bool(feeds), "feeds", f"{len(feeds)} feeds" if feeds else "none set for this channel"),
             _check(not gap_cause, "stock",
                    f"{stock} clips ready" + (f"; supply gap: {gap_cause[:80]}" if gap_cause else ""), required=False),
+            _check(channel.uploads_per_day <= _PROJECT_UPLOADS, "pace",
+                   f"{channel.uploads_per_day} a day" + (
+                       "" if channel.uploads_per_day <= _PROJECT_UPLOADS else
+                       f": a Cloud project's default quota covers about {_PROJECT_UPLOADS} uploads a day, so the "
+                       "rest will be refused unless this project has a raised quota"), required=False),
         ]
         if live:
             checks += _youtube_checks(insights) if insights else [

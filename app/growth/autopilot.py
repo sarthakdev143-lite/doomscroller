@@ -407,7 +407,7 @@ def _held_back(db, now: datetime, channel=None) -> Optional[dict]:
         return {"skipped": f"on hold until {hold['until']}: {hold['reason']}"}
     if not _gap_is_clear(db, now, channel):
         return {"waiting": "minimum gap between uploads"}
-    if quota.remaining(db) <= 0:
+    if quota.remaining(db, _ev_channel(channel)) <= 0:
         return {"skipped": "daily upload cap reached"}
     return None
 
