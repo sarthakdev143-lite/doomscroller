@@ -3575,3 +3575,70 @@ def test_the_last_segment_runs_on_past_the_final_word():
     assert held[0] == (1.0, 2.0) and held[1][1] > 4.0
     assert render.with_end_hold([(3.0, 4.0)], 4.1)[0][1] <= 4.1  # never past the end of the source
 
+
+
+# ---------- audio QA (earshot skill, opt-in) ----------
+def test_audio_qa_is_off_without_the_flag_or_binary(monkeypatch):
+    from app.clipper import audio_qa
+    monkeypatch.setattr(audio_qa, "earshot_bin", lambda: "/bin/earshot")
+    monkeypatch.setattr(settings, "earshot_qa", False)
+    assert audio_qa.available() is False
+    monkeypatch.setattr(settings, "earshot_qa", True)
+    assert audio_qa.available() is True
+    monkeypatch.setattr(audio_qa, "earshot_bin", lambda: None)
+    assert audio_qa.available() is False
+
+
+def test_audio_qa_summarise_trims_to_verdict_and_fixable_issues():
+    from app.clipper import audio_qa
+    raw = {"verdict": "needs work", "score": 0.846, "in_range": 19, "scored": 23,
+           "actions": [{"metric": "music_frac", "weight": "critical", "action": "music is heard in only 5% of windows: add a bed"},
+                       {"metric": "side_to_mid_db", "weight": "minor", "action": "the mix is mono"},
+                       {"metric": "tempo", "weight": "info", "action": "ignore me"},
+                       {"metric": "band_sub", "weight": "minor", "action": "thin lows"},
+                       {"metric": "x", "weight": "minor", "action": "fourth, dropped"}]}
+    out = audio_qa.summarise(raw)
+    assert out["verdict"] == "needs work" and out["score"] == 0.846 and out["in_range"] == 19
+    assert len(out["issues"]) == 3 and out["issues"][0]["metric"] == "music_frac"  # info dropped, capped at 3
+    assert audio_qa.summarise({"no": "verdict"}) is None
+
+
+def test_audio_qa_score_shells_out_and_parses(monkeypatch, tmp_path):
+    from app.clipper import audio_qa
+    clip = tmp_path / "c.mp4"; clip.write_bytes(b"x")
+    monkeypatch.setattr(audio_qa, "earshot_bin", lambda: "/bin/earshot")
+    import subprocess as sp
+    payload = json.dumps({"verdict": "launch-grade", "score": 0.95, "in_range": 22, "scored": 23, "actions": []})
+    monkeypatch.setattr(audio_qa.subprocess, "run",
+                        lambda cmd, **k: sp.CompletedProcess(cmd, 0, stdout=payload, stderr=""))
+    assert audio_qa.score(str(clip))["verdict"] == "launch-grade"
+    monkeypatch.setattr(audio_qa.subprocess, "run",
+                        lambda cmd, **k: sp.CompletedProcess(cmd, 1, stdout="", stderr="boom"))
+    assert audio_qa.score(str(clip)) is None  # a non-zero exit is swallowed, never raised
+
+
+def test_a_clip_stores_its_audio_score_only_when_qa_is_on(tmp_path, monkeypatch):
+    from app.clipper import audio_qa
+    from app.db import session_scope, init_db
+    from app.models import Video
+    init_db()
+    with session_scope() as db:
+        v = Video(source="local", source_id="qa-store", source_url="x", meta={"clip_rendered": True})
+        db.add(v); db.flush(); vid = v.id
+    monkeypatch.setattr(audio_qa, "available", lambda: True)
+    monkeypatch.setattr(audio_qa, "score", lambda p: {"verdict": "close", "score": 0.8, "issues": []})
+    job._store_audio_qa(vid, str(tmp_path / "c.mp4"))
+    with session_scope() as db:
+        assert db.get(Video, vid).meta["earshot"]["verdict"] == "close"
+    monkeypatch.setattr(audio_qa, "available", lambda: False)
+    monkeypatch.setattr(audio_qa, "score", lambda p: (_ for _ in ()).throw(AssertionError("must not be called")))
+    job._store_audio_qa(vid, str(tmp_path / "c.mp4"))  # no-op when off
+
+
+def test_review_card_shows_a_one_line_audio_verdict():
+    from app.growth.approval import _audio_line
+    assert _audio_line(None) == ""
+    assert _audio_line({"verdict": "launch-grade", "score": 0.95, "issues": []}) == "launch-grade 95%"
+    line = _audio_line({"verdict": "needs work", "score": 0.84,
+                        "issues": [{"metric": "band_mid", "weight": "major", "action": "honky mids: cut 1-3 kHz"}]})
+    assert line == "needs work 84%: honky mids"

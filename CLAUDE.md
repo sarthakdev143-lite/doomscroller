@@ -305,6 +305,11 @@ drive it through the `ClipJob` table, so queued work survives a restart.
   stereo music bed keeps its width instead of being folded to mono (earshot's critique caught every clip collapsing
   to one channel). Without music a talking clip is honestly near-mono. Judge any clip's sound with the **earshot**
   skill (`earshot critique <clip.mp4>`) rather than guessing — it is the tool that found this.
+- **Optional audio QA** (`audio_qa.py`, `EARSHOT_QA`, off by default). When on and the `earshot` CLI is on PATH, each
+  finished clip is scored by `earshot critique --json` (shelled out, like the AI CLIs, so the app venv stays free of
+  earshot's models) and a trimmed scorecard is stored on the row (`meta.earshot`: verdict, score, top fixable issues)
+  and shown on the review page ("Sound: launch-grade 95%"). It never raises, never blocks a render, and never gates
+  a clip — it is information for the owner and for later analysis, not an auto-reject.
 - **On-screen text.** `Credit: <name>` runs the whole clip whenever the source names a creator, and `BRAND_NAME`, when
   set, does the same for the channel.
 - Changes to the filter graph need the `slow` tier in `tests/test_clipper_render.py`.

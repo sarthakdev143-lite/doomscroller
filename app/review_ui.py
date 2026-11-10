@@ -247,6 +247,7 @@ function clipCard(c){
   t.addEventListener('input',()=>{edits[c.id]=t.value});b.append(t);
   b.append(el('div',{className:'meta'},[c.creator&&('Credit: '+c.creator),Math.round(c.seconds)+'s',c.kind].filter(Boolean).join(' · ')));
   if(c.hook)b.append(el('div',{className:'meta'},'Hook: '+c.hook));
+  if(c.audio)b.append(el('div',{className:'meta'},'Sound: '+c.audio));
   const errLine=el('div',{className:'err'});errLine.hidden=true;
   const actions=el('div',{className:'actions'}),yes=el('button',{className:'yes'},'Approve'),no=el('button',{className:'nope'},'Reject');
   let armed=false;

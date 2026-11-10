@@ -18,7 +18,7 @@ from app.models import ClipJob, Video, VideoStatus
 
 from app.growth import learn, recipes
 
-from . import music, subtitles
+from . import audio_qa, music, subtitles
 from .broll import StockSession, credit_line
 from .edit import attach_stock, build_edit, opening_line
 from .ingest import IngestError, SourceVideo, fetch, file_fingerprint, is_url
@@ -203,6 +203,26 @@ def _channel_brand(channel_id: Optional[str]) -> Optional[str]:
         return channel.brand_name or ""
 
 
+def _store_audio_qa(video_id: str, path: str) -> None:
+    """Record earshot's audio scorecard on the clip, best effort. Off unless EARSHOT_QA is set."""
+    if not audio_qa.available():
+        return
+    try:
+        result = audio_qa.score(path)
+    except Exception as exc:  # the reading is a nice-to-have, never a reason to fail a clip
+        log.warning("clipper: audio QA failed for %s: %s", video_id, exc)
+        return
+    if not result:
+        return
+    try:
+        with session_scope() as db:
+            video = db.get(Video, video_id)
+            if video is not None:
+                video.meta = {**(video.meta or {}), "earshot": result}
+    except Exception as exc:
+        log.warning("clipper: could not store audio QA for %s: %s", video_id, exc)
+
+
 def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
                 auto_queue: Optional[bool] = None, progress: Optional[Progress] = None,
                 job_id: Optional[str] = None, mine: bool = False, channel_id: Optional[str] = None) -> dict:
@@ -383,6 +403,7 @@ def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
                 generate_metadata_for_video(video_id)
             except Exception as exc:  # metadata can be redone at publish time
                 log.warning("clipper: metadata failed for %s: %s", video_id, exc)
+            _store_audio_qa(video_id, out_path)
             clips.append({
                 "id": video_id, "path": out_path, "title": moment.title, "hook": moment.hook,
                 "start": round(moment.start, 2), "end": round(moment.end, 2),

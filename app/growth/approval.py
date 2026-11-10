@@ -56,10 +56,22 @@ def _card(video: Video, db) -> dict:
         "kind": meta.get("clip_kind") or "",
         "why": meta.get("clip_reason") or "",
         "flag": meta.get("growth_flagged") or "",
+        "audio": _audio_line(meta.get("earshot")),
         "channel": name,
         "channel_slug": slug,
         "made": (video.scraped_at.isoformat() if video.scraped_at else ""),
     }
+
+
+def _audio_line(earshot: Optional[dict]) -> str:
+    """A one-line audio verdict for the card, e.g. 'launch-grade 95%' or 'needs work: honky mids'."""
+    if not isinstance(earshot, dict) or not earshot.get("verdict"):
+        return ""
+    pct = f" {round(earshot['score'] * 100)}%" if isinstance(earshot.get("score"), (int, float)) else ""
+    issues = earshot.get("issues") or []
+    worst = next((i for i in issues if i.get("weight") in ("critical", "major")), None)
+    tail = f": {worst['action'].split(':')[0]}" if worst and worst.get("action") else ""
+    return f"{earshot['verdict']}{pct}{tail}"
 
 
 _POSTED_LIMIT = 20
