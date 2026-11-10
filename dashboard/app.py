@@ -299,12 +299,22 @@ def growth_tab():
 
     health=doctor()
     if not health["ready"]:
-        st.warning("The growth loop cannot run yet: "+"; ".join(f'{c["name"]} ({c["detail"]})' for c in health["checks"] if c["required"] and not c["ok"]))
+        bad=[f'{c["name"]} ({c["detail"]})' for c in health["checks"] if c["required"] and not c["ok"]]
+        bad+=[f'channel {ch["slug"]} not ready' for ch in health.get("channels",[]) if not ch["ready"]]
+        st.warning("The growth loop cannot run yet: "+"; ".join(bad))
     report=build_report()
     if report["blocks"]:
         st.warning("Takedown blocks: "+safety.describe_blocks(report["blocks"]))
     for warning in report["warnings"]:
         st.warning(warning)
+    if health.get("channels"):
+        st.markdown("**Channels**")
+        rows=[]
+        for ch in health["channels"]:
+            fails=[c["detail"] for c in ch["checks"] if c["required"] and not c["ok"]]
+            rows.append({"Channel":ch["name"] or ch["slug"],"On":"yes" if ch.get("enabled",True) else "no",
+                         "Ready":"ok" if ch["ready"] else "FIX","Issue":fails[0] if fails else ""})
+        st.dataframe(rows,hide_index=True)
     c1,c2,c3,c4=st.columns(4)
     c1.metric("Day",report["day"])
     c2.metric("Published",report["published"])
