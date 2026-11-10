@@ -158,8 +158,10 @@ def record_strike(video: Video, reason: str, *, now: Optional[datetime] = None) 
     reason_to_pause = _pause_for(strikes)
     if reason_to_pause and db.get(GrowthState, paused_key) is None:
         set_state(db, paused_key, {"reason": reason_to_pause, "at": now.isoformat()})
+        # The bare key is the legacy channel's; a named channel's key starts with its slug, which resume takes.
+        slug = paused_key.rpartition(":")[0]
         db.add(GrowthEvent(kind="paused", video_id=video.id, channel_id=video.channel_id,
-                           summary=f"Posting paused: {reason_to_pause}. Clear it with: {_RESUME}"))
+                           summary=f"Posting paused: {reason_to_pause}. Clear it with: {f'{_RESUME} {slug}'.rstrip()}"))
     # One collect can bring several strikes, and db.get cannot see a row that is still pending.
     db.flush()
 
@@ -169,15 +171,16 @@ def pause_reason(db, channel=None) -> Optional[str]:
     return (_value(db, _ckey(channel, "paused")) or {}).get("reason")
 
 
-def _paused_keys(db, slug: Optional[str]) -> list[str]:
+def _paused_keys(db, slug: Optional[str]) -> list[tuple[str, Optional[str]]]:
+    """Each pause a resume covers, as (state key, the channel_id its event carries)."""
     from . import channels
 
     if slug:
         channel = channels.channel_by_slug(db, slug)
-        return [channels.state_key(channel, "paused")] if channel else []
+        return [(channels.state_key(channel, "paused"), channels.event_channel(channel))] if channel else []
     # No slug: every channel (the legacy bare key plus each named one).
-    return ["paused"] + [channels.state_key(c, "paused") for c in channels.all_channels(db)
-                         if not channels.is_default(c)]
+    return [("paused", None)] + [(channels.state_key(c, "paused"), c.id) for c in channels.all_channels(db)
+                                 if not channels.is_default(c)]
 
 
 def resume(slug: Optional[str] = None) -> bool:
@@ -187,12 +190,14 @@ def resume(slug: Optional[str] = None) -> bool:
     """
     cleared = 0
     with session_scope() as db:
-        for key in _paused_keys(db, slug):
+        for key, channel_id in _paused_keys(db, slug):
             state = db.get(GrowthState, key)
             if state is None:
                 continue
             db.delete(state)
-            db.add(GrowthEvent(kind="resumed", summary=f"The owner cleared the pause: {state.value.get('reason')}"))
+            # Stamped with the channel, so the report shows the resume beside that channel's pause.
+            db.add(GrowthEvent(kind="resumed", channel_id=channel_id,
+                               summary=f"The owner cleared the pause: {state.value.get('reason')}"))
             cleared += 1
     return cleared > 0
 

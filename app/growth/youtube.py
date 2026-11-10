@@ -146,3 +146,23 @@ def insights_for(channel=None) -> Optional[Insights]:
 def get_insights() -> Optional[Insights]:
     """None under mock mode, where there is nothing real to read."""
     return insights_for(None)
+
+
+def account_mismatch(channel, insights: Optional[Insights]) -> Optional[str]:
+    """Why this token must not act for this channel, or None.
+
+    Every Google sign-in looks alike, so a re-authorisation can land on another account. A clip posted
+    there cannot be taken back, and reading there makes every video of this channel look deleted, which
+    counts as strikes. Only a named channel that recorded its YouTube id at authorisation can be checked.
+    Raises when Google cannot be asked: not knowing is not the same as a match.
+    """
+    from app.growth import channels
+
+    if channel is None or channels.is_default(channel) or not channel.youtube_channel_id or insights is None:
+        return None
+    identity = insights.channel_identity()
+    if identity and identity[0] == channel.youtube_channel_id:
+        return None
+    found = f"another YouTube channel ({identity[1]})" if identity else "an account with no YouTube channel"
+    return (f"the token for channel {channel.slug} belongs to {found}. Re-run "
+            f"scripts/youtube_oauth.py --channel {channel.slug} --force and pick the right account")

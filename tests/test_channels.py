@@ -733,3 +733,174 @@ def test_doctor_reports_each_named_channels_readiness(tmp_path, monkeypatch):
     # Its client_secrets and token files do not exist, so the channel (and the whole doctor) is not ready.
     assert out["channels"][0]["ready"] is False
     assert out["ready"] is False
+
+
+# ---------- one account per channel, and nothing crossing between them ----------
+class _Account:
+    """A stand-in for a token: which YouTube channel it belongs to, and what it can see."""
+
+    def __init__(self, identity, stats=None):
+        self.identity, self._stats = identity, stats or {}
+
+    def channel_identity(self):
+        return self.identity
+
+    def stats(self, ids):
+        return self._stats
+
+
+def _tech_bound_to(tmp_path, monkeypatch, youtube_id="UCright", **entry):
+    _write(tmp_path, monkeypatch, {"channels": [{"slug": "tech", **entry}]})
+    with session_scope() as db:
+        channels.sync_channels(db)
+        channels.channel_by_slug(db, "tech").youtube_channel_id = youtube_id
+    with session_scope() as db:
+        return channels.channel_by_slug(db, "tech")
+
+
+def test_a_token_signed_in_to_another_account_is_named(tmp_path, monkeypatch):
+    from app.growth.youtube import account_mismatch
+
+    tech = _tech_bound_to(tmp_path, monkeypatch)
+    assert account_mismatch(tech, _Account(("UCright", "Right"))) is None
+    assert "another YouTube channel (Wrong)" in account_mismatch(tech, _Account(("UCwrong", "Wrong")))
+    assert "no YouTube channel" in account_mismatch(tech, _Account(None))
+    # Nothing was recorded at authorisation, or there is no channel: nothing to compare against.
+    assert account_mismatch(None, _Account(("UCwrong", "Wrong"))) is None
+    tech.youtube_channel_id = None
+    assert account_mismatch(tech, _Account(("UCwrong", "Wrong"))) is None
+
+
+def test_collect_does_not_judge_a_channels_videos_through_another_accounts_token(tmp_path, monkeypatch):
+    from app.growth import collect, safety
+
+    tech = _tech_bound_to(tmp_path, monkeypatch)
+    now = datetime(2026, 11, 9, tzinfo=timezone.utc)
+    with session_scope() as db:
+        video = Video(source="youtube", source_id="x", source_url="u", title="t", status=VideoStatus.PUBLISHED,
+                      youtube_video_id="yt1", published_at=now - timedelta(days=1), channel_id=tech.id,
+                      meta={"clip_rendered": True})
+        db.add(video)
+        db.flush()
+        video_id = video.id
+    # The wrong account cannot see yt1, which on its own would read as a deleted video and a strike.
+    monkeypatch.setattr(collect, "insights_for", lambda channel: _Account(("UCwrong", "Wrong"), stats={}))
+    out = collect.collect_job(now=now)
+    assert "another YouTube channel" in out["tech"]["error"]
+    with session_scope() as db:
+        assert not db.get(Video, video_id).meta.get("yt_missing")
+        assert safety.pause_reason(db, channels.channel_by_slug(db, "tech")) is None
+
+
+def test_a_post_is_held_when_the_token_is_for_another_account(tmp_path, monkeypatch):
+    from app.growth import autopilot
+
+    tech = _tech_bound_to(tmp_path, monkeypatch)
+
+    class Ready:
+        def check_ready(self):
+            pass
+
+    monkeypatch.setattr(autopilot, "_publisher", lambda channel: Ready())
+    monkeypatch.setattr(autopilot, "insights_for", lambda channel: _Account(("UCwrong", "Wrong")))
+    refused = autopilot._cannot_upload(tech)
+    assert refused["account_level"] and "another YouTube channel" in refused["error"]
+    monkeypatch.setattr(autopilot, "insights_for", lambda channel: _Account(("UCright", "Right")))
+    assert autopilot._cannot_upload(tech) is None
+
+
+def test_recovery_does_not_look_for_an_upload_on_another_account(tmp_path, monkeypatch):
+    from app.growth import youtube
+    from tasks import pipeline
+
+    tech = _tech_bound_to(tmp_path, monkeypatch)
+    monkeypatch.setattr(youtube, "insights_for", lambda channel: _Account(("UCwrong", "Wrong")))
+    # Not found there would release the clip, and it would be posted a second time.
+    with pytest.raises(RuntimeError, match="another YouTube channel"):
+        pipeline._uploads_for([{"claimed": datetime(2026, 11, 9, tzinfo=timezone.utc)}], tech.id)
+
+
+def test_a_clip_whose_channel_is_gone_is_not_posted_through_the_global_token():
+    from tasks import pipeline
+
+    with pytest.raises(RuntimeError, match="no longer exists"):
+        pipeline._publisher_for("0" * 32)
+    assert pipeline._publisher_for(None) is not None  # a legacy clip still uses the global one
+
+
+def test_a_managed_channels_clips_show_its_own_handle(tmp_path, monkeypatch):
+    from app.clipper import job
+
+    _write(tmp_path, monkeypatch, {"channels": [
+        {"slug": "tech", "brand_name": "@techclips"}, {"slug": "comedy"}, {"slug": "default"}]})
+    with session_scope() as db:
+        channels.sync_channels(db)
+        ids = {c.slug: c.id for c in channels.all_channels(db)}
+    assert job._channel_brand(ids["tech"]) == "@techclips"
+    assert job._channel_brand(ids["comedy"]) == ""        # none of its own, and never another channel's
+    assert job._channel_brand(ids["default"]) is None     # the legacy channel keeps BRAND_NAME
+    assert job._channel_brand(None) is None
+
+
+def test_a_videos_window_is_read_in_its_own_channels_timezone():
+    from zoneinfo import ZoneInfo
+
+    from app.growth.factors import published_arms
+
+    video = Video(source="youtube", source_id="x", title="t", duration_sec=30, meta={},
+                  published_at=datetime(2026, 11, 2, 20, 30, tzinfo=timezone.utc))
+    assert published_arms(video, ZoneInfo("UTC"))["slot"] == "20-24"
+    assert published_arms(video, ZoneInfo("Asia/Kolkata"))["slot"] == "00-04"  # 02:00 the next morning there
+
+
+def test_a_pause_and_its_resume_both_name_the_channel(tmp_path, monkeypatch):
+    from app.growth import safety
+
+    _write(tmp_path, monkeypatch, {"channels": [{"slug": "tech"}, {"slug": "comedy"}]})
+    with session_scope() as db:
+        channels.sync_channels(db)
+        tech_id = channels.channel_by_slug(db, "tech").id
+        video = Video(source="youtube", source_id="x", source_url="u", title="t", status=VideoStatus.PUBLISHED,
+                      youtube_video_id="yt1", channel_id=tech_id, meta={"clip_rendered": True})
+        db.add(video)
+        db.flush()
+        safety.record_strike(video, "copyright", now=datetime(2026, 11, 2, tzinfo=timezone.utc))
+    assert safety.resume("tech") is True
+    with session_scope() as db:
+        events = {e.kind: e for e in db.execute(select(GrowthEvent)).scalars()}
+        assert events["paused"].summary.endswith("scripts/growth.py resume tech")
+        # Without the channel the report would list the resume apart from the pause it ended.
+        assert events["resumed"].channel_id == tech_id
+
+
+def test_watch_leaves_a_fresh_upload_alone_when_its_author_has_a_takedown(tmp_path, monkeypatch):
+    watch = _watching(tmp_path, monkeypatch)
+    monkeypatch.setattr(watch.safety, "blocked_authors", lambda db: {"badcreator"})
+    monkeypatch.setattr(watch, "_fetch", lambda url: _atom(("NEW", "2026-11-09T09:30:00+00:00")))
+    monkeypatch.setattr(watch, "_probe", lambda link: {
+        "duration": 900, "live_status": "not_live", "authors": {"badcreator"}})
+    # Supply drops this author's feed after a strike; the sensor must not walk back into it.
+    assert watch.watch_job(now=datetime(2026, 11, 9, 9, 45, tzinfo=timezone.utc))["queued"] == 0
+    assert _clipjob_count() == 0
+
+
+def test_undo_gives_way_to_an_upload_that_took_the_clip_first(tmp_path, monkeypatch):
+    from app.growth import approval
+
+    clip = _ready_clip(tmp_path, "racing", None)
+    with session_scope() as db:
+        video = db.get(Video, clip)
+        video.meta = {**video.meta, "owner_approved": "2026-11-09T00:00:00+00:00"}
+    real_update = approval.update
+
+    def claimed_meanwhile(model):
+        # The autopilot's claim lands between undo's read and its write.
+        with session_scope() as other:
+            other.execute(real_update(Video).where(Video.id == clip).values(status=VideoStatus.PUBLISHING))
+        return real_update(model)
+
+    monkeypatch.setattr(approval, "update", claimed_meanwhile)
+    with pytest.raises(approval.ReviewError, match="too late"):
+        approval.undo(clip)
+    with session_scope() as db:
+        assert db.get(Video, clip).status == VideoStatus.PUBLISHING  # still the upload's, not back in review

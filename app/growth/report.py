@@ -19,6 +19,7 @@ from app.publishers.youtube_publisher import ANALYTICS_SCOPE, READ_SCOPE, UPLOAD
 
 from . import channels, collect, safety, supply
 from .autopilot import explore_rate, ready_clips, started_at
+from .factors import channel_zone
 from .learn import matured_results
 from .youtube import get_insights, insights_for
 
@@ -294,7 +295,7 @@ def _section(db, channel, now: datetime) -> dict:
     key = (lambda name: name) if channel is None else (lambda name: channels.state_key(channel, name))
     started = started_at(db, channel)
     paused, plan, focus, summary = (db.get(GrowthState, key(name)) for name in ("paused", "plan", "focus", "summary"))
-    results = matured_results(db, scope=scope)
+    results = matured_results(db, scope=scope, zone=channel_zone(channel))
     diagnoses = {}
     for video in db.execute(select(Video).where(Video.id.in_([r.video_id for r in results]))).scalars():
         diagnoses[video.id] = (video.meta or {}).get("growth_diagnosis", {})

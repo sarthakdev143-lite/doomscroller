@@ -15,7 +15,7 @@ from app.publishers.youtube_publisher import explain_api_error
 from . import channels, safety
 from .factors import aware
 from .learn import note_once, set_state, upload_turned_down
-from .youtube import get_insights, insights_for
+from .youtube import account_mismatch, get_insights, insights_for
 
 log = logging.getLogger(__name__)
 
@@ -196,6 +196,10 @@ def _collect_one(channel, now: datetime) -> dict:
     if not ids:
         return {"skipped": "nothing published recently"}
     try:
+        # Through another account's token every one of these videos would read as deleted, and count as a strike.
+        wrong = account_mismatch(channel, insights)
+        if wrong:
+            raise RuntimeError(wrong)
         recorded = _record_stats(set(ids), insights.stats(ids), now, scope)
     except Exception as exc:
         log.warning("growth: could not read video stats: %s", exc)

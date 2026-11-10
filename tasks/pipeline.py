@@ -937,14 +937,21 @@ def _claim_lost(status: VideoStatus) -> dict:
 
 
 def _publisher_for(channel_id: str | None):
-    """The publisher bound to a clip's managed channel, or the global one for a legacy clip."""
-    if channel_id:
-        from app.growth import channels
-        with session_scope() as db:
-            channel = channels.get_channel(db, channel_id)
-        if channel is not None:
-            return channels.publisher_for(channel)
-    return get_publisher()
+    """The publisher bound to a clip's managed channel, or the global one for a legacy clip.
+
+    A clip whose channel row is gone is never sent through the global token: that is another account,
+    and a clip posted to the wrong channel cannot be taken back. Raising leaves it on the shelf.
+    """
+    if not channel_id:
+        return get_publisher()
+    from app.growth import channels
+    with session_scope() as db:
+        channel = channels.get_channel(db, channel_id)
+        if channel is None:
+            raise RuntimeError("the clip's channel no longer exists, so there is no account to post it to")
+        if channels.is_default(channel):
+            return get_publisher()
+        return channels.publisher_for(channel)
 
 
 def publish_task(video_id: str, meta: dict | None = None) -> dict:
@@ -1083,8 +1090,9 @@ def _uploads_for(stuck: list[dict], channel_id: Optional[str] = None) -> list[di
     A clip that belongs to a managed channel is looked for on that channel's own account: searching another
     account would never find it, and "not found" sends the clip out a second time.
     """
-    from app.growth.youtube import get_insights, insights_for
+    from app.growth.youtube import account_mismatch, get_insights, insights_for
 
+    channel = None
     if channel_id:
         from app.growth import channels
         with session_scope() as db:
@@ -1096,6 +1104,9 @@ def _uploads_for(stuck: list[dict], channel_id: Optional[str] = None) -> list[di
         insights = get_insights()
     if insights is None:
         raise RuntimeError("no YouTube client to check the channel with")
+    wrong = account_mismatch(channel, insights)
+    if wrong:  # the upload would never be found there, and "not found" posts the clip again
+        raise RuntimeError(wrong)
     claims = [row["claimed"] for row in stuck]
     return insights.uploads_since(None if None in claims else min(claims) - _CLOCK_SKEW)
 

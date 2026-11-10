@@ -84,16 +84,35 @@ def _show_channel(creds, slug: str | None = None) -> int:
 
 
 def _store_channel_id(slug: str, youtube_id: str) -> None:
-    """Remember which YouTube channel this token is for, so doctor can catch a later wrong-channel swap."""
+    """Remember which YouTube channel this token is for, so the loop can refuse a later wrong-account token.
+
+    Once the channel has posted, a different account is not accepted quietly: its videos live on the first
+    one, so posting or reading through this token would cross-post, and make every earlier video look deleted.
+    """
+    from sqlalchemy import func, select
+
     from app.db import init_db, session_scope
     from app.growth import channels
+    from app.models import Video, VideoStatus
 
     init_db()
     with session_scope() as db:
         channels.sync_channels(db)
         channel = channels.channel_by_slug(db, slug)
-        if channel is not None:
-            channel.youtube_channel_id = youtube_id
+        if channel is None:
+            return
+        if channel.youtube_channel_id and channel.youtube_channel_id != youtube_id:
+            posted = db.scalar(select(func.count(Video.id)).where(
+                Video.channel_id == channel.id, Video.status == VideoStatus.PUBLISHED,
+                Video.youtube_video_id.isnot(None), ~Video.youtube_video_id.startswith("MOCK_", autoescape=True))) or 0
+            if posted:
+                print(f"\nWARNING: channel {slug!r} has already posted {posted} videos to a DIFFERENT YouTube channel.\n"
+                      "This token is for another account, so the loop will not post or read with it.\n"
+                      "  - Picked the wrong account? Re-run with --force and pick the original one.\n"
+                      "  - Moving to a new YouTube channel? Add it as a new channel instead:\n"
+                      "      venv/bin/python scripts/channels.py add <new-slug>")
+                return
+        channel.youtube_channel_id = youtube_id
 
 
 def main() -> int:

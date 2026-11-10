@@ -187,6 +187,22 @@ def _save_clip(src: SourceVideo, moment: Moment, path: str, duration: float, *, 
         return video.id, video.status
 
 
+def _channel_brand(channel_id: Optional[str]) -> Optional[str]:
+    """The handle a managed channel's clips show. None keeps BRAND_NAME, which is the legacy channel's.
+
+    A named channel with no handle shows none, rather than another channel's.
+    """
+    if not channel_id:
+        return None
+    from app.growth import channels
+
+    with session_scope() as db:
+        channel = channels.get_channel(db, channel_id)
+        if channel is None or channels.is_default(channel):
+            return None
+        return channel.brand_name or ""
+
+
 def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
                 auto_queue: Optional[bool] = None, progress: Optional[Progress] = None,
                 job_id: Optional[str] = None, mine: bool = False, channel_id: Optional[str] = None) -> dict:
@@ -298,6 +314,9 @@ def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
                 fresh.append(moment)
 
         out_dir = settings.content_path / "clips" / f"{src.source}_{src.source_id}"
+        # Only a managed channel names its own handle; the legacy call is left exactly as it was.
+        brand = _channel_brand(channel_id)
+        branding = {} if brand is None else {"brand": brand}
         failed = 0
         stock = StockSession()
         for number, moment in enumerate(fresh, 1):
@@ -330,7 +349,7 @@ def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
                     try:
                         plan = render_moment(src.path, info, signals, moment, words, out_path, edit=edit,
                                              creator=src.author_name or src.author, music=track,
-                                             source_captioned=burned_in)
+                                             source_captioned=burned_in, **branding)
                     except MediaError as exc:
                         if not (edit and edit.cutaways):
                             raise
@@ -339,7 +358,7 @@ def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
                         edit.cutaways = []
                         plan = render_moment(src.path, info, signals, moment, words, out_path, edit=edit,
                                              creator=src.author_name or src.author, music=track,
-                                             source_captioned=burned_in)
+                                             source_captioned=burned_in, **branding)
                 if recipe:
                     # Record what the clip got: no key or no matches means no B-roll, whatever was asked for.
                     recipe["broll"] = "on" if edit and edit.cutaways else "off"

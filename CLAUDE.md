@@ -316,7 +316,8 @@ cutting while nobody reviews. `app/review.py` is a separate small server (port 8
 review routes, so a tunnel to it never exposes the main API. It needs `REVIEW_TOKEN`, given once as `?key=` and then
 kept in a cookie. Approving moves a clip straight to `TRANSFORMED`; a title typed there becomes an edited draft, which
 the autopilot posts as written. On a phone a swipe right approves and left rejects, every decision shows an Undo
-(`approval.undo` restores the row while it has not been posted), a clip the gate flagged needs a second tap, and with
+(`approval.undo` takes the row back with a guarded `UPDATE`, so it loses to an upload that claimed the clip first), a
+clip the gate flagged needs a second tap, and with
 several channels a strip at the top filters by channel and shows each one's stock and pause state. `run.py` binds every server to `127.0.0.1` (`DOOMSCROLLER_HOST`): the API and the
 Streamlit dashboard have no login, and this host has a public address. Tests set `DOOMSCROLLER_ENV_FILE` empty so the
 owner's `.env` (which turns real uploads on) never reaches them.
@@ -372,12 +373,22 @@ confound each other.
 - **A new channel starts off.** `add_channel` writes `enabled: false` and `channels.py enable` refuses while there is no
   token, so a half-set-up channel never fails every post. The first `add` on a legacy deployment also writes
   `{"slug": "default"}`, or creating the file would retire the channel that is already running.
-- **Doctor checks the token is for the right channel.** Every Google sign-in looks alike, so the live doctor compares
-  the token's own channel id with the one stored at authorisation, and `duplicate_credentials` fails two enabled
-  channels that share a token or client-secret path.
+- **A token for the wrong account is refused, not just reported** (`youtube.account_mismatch`). Every Google sign-in
+  looks alike, so a re-authorisation can land on another account. A clip posted there cannot be taken back, and reading
+  there makes every video look deleted, which counts as strikes. So the channel id stored at authorisation is compared
+  with the token's own before a post (an `account_hold`), before collect judges anything, and before recovery searches
+  for a stuck upload. `youtube_oauth.py` will not rebind a channel that has already posted to a different account. The
+  live doctor shows the same check, and `duplicate_credentials` fails two enabled channels sharing a token or
+  client-secret path. A clip whose channel row is gone is never sent through the global token either.
+- **Per-channel values must reach the code that uses them.** `brand_name` is passed into `render_moment` (a named
+  channel with no handle shows none, never another channel's), and `published_arms` takes the channel's timezone,
+  because the plan lays windows out in that zone and reading the slot back in `GROWTH_TIMEZONE` would credit a video
+  to a window it was never posted in.
 - **The sensor only cuts real uploads** (`watch.py`). Each new RSS entry is probed with yt-dlp: Shorts (at or under
   `GROWTH_WATCH_MIN_SECONDS`) and finished streams are skipped, live or upcoming ones are rechecked later, and the first
-  poll of a feed records what is there without cutting it. The resolved RSS address is cached in `GrowthState`.
+  poll of a feed records what is there without cutting it. The resolved RSS address is cached in `GrowthState`. It
+  honours takedown blocks on the uploader as supply does, or a creator's next upload would be cut minutes after the
+  strike that quarantined them.
 - **Optional trust** (`approval.py`). `auto_approve_score` approves a waiting clip above that score, and
   `cadence_backstop` approves the best one when a post is due and nothing is approved. Both are off unless set per
   channel, and both pass only a clip an AI titled, that the gate did not flag, and that nobody has decided on.

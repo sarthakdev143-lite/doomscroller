@@ -18,11 +18,13 @@ from app.config import settings
 from app.db import session_scope
 from app.models import GrowthEvent, GrowthState, MetadataDraft, Video, VideoStatus
 from app.publishers import MockPublisher, get_publisher
+from app.publishers.base import TokenProblem
 
 from . import channels, safety, titles
 from .factors import CLIP_FACTORS, SLOTS, aware, channel_zone, clip_arms, published_arms
 from .learn import build_model, matured_results, set_state
 from .model import Draw
+from .youtube import account_mismatch, insights_for
 
 log = logging.getLogger(__name__)
 
@@ -111,7 +113,8 @@ def policy(now: Optional[datetime] = None, rng: Optional[random.Random] = None, 
     now = now or datetime.now(timezone.utc)
     rng = rng or random.Random()
     with session_scope() as db:
-        results = matured_results(db, scope=_scope(channel))
+        zone = channel_zone(channel)
+        results = matured_results(db, scope=_scope(channel), zone=zone)
         started = started_at(db, channel)
         rate = explore_rate(started, now) if started else settings.growth_explore_rate
         focus = db.get(GrowthState, _skey(channel, "focus"))
@@ -121,7 +124,7 @@ def policy(now: Optional[datetime] = None, rng: Optional[random.Random] = None, 
         published = db.execute(select(Video).where(*_really_posted(channel), Video.published_at.isnot(None))).scalars().all()
         for video in published:
             if (video.meta or {}).get("clip_rendered"):
-                for factor, arm in published_arms(video).items():
+                for factor, arm in published_arms(video, zone).items():
                     tried.setdefault(factor, {}).setdefault(arm, 0)
                     tried[factor][arm] += 1
     draw = build_model(results).draw(np.random.default_rng(rng.getrandbits(32)))
@@ -395,6 +398,11 @@ def _cannot_upload(channel=None) -> Optional[dict]:
 
     try:
         _publisher(channel).check_ready()
+        # A token signed in to the wrong account would post this channel's clip somewhere it cannot be taken back.
+        if channel is not None and channel.youtube_channel_id and not channels.is_default(channel):
+            wrong = account_mismatch(channel, insights_for(channel))
+            if wrong:
+                raise TokenProblem(wrong)
     except Exception as exc:
         return {"ok": False, "error": str(exc), **classify_publish_error(exc)}
     return None
@@ -424,7 +432,9 @@ def _recover_stuck(now: datetime) -> None:
 def _autopilot_one(channel, now: datetime, rng: Optional[random.Random]) -> dict:
     """Plan and post for one managed channel, to its own token at its own pace."""
     if not settings.use_mock and isinstance(_publisher(channel), MockPublisher):
-        return {"error": "YOUTUBE_CLIENT_SECRETS is not set, so uploads would be fake"}
+        missing = ("YOUTUBE_CLIENT_SECRETS is not set" if channel is None or channels.is_default(channel)
+                   else f"channel {channel.slug} has no client_secrets in channels.json")
+        return {"error": f"{missing}, so uploads would be fake"}
     with session_scope() as db:
         _start_clock(db, channel)
         paused = safety.pause_reason(db, channel)

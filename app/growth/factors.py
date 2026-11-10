@@ -49,8 +49,8 @@ def author_names(video) -> tuple[str, ...]:
     return tuple(n.casefold() for n in (video.author, video.author_name) if n)
 
 
-def slot_of(moment: datetime) -> str:
-    return SLOTS[aware(moment).astimezone(channel_zone()).hour // 4]
+def slot_of(moment: datetime, zone: Optional[ZoneInfo] = None) -> str:
+    return SLOTS[aware(moment).astimezone(zone or channel_zone()).hour // 4]
 
 
 def length_of(seconds: float) -> str:
@@ -73,13 +73,18 @@ def clip_arms(video) -> dict[str, str]:
     return arms
 
 
-def published_arms(video) -> dict[str, str]:
-    """Every arm of a published video. Timing comes from when it really went out."""
+def published_arms(video, zone: Optional[ZoneInfo] = None) -> dict[str, str]:
+    """Every arm of a published video. Timing comes from when it really went out.
+
+    `zone` is the posting channel's timezone. Its plan lays the windows out in that zone, so reading the
+    slot back in another one would credit the video to a window it was never posted in.
+    """
+    zone = zone or channel_zone()
     published = aware(video.published_at)
-    local = published.astimezone(channel_zone())
+    local = published.astimezone(zone)
     return {
         **clip_arms(video),
-        "slot": slot_of(published),
+        "slot": slot_of(published, zone),
         "title_style": (video.meta or {}).get("growth_title_style") or "plain",
         # Not something the loop chooses, but it would otherwise be blamed on the slot.
         "day_type": "weekend" if local.weekday() >= 5 else "weekday",

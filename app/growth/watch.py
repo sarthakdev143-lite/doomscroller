@@ -28,7 +28,7 @@ from app.config import settings
 from app.db import session_scope
 from app.models import ClipJob, GrowthState
 
-from . import channels, learn, safety
+from . import channels, learn, safety, supply
 
 log = logging.getLogger(__name__)
 
@@ -117,7 +117,7 @@ def _entries(xml: str) -> list[tuple[str, datetime]]:
 
 
 def _probe(link: str) -> Optional[dict]:
-    """What kind of upload this is: {'duration', 'live_status'}. None when it could not be looked at."""
+    """What kind of upload this is: {'duration', 'live_status', 'authors'}. None when it could not be looked at."""
     try:
         from yt_dlp import YoutubeDL
 
@@ -131,12 +131,20 @@ def _probe(link: str) -> Optional[dict]:
         log.info("watch: could not look at %s: %s", link, exc)
         return None
     live = info.get("live_status") or ("is_live" if info.get("is_live") else "not_live")
-    return {"duration": info.get("duration") or 0, "live_status": live}
+    return {"duration": info.get("duration") or 0, "live_status": live, "authors": supply._author_names(info)}
 
 
-def _verdict(probe: Optional[dict]) -> str:
-    """'cut', 'skip' (never worth cutting) or 'later' (look again: not aired yet, or could not be read)."""
-    if probe is None or probe["live_status"] in _NOT_AIRED:
+def _verdict(probe: Optional[dict], barred: frozenset[str] = frozenset()) -> str:
+    """'cut', 'skip' (never worth cutting) or 'later' (look again: not aired yet, or could not be read).
+
+    `barred` is every author under a takedown block. Supply drops their feeds, and a fresh upload is the
+    same creator: cutting it at once would walk straight back into the strike.
+    """
+    if probe is None:
+        return "later"
+    if barred & set(probe.get("authors") or ()):
+        return "skip"
+    if probe["live_status"] in _NOT_AIRED:
         return "later"
     if probe["live_status"] in _STREAMS:
         return "skip"  # supply reads the Videos tab, which leaves stream recordings out too
@@ -162,6 +170,7 @@ def _watch_feed(channel, feed_url: str, now: datetime) -> list[str]:
         state = db.get(GrowthState, key)
         saved = dict(state.value) if state else {}
         blocked = safety.blocked_sources(db)
+        barred = frozenset(safety.blocked_authors(db))
     rss = saved.get("rss") or _rss_url(feed_url)
     if not rss:
         return []
@@ -189,7 +198,7 @@ def _watch_feed(channel, feed_url: str, now: datetime) -> list[str]:
             continue
         if len(queued) >= _PER_POLL:
             continue  # stays unseen, so the next poll takes it
-        verdict = "skip" if link in blocked else _verdict(_probe(link))
+        verdict = "skip" if link in blocked else _verdict(_probe(link), barred)
         if verdict == "later":
             rechecks[vid] = now.isoformat()
             continue

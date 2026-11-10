@@ -557,12 +557,14 @@ def _exact_cuts(source: str, seek: float, span: float, cuts: Sequence[float]) ->
 
 def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment,
                   words: Sequence[Word], out_path: str, edit: Optional[EditPlan] = None, creator: str = "",
-                  music: Optional[str] = None, captions: bool = True, source_captioned: bool = False) -> ClipPlan:
+                  music: Optional[str] = None, captions: bool = True, source_captioned: bool = False,
+                  brand: Optional[str] = None) -> ClipPlan:
     """Write the finished clip to ``out_path`` and return its plan.
 
     ``source_captioned`` means the footage burns in its own captions. In the framed layout their band is cut
     from the bottom of the picture and ours replace them; otherwise ours are left out. ``captions=False``
-    always leaves ours out."""
+    always leaves ours out. ``brand`` is the handle shown on screen: a managed channel passes its own, and
+    ``None`` means ``BRAND_NAME``."""
     # Resolve the font from the clip's own text: a Devanagari clip gets a Devanagari font (if installed)
     # for its captions and overlays, while a Latin clip resolves the same font as before.
     sample = " ".join(w.text for w in words) + f" {moment.title or ''} {creator}"
@@ -581,8 +583,8 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
     crop_bottom = _CAPTION_BAND if source_captioned and _picture_height(info) else 0.0
     if not captions or (source_captioned and not crop_bottom):
         clip_words = []
-    brand = settings.brand_name
-    has_text = bool(font) and bool(clip_words or moment.hook or creator or brand)
+    brand = settings.brand_name if brand is None else brand
+    has_text =bool(font) and bool(clip_words or moment.hook or creator or brand)
     if total_duration(segments) <= 0:
         raise MediaError("clip has no duration")
 

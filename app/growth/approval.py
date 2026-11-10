@@ -10,7 +10,7 @@ import os
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from app.db import session_scope
 from app.metadata import finished_title
@@ -266,9 +266,16 @@ def undo(video_id: str) -> dict:
             raise ReviewError(f"nothing to undo on a {video.status.value} clip")
         if not any(k in (video.meta or {}) for k in _DECISION_KEYS):
             raise ReviewError("this clip was not decided from the review page")
-        video.status = VideoStatus.PENDING
-        video.transformed_at = None
-        video.curated_at = None
+        # The autopilot is another thread and may have claimed the clip since the read above. Only this
+        # UPDATE decides: writing PENDING over a claimed row would leave a clip both uploading and in review.
+        taken_back = db.execute(
+            update(Video).where(Video.id == video_id, Video.status == video.status, Video.youtube_video_id.is_(None))
+            .values(status=VideoStatus.PENDING, transformed_at=None, curated_at=None)
+            .execution_options(synchronize_session=False)
+        ).rowcount
+        if not taken_back:
+            raise ReviewError("already posted — too late to undo")
+        db.refresh(video)
         video.meta = {k: v for k, v in (video.meta or {}).items() if k not in _DECISION_KEYS}
         return {"id": video_id, "status": video.status.value}
 

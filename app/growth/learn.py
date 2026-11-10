@@ -15,7 +15,7 @@ from app.db import session_scope
 from app.models import ClipJob, GrowthEvent, GrowthState, Video, VideoSnapshot, VideoStatus
 
 from . import channels
-from .factors import FACTORS, author_names, aware, published_arms
+from .factors import FACTORS, author_names, aware, channel_zone, published_arms
 from .model import Model, Observation
 
 log = logging.getLogger(__name__)
@@ -96,10 +96,11 @@ def _subscriber_rate(analytics: dict) -> Optional[float]:
     return 1000 * gained / views if views and gained is not None else None
 
 
-def matured_results(db, *, include_diagnosed: bool = True, scope=None) -> list[Result]:
+def matured_results(db, *, include_diagnosed: bool = True, scope=None, zone=None) -> list[Result]:
     """Public clips old enough to judge. A private test upload says nothing about an audience.
 
-    `scope` is an optional SQLAlchemy filter limiting the videos to one managed channel.
+    `scope` is an optional SQLAlchemy filter limiting the videos to one managed channel, and `zone` is
+    that channel's timezone, which decides the window each video counts towards.
     """
     conds = [Video.status == VideoStatus.PUBLISHED, Video.youtube_video_id.isnot(None),
              Video.published_at.isnot(None)]
@@ -126,7 +127,7 @@ def matured_results(db, *, include_diagnosed: bool = True, scope=None) -> list[R
         analytics = (video.meta or {}).get("yt_analytics") or {}
         percent = analytics.get("averageViewPercentage")
         results.append(Result(
-            video_id=video.id, title=video.title or "", views=int(views), arms=published_arms(video),
+            video_id=video.id, title=video.title or "", views=int(views), arms=published_arms(video, zone),
             day=(aware(video.published_at) - first).total_seconds() / 86400,
             retention=min(percent / 100, _MAX_RETENTION) if percent is not None else None,
             subscribers=_subscriber_rate(analytics),
@@ -283,7 +284,7 @@ def mine_waiting_winner(db, now: datetime, *, scope=None, channel_id: Optional[s
         job_id = _mine_winner(db, result, scope=scope, channel_id=channel_id, require_approval=require_approval)
         if job_id:
             video.meta = {**video.meta, "growth_diagnosis": {**diagnosis, "mined_job": job_id}}
-            db.add(GrowthEvent(kind="winner_mined", video_id=video.id, data={"mined_job": job_id},
+            db.add(GrowthEvent(kind="winner_mined", video_id=video.id, data={"mined_job": job_id}, channel_id=channel_id,
                                summary=f"{result.title[:60]}: stock fell, so cutting more from this winner's source."))
             return job_id
     return None
@@ -340,7 +341,7 @@ def _learn_one(channel, now: datetime) -> dict:
     scope, cid, approval = _scope(channel), _ev(channel), _approval(channel)
     counts: dict[str, int] = {}
     with session_scope() as db:
-        results = matured_results(db, scope=scope)
+        results = matured_results(db, scope=scope, zone=channel_zone(channel))
         for result in (r for r in results if not r.diagnosed and now - r.published_at <= oldest_age):
             found = diagnose(result, _baseline(result, results))
             counts[found.code] = counts.get(found.code, 0) + 1
