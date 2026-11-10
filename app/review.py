@@ -77,9 +77,12 @@ def page(request: Request, key: str = ""):
         secure = request.headers.get("x-forwarded-proto") == "https" or request.url.scheme == "https"
         response.set_cookie(_COOKIE, key, max_age=90 * 24 * 3600, httponly=True, samesite="lax", secure=secure)
         return response
+    # Never let a phone cache the page: it is redeployed on every update, and a stale copy from the last
+    # deploy is exactly what hides new tabs and fixes until the browser is cleared by hand.
+    no_store = {"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"}
     if not _allowed(request):
-        return HTMLResponse(LOCKED, status_code=401 if settings.review_token else 503)
-    return HTMLResponse(PAGE)
+        return HTMLResponse(LOCKED, status_code=401 if settings.review_token else 503, headers=no_store)
+    return HTMLResponse(PAGE, headers=no_store)
 
 
 # ---------- Review ----------
