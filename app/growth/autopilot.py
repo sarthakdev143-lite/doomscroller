@@ -430,6 +430,8 @@ def _autopilot_one(channel, now: datetime, rng: Optional[random.Random]) -> dict
         paused = safety.pause_reason(db, channel)
     if paused:
         return {"skipped": f"paused until the owner resumes: {paused}"}
+    from . import approval
+    approval.auto_approve_sweep(channel)  # opt-in per-channel trust; 0 threshold = off
     current = policy(now, rng, channel)
     today = now.astimezone(channel_zone(channel)).date().isoformat()
     key = _skey(channel, "plan")
@@ -453,6 +455,11 @@ def _autopilot_one(channel, now: datetime, rng: Optional[random.Random]) -> dict
         if held:
             return held
 
+    # A window is due. If the shelf is empty but clips sit in review, the opted-in backstop posts the best one.
+    with session_scope() as db:
+        has_stock = bool(ready_clips(db, _scope(channel)))
+    if not has_stock:
+        approval.backstop_approve(channel)
     try:
         outcome = _cannot_upload(channel) or _publish_next(current, now, _post_id(due), channel)
     except Exception as exc:

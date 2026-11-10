@@ -30,7 +30,8 @@ class ChannelsConfigError(ValueError):
     """channels.json exists but could not be used, so the fleet must not be silently retired."""
 # channels.json fields that map straight onto a Channel column.
 _CONFIG_FIELDS = ("name", "niche", "brand_name", "token_path", "client_secrets",
-                  "uploads_per_day", "timezone", "require_approval", "enabled")
+                  "uploads_per_day", "timezone", "require_approval", "enabled",
+                  "auto_approve_score", "cadence_backstop")
 
 
 def _load_config() -> Optional[list[dict]]:

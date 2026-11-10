@@ -211,6 +211,10 @@ class Channel(Base):
     uploads_per_day: Mapped[int] = mapped_column(Integer, default=3)
     timezone: Mapped[str] = mapped_column(String(64), default="UTC")
     require_approval: Mapped[bool] = mapped_column(default=True)
+    # Opt-in trust: auto-approve a rendered clip scoring >= this (0 = off, a human reviews all).
+    auto_approve_score: Mapped[float] = mapped_column(Float, default=0.0)
+    # When a window would be missed with clips in review, auto-approve the best one rather than go dark.
+    cadence_backstop: Mapped[bool] = mapped_column(default=False)
     enabled: Mapped[bool] = mapped_column(default=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     meta: Mapped[dict] = mapped_column(MutableDict.as_mutable(JSON), default=dict)

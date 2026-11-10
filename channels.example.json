@@ -13,7 +13,11 @@
     "which writes that channel's token. Doctor (scripts/growth.py doctor) reports each channel.",
     "",
     "Set CHANNELS_FILE=channels.json in .env. A channel with enabled=false is skipped;",
-    "set it true once its token is in place. Feeds are the source creators clipped for that niche."
+    "set it true once its token is in place. Feeds are the source creators clipped for that niche.",
+    "",
+    "Optional per-channel trust (default: a human approves everything):",
+    "  auto_approve_score  0 = off; e.g. 0.8 auto-approves clips scoring >= 0.8 that pass the safety gate.",
+    "  cadence_backstop    false = off; true auto-approves the best waiting clip rather than miss a window."
   ],
   "channels": [
     {

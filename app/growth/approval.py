@@ -14,7 +14,7 @@ from sqlalchemy import func, select
 
 from app.db import session_scope
 from app.metadata import finished_title
-from app.models import GrowthState, MetadataDraft, Video, VideoStatus
+from app.models import GrowthEvent, GrowthState, MetadataDraft, Video, VideoStatus
 
 _QUEUE_LIMIT = 40
 
@@ -151,6 +151,59 @@ def queue() -> dict:
         "next_post": min((c["next_post"] for c in per if c["next_post"]), default=""),
         "posted": posted,
     }
+
+
+def _grant(db, video: Video, now: datetime, mark: str) -> None:
+    """Move a clip to the shelf without a human decision. curated_at stays None so the upload gate still runs."""
+    video.status = VideoStatus.TRANSFORMED
+    video.transformed_at = now
+    video.meta = {**(video.meta or {}), "auto_approved": mark}
+
+
+def _trustable(db, channel) -> list[Video]:
+    from . import channels
+    from tasks.pipeline import clip_gate_reason
+
+    return [v for v in awaiting_review(db, channels.video_scope(channel))
+            if v.curated_at is None and not clip_gate_reason(v)]
+
+
+def auto_approve_sweep(channel) -> int:
+    """Auto-approve a channel's rendered clips scoring at or above its trust threshold. 0 = off (a human reviews all)."""
+    from . import channels
+
+    threshold = channel.auto_approve_score or 0.0
+    if threshold <= 0:
+        return 0
+    now = datetime.now(timezone.utc)
+    approved = 0
+    with session_scope() as db:
+        for video in _trustable(db, channel):
+            score = (video.meta or {}).get("clip_score", 0.0)
+            if score >= threshold:
+                _grant(db, video, now, f"score {round(score, 2)}")
+                db.add(GrowthEvent(kind="auto_approved", video_id=video.id, channel_id=channels.event_channel(channel),
+                                   summary=f"Auto-approved (score {score:.2f} >= {threshold:.2f}): {(video.title or '')[:60]}"))
+                approved += 1
+    return approved
+
+
+def backstop_approve(channel) -> Optional[str]:
+    """Keep a channel posting: when a window would be missed with clips in review, approve its single best one."""
+    from . import channels
+
+    if not channel.cadence_backstop:
+        return None
+    now = datetime.now(timezone.utc)
+    with session_scope() as db:
+        pending = _trustable(db, channel)
+        if not pending:
+            return None
+        best = max(pending, key=lambda v: (v.meta or {}).get("clip_score", 0.0))
+        _grant(db, best, now, "cadence backstop")
+        db.add(GrowthEvent(kind="auto_approved", video_id=best.id, channel_id=channels.event_channel(channel),
+                           summary=f"Cadence backstop approved the best waiting clip to keep posting: {(best.title or '')[:60]}"))
+        return best.id
 
 
 def _pending_clip(db, video_id: str) -> Video:

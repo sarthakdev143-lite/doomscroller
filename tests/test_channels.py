@@ -198,6 +198,64 @@ def _ready_clip(tmp_path, name, channel_id):
         return video.id
 
 
+def _pending_clip(tmp_path, name, channel_id, score):
+    path = tmp_path / f"{name}.mp4"
+    path.write_bytes(b"x")
+    with session_scope() as db:
+        video = Video(source="youtube", source_id=name, source_url="u", title=f"Clip {name}", author="a",
+                      duration_sec=30, transformed_path=str(path), local_path=str(path), status=VideoStatus.PENDING,
+                      channel_id=channel_id, meta={"clip_rendered": True, "clip_kind": "visual",
+                                                   "clip_parent": name, "clip_score": score})
+        db.add(video)
+        db.flush()
+        return video.id
+
+
+def test_auto_approve_sweep_passes_only_clips_above_the_threshold(tmp_path, monkeypatch):
+    from app.growth import approval
+
+    _write(tmp_path, monkeypatch, {"channels": [{"slug": "tech", "auto_approve_score": 0.7}]})
+    with session_scope() as db:
+        channels.sync_channels(db)
+        tech = channels.channel_by_slug(db, "tech")
+    high = _pending_clip(tmp_path, "hi", tech.id, 0.9)
+    low = _pending_clip(tmp_path, "lo", tech.id, 0.3)
+    with session_scope() as db:
+        assert approval.auto_approve_sweep(channels.channel_by_slug(db, "tech")) == 1
+    with session_scope() as db:
+        assert db.get(Video, high).status == VideoStatus.TRANSFORMED
+        assert db.get(Video, high).meta.get("auto_approved")
+        assert db.get(Video, high).curated_at is None  # not a human decision; upload gate still runs
+        assert db.get(Video, low).status == VideoStatus.PENDING
+
+
+def test_auto_approve_is_off_by_default(tmp_path, monkeypatch):
+    from app.growth import approval
+
+    _write(tmp_path, monkeypatch, {"channels": [{"slug": "tech"}]})  # no threshold
+    with session_scope() as db:
+        channels.sync_channels(db)
+        tech = channels.channel_by_slug(db, "tech")
+    _pending_clip(tmp_path, "c", tech.id, 0.99)
+    with session_scope() as db:
+        assert approval.auto_approve_sweep(channels.channel_by_slug(db, "tech")) == 0  # a human reviews all
+
+
+def test_cadence_backstop_approves_the_best_waiting_clip(tmp_path, monkeypatch):
+    from app.growth import approval
+
+    _write(tmp_path, monkeypatch, {"channels": [{"slug": "tech", "cadence_backstop": True}]})
+    with session_scope() as db:
+        channels.sync_channels(db)
+        tech = channels.channel_by_slug(db, "tech")
+    _pending_clip(tmp_path, "weak", tech.id, 0.4)
+    best = _pending_clip(tmp_path, "strong", tech.id, 0.8)
+    with session_scope() as db:
+        assert approval.backstop_approve(channels.channel_by_slug(db, "tech")) == best
+    with session_scope() as db:
+        assert db.get(Video, best).status == VideoStatus.TRANSFORMED
+
+
 def _due_plan(now):
     due = now - timedelta(hours=1)
     return {"day": now.date().isoformat(), "posts": [
