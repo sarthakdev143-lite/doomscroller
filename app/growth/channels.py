@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from collections import Counter
 from typing import Callable, Optional
@@ -206,6 +207,87 @@ def sync_channels(db) -> list[Channel]:
 def _ensure_seeded(db) -> None:
     if db.scalar(select(Channel).limit(1)) is None:
         sync_channels(db)
+
+
+def _read_file() -> dict:
+    """channels.json as written, or an empty skeleton when there is no file yet."""
+    try:
+        raw = settings.channels_path.read_text(encoding="utf-8")
+    except OSError:
+        return {"channels": []}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ChannelsConfigError(f"channels.json is not valid JSON ({exc}). Fix it by hand first.")
+    if isinstance(data, list):
+        data = {"channels": data}
+    if not isinstance(data, dict) or not isinstance(data.get("channels"), list):
+        raise ChannelsConfigError("channels.json has no 'channels' list.")
+    return data
+
+
+def edit_config(change: Callable[[list[dict]], None]) -> dict:
+    """Change channels.json through code rather than by hand: validated, written whole, then applied.
+
+    Nothing is written if any entry would be invalid, and the running loop picks the result up on its next tick.
+    """
+    data = _read_file()
+    entries = data["channels"]
+    change(entries)
+    seen: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict) or not entry.get("slug"):
+            raise ChannelsConfigError("every channel needs a slug")
+        problem = _entry_problem(entry, seen)
+        if problem:
+            raise ChannelsConfigError(f"channel {entry.get('slug')!r}: {problem}")
+        seen.add(str(entry["slug"]).strip())
+    path = settings.channels_path
+    temp = path.with_name(path.name + ".tmp")
+    temp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    os.replace(temp, path)
+    return reload_channels()
+
+
+def _entry(entries: list[dict], slug: str) -> dict:
+    for entry in entries:
+        if isinstance(entry, dict) and str(entry.get("slug", "")).strip() == slug:
+            return entry
+    known = ", ".join(str(e.get("slug")) for e in entries if isinstance(e, dict)) or "none"
+    raise ChannelsConfigError(f"no channel {slug!r} in channels.json. Known: {known}.")
+
+
+def add_channel(slug: str, *, name: str = "", niche: str = "", brand_name: str = "", feeds: tuple[str, ...] = (),
+                uploads_per_day: int = 3, timezone: str = "") -> dict:
+    """Declare a new channel, off until its token is in place. Its secret and token paths follow the slug."""
+    def change(entries: list[dict]) -> None:
+        if any(isinstance(e, dict) and str(e.get("slug", "")).strip() == slug for e in entries):
+            raise ChannelsConfigError(f"channel {slug!r} already exists")
+        if not entries and (settings.growth_feeds_list or settings.youtube_client_secrets):
+            # A channel not listed is retired. The first channels.json must not switch off the channel
+            # already running from .env, so it is listed too; remove this entry to retire it.
+            entries.append({"slug": DEFAULT_SLUG})
+        entries.append({
+            "slug": slug, "name": name or slug, "niche": niche, "brand_name": brand_name,
+            "client_secrets": f"secrets/{slug}_client_secret.json", "token_path": f"secrets/{slug}_token.json",
+            "uploads_per_day": uploads_per_day, "timezone": timezone or settings.growth_timezone,
+            "require_approval": True, "enabled": False, "feeds": list(feeds),
+        })
+    return edit_config(change)
+
+
+def set_enabled(slug: str, enabled: bool) -> dict:
+    def change(entries: list[dict]) -> None:
+        _entry(entries, slug)["enabled"] = enabled
+    return edit_config(change)
+
+
+def change_feeds(slug: str, *, add: tuple[str, ...] = (), remove: tuple[str, ...] = ()) -> dict:
+    def change(entries: list[dict]) -> None:
+        entry = _entry(entries, slug)
+        feeds = [f for f in entry.get("feeds") or [] if f not in remove]
+        entry["feeds"] = feeds + [f for f in add if f not in feeds]
+    return edit_config(change)
 
 
 def reload_channels() -> dict:

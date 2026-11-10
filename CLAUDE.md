@@ -50,8 +50,15 @@ venv/Scripts/python.exe scripts/youtube_oauth.py
 # Growth loop: can it run, and what has it learned?
 venv/Scripts/python.exe scripts/growth.py doctor   # live: asks Google and reads feeds; --offline skips that
 venv/Scripts/python.exe scripts/growth.py report
-venv/Scripts/python.exe scripts/growth.py resume   # post again after a takedown pause
+venv/Scripts/python.exe scripts/growth.py resume   # post again after a takedown pause; `resume <slug>` for one channel
 venv/Scripts/python.exe scripts/growth.py unblock  # list takedown blocks; with a name, lift one
+venv/Scripts/python.exe scripts/growth.py reload   # re-read channels.json into the running loop
+
+# Channels: add, switch on or off, and change feeds without hand-editing channels.json
+venv/Scripts/python.exe scripts/channels.py list
+venv/Scripts/python.exe scripts/channels.py add tech --name "Tech" --feed https://www.youtube.com/@mkbhd
+venv/Scripts/python.exe scripts/youtube_oauth.py --channel tech   # that channel's own token
+venv/Scripts/python.exe scripts/channels.py enable tech           # refuses while no token is on disk
 ```
 
 `ffmpeg` and `ffprobe` must be on PATH for real operation. Playwright/Chromium is **optional** —
@@ -308,7 +315,9 @@ month). Supply and winner mining cut into `PENDING`; clips waiting for review co
 cutting while nobody reviews. `app/review.py` is a separate small server (port 8600, started by `run.py`) with only the
 review routes, so a tunnel to it never exposes the main API. It needs `REVIEW_TOKEN`, given once as `?key=` and then
 kept in a cookie. Approving moves a clip straight to `TRANSFORMED`; a title typed there becomes an edited draft, which
-the autopilot posts as written. `run.py` binds every server to `127.0.0.1` (`DOOMSCROLLER_HOST`): the API and the
+the autopilot posts as written. On a phone a swipe right approves and left rejects, every decision shows an Undo
+(`approval.undo` restores the row while it has not been posted), a clip the gate flagged needs a second tap, and with
+several channels a strip at the top filters by channel and shows each one's stock and pause state. `run.py` binds every server to `127.0.0.1` (`DOOMSCROLLER_HOST`): the API and the
 Streamlit dashboard have no login, and this host has a public address. Tests set `DOOMSCROLLER_ENV_FILE` empty so the
 owner's `.env` (which turns real uploads on) never reaches them.
 
@@ -334,8 +343,9 @@ each, so each channel's audience sees a focused feed. `channels.json` (path `CHA
 default; `channels.example.json` is the template) declares each channel — its slug, niche, `brand_name`, its own
 `client_secrets` and `token_path` (one Google Cloud project each, because the Data API gives ~6 uploads/day per
 project), `uploads_per_day`, `timezone`, `require_approval`, `enabled`, and its `feeds`. It is synced into the
-`channels` and `feeds` tables (the runtime source of truth) on first use. `scripts/youtube_oauth.py --channel <slug>`
-authorizes one channel into its own token; `doctor()` reports a readiness block per channel.
+`channels` and `feeds` tables (the runtime source of truth) at startup and on every reload.
+`scripts/youtube_oauth.py --channel <slug>` authorizes one channel into its own token and records which YouTube
+channel that token belongs to; `doctor()` reports a readiness block per channel.
 
 Every growth job (`supply`, `autopilot`, `collect`, `learn`, `watch`) loops the enabled channels and scopes its work:
 a clip carries its source feed's `channel_id` from `enqueue` through the pipeline and is published with that channel's
@@ -343,6 +353,36 @@ token; each channel keeps its own plan, start clock, focus, findings and analyti
 by `channels.state_key`. **Collection must stay per-channel** — reading one channel's videos through another's token
 would make them look deleted and fire false copyright strikes. The A/B model is fit per channel, so niches do not
 confound each other.
+
+- **One channel's failure never stops the others.** Jobs go through `channels.for_each`, which catches per channel and
+  returns each channel's result under its slug plus a top-level `error` naming the ones that failed, so `instrumented`
+  still marks the run failed. That is why `error` is a reserved slug.
+- **Pause, hold and strikes are per channel** (`safety._ckey`). A takedown on one channel pauses that channel only, and
+  `resume <slug>` restarts it. The quarantine of a struck source stays global: a source that drew a strike on one
+  channel is not worth the risk on another.
+- **Quota is per channel** (`app/quota.py`), because each has its own Cloud project. `QuotaUsage` rows are keyed by day
+  and `channel_id`. Doctor warns when `uploads_per_day` is above the ~6 a project allows.
+- **Stuck-publish recovery searches the clip's own channel.** Looking through another account's uploads would never find
+  the title, release the row, and post the clip twice.
+- **`channels.json` is validated before it is applied.** A bad file (invalid JSON, a duplicate or malformed slug, an
+  unknown timezone, a pace or flag of the wrong type) is recorded in `config_health`, fails doctor, and leaves the
+  running fleet as it was: a typo must never retire a live channel. Edits made through `scripts/channels.py` go through
+  `edit_config` (validate, atomic write, reload); hand edits need `scripts/growth.py reload` or
+  `POST /growth/channels/reload`.
+- **A new channel starts off.** `add_channel` writes `enabled: false` and `channels.py enable` refuses while there is no
+  token, so a half-set-up channel never fails every post. The first `add` on a legacy deployment also writes
+  `{"slug": "default"}`, or creating the file would retire the channel that is already running.
+- **Doctor checks the token is for the right channel.** Every Google sign-in looks alike, so the live doctor compares
+  the token's own channel id with the one stored at authorisation, and `duplicate_credentials` fails two enabled
+  channels that share a token or client-secret path.
+- **The sensor only cuts real uploads** (`watch.py`). Each new RSS entry is probed with yt-dlp: Shorts (at or under
+  `GROWTH_WATCH_MIN_SECONDS`) and finished streams are skipped, live or upcoming ones are rechecked later, and the first
+  poll of a feed records what is there without cutting it. The resolved RSS address is cached in `GrowthState`.
+- **Optional trust** (`approval.py`). `auto_approve_score` approves a waiting clip above that score, and
+  `cadence_backstop` approves the best one when a post is due and nothing is approved. Both are off unless set per
+  channel, and both pass only a clip an AI titled, that the gate did not flag, and that nobody has decided on.
+- **Report and dashboard are per channel** once there is more than one: `build_report` returns fleet totals plus a
+  `channels` map of sections, and the single default channel still gets the old flat shape.
 
 **Backward compatible by design.** With no `channels.json` the loop seeds a single legacy channel (slug `default`)
 from the flat `GROWTH_*` settings, `YOUTUBE_TOKEN_PATH` and `GROWTH_FEEDS`. That default channel resolves its config
@@ -401,13 +441,14 @@ old flat result shape — so an existing single-channel deployment, and the whol
   only a person restarts it. `record_strike` quarantines the unposted clips of that `clip_parent`, and
   supply drops that source and that author's feed links. One hard strike (`copyright`, `claim`, `termsOfUse`, `legal`,
   `inappropriate`, `trademark`, or a suspended or closed account) or three soft ones in 90 days (`missing`, or a
-  technical rejection such as `duplicate` or `length`) sets `paused`, and only `scripts/growth.py resume` clears it.
+  technical rejection such as `duplicate` or `length`) sets `paused` for that channel, and only
+  `scripts/growth.py resume` (all channels, or `resume <slug>`) clears it.
   Strikes keep counting after a resume, so the next problem inside the window pauses again. Collect keeps asking about
   videos for the whole 90 days, though snapshots stop at 30, and only judges ids it really sent. Each struck video holds
   one block: a `missing` video that comes back takes its strike and block with it, and otherwise
   `scripts/growth.py unblock <name>` lifts it. Doctor, report and a starved supply all name what is blocked.
-- **An account failure is a hold, not a strike.** `account_level` from `publish_task` stops posting for an hour with one
-  event, and clears itself on the next good upload, because the next clip would only fail the same way. A missing or
+- **An account failure is a hold, not a strike.** `account_level` from `publish_task` stops posting on that channel for
+  an hour with one event, and clears itself on the next good upload, because the next clip would only fail the same way. A missing or
   revoked token (`TokenProblem`) is one too, and `check_ready` finds it before anything is spent on a title. Other retryable
   failures retry each tick without counting an attempt, and `_LATE_GRACE` ends the window. An exception in the publish
   step counts against the post and the clip, so `least_failed` moves on to the next clip.

@@ -132,6 +132,42 @@ def test_adding_a_channel_is_picked_up_by_a_resync_the_app_runs_at_boot(tmp_path
         assert {c.slug for c in channels.active_channels(db)} == {"tech", "comedy"}
 
 
+def test_channels_are_added_and_switched_without_editing_the_file_by_hand(tmp_path, monkeypatch):
+    path = tmp_path / "channels.json"
+    monkeypatch.setattr(settings, "channels_file", str(path))
+    monkeypatch.setattr(settings, "growth_feeds", "[]")
+    out = channels.add_channel("tech", name="Tech & Science", feeds=("https://www.youtube.com/@mkbhd",))
+    assert out["active"] == []                                   # off until its token is in place
+    saved = json.loads(path.read_text())["channels"][0]
+    assert saved["client_secrets"] == "secrets/tech_client_secret.json" and saved["enabled"] is False
+    assert channels.set_enabled("tech", True)["active"] == ["tech"]
+    channels.change_feeds("tech", add=("https://www.youtube.com/@MarkRober",), remove=("https://www.youtube.com/@mkbhd",))
+    with session_scope() as db:
+        assert channels.feeds_for(db, channels.channel_by_slug(db, "tech")) == ["https://www.youtube.com/@MarkRober"]
+    assert channels.set_enabled("tech", False)["active"] == []    # one channel stopped, no restart
+
+
+def test_the_first_added_channel_does_not_retire_the_one_already_running(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "channels_file", str(tmp_path / "channels.json"))
+    monkeypatch.setattr(settings, "growth_feeds", '["https://www.youtube.com/@MrBeast"]')
+    with session_scope() as db:
+        assert [c.slug for c in channels.active_channels(db)] == [channels.DEFAULT_SLUG]   # the legacy channel
+    out = channels.add_channel("tech")
+    assert out["active"] == [channels.DEFAULT_SLUG]               # still running; tech is off for now
+
+
+def test_a_bad_change_is_refused_and_the_file_is_left_alone(tmp_path, monkeypatch):
+    _write(tmp_path, monkeypatch, {"_comment": ["keep me"], "channels": [{"slug": "tech"}]})
+    before = (tmp_path / "channels.json").read_text()
+    with pytest.raises(channels.ChannelsConfigError):
+        channels.add_channel("Not A Slug")
+    with pytest.raises(channels.ChannelsConfigError):
+        channels.set_enabled("missing", True)
+    assert (tmp_path / "channels.json").read_text() == before
+    channels.add_channel("comedy")
+    assert json.loads((tmp_path / "channels.json").read_text())["_comment"] == ["keep me"]   # notes survive an edit
+
+
 def test_each_channel_counts_its_own_uploads():
     from app import quota
 
