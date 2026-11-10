@@ -207,6 +207,7 @@ class Channel(Base):
     brand_name: Mapped[str] = mapped_column(String(64), default="")         # @handle for the on-screen credit
     token_path: Mapped[str] = mapped_column(Text, default="")               # this channel's YouTube OAuth token
     client_secrets: Mapped[str] = mapped_column(Text, default="")           # its own Cloud project's client_secret.json
+    youtube_channel_id: Mapped[Optional[str]] = mapped_column(String(64), default=None)  # captured at oauth; guards a misclick
     uploads_per_day: Mapped[int] = mapped_column(Integer, default=3)
     timezone: Mapped[str] = mapped_column(String(64), default="UTC")
     require_approval: Mapped[bool] = mapped_column(default=True)

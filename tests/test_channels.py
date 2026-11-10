@@ -385,6 +385,23 @@ def test_doctor_lists_a_configured_but_disabled_channel(tmp_path, monkeypatch):
     assert "enabled:true" in rows["tech"]["checks"][0]["detail"]
 
 
+def test_identity_check_catches_a_token_wired_to_the_wrong_channel():
+    from app.growth import report
+
+    class Insights:
+        def channel_identity(self):
+            return ("UCright", "Right Channel")
+
+    class Chan:
+        slug = "tech"
+        youtube_channel_id = "UCright"
+
+    assert report._identity_check(Chan(), Insights())[0]["ok"] is True  # matches
+    Chan.youtube_channel_id = "UCwrong"  # an account-picker misclick at oauth time
+    bad = report._identity_check(Chan(), Insights())[0]
+    assert bad["ok"] is False and "DIFFERENT channel" in bad["detail"]
+
+
 def test_doctor_flags_two_channels_sharing_a_token(tmp_path, monkeypatch):
     from app.growth import report
 

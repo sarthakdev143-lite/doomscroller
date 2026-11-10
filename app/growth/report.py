@@ -112,6 +112,22 @@ def _held_note(held: Counter) -> str:
             f"Most often: {held.most_common(1)[0][0]}")
 
 
+def _identity_check(channel, insights) -> list[dict]:
+    """Catch a token wired to the wrong channel (an account-picker misclick at oauth time)."""
+    if insights is None or not channel.youtube_channel_id:
+        return []
+    try:
+        identity = insights.channel_identity()
+    except Exception as exc:
+        return [_check(False, "channel identity", explain_api_error(exc), required=False)]
+    live_id = identity[0] if identity else None
+    ok = live_id == channel.youtube_channel_id
+    return [_check(ok, "channel identity",
+                   f"token belongs to {identity[1]}" if ok else
+                   f"token is wired to a DIFFERENT channel ({identity[1] if identity else live_id}) — "
+                   f"re-run scripts/youtube_oauth.py --channel {channel.slug} --force")]
+
+
 def _disabled_row(channel, configured: bool) -> dict:
     """A named channel left off. A fully-set-up one that is still off is the silent 'forgot enabled:true' trap."""
     note = ("configured (token + secret present) but enabled:false — set enabled:true and restart"
@@ -151,6 +167,7 @@ def _channel_rows(live: bool) -> list[dict]:
         if live:
             checks += _youtube_checks(insights) if insights else [
                 _check(False, "live", "no connection: USE_MOCK or no client_secrets", required=False)]
+            checks += _identity_check(channel, insights)
             checks += [_feed_check(feed) for feed in feeds]
         rows.append({"slug": channel.slug, "name": channel.name, "enabled": True,
                      "ready": all(c["ok"] for c in checks if c["required"]), "checks": checks})

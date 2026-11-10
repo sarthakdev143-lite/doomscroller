@@ -65,6 +65,11 @@ class Insights:
         items = self._publisher._client().channels().list(part="snippet", mine=True).execute().get("items")
         return items[0]["snippet"]["title"] if items else None
 
+    def channel_identity(self) -> Optional[tuple[str, str]]:
+        """(id, title) of the channel this token actually belongs to, for catching a wrong-channel token."""
+        items = self._publisher._client().channels().list(part="snippet", mine=True).execute().get("items")
+        return (items[0]["id"], items[0]["snippet"]["title"]) if items else None
+
     def probe_analytics(self) -> None:
         """One row is enough to show the API is on and this token may read it."""
         end = date.today() - timedelta(days=1)  # safely behind YouTube's Pacific calendar

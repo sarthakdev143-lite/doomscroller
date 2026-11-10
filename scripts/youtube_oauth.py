@@ -64,7 +64,7 @@ def _channel_paths(slug: str) -> tuple[str, str]:
         return channel.client_secrets, channel.token_path
 
 
-def _show_channel(creds) -> int:
+def _show_channel(creds, slug: str | None = None) -> int:
     from googleapiclient.discovery import build
 
     try:
@@ -76,9 +76,24 @@ def _show_channel(creds) -> int:
     if channels:
         print(f"Connected channel: {channels[0]['snippet']['title']}")
         print("If that is the wrong channel, re-run with --force and pick the right one on Google's screen.")
+        if slug:
+            _store_channel_id(slug, channels[0]["id"])
     else:
         print("WARNING: this Google account has no YouTube channel. Create one, then re-run with --force.")
     return 0
+
+
+def _store_channel_id(slug: str, youtube_id: str) -> None:
+    """Remember which YouTube channel this token is for, so doctor can catch a later wrong-channel swap."""
+    from app.db import init_db, session_scope
+    from app.growth import channels
+
+    init_db()
+    with session_scope() as db:
+        channels.sync_channels(db)
+        channel = channels.channel_by_slug(db, slug)
+        if channel is not None:
+            channel.youtube_channel_id = youtube_id
 
 
 def main() -> int:
@@ -127,7 +142,7 @@ def main() -> int:
     _show_warnings(token)
     # Before the API call, since a refused call must not cost the owner these lines.
     _show_env(args.secrets, args.token)
-    return _show_channel(creds)
+    return _show_channel(creds, args.channel)
 
 
 if __name__ == "__main__":
