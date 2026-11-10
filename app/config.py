@@ -190,6 +190,12 @@ class Settings(BaseSettings):
     claude_fallback: bool = True
     claude_bin: str = ""
     claude_model: str = "sonnet"
+    # Optional audio-quality reading per clip from the earshot CLI (the installed skill). Off by default;
+    # needs earshot on PATH. Stored on the clip and shown on the review page, never an auto-gate.
+    earshot_qa: bool = False
+    earshot_bin: str = ""
+    earshot_home: str = ""
+    earshot_qa_timeout_sec: int = 120
 
     # YouTube
     youtube_client_secrets: str = ""
@@ -361,7 +367,7 @@ class Settings(BaseSettings):
         "auto_discovery", "auto_approve", "allow_unknown_language",
         "transform_variation", "caption_enabled", "end_card_enabled",
         "upscale_sharpen", "clip_auto_queue", "clip_sfx", "clip_broll", "clip_music",
-        "growth_enabled", "youtube_made_for_kids", "claude_fallback", "growth_require_approval", mode="before",
+        "growth_enabled", "youtube_made_for_kids", "claude_fallback", "growth_require_approval", "earshot_qa", mode="before",
     )
     @classmethod
     def _coerce_bool(cls, v):
