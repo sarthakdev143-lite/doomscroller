@@ -329,7 +329,11 @@ It posts `GROWTH_UPLOADS_PER_DAY` clips in varied time windows and tests posting
 The same phone page is a full control panel, with tabs along the bottom. Everything is behind the one `?key=` login
 and the Cloudflare tunnel — nothing new is exposed.
 
-1. Start everything as services that survive reboots: `scripts/install_services.sh`
+1. Start everything as services that survive reboots: `scripts/install_services.sh`. This also installs an
+   **auto-deploy** timer: once a minute it fast-forwards `master` and restarts the app, so shipping a change is
+   just clicking **Merge** on GitHub — the box updates itself within a minute, with nothing to run by hand. It only
+   ever fast-forwards master and never touches a checkout with local edits (`scripts/autodeploy.sh`;
+   logs: `journalctl --user -u doomscroller-deploy`).
 2. The phone address is in `logs/tunnel_url.txt`. Open it once as `<address>/?key=<REVIEW_TOKEN from .env>`.
 3. For alerts, install the ntfy app and subscribe to the `NTFY_TOPIC` from `.env`. New clips, posts, problems and
    any new page address arrive there.
