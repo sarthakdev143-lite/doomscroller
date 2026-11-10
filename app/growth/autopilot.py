@@ -374,10 +374,10 @@ def _save_outcome(plan: dict, posts: list[dict], post: dict, outcome: dict, now:
             with session_scope() as db:
                 set_state(db, _skey(channel, "plan"), {**plan, "posts": posts})
                 if outcome.get("ok"):
-                    safety.clear_hold(db)
+                    safety.clear_hold(db, channel)
                     db.add(_posted_event(post, outcome.get("video_id"), outcome.get("title_style"), channel))
                 elif outcome.get("account_level"):
-                    safety.set_hold(db, now, outcome.get("error"))
+                    safety.set_hold(db, now, outcome.get("error"), channel)
                 elif post["state"] == "failed":
                     db.add(GrowthEvent(kind="publish_failed", channel_id=_ev_channel(channel),
                                        summary=f"Gave up on window {post['slot']}: {outcome.get('error')}"))
@@ -402,7 +402,7 @@ def _cannot_upload(channel=None) -> Optional[dict]:
 
 def _held_back(db, now: datetime, channel=None) -> Optional[dict]:
     """Why a due post cannot go on this tick."""
-    hold = safety.active_hold(db, now)
+    hold = safety.active_hold(db, now, channel)
     if hold:
         return {"skipped": f"on hold until {hold['until']}: {hold['reason']}"}
     if not _gap_is_clear(db, now, channel):
@@ -427,7 +427,7 @@ def _autopilot_one(channel, now: datetime, rng: Optional[random.Random]) -> dict
         return {"error": "YOUTUBE_CLIENT_SECRETS is not set, so uploads would be fake"}
     with session_scope() as db:
         _start_clock(db, channel)
-        paused = safety.pause_reason(db)
+        paused = safety.pause_reason(db, channel)
     if paused:
         return {"skipped": f"paused until the owner resumes: {paused}"}
     current = policy(now, rng, channel)

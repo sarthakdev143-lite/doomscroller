@@ -31,8 +31,12 @@ def show_doctor(live: bool) -> int:
     return 0 if result["ready"] else 1
 
 
-def show_resume() -> int:
-    print("Resumed. Strikes still count until they are 90 days old." if resume() else "Not paused.")
+def show_resume(slug: str | None) -> int:
+    where = f" {slug}" if slug else ""
+    if resume(slug):
+        print(f"Resumed{where}. Strikes still count until they are 90 days old.")
+    else:
+        print(f"Not paused{where}." if slug else "Not paused.")
     return 0
 
 
@@ -104,12 +108,14 @@ def show_report() -> int:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("command", choices=("doctor", "report", "resume", "unblock"))
-    parser.add_argument("name", nargs="?", help="unblock: the author, source or clip parent to lift")
+    parser.add_argument("name", nargs="?", help="unblock: the author/source/parent to lift; resume: a channel slug")
     parser.add_argument("--offline", action="store_true", help="doctor: skip asking Google and reading feeds")
     args = parser.parse_args()
     init_db()
     if args.command == "unblock":
         sys.exit(show_unblock(args.name))
+    if args.command == "resume":
+        sys.exit(show_resume(args.name))
     if args.command == "doctor":
         sys.exit(show_doctor(live=not args.offline))
-    sys.exit({"report": show_report, "resume": show_resume}[args.command]())
+    sys.exit(show_report())

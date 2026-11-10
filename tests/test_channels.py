@@ -206,6 +206,30 @@ def test_autopilot_posts_each_channels_own_clip_to_its_own_plan(tmp_path, monkey
         assert db.get(GrowthState, "comedy:plan").value["posts"][0]["state"] == "posted"
 
 
+def test_a_strike_on_one_channel_pauses_only_that_channel(tmp_path, monkeypatch):
+    from app.growth import safety
+
+    _write(tmp_path, monkeypatch, {"channels": [{"slug": "tech"}, {"slug": "comedy"}]})
+    now = datetime(2026, 11, 2, tzinfo=timezone.utc)
+    with session_scope() as db:
+        channels.sync_channels(db)
+        tech = channels.channel_by_slug(db, "tech")
+        video = Video(source="youtube", source_id="x", source_url="u", title="t", status=VideoStatus.PUBLISHED,
+                      youtube_video_id="yt1", channel_id=tech.id, meta={"clip_rendered": True})
+        db.add(video)
+        db.flush()
+        safety.record_strike(video, "copyright", now=now)
+    with session_scope() as db:
+        tech, comedy = channels.channel_by_slug(db, "tech"), channels.channel_by_slug(db, "comedy")
+        assert safety.pause_reason(db, tech) is not None       # the struck channel is paused
+        assert safety.pause_reason(db, comedy) is None          # the others keep posting
+    # resume is per-channel too
+    assert safety.resume("comedy") is False                     # comedy was never paused
+    assert safety.resume("tech") is True
+    with session_scope() as db:
+        assert safety.pause_reason(db, channels.channel_by_slug(db, "tech")) is None
+
+
 def _atom(*entries):
     rows = "".join(
         f'<entry><yt:videoId>{vid}</yt:videoId><published>{when}</published></entry>' for vid, when in entries)

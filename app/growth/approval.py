@@ -92,10 +92,10 @@ def _attention(db, channel, waiting: int, approved: int, now: datetime) -> str:
     """Why this channel needs the owner, or '' when it is fine. A halted channel must not read as merely idle."""
     from . import channels, safety, supply
 
-    paused = safety.pause_reason(db)
+    paused = safety.pause_reason(db, channel)
     if paused:
         return "Paused — run resume"
-    if safety.active_hold(db, now):
+    if safety.active_hold(db, now, channel):
         return "Posting on hold"
     gap = db.get(GrowthState, channels.state_key(channel, supply.SUPPLY_GAP))
     cause = (gap.value or {}).get("cause") if gap else None
