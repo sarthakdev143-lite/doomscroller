@@ -61,14 +61,42 @@ def _load_config() -> Optional[list[dict]]:
     valid = [e for e in entries if isinstance(e, dict) and e.get("slug")]
     if not valid:
         raise ChannelsConfigError("channels.json declares no channel with a slug.")
+    problem = _config_problem(valid)
+    if problem:
+        raise ChannelsConfigError(f"channels.json, {problem}. Fix the file; the fleet is unchanged.")
+    return valid
+
+
+def _feed_key(url: str) -> str:
+    """One creator's link written two ways is still one feed."""
+    return re.sub(r"^https?://(www\.|m\.)?", "", str(url).strip().casefold()).rstrip("/")
+
+
+def _config_problem(entries: list[dict]) -> Optional[str]:
+    """Why this set of channels cannot be used, naming the channel, or None."""
     seen: set[str] = set()
-    for entry in valid:
+    owners: dict[str, str] = {}
+    for entry in entries:
+        slug = str(entry["slug"]).strip()
         problem = _entry_problem(entry, seen)
         if problem:
-            raise ChannelsConfigError(f"channels.json, channel {entry.get('slug')!r}: {problem}. "
-                                      "Fix the file; the fleet is unchanged.")
-        seen.add(str(entry["slug"]).strip())
-    return valid
+            return f"channel {slug!r}: {problem}"
+        seen.add(slug)
+        # The legacy channel's feeds live in .env, and it is running them whenever it is listed.
+        feeds = settings.growth_feeds_list if slug == DEFAULT_SLUG else (entry.get("feeds") or [])
+        for url in feeds:
+            owner = owners.setdefault(_feed_key(url), slug)
+            if owner != slug:
+                return f"channel {slug!r}: {_shared_feed(url, owner, slug)}"
+    return None
+
+
+def _shared_feed(url: str, first: str, second: str) -> str:
+    """A source feeds one channel. Two would cut the same video into the same clips and fight over them."""
+    if DEFAULT_SLUG in (first, second):
+        return (f"feed {url} is also in GROWTH_FEEDS, which feeds the channel from your .env (\"default\"). "
+                "Take it out of GROWTH_FEEDS and restart, or remove the \"default\" entry to retire that channel")
+    return f"feed {url} is already listed under {first!r}, and a source can feed only one channel"
 
 
 def _entry_problem(entry: dict, seen: set[str]) -> Optional[str]:
@@ -108,6 +136,7 @@ def _record_config(db, error: Optional[str], count: int = 0) -> None:
         state.value = value
     else:
         db.add(GrowthState(key=_CONFIG_HEALTH, value=value))
+        db.flush()  # db.get cannot see a pending row, and reload reads this back in the same session
 
 
 def config_health(db) -> dict:
@@ -234,14 +263,11 @@ def edit_config(change: Callable[[list[dict]], None]) -> dict:
     data = _read_file()
     entries = data["channels"]
     change(entries)
-    seen: set[str] = set()
-    for entry in entries:
-        if not isinstance(entry, dict) or not entry.get("slug"):
-            raise ChannelsConfigError("every channel needs a slug")
-        problem = _entry_problem(entry, seen)
-        if problem:
-            raise ChannelsConfigError(f"channel {entry.get('slug')!r}: {problem}")
-        seen.add(str(entry["slug"]).strip())
+    if not all(isinstance(entry, dict) and entry.get("slug") for entry in entries):
+        raise ChannelsConfigError("every channel needs a slug")
+    problem = _config_problem(entries)
+    if problem:
+        raise ChannelsConfigError(problem)
     path = settings.channels_path
     temp = path.with_name(path.name + ".tmp")
     temp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")

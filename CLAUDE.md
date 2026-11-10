@@ -366,8 +366,10 @@ confound each other.
 - **Stuck-publish recovery searches the clip's own channel.** Looking through another account's uploads would never find
   the title, release the row, and post the clip twice.
 - **`channels.json` is validated before it is applied.** A bad file (invalid JSON, a duplicate or malformed slug, an
-  unknown timezone, a pace or flag of the wrong type) is recorded in `config_health`, fails doctor, and leaves the
-  running fleet as it was: a typo must never retire a live channel. Edits made through `scripts/channels.py` go through
+  unknown timezone, a pace or flag of the wrong type, a feed listed under two channels) is recorded in `config_health`,
+  fails doctor, and leaves the running fleet as it was: a typo must never retire a live channel. The shared-feed check
+  counts `GROWTH_FEEDS` as the `default` entry's feeds. Clip rows are keyed by source and moment, so two channels
+  cutting one source would fight over the same rows. Edits made through `scripts/channels.py` go through
   `edit_config` (validate, atomic write, reload); hand edits need `scripts/growth.py reload` or
   `POST /growth/channels/reload`.
 - **A new channel starts off.** `add_channel` writes `enabled: false` and `channels.py enable` refuses while there is no

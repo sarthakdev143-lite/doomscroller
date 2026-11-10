@@ -290,6 +290,10 @@ A change that would break the file (bad JSON, an unknown timezone, a slug used t
 
 **Your existing channel.** A channel that is not listed in `channels.json` is retired. To keep the one running from `.env` alongside the new ones, list it as `{"slug": "default"}`; `channels.py add` does this for you the first time. Files in `content/inbox/` go to that channel only.
 
+**One creator, one channel.** A source link can feed only one channel, or both would cut the same video into the same clips. To move a creator from your existing channel to a new one, take the link out of `GROWTH_FEEDS` in `.env` and restart, then add it to the new channel. The commands and `doctor` refuse a shared link and say which channel already has it.
+
+**The right Google account.** `youtube_oauth.py --channel <slug>` remembers which YouTube channel it connected. If a later sign-in lands on another account, that channel stops posting and stops reading its numbers until you sign in again with the right one, rather than posting to the wrong channel.
+
 **Optional, per channel, both off by default** (so a person approves every clip): `"auto_approve_score": 0.8` approves clips an AI titled that score at least that and pass the safety check, and `"cadence_backstop": true` approves the best waiting clip rather than miss a posting window.
 
 **New uploads.** Every `GROWTH_WATCH_MINUTES` (5) the loop checks each feed's YouTube RSS and queues a new video at once, instead of waiting for the hourly supply run. Shorts, stream recordings and premieres that have not aired are left alone. `0` turns it off.

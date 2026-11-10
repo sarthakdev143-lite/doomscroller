@@ -735,6 +735,29 @@ def test_doctor_reports_each_named_channels_readiness(tmp_path, monkeypatch):
     assert out["ready"] is False
 
 
+def test_a_source_listed_under_two_channels_is_refused(tmp_path, monkeypatch):
+    # Both would cut the same video into the same clips, and fight over the rows.
+    _write(tmp_path, monkeypatch, {"channels": [
+        {"slug": "tech", "feeds": ["https://www.youtube.com/@mkbhd"]},
+        {"slug": "comedy", "feeds": ["https://youtube.com/@MKBHD/"]}]})  # the same creator, written another way
+    with session_scope() as db:
+        channels.sync_channels(db)
+        error = channels.config_health(db)["error"]
+    assert "already listed under 'tech'" in error and "comedy" in error
+
+
+def test_a_source_cannot_feed_both_the_env_channel_and_a_named_one(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "growth_feeds", json.dumps(["https://www.youtube.com/@mkbhd"]))
+    _write(tmp_path, monkeypatch, {"channels": [{"slug": "default"}]})
+    with pytest.raises(channels.ChannelsConfigError, match="also in GROWTH_FEEDS"):
+        channels.add_channel("tech", feeds=("https://www.youtube.com/@mkbhd",))
+    assert "tech" not in (tmp_path / "channels.json").read_text(encoding="utf-8")  # nothing was written
+    # Once the .env channel is retired its feeds are free to move.
+    _write(tmp_path, monkeypatch, {"channels": []})
+    monkeypatch.setattr(settings, "growth_feeds", "[]")
+    assert "error" not in channels.add_channel("tech", feeds=("https://www.youtube.com/@mkbhd",))
+
+
 # ---------- one account per channel, and nothing crossing between them ----------
 class _Account:
     """A stand-in for a token: which YouTube channel it belongs to, and what it can see."""
