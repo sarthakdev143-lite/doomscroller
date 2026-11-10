@@ -314,7 +314,12 @@ Off unless `GROWTH_ENABLED=true`. When on it owns publishing (`publish_job` no-o
 month). Supply and winner mining cut into `PENDING`; clips waiting for review count as stock, or supply would keep
 cutting while nobody reviews. `app/review.py` is a separate small server (port 8600, started by `run.py`) with only the
 review routes, so a tunnel to it never exposes the main API. It needs `REVIEW_TOKEN`, given once as `?key=` and then
-kept in a cookie. Approving moves a clip straight to `TRANSFORMED`; a title typed there becomes an edited draft, which
+kept in a cookie. The page (`app/review_ui.py`, served by `app/review.py`) is a tabbed control panel — Review,
+Channels, Status, Report, Controls — each tab backed by its own `/api` route; `approval.channels_overview` feeds the
+Channels tab, `report.doctor`/`build_report` the Status and Report tabs, and `app/growth/controls.py` runs a growth job
+early in a daemon thread (the panel polls `/api/controls` for the result). Every channel edit goes through the same
+validated `channels.edit_config`, so the file stays the source of truth. Approving moves a clip straight to
+`TRANSFORMED`; a title typed there becomes an edited draft, which
 the autopilot posts as written. On a phone a swipe right approves and left rejects, every decision shows an Undo
 (`approval.undo` takes the row back with a guarded `UPDATE`, so it loses to an upload that claimed the clip first), a
 clip the gate flagged needs a second tap, and with

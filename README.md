@@ -324,17 +324,28 @@ A copyright takedown, a legal, policy or account rejection from YouTube, or thre
 
 It posts `GROWTH_UPLOADS_PER_DAY` clips in varied time windows and tests posting window, title style, format, length, source, pace, sound effects and B-roll. Half of all choices are tests for the first 30 days, then 10%.
 
-## Approving clips from your phone
+## The phone control panel
 
-While `GROWTH_REQUIRE_APPROVAL=true`, every clip waits on the review page until you approve it.
+The same phone page is a full control panel, with tabs along the bottom. Everything is behind the one `?key=` login
+and the Cloudflare tunnel — nothing new is exposed.
 
 1. Start everything as services that survive reboots: `scripts/install_services.sh`
 2. The phone address is in `logs/tunnel_url.txt`. Open it once as `<address>/?key=<REVIEW_TOKEN from .env>`.
 3. For alerts, install the ntfy app and subscribe to the `NTFY_TOPIC` from `.env`. New clips, posts, problems and
    any new page address arrive there.
 
-On the page, tap **Approve** or **Reject**, or swipe a clip right to approve and left to reject. An **Undo** appears
-for a few seconds after each decision, and works until the clip has actually posted. A clip the safety check flagged
-shows a warning, makes Reject the main button and asks for a second tap to approve. With several channels, the chips
-at the top filter by channel and the strip under them shows each channel's queue and anything that needs you.
+- **Review** — approve or reject clips (tap, or swipe right/left). An **Undo** appears for a few seconds and works
+  until the clip has posted. A flagged clip shows a warning, makes Reject the main button and asks for a second tap
+  to approve. With several channels, chips filter by channel and a strip shows each channel's queue, pause state and
+  anything that needs you.
+- **Channels** — every channel with its status and its one next setup step. Add a channel, add or remove creators,
+  change its name, handle, pace or timezone, switch it on or off, and pause or resume it. The Google sign-in is the
+  one step that still happens on a computer (`scripts/channels.py connect <slug>`); the panel shows exactly when a
+  channel is waiting on it.
+- **Status** — the doctor: what's ready, what needs fixing with the reason, and a button to run the full check that
+  asks Google.
+- **Report** — per channel: today's plan, what's published and in stock, what the A/B tests show, best and worst
+  videos, recent problems and activity.
+- **Controls** — run a job now (make clips, check for new uploads, refresh stats, learn), reload `channels.json`,
+  resume paused channels, and lift a takedown block.
 

@@ -12,6 +12,7 @@ from typing import Optional
 
 from sqlalchemy import func, select, update
 
+from app.config import settings
 from app.db import session_scope
 from app.metadata import finished_title
 from app.models import GrowthEvent, GrowthState, MetadataDraft, Video, VideoStatus
@@ -156,6 +157,33 @@ def queue() -> dict:
         "next_post": min((c["next_post"] for c in per if c["next_post"]), default=""),
         "posted": posted,
     }
+
+
+def channels_overview() -> list[dict]:
+    """Everything the control panel's Channels tab shows: each channel's config, its live counts, whether
+    it is connected to YouTube, and the one next step to get it running. The legacy channel is included."""
+    from . import channels
+
+    out = []
+    with session_scope() as db:
+        for channel in channels.all_channels(db):
+            default = channels.is_default(channel)
+            token = channel.token_path
+            connected = default or bool(token and os.path.exists(token) and channel.youtube_channel_id)
+            out.append({
+                **_channel_status(db, channel),
+                "niche": channel.niche or "",
+                "brand_name": (settings.brand_name if default else channel.brand_name) or "",
+                "uploads_per_day": channels.uploads_per_day(channel),
+                "timezone": channels.timezone_of(channel),
+                "require_approval": channels.require_approval(channel),
+                "enabled": channel.enabled,
+                "default": default,
+                "connected": connected,
+                "feeds": channels.feeds_for(db, channel),
+                "next_step": channels.next_step(db, channel),
+            })
+    return out
 
 
 def _grant(db, video: Video, now: datetime, mark: str) -> None:
