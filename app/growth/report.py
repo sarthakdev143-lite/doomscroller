@@ -142,13 +142,14 @@ def _disabled_row(channel, configured: bool) -> dict:
             "checks": [_check(True, "enabled", note, required=False)]}
 
 
-def _channel_rows(live: bool) -> list[dict]:
+def _channel_rows(live: bool, only: Optional[str] = None) -> list[dict]:
     """One block per managed named channel (enabled and disabled), so each channel's own setup can be checked.
 
-    Disabled channels are listed but never gate overall readiness.
+    Disabled channels are listed but never gate overall readiness. `only` limits it to one slug, so
+    connecting a channel does not wait on Google for every other one.
     """
     with session_scope() as db:
-        named = [c for c in channels.all_channels(db) if not channels.is_default(c)]
+        named = [c for c in channels.all_channels(db) if not channels.is_default(c) and only in (None, c.slug)]
         info = []
         for c in named:
             feeds = channels.feeds_for(db, c)
@@ -183,6 +184,11 @@ def _channel_rows(live: bool) -> list[dict]:
         rows.append({"slug": channel.slug, "name": channel.name, "enabled": True,
                      "ready": all(c["ok"] for c in checks if c["required"]), "checks": checks})
     return rows
+
+
+def check_channel(slug: str) -> Optional[dict]:
+    """One channel's readiness, asked of Google now. What `channels.py connect` shows before leaving it on."""
+    return next(iter(_channel_rows(True, only=slug)), None)
 
 
 def doctor(*, live: bool = False) -> dict:

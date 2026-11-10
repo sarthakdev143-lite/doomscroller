@@ -735,6 +735,165 @@ def test_doctor_reports_each_named_channels_readiness(tmp_path, monkeypatch):
     assert out["ready"] is False
 
 
+# ---------- setting a channel up: one command at a time, each naming the next ----------
+def _channels_cli(monkeypatch):
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "channels_cli", Path(__file__).parent.parent / "scripts" / "channels.py")
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+
+    def run(*args):
+        monkeypatch.setattr("sys.argv", ["channels.py", *args])
+        return cli.main()
+    return cli, run
+
+
+def _half_set_up(tmp_path, monkeypatch, **entry):
+    secrets, token = tmp_path / "tech_client.json", tmp_path / "tech_token.json"
+    _write(tmp_path, monkeypatch, {"channels": [{
+        "slug": "tech", "name": "Tech", "client_secrets": str(secrets), "token_path": str(token),
+        "enabled": False, "feeds": ["https://www.youtube.com/@mkbhd"], **entry}]})
+    return secrets, token
+
+
+def test_the_channels_command_names_the_next_step_at_every_stage(tmp_path, monkeypatch, capsys):
+    secrets, token = _half_set_up(tmp_path, monkeypatch)
+    cli, run = _channels_cli(monkeypatch)
+
+    def next_line():
+        assert run() == 0  # no arguments: the status view
+        shown = capsys.readouterr().out
+        return next((line.strip() for line in shown.splitlines() if line.strip().startswith("next:")), shown)
+
+    assert f"save its Google OAuth client file as {secrets}" in next_line()
+    secrets.write_text("{}")
+    assert "scripts/channels.py connect tech" in next_line()
+    token.write_text("{}")
+    assert "switch it on" in next_line()
+    channels.set_enabled("tech", True)
+    assert "1 of 1 ready." in next_line()  # nothing left to do, so no "next" line at all
+
+
+def test_connect_signs_in_checks_with_google_and_only_then_leaves_it_on(tmp_path, monkeypatch, capsys):
+    from app.growth import report
+
+    secrets, token = _half_set_up(tmp_path, monkeypatch)
+    secrets.write_text("{}")
+    cli, run = _channels_cli(monkeypatch)
+    signed_in = []
+
+    def sign_in(command):
+        signed_in.append(command)
+        token.write_text("{}")
+        return 0
+
+    def enabled():
+        with session_scope() as db:
+            return channels.channel_by_slug(db, "tech").enabled
+
+    monkeypatch.setattr(cli.subprocess, "call", sign_in)
+    # Google refuses something: the channel must not be left on, missing every window.
+    monkeypatch.setattr(report, "check_channel", lambda slug: {"checks": [
+        {"name": "analytics read", "detail": "enable the YouTube Analytics API", "ok": False, "required": True}]})
+    assert run("connect", "tech") == 1
+    assert "enable the YouTube Analytics API" in capsys.readouterr().out and not enabled()
+    assert "--channel" in signed_in[0] and "tech" in signed_in[0]
+
+    # Fixed and run again: it does not ask for a second sign-in, and now stays on.
+    monkeypatch.setattr(report, "check_channel", lambda slug: {"checks": [
+        {"name": "channel", "detail": "connected to Tech Clips", "ok": True, "required": True}]})
+    assert run("connect", "tech") == 0
+    assert "tech is on, connected to Tech Clips" in capsys.readouterr().out and enabled()
+    assert len(signed_in) == 1
+
+
+def test_connect_without_googles_file_says_exactly_where_it_goes(tmp_path, monkeypatch, capsys):
+    secrets, _ = _half_set_up(tmp_path, monkeypatch)
+    cli, run = _channels_cli(monkeypatch)
+    monkeypatch.setattr(cli.subprocess, "call", lambda command: pytest.fail("no sign-in without the client file"))
+    assert run("connect", "tech") == 1
+    shown = capsys.readouterr().out
+    assert f"Save that file here as: {secrets}" in shown and "Publish app" in shown
+
+
+def test_a_channels_settings_change_from_the_command_line(tmp_path, monkeypatch, capsys):
+    _half_set_up(tmp_path, monkeypatch)
+    cli, run = _channels_cli(monkeypatch)
+    assert run("set", "tech", "--uploads", "4", "--brand", "@techclips") == 0
+    with session_scope() as db:
+        tech = channels.channel_by_slug(db, "tech")
+        assert (tech.uploads_per_day, tech.brand_name, tech.name) == (4, "@techclips", "Tech")  # the rest untouched
+    assert run("set", "tech", "--uploads", "99") == 1  # refused by the same checks as the file
+    assert "uploads_per_day" in capsys.readouterr().out
+    with session_scope() as db:
+        assert channels.channel_by_slug(db, "tech").uploads_per_day == 4
+
+
+# ---------- managing a channel from the phone ----------
+def _signed_in(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.review import review_app
+
+    monkeypatch.setattr(settings, "review_token", "test-review-key")
+    client = TestClient(review_app)
+    assert client.get("/?key=test-review-key", follow_redirects=False).status_code == 303
+    return client
+
+
+def _strip(client, slug):
+    return next(c for c in client.get("/api/queue").json()["channels"] if c["slug"] == slug)
+
+
+def test_a_channel_is_paused_and_resumed_from_the_review_page(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.growth import safety
+    from app.review import review_app
+
+    _write(tmp_path, monkeypatch, {"channels": [{"slug": "tech", "name": "Tech"}, {"slug": "comedy"}]})
+    with session_scope() as db:
+        channels.sync_channels(db)
+    assert TestClient(review_app).post("/api/channels/tech/pause").status_code in (401, 503)  # not without the key
+    client = _signed_in(monkeypatch)
+
+    assert client.post("/api/channels/tech/pause").json() == {"slug": "tech", "paused": True}
+    tech = _strip(client, "tech")
+    assert tech["paused"] and tech["owner_paused"] and tech["attention"] == "Paused by you"
+    assert not _strip(client, "comedy")["paused"]                      # only the one that was tapped
+    with session_scope() as db:
+        assert safety.pause_reason(db, channels.channel_by_slug(db, "tech"))  # the autopilot skips it
+        kinds = [e.kind for e in db.execute(select(GrowthEvent)).scalars()]
+        assert kinds == ["owner_paused"]                               # routine, so no alert about your own tap
+
+    assert client.post("/api/channels/tech/resume").json() == {"slug": "tech", "paused": False}
+    assert not _strip(client, "tech")["paused"]
+    assert client.post("/api/channels/nope/pause").status_code == 404
+
+
+def test_a_takedown_replaces_the_owners_own_pause(tmp_path, monkeypatch):
+    from app.growth import safety
+
+    _write(tmp_path, monkeypatch, {"channels": [{"slug": "tech"}, {"slug": "comedy"}]})
+    with session_scope() as db:
+        channels.sync_channels(db)
+        tech_id = channels.channel_by_slug(db, "tech").id
+    client = _signed_in(monkeypatch)
+    client.post("/api/channels/tech/pause")
+    with session_scope() as db:
+        video = Video(source="youtube", source_id="x", source_url="u", title="t", status=VideoStatus.PUBLISHED,
+                      youtube_video_id="yt1", channel_id=tech_id, meta={"clip_rendered": True})
+        db.add(video)
+        db.flush()
+        safety.record_strike(video, "copyright", now=datetime(2026, 11, 2, tzinfo=timezone.utc))
+    # One tap lifts your own pause, so the page must now show the takedown and ask twice.
+    tech = _strip(client, "tech")
+    assert tech["paused"] and not tech["owner_paused"] and "copyright" in tech["attention"]
+
+
 def test_a_source_listed_under_two_channels_is_refused(tmp_path, monkeypatch):
     # Both would cut the same video into the same clips, and fight over the rows.
     _write(tmp_path, monkeypatch, {"channels": [

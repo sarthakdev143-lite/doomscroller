@@ -258,31 +258,43 @@ Lost the `.env` lines? Run the script again without `--force`: it reprints them 
 
 The growth loop can run several channels at once, one niche each. Every channel needs **its own Google Cloud project**: YouTube allows about 6 uploads a day per project (see [Quota & cadence](#quota--cadence)), so channels cannot share one. The channels live in `channels.json` at the repo root (`CHANNELS_FILE` moves it). With no such file the loop runs one channel from the `GROWTH_*` settings, exactly as before.
 
-**Add a channel.** Either copy `channels.example.json` to `channels.json` (it ships four niche channels with their feeds), or let the command write the entry:
+**Add a channel: two commands.**
 
 ```bash
 venv/bin/python scripts/channels.py add tech --name "Tech & Science" \
     --feed https://www.youtube.com/@mkbhd --feed https://www.youtube.com/@Mrwhosetheboss
 ```
 
-It prints the steps for that channel. They are the [YouTube token](#youtube-token) checklist against a fresh project, and **step 4 (Publish app → In production) matters most**: a project left in *Testing* kills that channel's token after 7 days, and the channel quietly stops. Then:
+That prints Google's part for this channel: six steps in a browser, about ten minutes, once. **Step 4 (Publish app → In production) matters most**: a project left in *Testing* kills that channel's sign-in after 7 days, and the channel quietly stops. Save the file it asks for, then:
 
 ```bash
-venv/bin/python scripts/youtube_oauth.py --channel tech --force   # pick THIS channel on Google's screen
-venv/bin/python scripts/channels.py enable tech
-venv/bin/python scripts/growth.py doctor                          # a readiness block per channel
+venv/bin/python scripts/channels.py connect tech
 ```
+
+`connect` signs you in (pick THIS channel on Google's screen), asks Google whether the sign-in, both APIs and every source link really work, and only then switches the channel on. If something is wrong it says what, leaves the channel off, and can simply be run again. Over SSH it prints the sign-in link instead of trying to open a browser.
+
+Lost track of where a channel is? Run it with nothing after it:
+
+```bash
+venv/bin/python scripts/channels.py
+# tech           Tech & Science           running  3/day  2 sources
+# comedy         Comedy                   off      3/day  0 sources
+#                next: save its Google OAuth client file as secrets/comedy_client_secret.json
+```
+
+(`channels.example.json` is there if you would rather start from a file with four niche channels filled in.)
 
 **Day to day.** None of these needs a restart; the loop reads its channels on every tick.
 
 ```bash
-venv/bin/python scripts/channels.py list                  # every channel, on or off, token in place or not
 venv/bin/python scripts/channels.py feed tech --add <link> --remove <link>
-venv/bin/python scripts/channels.py disable tech          # stop one channel, leave the rest running
-venv/bin/python scripts/growth.py reload                  # after editing channels.json by hand
+venv/bin/python scripts/channels.py set tech --uploads 4 --brand @techclips   # also --name --niche --timezone
+venv/bin/python scripts/channels.py disable tech          # switch one channel off completely
 venv/bin/python scripts/growth.py report                  # totals, then each channel's plan and results
-venv/bin/python scripts/growth.py resume tech             # clear one channel's takedown pause
+venv/bin/python scripts/growth.py reload                  # only after editing channels.json by hand
 ```
+
+**From your phone.** On the review page each channel has a **Pause posting** button. It stops that channel posting while it keeps cutting clips and reading its numbers, and **Resume posting** starts it again. A channel paused by a takedown shows the reason and takes a second tap to resume. `scripts/growth.py resume tech` does the same from a terminal.
 
 A change that would break the file (bad JSON, an unknown timezone, a slug used twice) is refused and the running channels are kept; `doctor` says what was wrong. Only `.env` changes still need a restart.
 

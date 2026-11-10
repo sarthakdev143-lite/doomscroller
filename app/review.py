@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 from app.config import settings
 from app.db import init_db
-from app.growth import approval
+from app.growth import approval, safety
 
 review_app = FastAPI(title="Doomscroller review", docs_url=None, redoc_url=None, openapi_url=None)
 _COOKIE = "review_key"
@@ -87,6 +87,22 @@ def api_undo(video_id: str, request: Request) -> dict:
         raise HTTPException(409, str(exc))
 
 
+@review_app.post("/api/channels/{slug}/pause")
+def api_pause(slug: str, request: Request) -> dict:
+    """Stops one channel posting. The other way round needs the same key, so both live here."""
+    _guard(request)
+    if not safety.pause(slug):
+        raise HTTPException(404, "no such channel")
+    return {"slug": slug, "paused": True}
+
+
+@review_app.post("/api/channels/{slug}/resume")
+def api_resume(slug: str, request: Request) -> dict:
+    _guard(request)
+    safety.resume(slug)  # already running is not an error: the page may be a tap behind
+    return {"slug": slug, "paused": False}
+
+
 @review_app.get("/media/{video_id}")
 def media(video_id: str, request: Request):
     _guard(request)
@@ -118,13 +134,16 @@ h1{font-size:15px;margin:0;display:inline}.stats{color:var(--dim);font-size:12px
 .chip.att{border-color:var(--warn)}
 .chip .n{opacity:.75;margin-left:5px;font-variant-numeric:tabular-nums}
 main{padding:10px 16px 40px;display:grid;gap:12px;max-width:560px;margin:0 auto}
-#strip{display:flex;gap:10px;overflow-x:auto;padding:2px 0;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+#banner{padding-bottom:0}
+#strip{display:flex;gap:10px;overflow-x:auto;padding:2px 16px;-webkit-overflow-scrolling:touch;scrollbar-width:none}
 #strip::-webkit-scrollbar{display:none}
 .cc{min-width:150px;flex:0 0 auto;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:9px 11px}
 .cc.att{border-color:var(--warn)}
 .cc h3{font-size:13px;margin:0 0 3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .cc .sub{color:var(--dim);font-size:12px;font-variant-numeric:tabular-nums}
-.cc .attn{color:var(--warn);font-size:12px;font-weight:600;margin-top:3px}
+.cc .attn{color:var(--warn);font-size:12px;font-weight:600;margin-top:3px;max-width:200px}
+.cbtn{margin-top:8px;width:100%;padding:9px;font-size:12px;background:transparent;color:var(--dim);border:1px solid var(--line)}
+.cbtn.go{color:var(--ok);border-color:var(--ok)}.cbtn.arm{color:var(--warn);border-color:var(--warn)}
 .banner{background:#3a1416;border:1px solid var(--no);color:#ffb4b4;border-radius:10px;padding:10px 12px;font-size:13px;font-weight:600}
 .card{background:var(--card);border-radius:14px;overflow:hidden;border:1px solid var(--line)}
 .card.flagged{border-color:var(--warn)}
@@ -163,7 +182,7 @@ h2{font-size:15px;margin:4px 0 0}.post{background:var(--card);border:1px solid v
 const stats=document.getElementById('stats'),chipsBox=document.getElementById('chips'),bannerBox=document.getElementById('banner'),
       stripBox=document.getElementById('strip'),list=document.getElementById('list'),postedBox=document.getElementById('posted'),
       snack=document.getElementById('snack');
-const edits={},cards=new Map();let last=null,filter='all',stale=false,snackTimer=null;
+const edits={},cards=new Map();let last=null,filter='all',stale=false,snackTimer=null,armedResume=null;
 try{filter=localStorage.getItem('reviewFilter')||'all'}catch(e){}
 function el(tag,attrs,text){const e=document.createElement(tag);Object.assign(e,attrs||{});if(text!=null)e.textContent=text;return e}
 function fmt(iso){return iso?new Date(iso).toLocaleString([],{weekday:'short',hour:'2-digit',minute:'2-digit'}):'—'}
@@ -197,8 +216,23 @@ function renderStrip(channels){
     card.append(el('div',{className:'sub'},`${c.waiting} to review · ${c.approved} queued`));
     card.append(el('div',{className:'sub'},`${c.posted_today} today · next ${fmt(c.next_post)}`));
     if(c.attention)card.append(el('div',{className:'attn'},c.attention));
+    card.append(pauseButton(c,card));
     stripBox.append(card)}
 }
+function pauseButton(c,card){
+  // Your own pause lifts in one tap. A takedown pause shows its reason above and takes a second tap.
+  const needsSecond=c.paused&&!c.owner_paused,armed=armedResume===c.slug&&needsSecond;
+  const b=el('button',{className:'cbtn'+(armed?' arm':c.paused?' go':'')},
+    armed?'Tap again to resume':c.paused?'Resume posting':'Pause posting');
+  b.onclick=async()=>{
+    if(needsSecond&&!armed){armedResume=c.slug;render();
+      setTimeout(()=>{if(armedResume===c.slug){armedResume=null;render()}},6000);return}
+    armedResume=null;b.disabled=true;
+    try{const r=await fetch('/api/channels/'+encodeURIComponent(c.slug)+'/'+(c.paused?'resume':'pause'),{method:'POST',credentials:'same-origin'});
+      if(!r.ok)throw new Error('refused');await load()}
+    catch(e){b.disabled=false;card.append(el('div',{className:'err'},'Could not change it. Check the connection and try again.'))}
+  };
+  return b}
 function renderPosted(items){
   postedBox.replaceChildren(el('h2',{},'Recently posted'));
   if(!items.length){postedBox.append(el('div',{className:'empty'},'Nothing posted yet.'));return}
@@ -289,7 +323,7 @@ function render(){
   stats.textContent=(stale?'OFFLINE — showing older data · ':'')+
     `${d.clips.length} to review · ${d.approved_waiting} queued · ${d.posted_today} posted today · next ${next}`;
   stats.style.color=stale?'var(--warn)':'';
-  const paused=(channels.find(c=>c.attention&&/paused|hold/i.test(c.attention))||{}).attention;
+  const paused=(channels.find(c=>c.attention&&/paused|hold/i.test(c.attention)&&!c.owner_paused)||{}).attention;
   if(paused){bannerBox.hidden=false;bannerBox.replaceChildren(el('div',{className:'banner'},paused+' — some channels are not posting.'))}
   else bannerBox.hidden=true;
   renderChips(channels);renderStrip(channels);renderPosted(d.posted||[]);

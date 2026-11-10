@@ -156,7 +156,9 @@ def record_strike(video: Video, reason: str, *, now: Optional[datetime] = None) 
     strikes.append({"video_id": video.id, "reason": reason, "hard": hard, "at": now.isoformat()})
     set_state(db, strikes_key, {"log": strikes})
     reason_to_pause = _pause_for(strikes)
-    if reason_to_pause and db.get(GrowthState, paused_key) is None:
+    standing = _value(db, paused_key)
+    # A pause the owner set themselves is one tap to lift, so a takedown has to take its place and say why.
+    if reason_to_pause and (standing is None or standing.get("by") == "owner"):
         set_state(db, paused_key, {"reason": reason_to_pause, "at": now.isoformat()})
         # The bare key is the legacy channel's; a named channel's key starts with its slug, which resume takes.
         slug = paused_key.rpartition(":")[0]
@@ -169,6 +171,34 @@ def record_strike(video: Video, reason: str, *, now: Optional[datetime] = None) 
 def pause_reason(db, channel=None) -> Optional[str]:
     """Why this channel's posting is paused, or None. A strike pauses only the channel it struck."""
     return (_value(db, _ckey(channel, "paused")) or {}).get("reason")
+
+
+OWNER_PAUSE = "you paused it from the review page"
+
+
+def pause(slug: str) -> bool:
+    """The owner stops one channel posting, from their phone. False when there is no such channel.
+
+    Only posting stops. Supply, collecting and learning carry on, so it comes back with a full shelf, and
+    it is logged as routine rather than as a problem, which would send them an alert about their own tap.
+    """
+    from . import channels
+
+    with session_scope() as db:
+        channel = channels.channel_by_slug(db, slug)
+        if channel is None:
+            return False
+        key = channels.state_key(channel, "paused")
+        if db.get(GrowthState, key) is None:
+            set_state(db, key, {"reason": OWNER_PAUSE, "at": datetime.now(timezone.utc).isoformat(), "by": "owner"})
+            db.add(GrowthEvent(kind="owner_paused", channel_id=channels.event_channel(channel),
+                               summary="Posting paused by the owner from the review page."))
+    return True
+
+
+def pause_state(db, channel) -> Optional[dict]:
+    """The standing pause as stored: its reason, and whether the owner set it."""
+    return _value(db, _ckey(channel, "paused"))
 
 
 def _paused_keys(db, slug: Optional[str]) -> list[tuple[str, Optional[str]]]:

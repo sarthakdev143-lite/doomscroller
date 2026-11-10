@@ -55,10 +55,10 @@ venv/Scripts/python.exe scripts/growth.py unblock  # list takedown blocks; with 
 venv/Scripts/python.exe scripts/growth.py reload   # re-read channels.json into the running loop
 
 # Channels: add, switch on or off, and change feeds without hand-editing channels.json
-venv/Scripts/python.exe scripts/channels.py list
+venv/Scripts/python.exe scripts/channels.py                       # every channel and its next setup step
 venv/Scripts/python.exe scripts/channels.py add tech --name "Tech" --feed https://www.youtube.com/@mkbhd
-venv/Scripts/python.exe scripts/youtube_oauth.py --channel tech   # that channel's own token
-venv/Scripts/python.exe scripts/channels.py enable tech           # refuses while no token is on disk
+venv/Scripts/python.exe scripts/channels.py connect tech          # sign in, check with Google, switch on
+venv/Scripts/python.exe scripts/channels.py set tech --uploads 4  # also --name --niche --brand --timezone
 ```
 
 `ffmpeg` and `ffprobe` must be on PATH for real operation. Playwright/Chromium is **optional** —
@@ -372,8 +372,15 @@ confound each other.
   cutting one source would fight over the same rows. Edits made through `scripts/channels.py` go through
   `edit_config` (validate, atomic write, reload); hand edits need `scripts/growth.py reload` or
   `POST /growth/channels/reload`.
-- **A new channel starts off.** `add_channel` writes `enabled: false` and `channels.py enable` refuses while there is no
-  token, so a half-set-up channel never fails every post. The first `add` on a legacy deployment also writes
+- **Setup is two commands, and each names the next step.** `channels.py add` writes the entry with `enabled: false` and
+  prints Google's part; `channels.py connect` runs the sign-in, asks Google through `report.check_channel`, and leaves
+  the channel on only if every required check passes, so a half-set-up channel never fails every post. It is safe to
+  run again, and skips the browser over SSH. `channels.next_step` is the single source for "what does this channel
+  need now", used by the bare `channels.py` status view. Keep new setup requirements in that function.
+- **The owner can pause a channel from the phone** (`safety.pause`, the review page's strip). It reuses the `paused`
+  state with `by: owner`, so only posting stops while supply, collect and learn carry on, and it logs `owner_paused`,
+  a routine event, rather than alerting them about their own tap. A takedown replaces an owner pause, because the
+  owner's own lifts in one tap and a takedown must show its reason and take two. The first `add` on a legacy deployment also writes
   `{"slug": "default"}`, or creating the file would retire the channel that is already running.
 - **A token for the wrong account is refused, not just reported** (`youtube.account_mismatch`). Every Google sign-in
   looks alike, so a re-authorisation can land on another account. A clip posted there cannot be taken back, and reading
@@ -454,8 +461,8 @@ old flat result shape — so an existing single-channel deployment, and the whol
   only a person restarts it. `record_strike` quarantines the unposted clips of that `clip_parent`, and
   supply drops that source and that author's feed links. One hard strike (`copyright`, `claim`, `termsOfUse`, `legal`,
   `inappropriate`, `trademark`, or a suspended or closed account) or three soft ones in 90 days (`missing`, or a
-  technical rejection such as `duplicate` or `length`) sets `paused` for that channel, and only
-  `scripts/growth.py resume` (all channels, or `resume <slug>`) clears it.
+  technical rejection such as `duplicate` or `length`) sets `paused` for that channel, and only a person clears it:
+  `scripts/growth.py resume` (all channels, or `resume <slug>`), or two taps on the review page.
   Strikes keep counting after a resume, so the next problem inside the window pauses again. Collect keeps asking about
   videos for the whole 90 days, though snapshots stop at 30, and only judges ids it really sent. Each struck video holds
   one block: a `missing` video that comes back takes its strike and block with it, and otherwise

@@ -308,6 +308,45 @@ def set_enabled(slug: str, enabled: bool) -> dict:
     return edit_config(change)
 
 
+_EDITABLE = ("name", "niche", "brand_name", "uploads_per_day", "timezone", "require_approval")
+
+
+def update_channel(slug: str, **fields) -> dict:
+    """Change a channel's own settings. Only what was given is touched, and the usual checks still apply."""
+    unknown = sorted(set(fields) - set(_EDITABLE))
+    if unknown:
+        raise ChannelsConfigError(f"cannot set {', '.join(unknown)}")
+
+    def change(entries: list[dict]) -> None:
+        _entry(entries, slug).update({k: v for k, v in fields.items() if v is not None})
+    return edit_config(change)
+
+
+def next_step(db, channel: Channel) -> str:
+    """The one thing this channel needs from its owner next, or '' when it is running.
+
+    Setup is several steps across Google and here, in a fixed order. Naming only the next one means
+    nobody has to work out where they stopped.
+    """
+    if is_default(channel):
+        return ""
+    slug = channel.slug
+    if not channel.client_secrets or not os.path.exists(channel.client_secrets):
+        return f"save its Google OAuth client file as {channel.client_secrets or f'secrets/{slug}_client_secret.json'}"
+    if not channel.token_path or not os.path.exists(channel.token_path):
+        return f"connect it to YouTube: scripts/channels.py connect {slug}"
+    if not feeds_for(db, channel):
+        return f"give it a creator to clip: scripts/channels.py feed {slug} --add <link>"
+    if not channel.enabled:
+        return f"switch it on: scripts/channels.py connect {slug}"
+    from . import safety
+
+    paused = safety.pause_reason(db, channel)
+    if paused:
+        return f"paused ({paused}). Resume: scripts/growth.py resume {slug}"
+    return ""
+
+
 def change_feeds(slug: str, *, add: tuple[str, ...] = (), remove: tuple[str, ...] = ()) -> dict:
     def change(entries: list[dict]) -> None:
         entry = _entry(entries, slug)

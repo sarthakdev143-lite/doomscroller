@@ -92,9 +92,10 @@ def _attention(db, channel, waiting: int, approved: int, now: datetime) -> str:
     """Why this channel needs the owner, or '' when it is fine. A halted channel must not read as merely idle."""
     from . import channels, safety, supply
 
-    paused = safety.pause_reason(db, channel)
+    paused = safety.pause_state(db, channel)
     if paused:
-        return "Paused — run resume"
+        # The owner's own pause needs no explaining; a takedown has to say what happened before it is lifted.
+        return "Paused by you" if paused.get("by") == "owner" else f"Paused: {(paused.get('reason') or '')[:90]}"
     if safety.active_hold(db, now, channel):
         return "Posting on hold"
     gap = db.get(GrowthState, channels.state_key(channel, supply.SUPPLY_GAP))
@@ -108,7 +109,7 @@ def _attention(db, channel, waiting: int, approved: int, now: datetime) -> str:
 
 def _channel_status(db, channel) -> dict:
     """One channel's at-a-glance numbers for the review page's status strip."""
-    from . import channels
+    from . import channels, safety
     from .autopilot import ready_clips
     from .factors import channel_zone
 
@@ -122,6 +123,7 @@ def _channel_status(db, channel) -> dict:
     waiting_posts = [p for p in (plan.value or {}).get("posts", []) if p.get("state") == "waiting"] if plan else []
     waiting = len(awaiting_review(db, scope))
     approved = len(ready_clips(db, scope))
+    pause = safety.pause_state(db, channel)
     return {
         "slug": channel.slug,
         "name": channel.name or channel.slug,
@@ -130,6 +132,9 @@ def _channel_status(db, channel) -> dict:
         "posted_today": posted_today,
         "next_post": min((p["due"] for p in waiting_posts), default=""),
         "attention": _attention(db, channel, waiting, approved, now),
+        # For the page's pause button: lifting a takedown takes a second tap, lifting your own does not.
+        "paused": pause is not None,
+        "owner_paused": bool(pause and pause.get("by") == "owner"),
     }
 
 
