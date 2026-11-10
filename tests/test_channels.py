@@ -356,6 +356,23 @@ def test_review_queue_has_a_per_channel_status_strip_when_multi(tmp_path, monkey
     assert q["clips"][0]["channel_slug"] == "tech"
 
 
+def test_doctor_lists_a_configured_but_disabled_channel(tmp_path, monkeypatch):
+    from app.growth import report
+
+    secret = tmp_path / "cs.json"
+    token = tmp_path / "tok.json"
+    secret.write_text("{}")
+    token.write_text("{}")
+    _write(tmp_path, monkeypatch, {"channels": [
+        {"slug": "tech", "client_secrets": str(secret), "token_path": str(token), "enabled": False}]})
+    with session_scope() as db:
+        channels.sync_channels(db)
+    rows = {r["slug"]: r for r in report.doctor(live=False).get("channels", [])}
+    assert "tech" in rows and rows["tech"]["enabled"] is False
+    # A fully-configured but off channel is the silent "forgot enabled:true" trap — doctor must name it.
+    assert "enabled:true" in rows["tech"]["checks"][0]["detail"]
+
+
 def test_doctor_flags_two_channels_sharing_a_token(tmp_path, monkeypatch):
     from app.growth import report
 

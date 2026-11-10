@@ -112,24 +112,47 @@ def _held_note(held: Counter) -> str:
             f"Most often: {held.most_common(1)[0][0]}")
 
 
+def _disabled_row(channel, configured: bool) -> dict:
+    """A named channel left off. A fully-set-up one that is still off is the silent 'forgot enabled:true' trap."""
+    note = ("configured (token + secret present) but enabled:false — set enabled:true and restart"
+            if configured else "disabled")
+    return {"slug": channel.slug, "name": channel.name, "enabled": False, "ready": True,
+            "checks": [_check(True, "enabled", note, required=False)]}
+
+
 def _channel_rows(live: bool) -> list[dict]:
-    """One readiness block per managed named channel, so each channel's token and feeds can be checked on its own."""
+    """One block per managed named channel (enabled and disabled), so each channel's own setup can be checked.
+
+    Disabled channels are listed but never gate overall readiness.
+    """
     with session_scope() as db:
-        named = [c for c in channels.active_channels(db) if not channels.is_default(c)]
-        info = [(c, channels.feeds_for(db, c), insights_for(c) if live else None) for c in named]
+        named = [c for c in channels.all_channels(db) if not channels.is_default(c)]
+        info = []
+        for c in named:
+            feeds = channels.feeds_for(db, c)
+            stock = len(ready_clips(db, channels.video_scope(c)))
+            gap = db.get(GrowthState, channels.state_key(c, supply.SUPPLY_GAP))
+            info.append((c, feeds, stock, (gap.value or {}).get("cause") if gap else None,
+                         insights_for(c) if (live and c.enabled) else None))
     rows = []
-    for channel, feeds, insights in info:
+    for channel, feeds, stock, gap_cause, insights in info:
+        has_creds = bool(channel.client_secrets) and os.path.exists(channel.client_secrets)
+        if not channel.enabled:
+            rows.append(_disabled_row(channel, has_creds and os.path.exists(channel.token_path)))
+            continue
         checks = [
-            _check(bool(channel.client_secrets) and os.path.exists(channel.client_secrets), "client_secrets",
+            _check(has_creds, "client_secrets",
                    channel.client_secrets or "not set, so this channel's uploads would be fake"),
             *_token_checks(channel.token_path),
             _check(bool(feeds), "feeds", f"{len(feeds)} feeds" if feeds else "none set for this channel"),
+            _check(not gap_cause, "stock",
+                   f"{stock} clips ready" + (f"; supply gap: {gap_cause[:80]}" if gap_cause else ""), required=False),
         ]
         if live:
             checks += _youtube_checks(insights) if insights else [
                 _check(False, "live", "no connection: USE_MOCK or no client_secrets", required=False)]
             checks += [_feed_check(feed) for feed in feeds]
-        rows.append({"slug": channel.slug, "name": channel.name,
+        rows.append({"slug": channel.slug, "name": channel.name, "enabled": True,
                      "ready": all(c["ok"] for c in checks if c["required"]), "checks": checks})
     return rows
 
