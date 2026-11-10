@@ -245,6 +245,28 @@ def reject(video_id: str) -> dict:
         return {"id": video_id, "status": video.status.value}
 
 
+_DECISION_KEYS = ("owner_approved", "owner_rejected", "auto_approved")
+
+
+def undo(video_id: str) -> dict:
+    """Reverse a review decision, as long as the clip has not been posted yet. Puts it back in the queue."""
+    with session_scope() as db:
+        video = db.get(Video, video_id)
+        if video is None or not (video.meta or {}).get("clip_rendered"):
+            raise ReviewError("no such clip")
+        if video.youtube_video_id or video.status in (VideoStatus.PUBLISHING, VideoStatus.PUBLISHED):
+            raise ReviewError("already posted — too late to undo")
+        if video.status not in (VideoStatus.TRANSFORMED, VideoStatus.REJECTED):
+            raise ReviewError(f"nothing to undo on a {video.status.value} clip")
+        if not any(k in (video.meta or {}) for k in _DECISION_KEYS):
+            raise ReviewError("this clip was not decided from the review page")
+        video.status = VideoStatus.PENDING
+        video.transformed_at = None
+        video.curated_at = None
+        video.meta = {k: v for k, v in (video.meta or {}).items() if k not in _DECISION_KEYS}
+        return {"id": video_id, "status": video.status.value}
+
+
 def media_path(video_id: str) -> Optional[str]:
     with session_scope() as db:
         video = db.get(Video, video_id)

@@ -78,6 +78,15 @@ def api_reject(video_id: str, request: Request) -> dict:
         raise HTTPException(409, str(exc))
 
 
+@review_app.post("/api/clips/{video_id}/undo")
+def api_undo(video_id: str, request: Request) -> dict:
+    _guard(request)
+    try:
+        return approval.undo(video_id)
+    except approval.ReviewError as exc:
+        raise HTTPException(409, str(exc))
+
+
 @review_app.get("/media/{video_id}")
 def media(video_id: str, request: Request):
     _guard(request)
@@ -134,6 +143,10 @@ button{border:0;border-radius:10px;font-weight:600;cursor:pointer}
 .card.flagged .nope{background:var(--no);color:#fff;border:0;padding:15px;font-size:16px;order:1}
 button:disabled{opacity:.5}
 .empty{color:var(--dim);text-align:center;padding:40px 0}
+.snack{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:#2a2a2e;color:var(--text);
+ border:1px solid var(--line);border-radius:10px;padding:10px 16px;display:flex;gap:16px;align-items:center;
+ font-size:14px;box-shadow:0 6px 20px rgba(0,0,0,.45);z-index:5;max-width:90vw}
+.snack button{background:none;color:var(--accent);border:0;font-weight:700;font-size:14px;padding:4px;cursor:pointer}
 h2{font-size:15px;margin:4px 0 0}.post{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;display:grid;gap:4px}
 .post a{color:var(--text);font-weight:600;text-decoration:none}.nums{display:flex;gap:14px;flex-wrap:wrap;color:var(--dim);font-size:13px}
 .verdict{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.04em}.winner{color:var(--ok)}
@@ -145,15 +158,26 @@ h2{font-size:15px;margin:4px 0 0}.post{background:var(--card);border:1px solid v
 <main id="strip" hidden></main>
 <main id="list"></main>
 <main id="posted"></main>
+<div id="snack" class="snack" hidden></div>
 <script>
 const stats=document.getElementById('stats'),chipsBox=document.getElementById('chips'),bannerBox=document.getElementById('banner'),
-      stripBox=document.getElementById('strip'),list=document.getElementById('list'),postedBox=document.getElementById('posted');
-const edits={},cards=new Map();let last=null,filter='all',stale=false;
+      stripBox=document.getElementById('strip'),list=document.getElementById('list'),postedBox=document.getElementById('posted'),
+      snack=document.getElementById('snack');
+const edits={},cards=new Map();let last=null,filter='all',stale=false,snackTimer=null;
 try{filter=localStorage.getItem('reviewFilter')||'all'}catch(e){}
 function el(tag,attrs,text){const e=document.createElement(tag);Object.assign(e,attrs||{});if(text!=null)e.textContent=text;return e}
 function fmt(iso){return iso?new Date(iso).toLocaleString([],{weekday:'short',hour:'2-digit',minute:'2-digit'}):'—'}
 function setFilter(f){filter=f;try{localStorage.setItem('reviewFilter',f)}catch(e){}render()}
 function busy(){const a=document.activeElement;return(a&&a.tagName==='INPUT'&&list.contains(a))||[...list.querySelectorAll('video')].some(v=>!v.paused&&!v.ended)}
+function toast(label,id){
+  clearTimeout(snackTimer);snack.replaceChildren(el('span',{},label));
+  const u=el('button',{},'Undo');
+  u.onclick=async()=>{clearTimeout(snackTimer);snack.hidden=true;
+    try{const r=await fetch('/api/clips/'+encodeURIComponent(id)+'/undo',{method:'POST',credentials:'same-origin'});
+      if(!r.ok){let m='Undo failed';try{m=(await r.json()).detail||m}catch(e){}alert(m)}}catch(e){alert('Undo failed — network error')}
+    load();};
+  snack.append(u);snack.hidden=false;snackTimer=setTimeout(()=>{snack.hidden=true},6000);
+}
 
 function renderChips(channels){
   chipsBox.replaceChildren();
@@ -209,7 +233,8 @@ function clipCard(c){
     try{
       const r=await fetch('/api/clips/'+encodeURIComponent(c.id)+'/'+path,{method:'POST',credentials:'same-origin',
         headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
-      if(r.ok){delete edits[c.id];cards.delete(c.id);card.remove();load();return}
+      if(r.ok){delete edits[c.id];cards.delete(c.id);card.remove();
+        toast(path==='approve'?'Approved':'Rejected',c.id);load();return}
       let msg='Failed ('+r.status+')';
       try{msg=(await r.json()).detail||msg}catch(e){}
       if(r.status===401)msg='Session expired — reopen your ?key= link.';

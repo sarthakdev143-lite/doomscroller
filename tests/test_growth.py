@@ -5059,6 +5059,35 @@ def test_review_page_signs_in_once_and_approves(tmp_path, monkeypatch):
     assert client.get("/api/queue").json()["clips"] == []
 
 
+def test_undo_puts_a_decided_clip_back_in_the_queue(tmp_path):
+    from app.growth import approval
+
+    path = tmp_path / "a.mp4"
+    path.write_bytes(b"x")
+    for n, decide in enumerate((approval.approve, approval.reject)):
+        vid = make_clip(path, n=n, status=VideoStatus.PENDING)
+        decide(vid)
+        with session_scope() as db:
+            assert db.get(Video, vid).status != VideoStatus.PENDING
+        approval.undo(vid)
+        with session_scope() as db:
+            video = db.get(Video, vid)
+            assert video.status == VideoStatus.PENDING
+            assert "owner_approved" not in video.meta and "owner_rejected" not in video.meta
+
+
+def test_undo_refuses_once_a_clip_has_posted(tmp_path):
+    from app.growth import approval
+
+    path = tmp_path / "a.mp4"
+    path.write_bytes(b"x")
+    vid = make_clip(path, status=VideoStatus.PUBLISHED, owner_approved="x")
+    with session_scope() as db:
+        db.get(Video, vid).youtube_video_id = "yt1"
+    with pytest.raises(approval.ReviewError):
+        approval.undo(vid)
+
+
 def test_review_page_shows_real_posts_with_their_results(tmp_path):
     from app.growth import approval
 
