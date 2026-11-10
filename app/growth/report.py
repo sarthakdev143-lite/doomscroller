@@ -151,23 +151,34 @@ def doctor(*, live: bool = False) -> dict:
         paused = safety.pause_reason(db)
         blocks = safety.block_list(db)
         held = _held_reasons(db)
+        config = channels.config_health(db)
+        active = channels.active_channels(db)
         # Every enabled channel's feeds. For a single legacy channel this is just GROWTH_FEEDS.
-        all_feeds = [f for c in channels.active_channels(db) for f in channels.feeds_for(db, c)]
+        all_feeds = [f for c in active for f in channels.feeds_for(db, c)]
+    # With named channels, each has its own token below; the global YOUTUBE_* creds are legacy and unused.
+    multi = any(not channels.is_default(c) for c in active)
+    auth_checks = [
+        _check(bool(secrets) and os.path.exists(secrets), "YOUTUBE_CLIENT_SECRETS",
+               secrets or ("per channel below" if multi else "not set, so uploads are fake")),
+        *_token_checks(),
+    ]
+    if multi:
+        auth_checks = [{**c, "required": False} for c in auth_checks]
     # An inbox file's title is only its filename, so without AI its clips never reach the shelf on their own.
     needs_ai = files > 0 and not ai.available()
     # The dashboard runs this on every refresh, so it goes by what supply last found rather than asking YouTube.
     feeds = [feed for feed in all_feeds if feed not in empty_feeds and feed not in barred]
     no_links = sorted(set(all_feeds) & empty_feeds)
     checks = [
+        _check("error" not in config, "channels.json",
+               config["error"] if config.get("error") else f"{config.get('count', 0)} channels declared"),
         _check(paused is None, "pause",
                f"{paused}. Check the channel, then clear it with: scripts/growth.py resume" if paused else "not paused"),
         _check(not blocks, "takedown blocks", safety.describe_blocks(blocks) if blocks else "none", required=False),
         _check(settings.growth_enabled, "GROWTH_ENABLED", "on" if settings.growth_enabled else "off"),
         _check(settings.enable_publish, "ENABLE_PUBLISH", "on" if settings.enable_publish else "off, so nothing posts"),
         _check(not settings.use_mock, "USE_MOCK", "real uploads" if not settings.use_mock else "true, so uploads are fake"),
-        _check(bool(secrets) and os.path.exists(secrets), "YOUTUBE_CLIENT_SECRETS",
-               secrets or "not set, so uploads are fake"),
-        *_token_checks(),
+        *auth_checks,
         _check(settings.youtube_default_privacy == "public", "YOUTUBE_DEFAULT_PRIVACY",
                f"{settings.youtube_default_privacy}: only public videos can get views to learn from"),
         _check(shutil.which("ffmpeg") is not None, "ffmpeg", "found" if shutil.which("ffmpeg") else "not on PATH"),

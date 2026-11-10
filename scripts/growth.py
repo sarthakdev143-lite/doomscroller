@@ -22,13 +22,26 @@ from app.growth.safety import block_list, resume, unblock
 _PROBLEMS_PER_KIND = 5
 
 
+def _print_checks(checks: list[dict], indent: str = "") -> None:
+    for check in checks:
+        mark = "ok  " if check["ok"] else ("FAIL" if check["required"] else "warn")
+        print(f"{indent}{mark}  {check['name']}: {check['detail']}")
+
+
 def show_doctor(live: bool) -> int:
     result = doctor(live=live)
-    for check in result["checks"]:
-        mark = "ok  " if check["ok"] else ("FAIL" if check["required"] else "warn")
-        print(f"{mark}  {check['name']}: {check['detail']}")
-    print("\nReady." if result["ready"] else "\nNot ready: fix the FAIL lines.")
-    return 0 if result["ready"] else 1
+    _print_checks(result["checks"])
+    for channel in result.get("channels", []):
+        state = "ready" if channel["ready"] else "NOT READY"
+        print(f"\nchannel {channel['slug']} ({channel['name']}) — {state}")
+        _print_checks(channel["checks"], indent="  ")
+    if result["ready"]:
+        print("\nReady.")
+        return 0
+    bad = [c["name"] for c in result["checks"] if c["required"] and not c["ok"]]
+    bad += [f"channel {ch['slug']}" for ch in result.get("channels", []) if not ch["ready"]]
+    print(f"\nNot ready — fix: {', '.join(bad)}" if bad else "\nNot ready: fix the FAIL lines.")
+    return 1
 
 
 def show_resume(slug: str | None) -> int:

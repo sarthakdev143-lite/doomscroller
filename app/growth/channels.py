@@ -17,34 +17,58 @@ from typing import Optional
 from sqlalchemy import select
 
 from app.config import settings
-from app.models import Channel, Feed
+from app.models import Channel, Feed, GrowthState
 
 log = logging.getLogger(__name__)
 
 DEFAULT_SLUG = "default"
+_CONFIG_HEALTH = "channels_config"
+
+
+class ChannelsConfigError(ValueError):
+    """channels.json exists but could not be used, so the fleet must not be silently retired."""
 # channels.json fields that map straight onto a Channel column.
 _CONFIG_FIELDS = ("name", "niche", "brand_name", "token_path", "client_secrets",
                   "uploads_per_day", "timezone", "require_approval", "enabled")
 
 
 def _load_config() -> Optional[list[dict]]:
-    """The channels declared in channels.json, or None when there is no usable file."""
+    """The channels declared in channels.json, or None when there is no file.
+
+    Raises ChannelsConfigError when the file exists but is unusable, so a typo does not silently retire
+    every channel (a trailing comma over SSH must not take the fleet down to the legacy default channel).
+    """
     path = settings.channels_path
     try:
         raw = path.read_text(encoding="utf-8")
     except OSError:
-        return None
+        return None  # no file -> the legacy single-channel fallback is intended
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
-        log.warning("growth: channels.json is not valid JSON (%s), ignoring it", exc)
-        return None
+        raise ChannelsConfigError(f"channels.json is not valid JSON ({exc}). Fix the file; the fleet is unchanged.")
     entries = data.get("channels") if isinstance(data, dict) else data
     if not isinstance(entries, list):
-        log.warning("growth: channels.json has no 'channels' list, ignoring it")
-        return None
+        raise ChannelsConfigError("channels.json has no 'channels' list.")
     valid = [e for e in entries if isinstance(e, dict) and e.get("slug")]
-    return valid or None
+    if not valid:
+        raise ChannelsConfigError("channels.json declares no channel with a slug.")
+    return valid
+
+
+def _record_config(db, error: Optional[str], count: int = 0) -> None:
+    value = {"error": error} if error else {"ok": True, "count": count}
+    state = db.get(GrowthState, _CONFIG_HEALTH)
+    if state:
+        state.value = value
+    else:
+        db.add(GrowthState(key=_CONFIG_HEALTH, value=value))
+
+
+def config_health(db) -> dict:
+    """What the last sync made of channels.json: {ok, count} or {error}. Doctor surfaces a parse failure."""
+    state = db.get(GrowthState, _CONFIG_HEALTH)
+    return dict(state.value) if state else {"ok": True, "count": 0}
 
 
 def _legacy_channel() -> dict:
@@ -85,8 +109,19 @@ def _sync_feeds(db, channel: Channel, urls: list[str]) -> None:
 
 
 def sync_channels(db) -> list[Channel]:
-    """Reconcile the channels/feeds tables with channels.json (or the legacy settings). Idempotent."""
-    config = _load_config() or [_legacy_channel()]
+    """Reconcile the channels/feeds tables with channels.json (or the legacy settings). Idempotent.
+
+    A broken channels.json leaves the existing channels in place rather than retiring the fleet.
+    """
+    try:
+        loaded = _load_config()
+    except ChannelsConfigError as exc:
+        _record_config(db, str(exc))
+        log.error("growth: %s", exc)
+        # Keep the last-known-good channels; do not retire anything. Query directly (no re-seed/recursion).
+        return list(db.execute(select(Channel).where(Channel.enabled.is_(True)).order_by(Channel.slug)).scalars())
+    _record_config(db, None, count=len(loaded) if loaded else 1)
+    config = loaded or [_legacy_channel()]
     seen: set[str] = set()
     for entry in config:
         slug = str(entry["slug"]).strip()

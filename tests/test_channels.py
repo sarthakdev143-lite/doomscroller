@@ -77,6 +77,23 @@ def test_sync_reconciles_feeds_added_and_removed(tmp_path, monkeypatch):
                                                      "https://www.youtube.com/@new"}
 
 
+def test_a_broken_channels_json_keeps_the_fleet_and_doctor_flags_it(tmp_path, monkeypatch):
+    from app.growth import report
+
+    _write(tmp_path, monkeypatch, {"channels": [{"slug": "tech"}, {"slug": "comedy"}]})
+    with session_scope() as db:
+        channels.sync_channels(db)
+        assert {c.slug for c in channels.active_channels(db)} == {"tech", "comedy"}
+    # A trailing comma over SSH must NOT retire every channel to the legacy default.
+    (tmp_path / "channels.json").write_text('{"channels": [{"slug": "tech"},]}', encoding="utf-8")
+    with session_scope() as db:
+        channels.sync_channels(db)
+        assert {c.slug for c in channels.active_channels(db)} == {"tech", "comedy"}  # fleet unchanged
+        assert "error" in channels.config_health(db)
+    check = next(c for c in report.doctor(live=False)["checks"] if c["name"] == "channels.json")
+    assert check["ok"] is False and "valid JSON" in check["detail"]
+
+
 def test_a_channel_dropped_from_config_is_retired_not_deleted(tmp_path, monkeypatch):
     _write(tmp_path, monkeypatch, {"channels": [{"slug": "tech"}, {"slug": "gone"}]})
     with session_scope() as db:
