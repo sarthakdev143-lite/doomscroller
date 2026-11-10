@@ -843,6 +843,31 @@ def test_recovery_does_not_look_for_an_upload_on_another_account(tmp_path, monke
         pipeline._uploads_for([{"claimed": datetime(2026, 11, 9, tzinfo=timezone.utc)}], tech.id)
 
 
+def test_signing_in_again_with_another_account_does_not_rebind_a_channel_that_has_posted(tmp_path, monkeypatch, capsys):
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "oauth_cli", Path(__file__).parent.parent / "scripts" / "youtube_oauth.py")
+    oauth = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(oauth)
+
+    def bound():
+        with session_scope() as db:
+            return channels.channel_by_slug(db, "tech").youtube_channel_id
+
+    tech = _tech_bound_to(tmp_path, monkeypatch, youtube_id="UCfirst")
+    oauth._store_channel_id("tech", "UCsecond")  # nothing posted yet, so the channel can still be pointed elsewhere
+    assert bound() == "UCsecond"
+    with session_scope() as db:
+        db.add(Video(source="youtube", source_id="x", source_url="u", title="t", status=VideoStatus.PUBLISHED,
+                     youtube_video_id="yt1", channel_id=tech.id, meta={"clip_rendered": True}))
+    oauth._store_channel_id("tech", "UCthird")
+    # Its videos live on UCsecond: accepting UCthird would cross-post, and read every earlier video as deleted.
+    assert bound() == "UCsecond"
+    assert "DIFFERENT YouTube channel" in capsys.readouterr().out
+
+
 def test_a_clip_whose_channel_is_gone_is_not_posted_through_the_global_token():
     from tasks import pipeline
 
