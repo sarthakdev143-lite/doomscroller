@@ -221,12 +221,24 @@ whose script the resolved font has no glyphs for, so non-Latin titles are droppe
 empty boxes.
 
 **Devanagari (Hindi) is script-aware** (`fonts.py`). `dominant_script()` detects Devanagari text;
-`resolve_font(configured, text)` returns a Devanagari font for it (if one is installed — e.g.
-`apt install fonts-noto-devanagari`), and the clipper resolves the font from each clip's own text so its
-captions and overlays use it. So a Hindi creator's title/credit now renders instead of being dropped —
-this works today on the no-speech (motion) path (good for visual Indian creators like Mr Indian Hacker).
-Hindi *speech* captioning still needs a transcription path: `SARVAM_API_KEY` is the config hook, but the
-English Deepgram path is the only captioner wired, so Hindi speech clips take the motion path for now.
+`resolve_font(configured, text)` returns a Devanagari font for it (if one is installed — `apt install
+fonts-noto-core` brings Noto Sans/Serif Devanagari), and the clipper resolves the font from each clip's own
+text so its captions and overlays use it. So a Hindi creator's title/credit renders instead of being
+dropped.
+
+**Hindi speech is captioned by Sarvam** (`app/clipper/sarvam.py`), with Deepgram still the English
+captioner. When Deepgram detects Hindi (`detected_language` starts with `hi`) but can't caption it, and
+`SARVAM_API_KEY` is set, the same extracted 16kHz audio is sent to Sarvam. Sarvam's REST STT is meant for
+audio under 30s and returns only chunk-level timestamps, so `sarvam.transcribe` cuts the audio into ≤25s
+windows, calls per window, offsets each window's timestamps back onto the source clock, and splits each
+phrase chunk into evenly-spaced `Word`s — so the rest of the speech path (sentence picking, caption timing)
+runs unchanged, if a little coarser than Deepgram's per-word timing. `Transcript.engine == "sarvam"` and
+`is_hindi_speech` gate it; the clip's `language` becomes `hi`. **Only Hindi** is routed this way, because the
+installed font is Devanagari — other Indic scripts would draw empty boxes, so they stay on the motion path.
+Fail-safe throughout: no key, a bad window, or any API error returns `None` and the clip falls back to the
+motion path exactly as before. A Hindi channel also needs `hi` in `TARGET_LANGUAGES`, or the clip gate
+(`channel_focus_reason`) rejects it. The key rides the `api-subscription-key` header, never a URL. Caption
+sync on real Hindi audio is only as good as Sarvam's chunk timings — the owner-review gate is the backstop.
 
 Fonts resolve through `app/transformers/fonts.py`. The historical `TRANSFORM_CAPTION_FONT` default was a
 Debian DejaVu path that does not exist on Windows or macOS, and a missing font file fails the whole render,

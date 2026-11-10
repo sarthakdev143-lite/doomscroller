@@ -310,7 +310,7 @@ A change that would break the file (bad JSON, an unknown timezone, a slug used t
 
 **New uploads.** Every `GROWTH_WATCH_MINUTES` (5) the loop checks each feed's YouTube RSS and queues a new video at once, instead of waiting for the hourly supply run. Shorts, stream recordings and premieres that have not aired are left alone. `0` turns it off.
 
-**Hindi creators.** Install a Devanagari font (`apt install fonts-noto-devanagari`) and Hindi titles and credits are drawn instead of dropped. Hindi speech is not captioned yet, so those clips are picked on motion and sound.
+**Hindi creators.** Install a Devanagari font (`sudo apt install -y fonts-noto-core`) so Hindi titles and credits are drawn instead of dropped. For Hindi **speech** captions, set `SARVAM_API_KEY` (Sarvam's speech-to-text) and add `"hi"` to `TARGET_LANGUAGES`; the clipper then transcribes Hindi talking clips through Sarvam. Without the key, Hindi speech clips fall back to motion-and-sound picking. Caption timing on Hindi follows Sarvam's phrase-level timestamps, so review the first few before trusting it unattended.
 
 ## Growth loop
 
