@@ -28,6 +28,21 @@ def _value(db, key: str) -> Optional[dict]:
     return dict(state.value) if state else None
 
 
+def _ckey(channel, name: str) -> str:
+    """A pause/hold/strikes key for a channel. The legacy channel (or None) keeps the bare key."""
+    if channel is None:
+        return name
+    from . import channels
+    return channels.state_key(channel, name)
+
+
+def _vkey(db, video: Video, name: str) -> str:
+    """The key for the channel a struck video belongs to, so one channel's strike pauses only that channel."""
+    from . import channels
+    channel = channels.get_channel(db, video.channel_id) if video.channel_id else None
+    return _ckey(channel, name)
+
+
 def _blocks(db) -> dict[str, dict]:
     """One block per struck video, so taking one away leaves whatever another still blocks."""
     return dict((_value(db, "quarantine") or {}).get("videos", {}))
@@ -89,9 +104,10 @@ def clear_missing(video: Video) -> None:
     db = object_session(video)
     video.meta = {k: v for k, v in video.meta.items() if k != "growth_strike"}
     _lift(db, [video.id])
-    logged = (_value(db, "strikes") or {}).get("log", [])
-    set_state(db, "strikes", {"log": [s for s in logged if s["video_id"] != video.id]})
-    db.add(GrowthEvent(kind="strike_cleared", video_id=video.id,
+    key = _vkey(db, video, "strikes")
+    logged = (_value(db, key) or {}).get("log", [])
+    set_state(db, key, {"log": [s for s in logged if s["video_id"] != video.id]})
+    db.add(GrowthEvent(kind="strike_cleared", video_id=video.id, channel_id=video.channel_id,
                        summary=f"{video.youtube_video_id} is back on YouTube, so its strike and block are gone."))
     db.flush()
 
@@ -128,52 +144,111 @@ def record_strike(video: Video, reason: str, *, now: Optional[datetime] = None) 
         return
     video.meta = {**(video.meta or {}), "growth_strike": {"reason": reason, "hard": hard, "at": now.isoformat()}}
     _quarantine(db, video, reason, now)
-    db.add(GrowthEvent(kind="strike", video_id=video.id, data={"reason": reason, "hard": hard},
+    db.add(GrowthEvent(kind="strike", video_id=video.id, channel_id=video.channel_id,
+                       data={"reason": reason, "hard": hard},
                        summary=f"{video.youtube_video_id} has a problem: {reason}. Its source and its author's "
                                f"feeds are off the shelf. Lift with: {_UNBLOCK} <name>"))
 
     cutoff = now - STRIKE_WINDOW
-    logged = (_value(db, "strikes") or {}).get("log", [])
+    strikes_key, paused_key = _vkey(db, video, "strikes"), _vkey(db, video, "paused")
+    logged = (_value(db, strikes_key) or {}).get("log", [])
     strikes = [s for s in logged if s["video_id"] != video.id and datetime.fromisoformat(s["at"]) > cutoff]
     strikes.append({"video_id": video.id, "reason": reason, "hard": hard, "at": now.isoformat()})
-    set_state(db, "strikes", {"log": strikes})
+    set_state(db, strikes_key, {"log": strikes})
     reason_to_pause = _pause_for(strikes)
-    if reason_to_pause and db.get(GrowthState, "paused") is None:
-        set_state(db, "paused", {"reason": reason_to_pause, "at": now.isoformat()})
-        db.add(GrowthEvent(kind="paused", video_id=video.id,
-                           summary=f"Posting paused: {reason_to_pause}. Clear it with: {_RESUME}"))
+    standing = _value(db, paused_key)
+    # A pause the owner set themselves is one tap to lift, so a takedown has to take its place and say why.
+    if reason_to_pause and (standing is None or standing.get("by") == "owner"):
+        set_state(db, paused_key, {"reason": reason_to_pause, "at": now.isoformat()})
+        # The bare key is the legacy channel's; a named channel's key starts with its slug, which resume takes.
+        slug = paused_key.rpartition(":")[0]
+        db.add(GrowthEvent(kind="paused", video_id=video.id, channel_id=video.channel_id,
+                           summary=f"Posting paused: {reason_to_pause}. Clear it with: {f'{_RESUME} {slug}'.rstrip()}"))
     # One collect can bring several strikes, and db.get cannot see a row that is still pending.
     db.flush()
 
 
-def pause_reason(db) -> Optional[str]:
-    return (_value(db, "paused") or {}).get("reason")
+def pause_reason(db, channel=None) -> Optional[str]:
+    """Why this channel's posting is paused, or None. A strike pauses only the channel it struck."""
+    return (_value(db, _ckey(channel, "paused")) or {}).get("reason")
 
 
-def resume() -> bool:
-    """The owner's call, once they have looked at why it stopped. Strikes still count until they age out."""
+OWNER_PAUSE = "you paused it from the review page"
+
+
+def pause(slug: str) -> bool:
+    """The owner stops one channel posting, from their phone. False when there is no such channel.
+
+    Only posting stops. Supply, collecting and learning carry on, so it comes back with a full shelf, and
+    it is logged as routine rather than as a problem, which would send them an alert about their own tap.
+    """
+    from . import channels
+
     with session_scope() as db:
-        state = db.get(GrowthState, "paused")
-        if state is None:
+        channel = channels.channel_by_slug(db, slug)
+        if channel is None:
             return False
-        db.delete(state)
-        db.add(GrowthEvent(kind="resumed", summary=f"The owner cleared the pause: {state.value.get('reason')}"))
+        key = channels.state_key(channel, "paused")
+        if db.get(GrowthState, key) is None:
+            set_state(db, key, {"reason": OWNER_PAUSE, "at": datetime.now(timezone.utc).isoformat(), "by": "owner"})
+            db.add(GrowthEvent(kind="owner_paused", channel_id=channels.event_channel(channel),
+                               summary="Posting paused by the owner from the review page."))
     return True
 
 
-def active_hold(db, now: datetime) -> Optional[dict]:
-    hold = _value(db, "hold")
+def pause_state(db, channel) -> Optional[dict]:
+    """The standing pause as stored: its reason, and whether the owner set it."""
+    return _value(db, _ckey(channel, "paused"))
+
+
+def _paused_keys(db, slug: Optional[str]) -> list[tuple[str, Optional[str]]]:
+    """Each pause a resume covers, as (state key, the channel_id its event carries)."""
+    from . import channels
+
+    if slug:
+        channel = channels.channel_by_slug(db, slug)
+        return [(channels.state_key(channel, "paused"), channels.event_channel(channel))] if channel else []
+    # No slug: every channel (the legacy bare key plus each named one).
+    return [("paused", None)] + [(channels.state_key(c, "paused"), c.id) for c in channels.all_channels(db)
+                                 if not channels.is_default(c)]
+
+
+def resume(slug: Optional[str] = None) -> bool:
+    """The owner's call, once they have looked at why it stopped. With a slug, resumes only that channel.
+
+    Strikes still count until they age out.
+    """
+    cleared = 0
+    with session_scope() as db:
+        for key, channel_id in _paused_keys(db, slug):
+            state = db.get(GrowthState, key)
+            if state is None:
+                continue
+            db.delete(state)
+            # Stamped with the channel, so the report shows the resume beside that channel's pause.
+            db.add(GrowthEvent(kind="resumed", channel_id=channel_id,
+                               summary=f"The owner cleared the pause: {state.value.get('reason')}"))
+            cleared += 1
+    return cleared > 0
+
+
+def active_hold(db, now: datetime, channel=None) -> Optional[dict]:
+    hold = _value(db, _ckey(channel, "hold"))
     return hold if hold and now < datetime.fromisoformat(hold["until"]) else None
 
 
-def set_hold(db, now: datetime, reason: Optional[str]) -> None:
+def set_hold(db, now: datetime, reason: Optional[str], channel=None) -> None:
     """The next clip would fail the same way. The row stays after the hour, so a long outage logs one event."""
-    if db.get(GrowthState, "hold") is None:
-        db.add(GrowthEvent(kind="account_hold", summary=f"Posting held by an account problem: {reason}"))
-    set_state(db, "hold", {"until": (now + _HOLD).isoformat(), "reason": reason})
+    key = _ckey(channel, "hold")
+    if db.get(GrowthState, key) is None:
+        from . import channels
+        cid = channels.event_channel(channel) if channel is not None else None
+        db.add(GrowthEvent(kind="account_hold", channel_id=cid,
+                           summary=f"Posting held by an account problem: {reason}"))
+    set_state(db, key, {"until": (now + _HOLD).isoformat(), "reason": reason})
 
 
-def clear_hold(db) -> None:
-    state = db.get(GrowthState, "hold")
+def clear_hold(db, channel=None) -> None:
+    state = db.get(GrowthState, _ckey(channel, "hold"))
     if state is not None:
         db.delete(state)

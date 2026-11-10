@@ -9,6 +9,7 @@ hold the password.
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -24,7 +25,7 @@ log = logging.getLogger(__name__)
 
 _STATE = "notified"
 TUNNEL_URL_FILE = PROJECT_ROOT / "logs" / "tunnel_url.txt"
-_ALERT_KINDS = ("strike", "paused", "account_hold", "publish_failed", "publish_stuck", "missing", "starved")
+_ALERT_KINDS = ("strike", "paused", "account_hold", "publish_failed", "publish_stuck", "missing", "starved", "missed")
 _MAX_LINES = 12
 
 
@@ -39,8 +40,9 @@ def review_link() -> str:
         return ""
 
 
-def send(text: str, *, title: str = "seduxing", link: str = "") -> bool:
+def send(text: str, *, title: str = "", link: str = "") -> bool:
     """Deliver to every configured channel. Never raises, and never logs a token-bearing URL."""
+    title = title or settings.brand_name.lstrip("@") or "Doomscroller"
     sent = False
     if settings.ntfy_topic:
         headers = {"Title": title}
@@ -73,21 +75,29 @@ def _since(db) -> datetime:
 
 
 def digest(db, since: datetime) -> list[str]:
+    from . import channels
+
+    names = {c.id: (c.name or c.slug) for c in channels.all_channels(db)}
+    # Which channel an event belongs to, so an alert among several channels is actionable.
+    tag = lambda ev: f"[{names[ev.channel_id]}] " if ev.channel_id in names else ""
     lines: list[str] = []
     waiting = db.execute(select(Video).where(Video.status == VideoStatus.PENDING,
                                              Video.scraped_at > since)).scalars().all()
     fresh = [v for v in waiting if (v.meta or {}).get("clip_rendered")]
     if fresh:
-        lines.append(f"{len(fresh)} new clip{'s' if len(fresh) != 1 else ''} waiting for your approval")
+        split = Counter(names[v.channel_id] for v in fresh if v.channel_id in names)
+        where = f" ({', '.join(f'{name} {n}' for name, n in split.most_common())})" if split else ""
+        lines.append(f"{len(fresh)} new clip{'s' if len(fresh) != 1 else ''} waiting for your approval{where}")
     events = db.execute(select(GrowthEvent).where(GrowthEvent.created_at > since)
                         .order_by(GrowthEvent.created_at)).scalars().all()
     for event in events:
         if event.kind == "posted" and event.video_id:
             video = db.get(Video, event.video_id)
             if video and video.youtube_video_id:
-                lines.append(f"Posted: {(video.title or '')[:70]} https://youtube.com/shorts/{video.youtube_video_id}")
+                lines.append(f"{tag(event)}Posted: {(video.title or '')[:70]} "
+                             f"https://youtube.com/shorts/{video.youtube_video_id}")
         elif event.kind in _ALERT_KINDS:
-            lines.append(f"Problem: {event.summary[:200]}")
+            lines.append(f"{tag(event)}Problem: {event.summary[:200]}")
     return lines[:_MAX_LINES]
 
 

@@ -15,8 +15,8 @@ from app.config import settings
 from app.db import init_db, session_scope
 from app.growth import autopilot, collect, factors, learn, recipes, report, safety, supply, titles
 from app.growth.model import Model, Observation
-from app.models import (ClipJob, GrowthEvent, GrowthState, MetadataDraft, QuotaUsage, Video, VideoSnapshot,
-                        VideoStatus)
+from app.models import (Channel, ClipJob, Feed, GrowthEvent, GrowthState, MetadataDraft, QuotaUsage, Video,
+                        VideoSnapshot, VideoStatus)
 from app.publishers.base import PublishResult, Publisher
 from tasks.pipeline import clip_gate_reason
 
@@ -28,7 +28,7 @@ JUDGED_AT = START + timedelta(days=5)
 def clean(monkeypatch):
     init_db()
     with session_scope() as db:
-        for table in (VideoSnapshot, MetadataDraft, GrowthEvent, GrowthState, ClipJob, QuotaUsage, Video):
+        for table in (Feed, Channel, VideoSnapshot, MetadataDraft, GrowthEvent, GrowthState, ClipJob, QuotaUsage, Video):
             db.execute(delete(table))
     monkeypatch.setattr(settings, "growth_enabled", True)
     # Most of these tests are about the unattended loop. The approval tests switch it back on.
@@ -579,7 +579,7 @@ def test_a_simulated_month_learns_the_best_window(tmp_path, monkeypatch, publish
     """A world where one posting window truly gets 4x the views. The loop is never told."""
     best_slot = "16-20"
     world = np.random.default_rng(7)
-    monkeypatch.setattr(quota, "remaining", lambda db: 99)
+    monkeypatch.setattr(quota, "remaining", lambda db, channel_id=None: 99)
     monkeypatch.setattr(settings, "growth_min_inventory", 0)
     path = tmp_path / "clip.mp4"
     path.write_bytes(b"x")
@@ -793,7 +793,7 @@ def test_claim_is_decided_by_the_update_not_the_earlier_read(tmp_path, publisher
     video_id = ready_file_clip(tmp_path)
     real_remaining = quota.remaining
 
-    def rejected_meanwhile(db):
+    def rejected_meanwhile(db, channel_id=None):
         db.execute(update(Video).where(Video.id == video_id).values(status=VideoStatus.REJECTED)
                    .execution_options(synchronize_session=False))
         return real_remaining(db)
@@ -1043,6 +1043,25 @@ def recover(now=START):
 def events(kind):
     with session_scope() as db:
         return db.execute(select(GrowthEvent).where(GrowthEvent.kind == kind)).scalars().all()
+
+
+def test_a_stuck_upload_is_looked_for_on_its_own_channels_account(tmp_path, real_mode, monkeypatch):
+    """The legacy account has no such video, and "not found" there must not send the clip out twice."""
+    with session_scope() as db:
+        channel = Channel(slug="tech", name="Tech", client_secrets="x", token_path="y")
+        db.add(channel)
+        db.flush()
+        channel_id = channel.id
+    video_id = stuck_row(tmp_path, claimed_at=START - timedelta(hours=3))
+    with session_scope() as db:
+        db.get(Video, video_id).channel_id = channel_id
+    legacy = real_mode(FakeUploads([]))
+    own = FakeUploads([{"id": "found", "title": "Stuck title #Shorts", "published_at": START - timedelta(hours=2)}])
+    monkeypatch.setattr("app.growth.youtube.insights_for", lambda channel=None: own)
+    assert recover() == {"published": 1, "released": 0, "left": 0}
+    assert legacy.calls == [] and own.calls
+    with session_scope() as db:
+        assert db.get(Video, video_id).youtube_video_id == "found"
 
 
 def test_stuck_upload_found_on_the_channel_becomes_published(tmp_path, real_mode):
@@ -4497,7 +4516,7 @@ def test_a_window_missed_on_a_hold_says_so(tmp_path, publisher):
 def test_a_window_missed_at_the_daily_cap_says_so(tmp_path, publisher, monkeypatch):
     ready_file_clip(tmp_path)
     add_plan(waiting_plan(hours_ago=1))
-    monkeypatch.setattr(quota, "remaining", lambda db: 0)
+    monkeypatch.setattr(quota, "remaining", lambda db, channel_id=None: 0)
     tick()
     tick(60 * 6)
     assert "daily upload cap" in events("missed")[0].summary
@@ -4506,7 +4525,7 @@ def test_a_window_missed_at_the_daily_cap_says_so(tmp_path, publisher, monkeypat
 def test_a_window_missed_on_the_minimum_gap_says_so(tmp_path, publisher, monkeypatch):
     ready_file_clip(tmp_path)
     add_plan(waiting_plan(hours_ago=1))
-    monkeypatch.setattr(autopilot, "_gap_is_clear", lambda db, now: False)
+    monkeypatch.setattr(autopilot, "_gap_is_clear", lambda db, now, channel=None: False)
     assert tick() == {"waiting": "minimum gap between uploads"}
     tick(60 * 6)
     assert "minimum gap" in events("missed")[0].summary
@@ -5057,6 +5076,35 @@ def test_review_page_signs_in_once_and_approves(tmp_path, monkeypatch):
     assert part.status_code == 206 and part.content == b"0123456789"  # phones seek through video with ranges
     assert client.post(f"/api/clips/{video_id}/approve", json={"title": ""}).json()["status"] == "transformed"
     assert client.get("/api/queue").json()["clips"] == []
+
+
+def test_undo_puts_a_decided_clip_back_in_the_queue(tmp_path):
+    from app.growth import approval
+
+    path = tmp_path / "a.mp4"
+    path.write_bytes(b"x")
+    for n, decide in enumerate((approval.approve, approval.reject)):
+        vid = make_clip(path, n=n, status=VideoStatus.PENDING)
+        decide(vid)
+        with session_scope() as db:
+            assert db.get(Video, vid).status != VideoStatus.PENDING
+        approval.undo(vid)
+        with session_scope() as db:
+            video = db.get(Video, vid)
+            assert video.status == VideoStatus.PENDING
+            assert "owner_approved" not in video.meta and "owner_rejected" not in video.meta
+
+
+def test_undo_refuses_once_a_clip_has_posted(tmp_path):
+    from app.growth import approval
+
+    path = tmp_path / "a.mp4"
+    path.write_bytes(b"x")
+    vid = make_clip(path, status=VideoStatus.PUBLISHED, owner_approved="x")
+    with session_scope() as db:
+        db.get(Video, vid).youtube_video_id = "yt1"
+    with pytest.raises(approval.ReviewError):
+        approval.undo(vid)
 
 
 def test_review_page_shows_real_posts_with_their_results(tmp_path):

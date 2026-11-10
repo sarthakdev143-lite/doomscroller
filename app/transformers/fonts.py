@@ -47,6 +47,53 @@ _CANDIDATES: dict[str, tuple[str, ...]] = {
     ),
 }
 
+# Devanagari (Hindi) needs its own font: the Latin faces above draw empty boxes for it. Bold first.
+# Install one with e.g. `apt install fonts-noto-devanagari` (Debian) and it is picked up automatically.
+_DEVANAGARI_CANDIDATES: dict[str, tuple[str, ...]] = {
+    "Windows": (r"C:\Windows\Fonts\Nirmala.ttf", r"C:\Windows\Fonts\mangal.ttf"),
+    "Darwin": ("/System/Library/Fonts/Supplemental/Devanagari Sangam MN.ttc",
+               "/Library/Fonts/Kohinoor.ttc"),
+    "Linux": ("/usr/share/fonts/truetype/noto/NotoSansDevanagari-Bold.ttf",
+              "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf",
+              "/usr/share/fonts/truetype/lohit-devanagari/Lohit-Devanagari.ttf",
+              "/system/fonts/NotoSansDevanagari-Bold.ttf",
+              "/system/fonts/NotoSansDevanagariUI-Bold.ttf"),
+}
+_DEVANAGARI_NAME_HINTS = ("devanagari", "mangal", "nirmala", "lohit-devanagari", "kohinoor")
+_FONT_ROOTS = (r"C:\Windows\Fonts", "/usr/share/fonts", "/system/fonts",
+               "/Library/Fonts", "/System/Library/Fonts", os.path.expanduser("~/.fonts"))
+_DEVANAGARI_RANGE = (0x0900, 0x097F)
+
+
+def dominant_script(text: str) -> str:
+    """'devanagari' when most of the letters are Devanagari, else 'default'. Used to pick a font."""
+    letters = [c for c in (text or "") if c.isalpha()]
+    if not letters:
+        return "default"
+    deva = sum(1 for c in letters if _DEVANAGARI_RANGE[0] <= ord(c) <= _DEVANAGARI_RANGE[1])
+    return "devanagari" if deva / len(letters) >= 0.5 else "default"
+
+
+@lru_cache(maxsize=1)
+def devanagari_font() -> str | None:
+    """A Devanagari-capable font on this machine, or None."""
+    for path in _DEVANAGARI_CANDIDATES.get(platform.system(), ()):
+        if os.path.isfile(path):
+            return path
+    for root in _FONT_ROOTS:
+        if not os.path.isdir(root):
+            continue
+        for dirpath, _dirs, filenames in os.walk(root):
+            for name in sorted(filenames):
+                low = name.lower()
+                if low.endswith((".ttf", ".otf", ".ttc")) and any(h in low for h in _DEVANAGARI_NAME_HINTS):
+                    return os.path.join(dirpath, name)
+    return None
+
+
+def has_devanagari_font() -> bool:
+    return devanagari_font() is not None
+
 
 @lru_cache(maxsize=1)
 def _discovered_font() -> str | None:
@@ -71,12 +118,19 @@ def _discovered_font() -> str | None:
     return None
 
 
-def resolve_font(configured: str = "") -> str | None:
+def resolve_font(configured: str = "", text: str = "") -> str | None:
     """Return a usable font file path, or ``None`` if there is none.
 
     ``None`` means callers must skip text rendering rather than hand ffmpeg a
-    path that does not exist.
+    path that does not exist. When ``text`` is predominantly Devanagari and a
+    Devanagari font exists, that font is returned so Hindi overlays actually draw.
     """
+    if text and dominant_script(text) == "devanagari":
+        deva = devanagari_font()
+        if deva is not None:
+            return deva
+        # No Devanagari font: fall through to the Latin font (the caller's is_renderable check
+        # will have already decided whether to draw this text at all).
     candidate = (configured or "").strip()
     if candidate and os.path.isfile(candidate):
         return candidate

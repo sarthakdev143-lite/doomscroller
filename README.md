@@ -204,8 +204,10 @@ doomscroller/
 
 ## Quota & cadence
 
-- `QuotaUsage` table records uploads per UTC day. `MAX_UPLOADS_PER_DAY` is the
-  hard cap (default 50, YouTube's daily quota).
+- `QuotaUsage` table records uploads per UTC day. `MAX_UPLOADS_PER_DAY` is a local
+  safety cap (default 50), **not** YouTube's limit. YouTube's real limit is the API
+  quota: 10,000 units/day per Cloud project and ~1,600 per upload, so **about 6
+  uploads/day per project** — which is why each managed channel uses its own project.
 - `UPLOADS_PER_DAY` is your self-imposed cap (default 8).
 - The scheduler's `publish` job runs every `UPLOAD_INTERVAL_HOURS` (default 3h) and:
   1. Checks both quotas
@@ -250,7 +252,65 @@ The token lets the app upload to, and read the analytics of, one channel. It tak
 
 Lost the `.env` lines? Run the script again without `--force`: it reprints them and says what the existing token lacks. If a permission was left unticked or `doctor` reports `invalid_grant`, run it with `--force`. `invalid_grant` means the token was revoked, or expired because the app is still in Testing (step 4).
 
-`secrets/` is gitignored. The token is saved readable only by you, and it gives upload access to your channel, so never share it. Each project gets 100 uploads a day by default.
+`secrets/` is gitignored. The token is saved readable only by you, and it gives upload access to your channel, so never share it. A project's quota allows roughly 6 uploads a day (see [Quota & cadence](#quota--cadence)).
+
+## Running multiple channels
+
+The growth loop can run several channels at once, one niche each. Every channel needs **its own Google Cloud project**: YouTube allows about 6 uploads a day per project (see [Quota & cadence](#quota--cadence)), so channels cannot share one. The channels live in `channels.json` at the repo root (`CHANNELS_FILE` moves it). With no such file the loop runs one channel from the `GROWTH_*` settings, exactly as before.
+
+**Add a channel: two commands.**
+
+```bash
+venv/bin/python scripts/channels.py add tech --name "Tech & Science" \
+    --feed https://www.youtube.com/@mkbhd --feed https://www.youtube.com/@Mrwhosetheboss
+```
+
+That prints Google's part for this channel: six steps in a browser, about ten minutes, once. **Step 4 (Publish app → In production) matters most**: a project left in *Testing* kills that channel's sign-in after 7 days, and the channel quietly stops. Save the file it asks for, then:
+
+```bash
+venv/bin/python scripts/channels.py connect tech
+```
+
+`connect` signs you in (pick THIS channel on Google's screen), asks Google whether the sign-in, both APIs and every source link really work, and only then switches the channel on. If something is wrong it says what, leaves the channel off, and can simply be run again. Over SSH it prints the sign-in link instead of trying to open a browser.
+
+Lost track of where a channel is? Run it with nothing after it:
+
+```bash
+venv/bin/python scripts/channels.py
+# tech           Tech & Science           running  3/day  2 sources
+# comedy         Comedy                   off      3/day  0 sources
+#                next: save its Google OAuth client file as secrets/comedy_client_secret.json
+```
+
+(`channels.example.json` is there if you would rather start from a file with four niche channels filled in.)
+
+**Day to day.** None of these needs a restart; the loop reads its channels on every tick.
+
+```bash
+venv/bin/python scripts/channels.py feed tech --add <link> --remove <link>
+venv/bin/python scripts/channels.py set tech --uploads 4 --brand @techclips   # also --name --niche --timezone
+venv/bin/python scripts/channels.py disable tech          # switch one channel off completely
+venv/bin/python scripts/growth.py report                  # totals, then each channel's plan and results
+venv/bin/python scripts/growth.py reload                  # only after editing channels.json by hand
+```
+
+**From your phone.** On the review page each channel has a **Pause posting** button. It stops that channel posting while it keeps cutting clips and reading its numbers, and **Resume posting** starts it again. A channel paused by a takedown shows the reason and takes a second tap to resume. `scripts/growth.py resume tech` does the same from a terminal.
+
+A change that would break the file (bad JSON, an unknown timezone, a slug used twice) is refused and the running channels are kept; `doctor` says what was wrong. Only `.env` changes still need a restart.
+
+**What is separate per channel.** Its token, pace, timezone, plan, test results and upload count, and its takedown pause: a strike on one channel pauses that channel only. A blocked source or author is skipped by every channel.
+
+**Your existing channel.** A channel that is not listed in `channels.json` is retired. To keep the one running from `.env` alongside the new ones, list it as `{"slug": "default"}`; `channels.py add` does this for you the first time. Files in `content/inbox/` go to that channel only.
+
+**One creator, one channel.** A source link can feed only one channel, or both would cut the same video into the same clips. To move a creator from your existing channel to a new one, take the link out of `GROWTH_FEEDS` in `.env` and restart, then add it to the new channel. The commands and `doctor` refuse a shared link and say which channel already has it.
+
+**The right Google account.** `youtube_oauth.py --channel <slug>` remembers which YouTube channel it connected. If a later sign-in lands on another account, that channel stops posting and stops reading its numbers until you sign in again with the right one, rather than posting to the wrong channel.
+
+**Optional, per channel, both off by default** (so a person approves every clip): `"auto_approve_score": 0.8` approves clips an AI titled that score at least that and pass the safety check, and `"cadence_backstop": true` approves the best waiting clip rather than miss a posting window.
+
+**New uploads.** Every `GROWTH_WATCH_MINUTES` (5) the loop checks each feed's YouTube RSS and queues a new video at once, instead of waiting for the hourly supply run. Shorts, stream recordings and premieres that have not aired are left alone. `0` turns it off.
+
+**Hindi creators.** Install a Devanagari font (`apt install fonts-noto-devanagari`) and Hindi titles and credits are drawn instead of dropped. Hindi speech is not captioned yet, so those clips are picked on motion and sound.
 
 ## Growth loop
 
@@ -260,7 +320,7 @@ Set `GROWTH_ENABLED=true`, `YOUTUBE_DEFAULT_PRIVACY=public` and `GROWTH_TIMEZONE
 
 The report and the Growth tab warn when the shelf is empty or analytics has failed for 3 days, show when numbers were last collected, and list problems from the last 30 days apart from routine events: videos gone missing, strikes, pauses, account holds, failed or missed posts, failed collects, retracted findings, stopped clip jobs, empty feeds, clips held for review, and supply running out, along with whatever has since cleared them. Check them weekly and nothing should have scrolled away.
 
-A copyright takedown, a legal, policy or account rejection from YouTube, or three videos going missing in 90 days, pauses posting until you have looked at it and run `scripts/growth.py resume`. A video that goes missing also stops that author's feed, including one you deleted yourself; `scripts/growth.py unblock <name>` lifts it.
+A copyright takedown, a legal, policy or account rejection from YouTube, or three videos going missing in 90 days, pauses posting until you have looked at it and run `scripts/growth.py resume` (with several channels only the struck channel pauses, and `resume <slug>` clears just that one). A video that goes missing also stops that author's feed, including one you deleted yourself; `scripts/growth.py unblock <name>` lifts it.
 
 It posts `GROWTH_UPLOADS_PER_DAY` clips in varied time windows and tests posting window, title style, format, length, source, pace, sound effects and B-roll. Half of all choices are tests for the first 30 days, then 10%.
 
@@ -272,4 +332,9 @@ While `GROWTH_REQUIRE_APPROVAL=true`, every clip waits on the review page until 
 2. The phone address is in `logs/tunnel_url.txt`. Open it once as `<address>/?key=<REVIEW_TOKEN from .env>`.
 3. For alerts, install the ntfy app and subscribe to the `NTFY_TOPIC` from `.env`. New clips, posts, problems and
    any new page address arrive there.
+
+On the page, tap **Approve** or **Reject**, or swipe a clip right to approve and left to reject. An **Undo** appears
+for a few seconds after each decision, and works until the clip has actually posted. A clip the safety check flagged
+shows a warning, makes Reject the main button and asks for a second tap to approve. With several channels, the chips
+at the top filter by channel and the strip under them shows each channel's queue and anything that needs you.
 

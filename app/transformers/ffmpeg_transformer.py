@@ -114,15 +114,19 @@ def _has_audio(path: str) -> bool:
 
 
 def is_renderable(text: str) -> bool:
-    """Whether a Latin font can plausibly draw ``text``.
+    """Whether the resolvable fonts can plausibly draw ``text``.
 
-    Returns False when a meaningful share of the letters come from a script the
-    font will not have glyphs for, so callers can skip the overlay instead of
-    burning in empty boxes.
+    Devanagari text is renderable when a Devanagari font is installed (and the renderer resolves it
+    per-text); otherwise a Latin font is assumed and text from a script it cannot draw is skipped, so
+    callers do not burn in a row of empty boxes.
     """
+    from .fonts import dominant_script, has_devanagari_font
+
     letters = [c for c in (text or "") if c.isalpha()]
     if not letters:
         return False
+    if dominant_script(text) == "devanagari":
+        return has_devanagari_font()
     foreign = sum(
         1 for c in letters
         if any(low <= ord(c) <= high for low, high in _NON_LATIN_RANGES)

@@ -84,6 +84,8 @@ class Video(Base):
     status: Mapped[VideoStatus] = mapped_column(
         SAEnum(VideoStatus), default=VideoStatus.PENDING, index=True
     )
+    # Which managed channel this clip is destined for. None = the legacy single channel.
+    channel_id: Mapped[Optional[str]] = mapped_column(String(32), default=None, index=True)
     meta: Mapped[dict] = mapped_column(MutableDict.as_mutable(JSON), default=dict)
     error: Mapped[Optional[str]] = mapped_column(Text, default=None)
 
@@ -127,6 +129,7 @@ class ClipJob(Base):
     source: Mapped[str] = mapped_column(Text)  # link or local path
     count: Mapped[Optional[int]] = mapped_column(Integer, default=None)
     auto_queue: Mapped[Optional[bool]] = mapped_column(default=None)
+    channel_id: Mapped[Optional[str]] = mapped_column(String(32), default=None, index=True)  # the managed channel to feed
     mined: Mapped[bool] = mapped_column(default=False)  # queued because an earlier clip of this source won
     status: Mapped[str] = mapped_column(String(16), default="queued", index=True)
     stage: Mapped[str] = mapped_column(String(64), default="")
@@ -171,6 +174,7 @@ class GrowthEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, index=True)
     kind: Mapped[str] = mapped_column(String(32), index=True)
     video_id: Mapped[Optional[str]] = mapped_column(String(32), default=None, index=True)
+    channel_id: Mapped[Optional[str]] = mapped_column(String(32), default=None, index=True)
     summary: Mapped[str] = mapped_column(Text, default="")
     data: Mapped[dict] = mapped_column(JSON, default=dict)
 
@@ -182,9 +186,51 @@ class QuotaUsage(Base):
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
     day: Mapped[str] = mapped_column(String(10), index=True)  # YYYY-MM-DD
+    channel_id: Mapped[Optional[str]] = mapped_column(String(32), default=None, index=True)  # None = the legacy count
     uploads: Mapped[int] = mapped_column(Integer, default=0)
     cap: Mapped[int] = mapped_column(Integer, default=50)
     notes: Mapped[Optional[str]] = mapped_column(Text, default=None)
+
+
+class Channel(Base):
+    """One managed YouTube channel: a single niche, its own Google Cloud project and OAuth token.
+
+    Per-channel settings (uploads/day, timezone, approval) override the global growth settings, so
+    the loop can run several channels at once, each posting to its own account at its own pace.
+    """
+
+    __tablename__ = "channels"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    slug: Mapped[str] = mapped_column(String(64), unique=True, index=True)  # stable handle, e.g. "tech"
+    name: Mapped[str] = mapped_column(String(128), default="")              # display, e.g. "Tech & Science"
+    niche: Mapped[str] = mapped_column(String(256), default="")
+    brand_name: Mapped[str] = mapped_column(String(64), default="")         # @handle for the on-screen credit
+    token_path: Mapped[str] = mapped_column(Text, default="")               # this channel's YouTube OAuth token
+    client_secrets: Mapped[str] = mapped_column(Text, default="")           # its own Cloud project's client_secret.json
+    youtube_channel_id: Mapped[Optional[str]] = mapped_column(String(64), default=None)  # captured at oauth; guards a misclick
+    uploads_per_day: Mapped[int] = mapped_column(Integer, default=3)
+    timezone: Mapped[str] = mapped_column(String(64), default="UTC")
+    require_approval: Mapped[bool] = mapped_column(default=True)
+    # Opt-in trust: auto-approve a rendered clip scoring >= this (0 = off, a human reviews all).
+    auto_approve_score: Mapped[float] = mapped_column(Float, default=0.0)
+    # When a window would be missed with clips in review, auto-approve the best one rather than go dark.
+    cadence_backstop: Mapped[bool] = mapped_column(default=False)
+    enabled: Mapped[bool] = mapped_column(default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    meta: Mapped[dict] = mapped_column(MutableDict.as_mutable(JSON), default=dict)
+
+
+class Feed(Base):
+    """A source channel or playlist URL that supplies exactly one managed channel (one niche per channel)."""
+
+    __tablename__ = "feeds"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    url: Mapped[str] = mapped_column(Text)
+    channel_id: Mapped[str] = mapped_column(ForeignKey("channels.id"), index=True)
+    enabled: Mapped[bool] = mapped_column(default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
 class Creator(Base):

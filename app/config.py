@@ -176,6 +176,10 @@ class Settings(BaseSettings):
     clip_ai_timeout_sec: int = 240
     deepgram_api_key: str = ""
     deepgram_model: str = "nova-3"
+    # Hindi speech-to-text (Sarvam). Empty = Hindi speech clips take the no-speech (motion) path, where
+    # their Hindi title/credit still render once a Devanagari font is installed. With a key, a Hindi
+    # transcription path can caption them (not yet wired — the English Deepgram path is the only captioner).
+    sarvam_api_key: str = ""
     # Empty means PATH, then ~/.opencode/bin/opencode.
     opencode_bin: str = ""
     # Chosen by the owner for every call. It reads images too.
@@ -215,8 +219,17 @@ class Settings(BaseSettings):
     # Below this many finished clips, the supply job queues another source.
     growth_min_inventory: int = 9
     growth_clips_per_source: int = 3
-    # JSON list of channel or playlist links to cut into clips.
+    # Motion sensor: how often to poll each feed's YouTube RSS for a fresh upload and cut it at once.
+    # 0 turns watching off; supply still fills the shelf on its own schedule.
+    growth_watch_minutes: int = 5
+    # The sensor leaves anything this short alone: it is a Short, or too little footage to cut from.
+    growth_watch_min_seconds: int = 180
+    # JSON list of channel or playlist links to cut into clips (the legacy single-channel feed list).
     growth_feeds: str = '[]'
+    # Multi-channel: a JSON file of niche channels and their feeds (one niche per channel, each its own
+    # Cloud project and token). When the file is absent the loop runs a single channel built from the
+    # GROWTH_* settings, YOUTUBE_TOKEN_PATH and GROWTH_FEEDS, so existing single-channel setups are unchanged.
+    channels_file: str = ""
     # Video files dropped here are cut into clips. Empty means <CONTENT_DIR>/inbox.
     growth_inbox_dir: str = ""
     # Every clip waits for the owner's approval on the review page before it can be posted.
@@ -331,6 +344,10 @@ class Settings(BaseSettings):
     @property
     def growth_inbox_path(self) -> Path:
         return Path(self.growth_inbox_dir) if self.growth_inbox_dir else self.content_path / "inbox"
+
+    @property
+    def channels_path(self) -> Path:
+        return Path(self.channels_file) if self.channels_file else PROJECT_ROOT / "channels.json"
 
     @property
     def tags_list(self) -> List[str]:

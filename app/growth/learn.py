@@ -14,10 +14,27 @@ from app.config import settings
 from app.db import session_scope
 from app.models import ClipJob, GrowthEvent, GrowthState, Video, VideoSnapshot, VideoStatus
 
-from .factors import FACTORS, author_names, aware, published_arms
+from . import channels
+from .factors import FACTORS, author_names, aware, channel_zone, published_arms
 from .model import Model, Observation
 
 log = logging.getLogger(__name__)
+
+
+def _skey(channel, name: str) -> str:
+    return name if channel is None else channels.state_key(channel, name)
+
+
+def _scope(channel):
+    return None if channel is None else channels.video_scope(channel)
+
+
+def _ev(channel) -> "Optional[str]":
+    return None if channel is None else channels.event_channel(channel)
+
+
+def _approval(channel) -> bool:
+    return settings.growth_require_approval if channel is None else channels.require_approval(channel)
 
 _RETENTION_WEIGHT = 2.0
 _SUBSCRIBER_WEIGHT = 0.3
@@ -79,12 +96,17 @@ def _subscriber_rate(analytics: dict) -> Optional[float]:
     return 1000 * gained / views if views and gained is not None else None
 
 
-def matured_results(db, *, include_diagnosed: bool = True) -> list[Result]:
-    """Public clips old enough to judge. A private test upload says nothing about an audience."""
-    rows = db.execute(select(Video).where(
-        Video.status == VideoStatus.PUBLISHED, Video.youtube_video_id.isnot(None),
-        Video.published_at.isnot(None),
-    )).scalars().all()
+def matured_results(db, *, include_diagnosed: bool = True, scope=None, zone=None) -> list[Result]:
+    """Public clips old enough to judge. A private test upload says nothing about an audience.
+
+    `scope` is an optional SQLAlchemy filter limiting the videos to one managed channel, and `zone` is
+    that channel's timezone, which decides the window each video counts towards.
+    """
+    conds = [Video.status == VideoStatus.PUBLISHED, Video.youtube_video_id.isnot(None),
+             Video.published_at.isnot(None)]
+    if scope is not None:
+        conds.append(scope)
+    rows = db.execute(select(Video).where(*conds)).scalars().all()
     rows = [v for v in rows if (v.meta or {}).get("clip_rendered") and (v.meta or {}).get("yt_privacy") == "public"
             and not (v.meta or {}).get("yt_missing")
             and not upload_turned_down((v.meta or {}).get("yt_upload_status"))]
@@ -105,7 +127,7 @@ def matured_results(db, *, include_diagnosed: bool = True) -> list[Result]:
         analytics = (video.meta or {}).get("yt_analytics") or {}
         percent = analytics.get("averageViewPercentage")
         results.append(Result(
-            video_id=video.id, title=video.title or "", views=int(views), arms=published_arms(video),
+            video_id=video.id, title=video.title or "", views=int(views), arms=published_arms(video, zone),
             day=(aware(video.published_at) - first).total_seconds() / 86400,
             retention=min(percent / 100, _MAX_RETENTION) if percent is not None else None,
             subscribers=_subscriber_rate(analytics),
@@ -193,32 +215,43 @@ def _baseline(result: Result, results: Sequence[Result]) -> list[Result]:
     return earlier + [o for o in others if o.day > result.day][:_MIN_BASELINE - len(earlier)]
 
 
-def _coming_clips(db) -> int:
+def _clipjob_scope(channel_id: Optional[str]):
+    return ClipJob.channel_id.is_(None) if channel_id is None else ClipJob.channel_id == channel_id
+
+
+def _coming_clips(db, cj_scope=None) -> int:
     """What jobs in progress will add to the shelf. One may have stocked a few already, so this can run a little high."""
-    counts = db.execute(select(ClipJob.count).where(ClipJob.status.in_(("queued", "running")))).scalars()
+    stmt = select(ClipJob.count).where(ClipJob.status.in_(("queued", "running")))
+    if cj_scope is not None:
+        stmt = stmt.where(cj_scope)
+    counts = db.execute(stmt).scalars()
     return sum(count or settings.max_clips_per_video for count in counts)
 
 
-def _mine_winner(db, result: Result) -> Optional[str]:
+def _mine_winner(db, result: Result, *, scope=None, channel_id: Optional[str] = None,
+                 require_approval: Optional[bool] = None) -> Optional[str]:
     """Cut more from a source that worked, while the shelf has room. The clipper steers around moments it has used."""
     from .autopilot import ready_clips
     from .safety import blocked_authors, blocked_sources
 
+    cj_scope = _clipjob_scope(channel_id)
+    approval = settings.growth_require_approval if require_approval is None else require_approval
     if not result.source_url.startswith(("http://", "https://")) or result.source_url in blocked_sources(db):
         return None
     if blocked_authors(db).intersection(result.authors):
         return None
     active = db.scalar(select(func.count(ClipJob.id)).where(
-        ClipJob.source == result.source_url, ClipJob.status.in_(("queued", "running"))))
-    if active or len(ready_clips(db)) + _coming_clips(db) >= settings.growth_min_inventory:
+        ClipJob.source == result.source_url, ClipJob.status.in_(("queued", "running")), cj_scope))
+    if active or len(ready_clips(db, scope)) + _coming_clips(db, cj_scope) >= settings.growth_min_inventory:
         return None
-    mined = db.execute(select(ClipJob).where(ClipJob.source == result.source_url, ClipJob.mined.is_(True))).scalars()
+    mined = db.execute(select(ClipJob).where(
+        ClipJob.source == result.source_url, ClipJob.mined.is_(True), cj_scope)).scalars()
     # A failure that may clear up cut nothing from the source, so it does not use up its turn.
     spent = [job for job in mined if job.status != "failed" or (job.result or {}).get("permanent")]
     if len(spent) >= _MAX_MINED_PER_SOURCE:
         return None
     job = ClipJob(source=result.source_url, count=settings.growth_clips_per_source,
-                  auto_queue=not settings.growth_require_approval, mined=True)
+                  auto_queue=not approval, mined=True, channel_id=channel_id)
     db.add(job)
     db.flush()
     return job.id
@@ -238,27 +271,28 @@ def _mining_due(db, result: Result, diagnosis: dict, now: datetime) -> bool:
     return can_take(failures, now)
 
 
-def mine_waiting_winner(db, now: datetime) -> Optional[str]:
+def mine_waiting_winner(db, now: datetime, *, scope=None, channel_id: Optional[str] = None,
+                        require_approval: Optional[bool] = None) -> Optional[str]:
     """A winner judged while the shelf was full is still owed its follow-up. Newest first, inside the judging window."""
     oldest = now - timedelta(hours=settings.growth_horizon_hours) - _JUDGE_WITHIN
-    recent = [r for r in matured_results(db) if r.published_at >= oldest]
+    recent = [r for r in matured_results(db, scope=scope) if r.published_at >= oldest]
     for result in sorted(recent, key=lambda r: r.published_at, reverse=True):
         video = db.get(Video, result.video_id)
         diagnosis = (video.meta or {}).get("growth_diagnosis", {})
         if diagnosis.get("code") != "winner" or not _mining_due(db, result, diagnosis, now):
             continue
-        job_id = _mine_winner(db, result)
+        job_id = _mine_winner(db, result, scope=scope, channel_id=channel_id, require_approval=require_approval)
         if job_id:
             video.meta = {**video.meta, "growth_diagnosis": {**diagnosis, "mined_job": job_id}}
-            db.add(GrowthEvent(kind="winner_mined", video_id=video.id, data={"mined_job": job_id},
+            db.add(GrowthEvent(kind="winner_mined", video_id=video.id, data={"mined_job": job_id}, channel_id=channel_id,
                                summary=f"{result.title[:60]}: stock fell, so cutting more from this winner's source."))
             return job_id
     return None
 
 
-def _note_findings(db, summary: dict, matured: int) -> int:
+def _note_findings(db, summary: dict, matured: int, channel=None) -> int:
     """Log an arm that stays clearly ahead for views across new videos, and take it back if that fades."""
-    state = db.get(GrowthState, "findings")
+    state = db.get(GrowthState, _skey(channel, "findings"))
     saved = state.value if state else {}
     live, held = dict(saved.get("live", {})), saved.get("since", {})
     since: dict[str, int] = {}
@@ -272,15 +306,15 @@ def _note_findings(db, summary: dict, matured: int) -> int:
                 since[key] = held.get(key, matured)
             if key in live and row["p_best"] < _FADED_P_BEST:
                 del live[key]
-                db.add(GrowthEvent(kind="finding_retracted", data=row, summary=(
+                db.add(GrowthEvent(kind="finding_retracted", data=row, channel_id=_ev(channel), summary=(
                     f"{factor} = {row['arm']} no longer looks best: its chance fell to {row['p_best']:.0%}.")))
             elif key not in live and key in since and matured - since[key] >= _CONFIRM_VIDEOS:
                 live[key] = row["multiplier"]
-                db.add(GrowthEvent(kind="finding", data=row, summary=(
+                db.add(GrowthEvent(kind="finding", data=row, channel_id=_ev(channel), summary=(
                     f"{factor} = {row['arm']} looks best: about {row['multiplier']}x the factor's average views "
                     f"(range {row['low']}-{row['high']}x, {row['n']} videos).")))
                 added += 1
-    set_state(db, "findings", {"live": live, "since": since})
+    set_state(db, _skey(channel, "findings"), {"live": live, "since": since})
     return added
 
 
@@ -292,20 +326,22 @@ def set_state(db, key: str, value: dict) -> None:
         db.add(GrowthState(key=key, value=value))
 
 
-def note_once(db, kind: str, summary: str, *, key: str = "", within: timedelta = timedelta(days=1)) -> None:
+def note_once(db, kind: str, summary: str, *, key: str = "", within: timedelta = timedelta(days=1),
+              channel_id: Optional[str] = None) -> None:
     """Record a problem that repeats every run only once in a while, or it pushes everything else out of the report."""
     since = datetime.now(timezone.utc) - within
     recent = db.execute(select(GrowthEvent.data).where(GrowthEvent.kind == kind, GrowthEvent.created_at >= since)).scalars()
     if not any((data or {}).get("key") == key for data in recent):
-        db.add(GrowthEvent(kind=kind, summary=summary, data={"key": key}))
+        db.add(GrowthEvent(kind=kind, summary=summary, data={"key": key}, channel_id=channel_id))
 
 
-def learn_job(now: Optional[datetime] = None) -> dict:
-    now = now or datetime.now(timezone.utc)
+def _learn_one(channel, now: datetime) -> dict:
+    """Diagnose one managed channel's matured videos and update its own focus and findings."""
     oldest_age = timedelta(hours=settings.growth_horizon_hours) + _JUDGE_WITHIN
+    scope, cid, approval = _scope(channel), _ev(channel), _approval(channel)
     counts: dict[str, int] = {}
     with session_scope() as db:
-        results = matured_results(db)
+        results = matured_results(db, scope=scope, zone=channel_zone(channel))
         for result in (r for r in results if not r.diagnosed and now - r.published_at <= oldest_age):
             found = diagnose(result, _baseline(result, results))
             counts[found.code] = counts.get(found.code, 0) + 1
@@ -313,20 +349,23 @@ def learn_job(now: Optional[datetime] = None) -> dict:
                 continue
             action = {}
             if found.code == "winner":
-                job_id = _mine_winner(db, result)
+                job_id = _mine_winner(db, result, scope=scope, channel_id=cid, require_approval=approval)
                 if job_id:
                     action = {"mined_job": job_id}
             video = db.get(Video, result.video_id)
             video.meta = {**(video.meta or {}), "growth_diagnosis": {
                 "code": found.code, "reason": found.reason, "focus": list(found.focus), "at": now.isoformat(), **action,
             }}
-            db.add(GrowthEvent(kind=f"diagnosis:{found.code}", video_id=result.video_id,
+            db.add(GrowthEvent(kind=f"diagnosis:{found.code}", video_id=result.video_id, channel_id=cid,
                                summary=f"{result.title[:60]}: {found.reason}", data=action))
         db.flush()
-        mine_waiting_winner(db, now)
+        mine_waiting_winner(db, now, scope=scope, channel_id=cid, require_approval=approval)
 
         # A run of the same problem steers extra testing to the factors that could explain it.
-        recent = db.execute(select(Video).where(Video.status == VideoStatus.PUBLISHED)
+        conds = [Video.status == VideoStatus.PUBLISHED]
+        if scope is not None:
+            conds.append(scope)
+        recent = db.execute(select(Video).where(*conds)
                             .order_by(Video.published_at.desc()).limit(_FOCUS_WINDOW * 3)).scalars().all()
         judged = [(v.meta or {})["growth_diagnosis"] for v in recent
                   if (v.meta or {}).get("growth_diagnosis", {}).get("code") not in (None, "too_early")][:_FOCUS_WINDOW]
@@ -335,9 +374,19 @@ def learn_job(now: Optional[datetime] = None) -> dict:
             for factor in item.get("focus", []):
                 tally[factor] = tally.get(factor, 0) + 1
         focus = sorted(f for f, n in tally.items() if judged and n / len(judged) >= _FOCUS_SHARE)
-        set_state(db, "focus", {"factors": focus})
+        set_state(db, _skey(channel, "focus"), {"factors": focus})
 
         summary = summarise(results) if results else {}
-        set_state(db, "summary", summary)
-        findings = _note_findings(db, summary, len(results))
+        set_state(db, _skey(channel, "summary"), summary)
+        findings = _note_findings(db, summary, len(results), channel)
     return {"matured": len(results), "diagnosed": counts, "focus": focus, "findings": findings}
+
+
+def learn_job(now: Optional[datetime] = None) -> dict:
+    now = now or datetime.now(timezone.utc)
+    with session_scope() as db:
+        active = channels.active_channels(db)
+    # A single legacy channel keeps the old flat result; several report per channel by slug.
+    if len(active) == 1 and channels.is_default(active[0]):
+        return _learn_one(active[0], now)
+    return channels.for_each(active, lambda channel: _learn_one(channel, now))

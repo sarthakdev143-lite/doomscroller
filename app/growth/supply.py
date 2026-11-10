@@ -18,7 +18,7 @@ from app.config import settings
 from app.db import session_scope
 from app.models import ClipJob, GrowthEvent
 
-from . import learn, safety
+from . import channels, learn, safety
 from .autopilot import ready_clips
 from .approval import awaiting_review
 from .factors import aware
@@ -149,9 +149,12 @@ def _inbox_files() -> list[str]:
             if now - mtime > _SETTLE_SECONDS]
 
 
-def _job_history(db) -> dict[str, list]:
+def _job_history(db, scope=None) -> dict[str, list]:
+    stmt = select(ClipJob.source, ClipJob.status, ClipJob.result, ClipJob.finished_at, ClipJob.created_at)
+    if scope is not None:
+        stmt = stmt.where(scope)
     history = defaultdict(list)
-    for row in db.execute(select(ClipJob.source, ClipJob.status, ClipJob.result, ClipJob.finished_at, ClipJob.created_at)):
+    for row in db.execute(stmt):
         history[row.source].append(row)
     return history
 
@@ -187,10 +190,11 @@ def open_inbox_files() -> list[str]:
             if path not in blocked and _can_take_file(path, history.get(path, ()), now)]
 
 
-def _feeds_by_turn(history: dict[str, list]) -> list[str]:
+def _feeds_by_turn(history: dict[str, list], feeds: Optional[Sequence[str]] = None) -> list[str]:
     """Fewest jobs first, so every source is in stock from the start and can be compared."""
+    feeds = settings.growth_feeds_list if feeds is None else list(feeds)
     taken = Counter((job.result or {}).get("feed") for jobs in history.values() for job in jobs)
-    return sorted(settings.growth_feeds_list, key=lambda feed: taken[feed])
+    return sorted(feeds, key=lambda feed: taken[feed])
 
 
 def next_source(unread: Optional[dict[str, str]] = None) -> Optional[tuple[str, Optional[str]]]:
@@ -206,6 +210,30 @@ def next_source(unread: Optional[dict[str, str]] = None) -> Optional[tuple[str, 
         history = _job_history(db)
         blocked = safety.blocked_sources(db)
     for feed in _feeds_by_turn(history):
+        try:
+            for link in _feed_links(feed):
+                if link not in blocked and can_take(history.get(link, ()), now):
+                    return link, feed
+        except Exception as exc:
+            log.warning("growth: could not read feed %s: %s", feed, exc)
+            if unread is not None:
+                unread[feed] = str(exc)
+    return None
+
+
+def _clipjob_scope(channel_id: Optional[str]):
+    return ClipJob.channel_id.is_(None) if channel_id is None else ClipJob.channel_id == channel_id
+
+
+def next_source_for(channel, unread: Optional[dict[str, str]] = None) -> Optional[tuple[str, Optional[str]]]:
+    """The next source to cut for a named channel, from its own feeds only (the inbox feeds the legacy channel)."""
+    now = datetime.now(timezone.utc)
+    channel_id = channels.event_channel(channel)
+    with session_scope() as db:
+        history = _job_history(db, _clipjob_scope(channel_id))
+        blocked = safety.blocked_sources(db)
+        feeds = channels.feeds_for(db, channel)
+    for feed in _feeds_by_turn(history, feeds):
         try:
             for link in _feed_links(feed):
                 if link not in blocked and can_take(history.get(link, ()), now):
@@ -240,23 +268,28 @@ def _why_starved(db, unread: dict[str, str]) -> tuple[str, str]:
     return "; ".join(causes) or "no new source in the inbox or feeds", " ".join(steps) or ADD_SOURCES
 
 
-def supply_job() -> dict:
-    if not settings.growth_enabled:
-        return {"skipped": "GROWTH_ENABLED is off"}
+def _supply_one(channel) -> dict:
+    """Keep one managed channel's shelf stocked from its own feeds (and, for the legacy channel, the inbox)."""
+    scope = channels.video_scope(channel)
+    channel_id = channels.event_channel(channel)
+    approval = channels.require_approval(channel)
+    now = datetime.now(timezone.utc)
     with session_scope() as db:
         # Clips waiting for the owner count as stock, or supply would keep cutting while they sit unreviewed.
-        stock = len(ready_clips(db)) + (len(awaiting_review(db)) if settings.growth_require_approval else 0)
-        active = db.scalar(select(func.count(ClipJob.id)).where(ClipJob.status.in_(("queued", "running")))) or 0
+        stock = len(ready_clips(db, scope)) + (len(awaiting_review(db, scope)) if approval else 0)
+        active = db.scalar(select(func.count(ClipJob.id)).where(
+            ClipJob.status.in_(("queued", "running")), _clipjob_scope(channel_id))) or 0
     if stock >= settings.growth_min_inventory:
         return {"stock": stock}
     if active:
         return {"stock": stock, "waiting": f"{active} clip jobs in progress"}
     with session_scope() as db:
-        mined = learn.mine_waiting_winner(db, datetime.now(timezone.utc))
+        mined = learn.mine_waiting_winner(db, now, scope=scope, channel_id=channel_id, require_approval=approval)
     if mined:
         return {"stock": stock, "mined": mined}
     unread: dict[str, str] = {}
-    picked = next_source(unread)
+    picked = next_source(unread) if channels.is_default(channel) else next_source_for(channel, unread)
+    gap_key = channels.state_key(channel, SUPPLY_GAP)
     if picked is None:
         with session_scope() as db:
             blocks = safety.block_list(db)
@@ -264,12 +297,24 @@ def supply_job() -> dict:
             cause, step = _why_starved(db, unread)
             starved = f"{cause}{blocked}"
             # Keyed by the step, so a different kind of cause is news within the day but a reworded error is not.
-            learn.note_once(db, "starved", f"Supply has nothing new to cut, with {stock} clips left: {starved}", key=step)
-            learn.set_state(db, SUPPLY_GAP, {"cause": cause, "step": step})
+            learn.note_once(db, "starved", f"Supply has nothing new to cut, with {stock} clips left: {starved}",
+                            key=channels.state_key(channel, step), channel_id=channel_id)
+            learn.set_state(db, gap_key, {"cause": cause, "step": step})
         return {"stock": stock, "starved": starved}
     with session_scope() as db:
-        learn.set_state(db, SUPPLY_GAP, {})
+        learn.set_state(db, gap_key, {})
     source, feed = picked
     job_id = enqueue(source, count=settings.growth_clips_per_source,
-                     auto_queue=not settings.growth_require_approval, feed=feed)
+                     auto_queue=not approval, feed=feed, channel_id=channel_id)
     return {"stock": stock, "queued": source, "job": job_id}
+
+
+def supply_job() -> dict:
+    if not settings.growth_enabled:
+        return {"skipped": "GROWTH_ENABLED is off"}
+    with session_scope() as db:
+        active = channels.active_channels(db)
+    # A single legacy channel keeps the old flat result shape; several report per channel by slug.
+    if len(active) == 1 and channels.is_default(active[0]):
+        return _supply_one(active[0])
+    return channels.for_each(active, _supply_one)

@@ -34,6 +34,16 @@ async def lifespan(app: FastAPI):
     # Must run before anything logs, or app-level INFO is discarded.
     configure_logging()
     init_db()
+    # Reconcile channels.json into the channels/feeds tables on every boot, so editing it and
+    # restarting actually adds/updates/retires a channel (the lazy seed only fires on an empty table).
+    try:
+        from .db import session_scope
+        from .growth import channels
+        with session_scope() as db:
+            channels.sync_channels(db)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("channel sync failed: %s", e)
     # Start autonomous scheduler in background
     try:
         scheduler.start_scheduler()
@@ -220,6 +230,13 @@ def growth_doctor(live: bool = False) -> dict:
     """Whether the loop can really run: token, scopes, privacy, stock. Live also asks Google and reads every feed."""
     from .growth.report import doctor
     return doctor(live=live)
+
+
+@app.post("/growth/channels/reload", response_model=dict)
+def growth_channels_reload() -> dict:
+    """Re-apply channels.json without a restart. The loop reads channels fresh each tick, so edits take effect next tick."""
+    from .growth.channels import reload_channels
+    return reload_channels()
 
 
 # ==================== Autonomous scheduler endpoints ====================

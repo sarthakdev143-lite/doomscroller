@@ -47,7 +47,24 @@ def _show_env(secrets: str, token: str) -> None:
     print(f"\nAdd to .env:\n  USE_MOCK=false\n  YOUTUBE_CLIENT_SECRETS={secrets}\n  YOUTUBE_TOKEN_PATH={token}\n")
 
 
-def _show_channel(creds) -> int:
+def _channel_paths(slug: str) -> tuple[str, str]:
+    """A managed channel's client_secret.json and token paths, from channels.json."""
+    from app.db import init_db, session_scope
+    from app.growth import channels
+
+    init_db()
+    with session_scope() as db:
+        channels.sync_channels(db)
+        channel = channels.channel_by_slug(db, slug)
+        if channel is None:
+            known = ", ".join(c.slug for c in channels.all_channels(db)) or "none"
+            raise SystemExit(f"ERROR: no channel {slug!r} in channels.json. Known channels: {known}.")
+        if not channel.client_secrets or not channel.token_path:
+            raise SystemExit(f"ERROR: channel {slug!r} needs client_secrets and token_path set in channels.json.")
+        return channel.client_secrets, channel.token_path
+
+
+def _show_channel(creds, slug: str | None = None) -> int:
     from googleapiclient.discovery import build
 
     try:
@@ -59,19 +76,59 @@ def _show_channel(creds) -> int:
     if channels:
         print(f"Connected channel: {channels[0]['snippet']['title']}")
         print("If that is the wrong channel, re-run with --force and pick the right one on Google's screen.")
+        if slug:
+            _store_channel_id(slug, channels[0]["id"])
     else:
         print("WARNING: this Google account has no YouTube channel. Create one, then re-run with --force.")
     return 0
 
 
+def _store_channel_id(slug: str, youtube_id: str) -> None:
+    """Remember which YouTube channel this token is for, so the loop can refuse a later wrong-account token.
+
+    Once the channel has posted, a different account is not accepted quietly: its videos live on the first
+    one, so posting or reading through this token would cross-post, and make every earlier video look deleted.
+    """
+    from sqlalchemy import func, select
+
+    from app.db import init_db, session_scope
+    from app.growth import channels
+    from app.models import Video, VideoStatus
+
+    init_db()
+    with session_scope() as db:
+        channels.sync_channels(db)
+        channel = channels.channel_by_slug(db, slug)
+        if channel is None:
+            return
+        if channel.youtube_channel_id and channel.youtube_channel_id != youtube_id:
+            posted = db.scalar(select(func.count(Video.id)).where(
+                Video.channel_id == channel.id, Video.status == VideoStatus.PUBLISHED,
+                Video.youtube_video_id.isnot(None), ~Video.youtube_video_id.startswith("MOCK_", autoescape=True))) or 0
+            if posted:
+                print(f"\nWARNING: channel {slug!r} has already posted {posted} videos to a DIFFERENT YouTube channel.\n"
+                      "This token is for another account, so the loop will not post or read with it.\n"
+                      "  - Picked the wrong account? Re-run with --force and pick the original one.\n"
+                      "  - Moving to a new YouTube channel? Add it as a new channel instead:\n"
+                      "      venv/bin/python scripts/channels.py add <new-slug>")
+                return
+        channel.youtube_channel_id = youtube_id
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--force", action="store_true", help="Re-authorize even if a token exists")
+    ap.add_argument("--channel", help="A managed channel's slug (its secrets/token come from channels.json)")
     ap.add_argument("--secrets", default=CLIENT_SECRETS_PATH, help="Path to client_secret.json")
     ap.add_argument("--token", default=TOKEN_PATH, help="Path to save the token")
     ap.add_argument("--no-browser", action="store_true", help="Print the link instead of opening a browser")
     ap.add_argument("--port", type=int, default=8765, help="Local port Google redirects back to")
     args = ap.parse_args()
+
+    # A named channel in channels.json fills its own secrets and token paths (one Cloud project each).
+    if args.channel:
+        args.secrets, args.token = _channel_paths(args.channel)
+        print(f"Authorizing channel {args.channel!r}: secrets {args.secrets}, token {args.token}")
 
     if not os.path.exists(args.secrets):
         print(f"ERROR: missing {args.secrets}. See 'YouTube token' in README.md.")
@@ -104,7 +161,7 @@ def main() -> int:
     _show_warnings(token)
     # Before the API call, since a refused call must not cost the owner these lines.
     _show_env(args.secrets, args.token)
-    return _show_channel(creds)
+    return _show_channel(creds, args.channel)
 
 
 if __name__ == "__main__":
