@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git status:*)",
+      "Bash(git log:*)",
+      "Bash(git fetch:*)",
+      "Bash(git pull:*)",
+      "Bash(git -C /home/sarthak/doomscroller status:*)",
+      "Bash(git -C /home/sarthak/doomscroller log:*)",
+      "Bash(git -C /home/sarthak/doomscroller fetch:*)",
+      "Bash(git -C /home/sarthak/doomscroller pull:*)",
+      "Bash(systemctl --user restart doomscroller:*)",
+      "Bash(systemctl --user restart doomscroller.service:*)",
+      "Bash(systemctl --user status doomscroller:*)",
+      "Bash(systemctl --user list-timers doomscroller:*)",
+      "Bash(journalctl --user -u doomscroller:*)"
+    ]
+  }
+}
