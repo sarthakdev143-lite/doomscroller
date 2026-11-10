@@ -132,6 +132,60 @@ def test_adding_a_channel_is_picked_up_by_a_resync_the_app_runs_at_boot(tmp_path
         assert {c.slug for c in channels.active_channels(db)} == {"tech", "comedy"}
 
 
+def test_one_channel_failing_does_not_stop_the_others(tmp_path, monkeypatch):
+    from app.growth import supply
+
+    monkeypatch.setattr(settings, "growth_enabled", True)
+    _write(tmp_path, monkeypatch, {"channels": [
+        {"slug": "broken", "feeds": ["https://yt/a"]}, {"slug": "fine", "feeds": ["https://yt/b"]}]})
+    real = supply._supply_one
+
+    def flaky(channel):
+        if channel.slug == "broken":
+            raise RuntimeError("database is locked")
+        return real(channel)
+
+    monkeypatch.setattr(supply, "_supply_one", flaky)
+    monkeypatch.setattr(supply, "_feed_links", lambda feed: ["https://vid/1"])
+    out = supply.supply_job()
+    assert out["fine"]["queued"] == "https://vid/1"          # the healthy channel still ran
+    assert "database is locked" in out["broken"]["error"]
+    assert out["error"].startswith("broken:")                # and the run is recorded as failed
+
+
+def test_a_channel_put_back_in_the_config_runs_again(tmp_path, monkeypatch):
+    _write(tmp_path, monkeypatch, {"channels": [{"slug": "tech"}, {"slug": "comedy"}]})
+    with session_scope() as db:
+        channels.sync_channels(db)
+    _write(tmp_path, monkeypatch, {"channels": [{"slug": "tech"}]})
+    with session_scope() as db:
+        channels.sync_channels(db)
+        assert channels.channel_by_slug(db, "comedy").enabled is False
+    _write(tmp_path, monkeypatch, {"channels": [{"slug": "tech"}, {"slug": "comedy"}]})
+    with session_scope() as db:
+        channels.sync_channels(db)
+        assert channels.channel_by_slug(db, "comedy").enabled is True
+
+
+@pytest.mark.parametrize("entry, problem", [
+    ({"slug": "Tech Channel"}, "slug"),
+    ({"slug": "error"}, "reserved"),
+    ({"slug": "tech", "uploads_per_day": "3"}, "uploads_per_day"),
+    ({"slug": "tech", "timezone": "Mars/Olympus"}, "timezone"),
+    ({"slug": "tech", "enabled": "yes"}, "enabled"),
+    ({"slug": "tech", "feeds": "https://yt/a"}, "feeds"),
+])
+def test_a_bad_value_is_refused_by_name_and_the_fleet_is_kept(tmp_path, monkeypatch, entry, problem):
+    _write(tmp_path, monkeypatch, {"channels": [{"slug": "good"}]})
+    with session_scope() as db:
+        channels.sync_channels(db)
+    _write(tmp_path, monkeypatch, {"channels": [{"slug": "good"}, entry]})
+    with session_scope() as db:
+        channels.sync_channels(db)
+        assert {c.slug for c in channels.active_channels(db)} == {"good"}
+        assert problem in channels.config_health(db)["error"]
+
+
 def test_state_key_namespaces_per_channel(tmp_path, monkeypatch):
     _write(tmp_path, monkeypatch, {"channels": [{"slug": "tech"}, {"slug": "comedy"}]})
     with session_scope() as db:
@@ -198,14 +252,15 @@ def _ready_clip(tmp_path, name, channel_id):
         return video.id
 
 
-def _pending_clip(tmp_path, name, channel_id, score):
+def _pending_clip(tmp_path, name, channel_id, score, ai_titled=True):
     path = tmp_path / f"{name}.mp4"
     path.write_bytes(b"x")
     with session_scope() as db:
         video = Video(source="youtube", source_id=name, source_url="u", title=f"Clip {name}", author="a",
                       duration_sec=30, transformed_path=str(path), local_path=str(path), status=VideoStatus.PENDING,
                       channel_id=channel_id, meta={"clip_rendered": True, "clip_kind": "visual",
-                                                   "clip_parent": name, "clip_score": score})
+                                                   "clip_parent": name, "clip_score": score,
+                                                   "clip_ai_titled": ai_titled})
         db.add(video)
         db.flush()
         return video.id
@@ -227,6 +282,23 @@ def test_auto_approve_sweep_passes_only_clips_above_the_threshold(tmp_path, monk
         assert db.get(Video, high).meta.get("auto_approved")
         assert db.get(Video, high).curated_at is None  # not a human decision; upload gate still runs
         assert db.get(Video, low).status == VideoStatus.PENDING
+
+
+def test_a_clip_no_ai_titled_is_never_approved_without_a_person(tmp_path, monkeypatch):
+    from app.growth import approval
+
+    _write(tmp_path, monkeypatch, {"channels": [
+        {"slug": "tech", "auto_approve_score": 0.5, "cadence_backstop": True}]})
+    with session_scope() as db:
+        channels.sync_channels(db)
+        tech = channels.channel_by_slug(db, "tech")
+    raw = _pending_clip(tmp_path, "raw", tech.id, 0.99, ai_titled=False)
+    with session_scope() as db:
+        tech = channels.channel_by_slug(db, "tech")
+        assert approval.auto_approve_sweep(tech) == 0
+        assert approval.backstop_approve(tech) is None
+    with session_scope() as db:
+        assert db.get(Video, raw).status == VideoStatus.PENDING
 
 
 def test_auto_approve_is_off_by_default(tmp_path, monkeypatch):

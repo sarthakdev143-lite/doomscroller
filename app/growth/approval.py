@@ -161,11 +161,17 @@ def _grant(db, video: Video, now: datetime, mark: str) -> None:
 
 
 def _trustable(db, channel) -> list[Video]:
+    """Clips that may go out without a person: gate-clean, not flagged, and titled by an AI.
+
+    A rule-based title is a raw first sentence or "<source> - part N", and a visual pick may be end
+    credits, so a clip no AI looked at always waits for a person, whatever its score.
+    """
     from . import channels
     from tasks.pipeline import clip_gate_reason
 
     return [v for v in awaiting_review(db, channels.video_scope(channel))
-            if v.curated_at is None and not clip_gate_reason(v)]
+            if v.curated_at is None and (v.meta or {}).get("clip_ai_titled")
+            and not (v.meta or {}).get("growth_flagged") and not clip_gate_reason(v)]
 
 
 def auto_approve_sweep(channel) -> int:

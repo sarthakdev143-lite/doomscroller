@@ -388,4 +388,4 @@ def learn_job(now: Optional[datetime] = None) -> dict:
     # A single legacy channel keeps the old flat result; several report per channel by slug.
     if len(active) == 1 and channels.is_default(active[0]):
         return _learn_one(active[0], now)
-    return {channel.slug: _learn_one(channel, now) for channel in active}
+    return channels.for_each(active, lambda channel: _learn_one(channel, now))

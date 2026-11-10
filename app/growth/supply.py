@@ -317,4 +317,4 @@ def supply_job() -> dict:
     # A single legacy channel keeps the old flat result shape; several report per channel by slug.
     if len(active) == 1 and channels.is_default(active[0]):
         return _supply_one(active[0])
-    return {channel.slug: _supply_one(channel) for channel in active}
+    return channels.for_each(active, _supply_one)

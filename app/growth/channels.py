@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections import Counter
-from typing import Optional
+from typing import Callable, Optional
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 
@@ -24,6 +26,9 @@ log = logging.getLogger(__name__)
 
 DEFAULT_SLUG = "default"
 _CONFIG_HEALTH = "channels_config"
+_SLUG = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+# "error" is the key a multi-channel job result uses to say that some channel failed.
+_RESERVED_SLUGS = frozenset({"error"})
 
 
 class ChannelsConfigError(ValueError):
@@ -55,7 +60,44 @@ def _load_config() -> Optional[list[dict]]:
     valid = [e for e in entries if isinstance(e, dict) and e.get("slug")]
     if not valid:
         raise ChannelsConfigError("channels.json declares no channel with a slug.")
+    seen: set[str] = set()
+    for entry in valid:
+        problem = _entry_problem(entry, seen)
+        if problem:
+            raise ChannelsConfigError(f"channels.json, channel {entry.get('slug')!r}: {problem}. "
+                                      "Fix the file; the fleet is unchanged.")
+        seen.add(str(entry["slug"]).strip())
     return valid
+
+
+def _entry_problem(entry: dict, seen: set[str]) -> Optional[str]:
+    """Why one channel entry cannot be used, or None. A bad value is refused by name, never half-applied."""
+    slug = str(entry["slug"]).strip()
+    if not _SLUG.match(slug):
+        return "the slug must be lowercase letters, digits, - or _"
+    if slug in _RESERVED_SLUGS:
+        return f"{slug!r} is a reserved name"
+    if slug in seen:
+        return "the slug is used twice"
+    pace = entry.get("uploads_per_day")
+    if pace is not None and (isinstance(pace, bool) or not isinstance(pace, int) or not 0 <= pace <= 50):
+        return "uploads_per_day must be a whole number from 0 to 50"
+    score = entry.get("auto_approve_score")
+    if score is not None and (isinstance(score, bool) or not isinstance(score, (int, float)) or not 0 <= score <= 1):
+        return "auto_approve_score must be a number from 0 to 1"
+    for flag in ("require_approval", "enabled", "cadence_backstop"):
+        if entry.get(flag) is not None and not isinstance(entry[flag], bool):
+            return f"{flag} must be true or false"
+    zone = entry.get("timezone")
+    if zone is not None:
+        try:
+            ZoneInfo(str(zone))
+        except Exception:
+            return f"unknown timezone {zone!r}"
+    feeds = entry.get("feeds")
+    if feeds is not None and (not isinstance(feeds, list) or not all(isinstance(f, str) for f in feeds)):
+        return "feeds must be a list of links"
+    return None
 
 
 def _record_config(db, error: Optional[str], count: int = 0) -> None:
@@ -149,6 +191,8 @@ def sync_channels(db) -> list[Channel]:
             channel = Channel(slug=slug)
             db.add(channel)
         _apply(channel, entry)
+        # Listed means on unless the file says otherwise, so a channel put back after being retired runs again.
+        channel.enabled = bool(entry.get("enabled", True))
         db.flush()  # need channel.id for the feed rows
         _sync_feeds(db, channel, entry.get("feeds") or [])
     # A channel dropped from the config is retired, not deleted: its videos and history stay.
@@ -206,6 +250,23 @@ def default_channel(db) -> Optional[Channel]:
 
 def is_default(channel: Channel) -> bool:
     return channel.slug == DEFAULT_SLUG
+
+
+def for_each(active: list[Channel], run: Callable[[Channel], dict]) -> dict:
+    """Run a job once per channel and report by slug. One channel failing must not stop the others,
+    and the result carries a top-level "error" naming any that did, so the scheduler records the run as failed."""
+    out: dict = {}
+    for channel in active:
+        try:
+            out[channel.slug] = run(channel)
+        except Exception as exc:
+            log.exception("growth: a job failed for channel %s", channel.slug)
+            out[channel.slug] = {"error": f"{type(exc).__name__}: {exc}"}
+    failed = [f"{slug}: {result['error']}" for slug, result in out.items()
+              if isinstance(result, dict) and result.get("error")]
+    if failed:
+        out["error"] = "; ".join(failed)
+    return out
 
 
 def feeds_for(db, channel: Channel) -> list[str]:

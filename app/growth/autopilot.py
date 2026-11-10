@@ -487,6 +487,6 @@ def autopilot_job(now: Optional[datetime] = None, rng: Optional[random.Random] =
         # A single legacy channel keeps the old flat result; several report per channel by slug.
         if len(active) == 1 and channels.is_default(active[0]):
             return _autopilot_one(active[0], now, rng)
-        return {channel.slug: _autopilot_one(channel, now, rng) for channel in active}
+        return channels.for_each(active, lambda channel: _autopilot_one(channel, now, rng))
     finally:
         _lock.release()

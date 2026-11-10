@@ -167,6 +167,8 @@ def _save_clip(src: SourceVideo, moment: Moment, path: str, duration: float, *, 
             "clip_parent": src.source_id,
             "clip_job": job_id,
             "llm_title": moment.title,
+            # Whether an AI wrote the title. Anything approving a clip without a person needs to know.
+            "clip_ai_titled": bool(moment.ai_title),
             "llm_description": written,
             "growth_recipe": recipe or {},
             "clip_source_text": f"{src.title} {src.description}".strip(),

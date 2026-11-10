@@ -223,4 +223,4 @@ def collect_job(now: datetime | None = None) -> dict:
     # A single legacy channel keeps the old flat result; several report per channel by slug.
     if len(active) == 1 and channels.is_default(active[0]):
         return _collect_one(active[0], now)
-    return {channel.slug: _collect_one(channel, now) for channel in active}
+    return channels.for_each(active, lambda channel: _collect_one(channel, now))
