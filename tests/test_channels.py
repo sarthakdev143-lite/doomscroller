@@ -356,6 +356,18 @@ def test_review_queue_has_a_per_channel_status_strip_when_multi(tmp_path, monkey
     assert q["clips"][0]["channel_slug"] == "tech"
 
 
+def test_doctor_flags_two_channels_sharing_a_token(tmp_path, monkeypatch):
+    from app.growth import report
+
+    _write(tmp_path, monkeypatch, {"channels": [
+        {"slug": "tech", "client_secrets": "secrets/a.json", "token_path": "secrets/shared.json"},
+        {"slug": "comedy", "client_secrets": "secrets/b.json", "token_path": "secrets/shared.json"}]})
+    with session_scope() as db:
+        channels.sync_channels(db)
+    check = next(c for c in report.doctor(live=False)["checks"] if c["name"] == "channel credentials")
+    assert check["ok"] is False and "shared by comedy, tech" in check["detail"]
+
+
 def test_channel_status_flags_a_channel_that_needs_attention(tmp_path, monkeypatch):
     from app.growth import approval
 

@@ -73,6 +73,11 @@ def _since(db) -> datetime:
 
 
 def digest(db, since: datetime) -> list[str]:
+    from . import channels
+
+    names = {c.id: (c.name or c.slug) for c in channels.all_channels(db)}
+    # Which channel an event belongs to, so an alert among several channels is actionable.
+    tag = lambda ev: f"[{names[ev.channel_id]}] " if ev.channel_id in names else ""
     lines: list[str] = []
     waiting = db.execute(select(Video).where(Video.status == VideoStatus.PENDING,
                                              Video.scraped_at > since)).scalars().all()
@@ -85,9 +90,10 @@ def digest(db, since: datetime) -> list[str]:
         if event.kind == "posted" and event.video_id:
             video = db.get(Video, event.video_id)
             if video and video.youtube_video_id:
-                lines.append(f"Posted: {(video.title or '')[:70]} https://youtube.com/shorts/{video.youtube_video_id}")
+                lines.append(f"{tag(event)}Posted: {(video.title or '')[:70]} "
+                             f"https://youtube.com/shorts/{video.youtube_video_id}")
         elif event.kind in _ALERT_KINDS:
-            lines.append(f"Problem: {event.summary[:200]}")
+            lines.append(f"{tag(event)}Problem: {event.summary[:200]}")
     return lines[:_MAX_LINES]
 
 

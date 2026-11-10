@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import Counter
 from typing import Optional
 
 from sqlalchemy import select
@@ -69,6 +70,20 @@ def config_health(db) -> dict:
     """What the last sync made of channels.json: {ok, count} or {error}. Doctor surfaces a parse failure."""
     state = db.get(GrowthState, _CONFIG_HEALTH)
     return dict(state.value) if state else {"ok": True, "count": 0}
+
+
+def duplicate_credentials(db) -> list[str]:
+    """A token or client_secret path shared by more than one enabled channel — a copy-paste slip that would
+    cross-post two niches to one account or double-spend a project's quota. Named channels only."""
+    rows = [c for c in db.execute(select(Channel).where(Channel.enabled.is_(True))).scalars() if not is_default(c)]
+    out = []
+    for field in ("token_path", "client_secrets"):
+        counts = Counter(getattr(c, field) for c in rows if getattr(c, field))
+        for path, n in counts.items():
+            if n > 1:
+                slugs = ", ".join(sorted(c.slug for c in rows if getattr(c, field) == path))
+                out.append(f"{field} {path} is shared by {slugs}")
+    return out
 
 
 def _legacy_channel() -> dict:

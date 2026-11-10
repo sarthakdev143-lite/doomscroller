@@ -152,6 +152,7 @@ def doctor(*, live: bool = False) -> dict:
         blocks = safety.block_list(db)
         held = _held_reasons(db)
         config = channels.config_health(db)
+        dupes = channels.duplicate_credentials(db)
         active = channels.active_channels(db)
         # Every enabled channel's feeds. For a single legacy channel this is just GROWTH_FEEDS.
         all_feeds = [f for c in active for f in channels.feeds_for(db, c)]
@@ -172,6 +173,8 @@ def doctor(*, live: bool = False) -> dict:
     checks = [
         _check("error" not in config, "channels.json",
                config["error"] if config.get("error") else f"{config.get('count', 0)} channels declared"),
+        _check(not dupes, "channel credentials",
+               "; ".join(dupes) + ". Each channel needs its own token/project." if dupes else "unique per channel"),
         _check(paused is None, "pause",
                f"{paused}. Check the channel, then clear it with: scripts/growth.py resume" if paused else "not paused"),
         _check(not blocks, "takedown blocks", safety.describe_blocks(blocks) if blocks else "none", required=False),
