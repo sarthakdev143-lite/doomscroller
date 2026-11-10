@@ -315,35 +315,46 @@ def growth_tab():
             rows.append({"Channel":ch["name"] or ch["slug"],"On":"yes" if ch.get("enabled",True) else "no",
                          "Ready":"ok" if ch["ready"] else "FIX","Issue":fails[0] if fails else ""})
         st.dataframe(rows,hide_index=True)
+    # With several channels, each one plans and learns on its own: pick one to see its plan and results.
+    view=report
+    if report.get("channels"):
+        names={s["name"]:slug for slug,s in report["channels"].items()}
+        pick=st.selectbox("Show",["All channels"]+list(names),key="growth_channel")
+        if pick!="All channels":
+            view=report["channels"][names[pick]]
+    multi=bool(report.get("channels"))
     c1,c2,c3,c4=st.columns(4)
-    c1.metric("Day",report["day"])
-    c2.metric("Published",report["published"])
-    c3.metric("Judged",report["matured"])
-    c4.metric("Clips in stock",report["stock"])
-    st.caption(f'{report["phase"].capitalize()}: {report["explore_rate"]:.0%} of choices are tests.'+(f' Testing harder: {", ".join(report["focus"])}.' if report["focus"] else ""))
-    last_collect=report["collect"]["last_success"]
+    c1.metric("Day",view["day"])
+    c2.metric("Published",view["published"])
+    c3.metric("Judged",view["matured"])
+    c4.metric("Clips in stock",view["stock"])
+    if view is report and multi:
+        st.caption("Totals across channels. Pick a channel above to see its plan and what its tests show.")
+    else:
+        st.caption(f'{view["phase"].capitalize()}: {view["explore_rate"]:.0%} of choices are tests.'+(f' Testing harder: {", ".join(view["focus"])}.' if view["focus"] else ""))
+    last_collect=view["collect"]["last_success"]
     st.caption(f'Last successful collect: {last_collect[:16].replace("T"," ") if last_collect else "never"}.')
     if report["problems"]:
         st.markdown("**Problems in the last 30 days**")
-        st.dataframe([{"When":p["at"][:16].replace("T"," "),"What":p["kind"],"Detail":p["summary"]} for p in report["problems"]],hide_index=True)
-    if report["plan"].get("posts"):
+        st.dataframe([{"When":p["at"][:16].replace("T"," "),**({"Channel":p.get("channel","")} if multi else {}),"What":p["kind"],"Detail":p["summary"]} for p in report["problems"]],hide_index=True)
+    if view["plan"].get("posts"):
         st.markdown("**Today**")
-        st.dataframe([{"Window":p["slot"],"Status":p["state"]} for p in report["plan"]["posts"]],hide_index=True)
-    if report["factors"]:
+        st.dataframe([{"Window":p["slot"],"Status":p["state"]} for p in view["plan"]["posts"]],hide_index=True)
+    if view["factors"]:
         st.markdown("**What the tests show**")
         st.caption("Views alone against that factor's average, with the likely range and the chance of being best. Treat it as noise until the range clears 1x. Score also counts watch time and subscribers, and is what the loop chooses by.")
-        for factor,rows in report["factors"].items():
+        for factor,rows in view["factors"].items():
             st.markdown(f"`{factor}`")
             st.dataframe([{"Option":r["arm"],"Views":f'{r["multiplier"]}x',"Range":f'{r["low"]}-{r["high"]}x',"Chance best":f'{r["p_best"]:.0%}',"Score":f'{r["score"]["multiplier"]}x' if "score" in r else "","Videos":r["n"]} for r in rows],hide_index=True)
-    else:
+    elif not (view is report and multi):
         st.info(f"No results yet: a video is judged {settings.growth_horizon_hours} hours after it goes out.")
     for label,key in (("Best","best"),("Worst","worst")):
-        if report[key]:
+        if view[key]:
             st.markdown(f"**{label} videos**")
-            st.dataframe([{"Title":r["title"],"Views":r["views"],"Why":r["diagnosis"]} for r in report[key]],hide_index=True)
+            st.dataframe([{"Title":r["title"],"Views":r["views"],"Why":r["diagnosis"]} for r in view[key]],hide_index=True)
     if report["events"]:
         st.markdown("**What it did**")
-        st.dataframe([{"When":e["at"][:16].replace("T"," "),"What":e["kind"],"Detail":e["summary"]} for e in report["events"]],hide_index=True)
+        st.dataframe([{"When":e["at"][:16].replace("T"," "),**({"Channel":e.get("channel","")} if multi else {}),"What":e["kind"],"Detail":e["summary"]} for e in report["events"]],hide_index=True)
 
 
 def clip_tab():

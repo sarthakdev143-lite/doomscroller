@@ -101,9 +101,12 @@ def _live_checks() -> list[dict]:
     return youtube + [_feed_check(feed) for feed in settings.growth_feeds_list]
 
 
-def _held_reasons(db) -> Counter:
+def _held_reasons(db, scope=None) -> Counter:
     """Why unattended clips were left for a person. They post nothing until someone looks."""
-    metas = db.execute(select(Video.meta).where(Video.status == VideoStatus.PENDING)).scalars()
+    conds = [Video.status == VideoStatus.PENDING]
+    if scope is not None:
+        conds.append(scope)
+    metas = db.execute(select(Video.meta).where(*conds)).scalars()
     return Counter(meta["growth_flagged"] for meta in metas if (meta or {}).get("growth_flagged"))
 
 
@@ -249,62 +252,103 @@ def doctor(*, live: bool = False) -> dict:
     return result
 
 
-def _stock_warning(db, stock: int) -> Optional[str]:
+def _stock_warning(db, stock: int, channel=None) -> Optional[str]:
+    """Why nothing can post, and the step that fits. With a channel, judged on that channel's own shelf."""
     if stock or not settings.growth_enabled:
         return None
-    active = db.scalar(select(func.count(ClipJob.id)).where(ClipJob.status.in_(("queued", "running")))) or 0
-    held = _held_reasons(db)
+    scope = None if channel is None else channels.video_scope(channel)
+    jobs = [ClipJob.status.in_(("queued", "running"))]
+    if channel is not None:
+        cid = channels.event_channel(channel)
+        jobs.append(ClipJob.channel_id.is_(None) if cid is None else ClipJob.channel_id == cid)
+    active = db.scalar(select(func.count(ClipJob.id)).where(*jobs)) or 0
+    held = _held_reasons(db, scope)
     steps = [f"{active} clip jobs are being cut."] if active else []
     if held:
         steps.append(f"{_held_note(held)}.")
     if not steps:  # adding sources is only the answer when they are what ran out
-        state = db.get(GrowthState, supply.SUPPLY_GAP)
+        gap_key = supply.SUPPLY_GAP if channel is None else channels.state_key(channel, supply.SUPPLY_GAP)
+        state = db.get(GrowthState, gap_key)
         gap = state.value if state else {}
         steps.append(f"Supply stopped: {gap['cause']}. {gap['step']}" if gap else supply.ADD_SOURCES)
     return " ".join(["No finished clips in stock, so nothing can post.", *steps])
 
 
 def _events(db, *where, limit: Optional[int] = None) -> list[dict]:
+    names = {c.id: (c.name or c.slug) for c in channels.all_channels(db)}
     rows = select(GrowthEvent).where(*where).order_by(GrowthEvent.created_at.desc()).limit(limit)
-    return [{"at": e.created_at.isoformat(), "kind": e.kind, "summary": e.summary} for e in db.execute(rows).scalars()]
+    return [{"at": e.created_at.isoformat(), "kind": e.kind, "summary": e.summary,
+             "channel": names.get(e.channel_id, "")} for e in db.execute(rows).scalars()]
+
+
+def _section(db, channel, now: datetime) -> dict:
+    """What one channel has done and learned. With no channel, the whole legacy loop, as before."""
+    scope = None if channel is None else channels.video_scope(channel)
+    key = (lambda name: name) if channel is None else (lambda name: channels.state_key(channel, name))
+    started = started_at(db, channel)
+    paused, plan, focus, summary = (db.get(GrowthState, key(name)) for name in ("paused", "plan", "focus", "summary"))
+    results = matured_results(db, scope=scope)
+    diagnoses = {}
+    for video in db.execute(select(Video).where(Video.id.in_([r.video_id for r in results]))).scalars():
+        diagnoses[video.id] = (video.meta or {}).get("growth_diagnosis", {})
+    ranked = sorted(results, key=lambda r: -r.views)
+    row = lambda r: {"id": r.video_id, "title": r.title, "views": r.views, "retention": r.retention,
+                     "arms": r.arms, "diagnosis": diagnoses.get(r.video_id, {}).get("reason", "")}
+    stock = len(ready_clips(db, scope))
+    collected = collect.health(db, channel)
+    warnings = [_stock_warning(db, stock, channel), collect.analytics_warning(collected, now)]
+    posted = [Video.status == VideoStatus.PUBLISHED] + ([scope] if scope is not None else [])
+    return {
+        "day": (now - started).days + 1 if started else 0,
+        "phase": "not started" if not started else (
+            "testing" if explore_rate(started, now) == settings.growth_explore_rate else "exploiting"),
+        "explore_rate": explore_rate(started, now) if started else settings.growth_explore_rate,
+        "paused": paused.value if paused else None,
+        "hold": safety.active_hold(db, now, channel),
+        "published": db.scalar(select(func.count(Video.id)).where(*posted)) or 0,
+        "matured": len(results),
+        "stock": stock,
+        "collect": collected,
+        "warnings": [w for w in warnings if w],
+        "plan": plan.value if plan else {},
+        "focus": (focus.value or {}).get("factors", []) if focus else [],
+        "factors": summary.value if summary else {},
+        "best": [row(r) for r in ranked[:5]],
+        "worst": [row(r) for r in ranked[-5:][::-1]] if len(ranked) > 5 else [],
+    }
+
+
+def _fleet(sections: dict[str, dict]) -> dict:
+    """The top of a multi-channel report: totals, and anything a channel needs the owner for."""
+    parts = list(sections.values())
+    collects = [s["collect"]["last_success"] for s in parts if s["collect"]["last_success"]]
+    return {
+        "day": max((s["day"] for s in parts), default=0),
+        "phase": "per channel",
+        "explore_rate": settings.growth_explore_rate,
+        "paused": next((s["paused"] for s in parts if s["paused"]), None),
+        "hold": next((s["hold"] for s in parts if s["hold"]), None),
+        "published": sum(s["published"] for s in parts),
+        "matured": sum(s["matured"] for s in parts),
+        "stock": sum(s["stock"] for s in parts),
+        "collect": {"last_success": max(collects) if collects else None,
+                    "analytics_failing_since": None, "analytics_error": None},
+        "warnings": [f"{s['name']}: {w}" for s in parts for w in s["warnings"]],
+        "plan": {}, "focus": [], "factors": {}, "best": [], "worst": [],
+    }
 
 
 def build_report() -> dict:
+    """One channel reports flat, as it always has. Several report totals plus a section per channel."""
     now = datetime.now(timezone.utc)
     with session_scope() as db:
-        started = started_at(db)
-        paused = db.get(GrowthState, "paused")
-        plan = db.get(GrowthState, "plan")
-        focus = db.get(GrowthState, "focus")
-        summary = db.get(GrowthState, "summary")
-        results = matured_results(db)
-        diagnoses = {}
-        for video in db.execute(select(Video).where(Video.id.in_([r.video_id for r in results]))).scalars():
-            diagnoses[video.id] = (video.meta or {}).get("growth_diagnosis", {})
-        ranked = sorted(results, key=lambda r: -r.views)
-        row = lambda r: {"id": r.video_id, "title": r.title, "views": r.views, "retention": r.retention,
-                         "arms": r.arms, "diagnosis": diagnoses.get(r.video_id, {}).get("reason", "")}
-        stock = len(ready_clips(db))
-        collected = collect.health(db)
-        warnings = [_stock_warning(db, stock), collect.analytics_warning(collected, now)]
-        return {
-            "day": (now - started).days + 1 if started else 0,
-            "phase": "not started" if not started else (
-                "testing" if explore_rate(started, now) == settings.growth_explore_rate else "exploiting"),
-            "explore_rate": explore_rate(started, now) if started else settings.growth_explore_rate,
-            "paused": paused.value if paused else None,
-            "hold": safety.active_hold(db, now),
+        active = channels.active_channels(db)
+        shared = {
             "blocks": safety.block_list(db),
-            "published": db.scalar(select(func.count(Video.id)).where(Video.status == VideoStatus.PUBLISHED)) or 0,
-            "matured": len(results),
-            "stock": stock,
-            "collect": collected,
-            "warnings": [w for w in warnings if w],
-            "plan": plan.value if plan else {},
-            "focus": (focus.value or {}).get("factors", []) if focus else [],
-            "factors": summary.value if summary else {},
-            "best": [row(r) for r in ranked[:5]],
-            "worst": [row(r) for r in ranked[-5:][::-1]] if len(ranked) > 5 else [],
             "problems": _events(db, GrowthEvent.kind.in_(_LISTED_KINDS), GrowthEvent.created_at >= now - PROBLEM_WINDOW),
             "events": _events(db, GrowthEvent.kind.not_in(_LISTED_KINDS), limit=40),
         }
+        if len(active) == 1 and channels.is_default(active[0]):
+            return {**_section(db, None, now), **shared}
+        sections = {c.slug: {"name": c.name or c.slug, **_section(db, c, now)} for c in active}
+        return {**_fleet(sections), **shared, "channels": sections}

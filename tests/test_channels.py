@@ -586,6 +586,43 @@ def test_doctor_lists_a_configured_but_disabled_channel(tmp_path, monkeypatch):
     assert "enabled:true" in rows["tech"]["checks"][0]["detail"]
 
 
+def test_report_has_a_section_per_channel_with_its_own_plan_and_stock(tmp_path, monkeypatch):
+    from app.growth import report
+
+    monkeypatch.setattr(settings, "growth_enabled", True)
+    _write(tmp_path, monkeypatch, {"channels": [
+        {"slug": "tech", "name": "Tech"}, {"slug": "comedy", "name": "Comedy"}]})
+    now = datetime(2026, 11, 2, 1, 0, tzinfo=timezone.utc)
+    with session_scope() as db:
+        channels.sync_channels(db)
+        tech = channels.channel_by_slug(db, "tech")
+        db.add(GrowthState(key="tech:plan", value=_due_plan(now)))
+    _ready_clip(tmp_path, "tech-clip", tech.id)
+    out = report.build_report()
+    assert set(out["channels"]) == {"tech", "comedy"}
+    assert out["channels"]["tech"]["plan"]["posts"] and out["channels"]["comedy"]["plan"] == {}
+    assert out["channels"]["tech"]["stock"] == 1 and out["channels"]["comedy"]["stock"] == 0
+    assert out["stock"] == 1                                    # totals on top
+    # A starving channel is named even though the fleet as a whole has stock.
+    assert any(w.startswith("Comedy: No finished clips") for w in out["warnings"])
+    assert not any(w.startswith("Tech:") for w in out["warnings"])
+
+
+def test_report_command_prints_each_channel(tmp_path, monkeypatch, capsys):
+    import importlib.util
+    from pathlib import Path
+
+    _write(tmp_path, monkeypatch, {"channels": [{"slug": "tech", "name": "Tech"}, {"slug": "comedy", "name": "Comedy"}]})
+    with session_scope() as db:
+        channels.sync_channels(db)
+    spec = importlib.util.spec_from_file_location("growth_cli", Path(__file__).parent.parent / "scripts" / "growth.py")
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    assert cli.show_report() == 0
+    shown = capsys.readouterr().out
+    assert "== Tech (tech) ==" in shown and "== Comedy (comedy) ==" in shown and "2 channels." in shown
+
+
 def test_identity_check_catches_a_token_wired_to_the_wrong_channel():
     from app.growth import report
 
