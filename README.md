@@ -204,8 +204,10 @@ doomscroller/
 
 ## Quota & cadence
 
-- `QuotaUsage` table records uploads per UTC day. `MAX_UPLOADS_PER_DAY` is the
-  hard cap (default 50, YouTube's daily quota).
+- `QuotaUsage` table records uploads per UTC day. `MAX_UPLOADS_PER_DAY` is a local
+  safety cap (default 50), **not** YouTube's limit. YouTube's real limit is the API
+  quota: 10,000 units/day per Cloud project and ~1,600 per upload, so **about 6
+  uploads/day per project** — which is why each managed channel uses its own project.
 - `UPLOADS_PER_DAY` is your self-imposed cap (default 8).
 - The scheduler's `publish` job runs every `UPLOAD_INTERVAL_HOURS` (default 3h) and:
   1. Checks both quotas
@@ -250,7 +252,19 @@ The token lets the app upload to, and read the analytics of, one channel. It tak
 
 Lost the `.env` lines? Run the script again without `--force`: it reprints them and says what the existing token lacks. If a permission was left unticked or `doctor` reports `invalid_grant`, run it with `--force`. `invalid_grant` means the token was revoked, or expired because the app is still in Testing (step 4).
 
-`secrets/` is gitignored. The token is saved readable only by you, and it gives upload access to your channel, so never share it. Each project gets 100 uploads a day by default.
+`secrets/` is gitignored. The token is saved readable only by you, and it gives upload access to your channel, so never share it. A project's quota allows roughly 6 uploads a day (see [Quota & cadence](#quota--cadence)).
+
+## Running multiple channels
+
+To run several channels, one niche each, copy `channels.example.json` to `channels.json` (it ships the four niche channels with their feeds) and set `CHANNELS_FILE=channels.json` in `.env`. Each channel needs **its own Google Cloud project** — YouTube allows only ~6 uploads/day per project (see above), so channels cannot share one.
+
+For **each** channel, do the whole [YouTube token](#youtube-token) checklist against a fresh project — including **step 4 (Publish app → In production)**, which is the one easy-to-miss step whose omission is silent and fatal: a project left in *Testing* kills that channel's token after 7 days and the channel quietly stops posting. Save that project's client secret at the `client_secrets` path in the channel's `channels.json` entry, then authorize it into its own token:
+
+```bash
+venv/bin/python scripts/youtube_oauth.py --channel <slug> --force   # pick the RIGHT channel in the account chooser
+```
+
+Then set `"enabled": true` for that channel and **restart the app** (`scripts/run.py --stop` then `--start`) so the new config is loaded. `scripts/growth.py doctor` prints a readiness block per channel; a broken `channels.json` is reported there too. With no `channels.json`, the loop runs a single channel from the `GROWTH_*` settings exactly as before.
 
 ## Growth loop
 
