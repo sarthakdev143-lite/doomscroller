@@ -1045,6 +1045,25 @@ def events(kind):
         return db.execute(select(GrowthEvent).where(GrowthEvent.kind == kind)).scalars().all()
 
 
+def test_a_stuck_upload_is_looked_for_on_its_own_channels_account(tmp_path, real_mode, monkeypatch):
+    """The legacy account has no such video, and "not found" there must not send the clip out twice."""
+    with session_scope() as db:
+        channel = Channel(slug="tech", name="Tech", client_secrets="x", token_path="y")
+        db.add(channel)
+        db.flush()
+        channel_id = channel.id
+    video_id = stuck_row(tmp_path, claimed_at=START - timedelta(hours=3))
+    with session_scope() as db:
+        db.get(Video, video_id).channel_id = channel_id
+    legacy = real_mode(FakeUploads([]))
+    own = FakeUploads([{"id": "found", "title": "Stuck title #Shorts", "published_at": START - timedelta(hours=2)}])
+    monkeypatch.setattr("app.growth.youtube.insights_for", lambda channel=None: own)
+    assert recover() == {"published": 1, "released": 0, "left": 0}
+    assert legacy.calls == [] and own.calls
+    with session_scope() as db:
+        assert db.get(Video, video_id).youtube_video_id == "found"
+
+
 def test_stuck_upload_found_on_the_channel_becomes_published(tmp_path, real_mode):
     video_id = stuck_row(tmp_path, claimed_at=START - timedelta(hours=3))
     insights = real_mode(FakeUploads([

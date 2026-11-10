@@ -1061,7 +1061,7 @@ def _settle_stuck(video_id: str, status: VideoStatus, summary: str, **values) ->
         video = db.get(Video, video_id)
         db.refresh(video)
         video.meta = {k: v for k, v in (video.meta or {}).items() if k not in _CLAIM_META}
-        db.add(GrowthEvent(kind="publish_recovered", video_id=video_id, summary=summary))
+        db.add(GrowthEvent(kind="publish_recovered", video_id=video_id, channel_id=video.channel_id, summary=summary))
     return True
 
 
@@ -1072,15 +1072,27 @@ def _note_stuck_once(video_id: str, reason: str) -> None:
         if video is None or (video.meta or {}).get("publish_stuck_noted"):
             return
         video.meta = {**(video.meta or {}), "publish_stuck_noted": True}
-        db.add(GrowthEvent(kind="publish_stuck", video_id=video_id, data={"reason": reason},
+        db.add(GrowthEvent(kind="publish_stuck", video_id=video_id, channel_id=video.channel_id, data={"reason": reason},
                            summary=f"An upload stopped midway and could not be checked yet: {reason}"))
 
 
-def _uploads_for(stuck: list[dict]) -> list[dict]:
-    """Raises if there is no way to tell, which is different from the video not being there."""
-    from app.growth.youtube import get_insights
+def _uploads_for(stuck: list[dict], channel_id: Optional[str] = None) -> list[dict]:
+    """Raises if there is no way to tell, which is different from the video not being there.
 
-    insights = get_insights()
+    A clip that belongs to a managed channel is looked for on that channel's own account: searching another
+    account would never find it, and "not found" sends the clip out a second time.
+    """
+    from app.growth.youtube import get_insights, insights_for
+
+    if channel_id:
+        from app.growth import channels
+        with session_scope() as db:
+            channel = channels.get_channel(db, channel_id)
+        if channel is None:
+            raise RuntimeError("the clip's channel is gone, so its uploads cannot be checked")
+        insights = get_insights() if channels.is_default(channel) else insights_for(channel)
+    else:
+        insights = get_insights()
     if insights is None:
         raise RuntimeError("no YouTube client to check the channel with")
     claims = [row["claimed"] for row in stuck]
@@ -1128,7 +1140,7 @@ def recover_stuck_publishes(now: Optional[datetime] = None) -> dict:
     with session_scope() as db:
         rows = db.execute(select(Video).where(Video.status == VideoStatus.PUBLISHING)).scalars().all()
         stale = [v for v in rows if publish_claim_is_stale(v, now)]
-        stuck = [{"id": v.id, "claimed": _claimed_at(v), "title": _sent_title(db, v),
+        stuck = [{"id": v.id, "claimed": _claimed_at(v), "title": _sent_title(db, v), "channel_id": v.channel_id,
                   "mock": (v.youtube_video_id or "").startswith("MOCK_")} for v in stale]
         taken = set(db.execute(select(Video.youtube_video_id).where(Video.youtube_video_id.isnot(None))).scalars())
 
@@ -1145,22 +1157,26 @@ def recover_stuck_publishes(now: Optional[datetime] = None) -> dict:
     if not lookups:
         return out
 
-    try:
-        uploads = _uploads_for(lookups)
-    except Exception as exc:
-        log.warning("publish recovery: could not read the channel's uploads: %s", exc)
-        for row in lookups:
-            _note_stuck_once(row["id"], str(exc))
-            out["left"] += 1
-        return out
-
+    # Each managed channel is its own account, so each group is checked against its own uploads.
+    groups: dict[Optional[str], list[dict]] = {}
     for row in lookups:
-        upload = _matching_upload(row, uploads, taken)
-        if upload:
-            taken.add(upload["id"])
-            out["published"] += _publish_recovered(row, upload, now)
-        else:
-            out["released"] += _settle_stuck(row["id"], VideoStatus.TRANSFORMED, _RELEASED)
+        groups.setdefault(row["channel_id"], []).append(row)
+    for channel_id, rows in groups.items():
+        try:
+            uploads = _uploads_for(rows, channel_id)
+        except Exception as exc:
+            log.warning("publish recovery: could not read the channel's uploads: %s", exc)
+            for row in rows:
+                _note_stuck_once(row["id"], str(exc))
+                out["left"] += 1
+            continue
+        for row in rows:
+            upload = _matching_upload(row, uploads, taken)
+            if upload:
+                taken.add(upload["id"])
+                out["published"] += _publish_recovered(row, upload, now)
+            else:
+                out["released"] += _settle_stuck(row["id"], VideoStatus.TRANSFORMED, _RELEASED)
     return out
 
 

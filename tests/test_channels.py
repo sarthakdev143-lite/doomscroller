@@ -341,12 +341,83 @@ def test_watch_queues_a_fresh_upload_but_not_on_first_sight(tmp_path, monkeypatc
     # A newer upload appears and is cut at once, with the channel's id.
     monkeypatch.setattr(watch, "_fetch", lambda url: _atom(
         ("VID2", "2026-11-09T09:30:00+00:00"), ("VID1", "2026-11-09T08:00:00+00:00")))
+    monkeypatch.setattr(watch, "_probe", lambda link: {"duration": 900, "live_status": "not_live"})
     out = watch.watch_job(now=datetime(2026, 11, 9, 9, 45, tzinfo=timezone.utc))
     assert out["queued"] == 1
     with session_scope() as db:
         tech = channels.channel_by_slug(db, "tech")
         job = db.execute(select(ClipJob)).scalar_one()
         assert job.channel_id == tech.id and "VID2" in job.source
+    # The same upload on the next poll is not queued twice.
+    assert watch.watch_job(now=datetime(2026, 11, 9, 9, 50, tzinfo=timezone.utc))["queued"] == 0
+    assert _clipjob_count() == 1
+
+
+def _watching(tmp_path, monkeypatch, feed="https://www.youtube.com/channel/UCaaaaaaaaaaaaaaaaaaaaaa"):
+    from app.growth import watch
+
+    monkeypatch.setattr(settings, "growth_enabled", True)
+    monkeypatch.setattr(settings, "growth_watch_minutes", 5)
+    _write(tmp_path, monkeypatch, {"channels": [{"slug": "tech", "feeds": [feed]}]})
+    monkeypatch.setattr(watch, "_fetch", lambda url: _atom(("OLD", "2026-11-09T08:00:00+00:00")))
+    watch.watch_job(now=datetime(2026, 11, 9, 9, 0, tzinfo=timezone.utc))  # first sight
+    return watch
+
+
+def test_watch_leaves_shorts_and_stream_recordings_alone(tmp_path, monkeypatch):
+    watch = _watching(tmp_path, monkeypatch)
+    monkeypatch.setattr(watch, "_fetch", lambda url: _atom(
+        ("SHORT", "2026-11-09T09:30:00+00:00"), ("STREAM", "2026-11-09T09:20:00+00:00")))
+    kinds = {"SHORT": {"duration": 45, "live_status": "not_live"},
+             "STREAM": {"duration": 7200, "live_status": "was_live"}}
+    monkeypatch.setattr(watch, "_probe", lambda link: kinds[link.rsplit("=", 1)[1]])
+    assert watch.watch_job(now=datetime(2026, 11, 9, 9, 45, tzinfo=timezone.utc))["queued"] == 0
+    assert _clipjob_count() == 0
+
+
+def test_watch_waits_for_a_premiere_to_air_instead_of_locking_it_out(tmp_path, monkeypatch):
+    watch = _watching(tmp_path, monkeypatch)
+    monkeypatch.setattr(watch, "_fetch", lambda url: _atom(("PREM", "2026-11-09T09:30:00+00:00")))
+    state = {"live_status": "is_upcoming"}
+    monkeypatch.setattr(watch, "_probe", lambda link: {"duration": 0, **state})
+    # Not aired: the clipper would fail it permanently, so it must not be queued or marked seen.
+    assert watch.watch_job(now=datetime(2026, 11, 9, 9, 35, tzinfo=timezone.utc))["queued"] == 0
+    # Looked at again only after a while, and cut once it has aired.
+    state.update(live_status="not_live")
+    assert watch.watch_job(now=datetime(2026, 11, 9, 9, 40, tzinfo=timezone.utc))["queued"] == 0
+    monkeypatch.setattr(watch, "_probe", lambda link: {"duration": 1200, "live_status": "not_live"})
+    assert watch.watch_job(now=datetime(2026, 11, 9, 10, 0, tzinfo=timezone.utc))["queued"] == 1
+
+
+def test_watch_skips_a_source_supply_already_queued(tmp_path, monkeypatch):
+    from app.clipper.job import enqueue
+
+    watch = _watching(tmp_path, monkeypatch)
+    enqueue("https://www.youtube.com/watch?v=NEW")
+    monkeypatch.setattr(watch, "_fetch", lambda url: _atom(("NEW", "2026-11-09T09:30:00+00:00")))
+    monkeypatch.setattr(watch, "_probe", lambda link: {"duration": 900, "live_status": "not_live"})
+    assert watch.watch_job(now=datetime(2026, 11, 9, 9, 45, tzinfo=timezone.utc))["queued"] == 0
+    assert _clipjob_count() == 1
+
+
+def test_watch_resolves_a_handle_only_once(tmp_path, monkeypatch):
+    from app.growth import watch
+
+    monkeypatch.setattr(settings, "growth_enabled", True)
+    monkeypatch.setattr(settings, "growth_watch_minutes", 5)
+    _write(tmp_path, monkeypatch, {"channels": [{"slug": "tech", "feeds": ["https://www.youtube.com/@sometech"]}]})
+    pages = []
+
+    def fetch(url):
+        if "feeds/videos.xml" in url:
+            return _atom(("VID1", "2026-11-09T08:00:00+00:00"))
+        pages.append(url)
+        return '<html>"externalId":"UCabcdefghijklmnopqrstuv"</html>'
+
+    monkeypatch.setattr(watch, "_fetch", fetch)
+    for minute in (0, 5, 10):
+        watch.watch_job(now=datetime(2026, 11, 9, 9, minute, tzinfo=timezone.utc))
+    assert len(pages) == 1  # the channel page is fetched once, then the feed address is remembered
 
 
 def test_watch_ignores_an_upload_older_than_the_fresh_window(tmp_path, monkeypatch):

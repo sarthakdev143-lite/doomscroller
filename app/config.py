@@ -222,6 +222,8 @@ class Settings(BaseSettings):
     # Motion sensor: how often to poll each feed's YouTube RSS for a fresh upload and cut it at once.
     # 0 turns watching off; supply still fills the shelf on its own schedule.
     growth_watch_minutes: int = 5
+    # The sensor leaves anything this short alone: it is a Short, or too little footage to cut from.
+    growth_watch_min_seconds: int = 180
     # JSON list of channel or playlist links to cut into clips (the legacy single-channel feed list).
     growth_feeds: str = '[]'
     # Multi-channel: a JSON file of niche channels and their feeds (one niche per channel, each its own
