@@ -240,13 +240,33 @@ function clipCard(c){
       if(r.status===401)msg='Session expired — reopen your ?key= link.';
       errLine.textContent=msg;errLine.hidden=false;
     }catch(e){errLine.textContent='Network error — not sent. Check your connection and try again.';errLine.hidden=false;}
-    yes.disabled=no.disabled=false;
+    card.style.transform='';card.style.opacity='';yes.disabled=no.disabled=false;
   }
   // Approving a flagged clip (the gate says it probably should not post) takes a confirming second tap.
   yes.onclick=()=>{if(c.flag&&!armed){armed=true;yes.textContent='Tap again to approve anyway';
       setTimeout(()=>{armed=false;yes.textContent='Approve'},3000);return}decide('approve',{title:t.value})};
   no.onclick=()=>decide('reject');
-  actions.append(yes,no);b.append(actions,errLine);card.append(b);return card;
+  actions.append(yes,no);b.append(actions,errLine);card.append(b);
+  // Swipe: left = reject, right = approve. Ignores the video, title input and buttons, engages only on a
+  // clearly-horizontal drag (so vertical scrolling is untouched), and a flagged clip's swipe-right snaps
+  // back — approving a flagged clip still needs the confirming button tap.
+  let tracking=false,horiz=false,startX=0,startY=0;
+  card.style.transition='transform .2s ease, opacity .2s ease';
+  const onCard=t=>!t.closest('video,input,button');
+  card.addEventListener('touchstart',e=>{if(e.touches.length!==1||!onCard(e.target)){tracking=false;return}
+    startX=e.touches[0].clientX;startY=e.touches[0].clientY;tracking=true;horiz=false},{passive:true});
+  card.addEventListener('touchmove',e=>{if(!tracking)return;
+    const dx=e.touches[0].clientX-startX,dy=e.touches[0].clientY-startY;
+    if(!horiz){if(Math.abs(dx)<12&&Math.abs(dy)<12)return;if(Math.abs(dy)>=Math.abs(dx)){tracking=false;return}horiz=true}
+    e.preventDefault();card.style.transition='none';card.style.transform='translateX('+dx+'px)';
+    card.style.opacity=String(Math.max(.35,1-Math.abs(dx)/350));},{passive:false});
+  card.addEventListener('touchend',e=>{if(!tracking||!horiz){tracking=false;return}tracking=false;
+    const dx=e.changedTouches[0].clientX-startX;card.style.transition='transform .2s ease, opacity .2s ease';
+    const past=Math.abs(dx)>90,right=dx>0;
+    if(past&&right&&!c.flag){card.style.transform='translateX(120%)';card.style.opacity='0';decide('approve',{title:t.value});return}
+    if(past&&!right){card.style.transform='translateX(-120%)';card.style.opacity='0';decide('reject');return}
+    card.style.transform='';card.style.opacity='';});
+  return card;
 }
 function renderList(clips){
   const want=new Map(clips.map(c=>[c.id,c]));
