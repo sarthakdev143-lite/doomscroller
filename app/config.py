@@ -176,9 +176,9 @@ class Settings(BaseSettings):
     clip_ai_timeout_sec: int = 240
     deepgram_api_key: str = ""
     deepgram_model: str = "nova-3"
-    # Hindi speech-to-text (Sarvam). Empty = Hindi speech clips take the no-speech (motion) path, where
-    # their Hindi title/credit still render once a Devanagari font is installed. With a key, a Hindi
-    # transcription path can caption them (not yet wired — the English Deepgram path is the only captioner).
+    # Hindi speech-to-text (Sarvam), wired in app/clipper/sarvam.py. Empty = Hindi speech clips take the
+    # no-speech (motion) path (their Hindi title/credit still render with a Devanagari font). With a key,
+    # Deepgram-detected Hindi audio is re-transcribed by Sarvam and captioned. Needs `hi` in TARGET_LANGUAGES.
     sarvam_api_key: str = ""
     # Empty means PATH, then ~/.opencode/bin/opencode.
     opencode_bin: str = ""

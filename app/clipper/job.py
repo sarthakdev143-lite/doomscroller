@@ -288,10 +288,12 @@ def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
             warn(f"transcription failed, so no captions: {exc}")
         except MediaError as exc:
             warn(f"transcription failed, so no captions: {exc}")
-        speech = transcript is not None and transcript.is_english_speech
+        # English comes from Deepgram, Hindi from Sarvam; both drive the same speech path from here.
+        speech = transcript is not None and (transcript.is_english_speech or transcript.is_hindi_speech)
         # A cached transcript or an audio track can run past the end of the picture.
         words = [w for w in transcript.words if w.end <= info.duration] if speech else []
-        language = "en" if speech else (transcript.spoken_language if transcript else "")
+        language = (("hi" if transcript.is_hindi_speech else "en") if speech
+                    else (transcript.spoken_language if transcript else ""))
         if info.has_audio and transcript is not None and not transcript.words:
             warn("no words were heard in this audio, so these clips have no captions")
         if info.has_audio and transcript is None and not settings.deepgram_api_key:

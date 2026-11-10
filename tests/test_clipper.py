@@ -313,7 +313,8 @@ def test_caption_events_never_overlap():
 
 
 def test_hook_skips_text_the_font_cannot_draw():
-    assert "Dialogue: 2" not in captions.build_ass([], "हिंदी हुक", 5.0, "Font")
+    # Arabic has no installed font, so the overlay is skipped; Latin draws. (Devanagari now renders.)
+    assert "Dialogue: 2" not in captions.build_ass([], "مرحبا بالعالم", 5.0, "Font")
     assert "Dialogue: 2" in captions.build_ass([], "English hook", 5.0, "Font")
 
 
@@ -1390,13 +1391,13 @@ def test_plain_numbers_are_really_drawn(text):
     assert any(line.startswith("Dialogue: 3") for line in ass.splitlines())
 
 
-@pytest.mark.parametrize("text", ["४०", "भूमि", "!!!", "🔥"])
+@pytest.mark.parametrize("text", ["४०", "مرحبا", "!!!", "🔥"])
 def test_text_the_font_cannot_draw_is_refused(text):
     assert not captions.beat_is_drawable(text)
     assert not captions.build_ass([], "", 20.0, "Font", None, [(4.0, text, "card", "", 0.9)]).count("Dialogue")
 
 
-@pytest.mark.parametrize("text", ["भूमि", "!!!", "४०"])
+@pytest.mark.parametrize("text", ["مرحبا", "!!!", "४०"])
 def test_undrawable_graphic_gets_no_flash_or_thud(monkeypatch, text):
     from app.clipper.edit import build_edit
     _edit_reply(monkeypatch, {"keep": list(range(12)), "beats": [

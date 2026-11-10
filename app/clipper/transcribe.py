@@ -50,6 +50,9 @@ class Transcript:
     words: list[Word] = field(default_factory=list)
     language: str = ""
     duration: float = 0.0
+    # Which service produced this. "sarvam" is the Hindi captioner (app/clipper/sarvam.py); its words
+    # come from chunk-level timestamps rather than Deepgram's per-word ones, so it has its own speech gate.
+    engine: str = "deepgram"
 
     @property
     def is_english_speech(self) -> bool:
@@ -58,8 +61,16 @@ class Transcript:
         return self._is_speech
 
     @property
+    def is_hindi_speech(self) -> bool:
+        """Sarvam only runs when we already want Hindi captions, so words from it mean real speech. Its
+        word count and (absent) per-word confidence are not Deepgram's, so the Deepgram heuristic is skipped."""
+        return self.engine == "sarvam" and bool(self.words)
+
+    @property
     def spoken_language(self) -> str:
         """Empty unless this really is speech: a language detected from lyrics or noise says nothing about the video."""
+        if self.is_hindi_speech:
+            return "hi"
         return self.language.lower() if self._is_speech else ""
 
     @property
@@ -137,13 +148,14 @@ def _load_cache(path: str, fingerprint: dict, duration: float) -> Optional[Trans
             words=[Word(**w) for w in data["words"]],
             language=data.get("language", ""),
             duration=duration,
+            engine=data.get("engine", "deepgram"),
         )
     except (AttributeError, OSError, ValueError, KeyError, TypeError):
         return None
 
 
 def _write_cache(paths: tuple[str, str], fingerprint: dict, transcript: Transcript) -> None:
-    body = {"source": fingerprint, "language": transcript.language,
+    body = {"source": fingerprint, "language": transcript.language, "engine": transcript.engine,
             "words": [asdict(w) for w in transcript.words]}
     for path in paths:
         try:
@@ -174,10 +186,20 @@ def transcribe(video_path: str, info: MediaInfo) -> Optional[Transcript]:
         run_ffmpeg(["-i", video_path, "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000",
                     "-b:a", "48k", audio_path])
         payload = _request(audio_path)
-    try:
-        transcript = parse_response(payload, info.duration)
-    except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
-        raise TranscribeError(f"unexpected Deepgram reply: {exc!r}") from exc
+        try:
+            transcript = parse_response(payload, info.duration)
+        except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
+            raise TranscribeError(f"unexpected Deepgram reply: {exc!r}") from exc
+        # Deepgram heard Hindi, which it does not caption well. Sarvam does — and the Devanagari font
+        # renders it. Only Hindi: the installed font is Devanagari, so other Indic scripts stay on the
+        # motion path rather than dropping to empty boxes. Any Sarvam failure keeps the Deepgram result.
+        if (settings.sarvam_api_key and not transcript.is_english_speech
+                and transcript.language.lower().startswith("hi")):
+            from . import sarvam
+            hindi = sarvam.transcribe(audio_path, info.duration, language_code="hi-IN")
+            if hindi is not None:
+                transcript = hindi
     _write_cache(caches, fingerprint, transcript)
-    log.info("transcribe: %d words, language=%s", len(transcript.words), transcript.language or "?")
+    log.info("transcribe: %d words, language=%s, via=%s",
+             len(transcript.words), transcript.language or "?", transcript.engine)
     return transcript

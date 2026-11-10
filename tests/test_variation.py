@@ -140,12 +140,12 @@ def test_latin_text_is_renderable():
 
 
 @pytest.mark.parametrize("text", [
-    "भूमि ठाकुर की यात्रा",   # Devanagari
     "안녕하세요 여러분",          # Hangul
     "مرحبا بالعالم",           # Arabic
 ])
 def test_non_latin_text_is_not_renderable(text):
-    # A Latin font would draw empty boxes, so callers skip the overlay.
+    # A Latin font would draw empty boxes, so callers skip the overlay. (Devanagari is NOT here: with a
+    # Noto Devanagari font installed it renders — see the clipper's Hindi path.)
     assert not is_renderable(text)
 
 
