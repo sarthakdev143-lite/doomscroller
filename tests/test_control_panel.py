@@ -127,6 +127,14 @@ def test_a_slow_control_runs_in_the_background(monkeypatch):
     assert calls == ["supply"]
 
 
+def test_the_page_is_never_cached_so_an_update_shows_at_once():
+    from app.review import review_app
+
+    c = TestClient(review_app)
+    r = c.get("/?key=panel-test-key", follow_redirects=True)
+    assert "no-store" in r.headers.get("cache-control", "")  # a stale copy must not hide a redeploy
+
+
 def test_resume_all_and_unblock_endpoints():
     c = _client()
     assert c.post("/api/resume-all").json() == {"ok": False}  # nothing paused
