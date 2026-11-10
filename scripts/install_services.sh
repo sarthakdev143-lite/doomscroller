@@ -7,8 +7,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 UNITS="$HOME/.config/systemd/user"
 if [ "${1:-}" = "remove" ]; then
+  systemctl --user disable --now doomscroller-deploy.timer 2>/dev/null || true
   systemctl --user disable --now doomscroller-tunnel.service doomscroller.service 2>/dev/null || true
-  rm -f "$UNITS/doomscroller.service" "$UNITS/doomscroller-tunnel.service"
+  rm -f "$UNITS/doomscroller.service" "$UNITS/doomscroller-tunnel.service" \
+        "$UNITS/doomscroller-deploy.service" "$UNITS/doomscroller-deploy.timer"
   systemctl --user daemon-reload
   echo "Removed."
   exit 0
@@ -48,7 +50,33 @@ RestartSec=20
 [Install]
 WantedBy=default.target
 UNIT
+# Auto-deploy: once a minute, fast-forward master and restart the app if a merge landed, so shipping is
+# just clicking Merge on GitHub (scripts/autodeploy.sh explains its own safety guards).
+cat > "$UNITS/doomscroller-deploy.service" <<UNIT
+[Unit]
+Description=Doomscroller: pull master and restart when a merge lands
+
+[Service]
+Type=oneshot
+WorkingDirectory=$ROOT
+Environment=PATH=$PATH
+ExecStart=/bin/bash $ROOT/scripts/autodeploy.sh
+UNIT
+cat > "$UNITS/doomscroller-deploy.timer" <<UNIT
+[Unit]
+Description=Doomscroller: check for a new master every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+Unit=doomscroller-deploy.service
+
+[Install]
+WantedBy=timers.target
+UNIT
 systemctl --user daemon-reload
 systemctl --user enable --now doomscroller.service doomscroller-tunnel.service
+systemctl --user enable --now doomscroller-deploy.timer
 loginctl show-user "$USER" -p Linger | grep -q yes || echo "Note: lingering is off, so services stop when you log out."
 echo "Installed. Status: systemctl --user status doomscroller doomscroller-tunnel"
+echo "Auto-deploy: systemctl --user list-timers doomscroller-deploy; logs: journalctl --user -u doomscroller-deploy"
