@@ -5,6 +5,7 @@ test_render_integration.py. Skipped automatically when ffmpeg is unavailable.
 """
 import os
 import shutil
+import math
 import subprocess
 import sys
 from pathlib import Path
@@ -639,3 +640,43 @@ def test_music_bed_renders_under_the_voice(landscape, tmp_path):
                          music=str(bed))
     assert plan.music
     _assert_valid(str(out), plan.duration)  # a 4-second track loops to fill the clip
+
+
+def _audio_channels(path):
+    import subprocess as sp
+    return int(sp.run(["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=channels",
+                       "-of", "csv=p=0", str(path)], capture_output=True, text=True).stdout.strip() or 0)
+
+
+def _side_energy_db(path):
+    """RMS of the stereo side (L-R)/2 signal in dB. ~-120 for a mono/dual-mono file, higher with real width."""
+    raw = read_ffmpeg(["-i", str(path), "-map", "0:a:0", "-ac", "2", "-ar", "48000", "-f", "s16le", "-"])
+    a = np.frombuffer(raw, np.int16).reshape(-1, 2).astype(float) / 32768
+    side = (a[:, 0] - a[:, 1]) / 2
+    rms = float(np.sqrt((side ** 2).mean()))
+    return 20 * math.log10(rms) if rms > 0 else -120.0
+
+
+def _stereo_bed(path, hz_left, hz_right, seconds=22):
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", f"sine=f={hz_left}:d={seconds}",
+                    "-f", "lavfi", "-i", f"sine=f={hz_right}:d={seconds}", "-filter_complex",
+                    "[0:a][1:a]join=inputs=2:channel_layout=stereo", "-c:a", "libmp3lame", str(path)], check=True)
+
+
+def test_mix_is_stereo_and_keeps_a_stereo_bed_width(landscape, tmp_path):
+    """Before the fix every clip was folded to mono (earshot: stereo width -40 dB). The mix is now stereo,
+    and a stereo music bed's width survives where a mono bed leaves the sides empty."""
+    stereo_bed, mono_bed = tmp_path / "stereo.mp3", tmp_path / "mono.mp3"
+    _stereo_bed(stereo_bed, 330, 440)
+    _stereo_bed(mono_bed, 330, 330)  # same tone both sides = no width
+    info = probe(landscape)
+    sig = analyse(landscape, info)
+    moment = Moment(5.0, 20.0, kind="visual")
+    st, mo = tmp_path / "stereo.mp4", tmp_path / "mono.mp4"
+    render_moment(landscape, info, sig, moment, [], str(st), music=str(stereo_bed))
+    render_moment(landscape, info, sig, moment, [], str(mo), music=str(mono_bed))
+    _assert_valid(str(st), 15.0)
+    assert _audio_channels(str(st)) == 2 and _audio_channels(str(mo)) == 2  # pinned stereo, never folded to mono
+    # The music sits below the voice and is ducked, so the side is quiet in absolute terms; what matters is
+    # that a stereo bed produces far more side energy than a mono one, i.e. width is preserved not collapsed.
+    assert _side_energy_db(str(st)) - _side_energy_db(str(mo)) > 25.0
