@@ -301,6 +301,10 @@ drive it through the `ClipJob` table, so queued work survives a restart.
   `content/music/` (`CLIP_MUSIC_DIR`), tracks the owner chose, because music is what draws claims. One is picked per
   clip from its id, looped, set `CLIP_MUSIC_DB` below the levelled voice and ducked by it with `sidechaincompress`. A
   `<track>.txt` beside a track is its credit line, added to the description. An empty folder means no music.
+  The whole audio mix is rendered **stereo** (`_STEREO`, output `-ac 2`): the voice is centred dual-mono and a
+  stereo music bed keeps its width instead of being folded to mono (earshot's critique caught every clip collapsing
+  to one channel). Without music a talking clip is honestly near-mono. Judge any clip's sound with the **earshot**
+  skill (`earshot critique <clip.mp4>`) rather than guessing — it is the tool that found this.
 - **On-screen text.** `Credit: <name>` runs the whole clip whenever the source names a creator, and `BRAND_NAME`, when
   set, does the same for the channel.
 - Changes to the filter graph need the `slow` tier in `tests/test_clipper_render.py`.

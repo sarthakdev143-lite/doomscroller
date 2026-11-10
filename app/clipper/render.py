@@ -56,6 +56,8 @@ _MUSIC_FADE_IN = 0.8
 # A clip ends a beat after its last word, and the voice fades, instead of stopping on the syllable.
 _END_HOLD = 0.45
 _END_FADE = 0.35
+# Every mix is rendered stereo so a stereo music bed keeps its width; a mono source becomes centred dual-mono.
+_STEREO = "aformat=channel_layouts=stereo"
 # The share of a framed picture cut from the bottom when the source burns in its own captions,
 # so ours can replace them instead of doubling them.
 _CAPTION_BAND = 0.2
@@ -479,28 +481,36 @@ def build_filtergraph(plan: ClipPlan, info: MediaInfo, seek: float) -> str:
         fade_at = max(0.0, plan.duration - _END_FADE)
         normalised = (f"loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,asetpts=N/SR/TB,"
                       f"afade=t=out:st={fade_at:.3f}:d={_END_FADE}")
+        # The whole mix is stereo so a stereo music bed keeps its width instead of being folded to
+        # mono (earshot: "the mix is mono ... use stereo music and ambience"). The voice is centred
+        # dual-mono and the music carries the sides; without music a clip is honestly near-mono.
         if plan.music:
             # The voice is levelled first and also keys the ducking, so music drops whenever someone talks.
             music_input = first_input + len(plan.broll)
             fade_out = max(0.0, plan.duration - _MUSIC_FADE_OUT)
-            parts.append(f"{head}{normalised}[voice]")
+            parts.append(f"{head}{normalised},{_STEREO}[voice]")
             parts.append("[voice]asplit=2[vmix][vkey]")
-            parts.append(f"[{music_input}:a]aresample=48000,atrim=0:{plan.duration:.3f},asetpts=N/SR/TB,"
+            parts.append(f"[{music_input}:a]aresample=48000,{_STEREO},atrim=0:{plan.duration:.3f},asetpts=N/SR/TB,"
                          f"volume={settings.clip_music_db:g}dB,afade=t=in:d={_MUSIC_FADE_IN},"
                          f"afade=t=out:st={fade_out:.3f}:d={_MUSIC_FADE_OUT}[bed]")
             parts.append("[bed][vkey]sidechaincompress=threshold=0.03:ratio=6:attack=15:release=350[ducked]")
-            mix = ["[vmix]", *(["[2:a]"] if plan.has_sfx else []), "[ducked]"]
+            sfx = []
+            if plan.has_sfx:
+                parts.append(f"[2:a]{_STEREO}[sfxst]")
+                sfx = ["[sfxst]"]
+            mix = ["[vmix]", *sfx, "[ducked]"]
             parts.append(f"{''.join(mix)}amix=inputs={len(mix)}:duration=first:dropout_transition=0:normalize=0,"
-                         "alimiter=limit=0.84:attack=2:release=40:level=0:latency=1,asetpts=N/SR/TB[aout]")
+                         f"alimiter=limit=0.84:attack=2:release=40:level=0:latency=1,{_STEREO},asetpts=N/SR/TB[aout]")
         elif plan.has_sfx:
             # Effects go on after the voice is levelled, or a quiet recording would come
             # out with the thuds louder than the speech. level=0 stops the limiter
             # raising everything back up.
-            parts.append(f"{head}{normalised}[voice]")
-            parts.append("[voice][2:a]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,"
-                         "alimiter=limit=0.84:attack=2:release=40:level=0:latency=1,asetpts=N/SR/TB[aout]")
+            parts.append(f"{head}{normalised},{_STEREO}[voice]")
+            parts.append(f"[2:a]{_STEREO}[sfxst]")
+            parts.append("[voice][sfxst]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,"
+                         f"alimiter=limit=0.84:attack=2:release=40:level=0:latency=1,{_STEREO},asetpts=N/SR/TB[aout]")
         else:
-            parts.append(f"{head}{normalised}[aout]")
+            parts.append(f"{head}{normalised},{_STEREO}[aout]")
     return ";".join(parts)
 
 
@@ -636,7 +646,7 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
                     "-filter_complex", build_filtergraph(plan, info, seek),
                     "-map", "[vout]"]
             if plan.has_audio:
-                args += ["-map", "[aout]", "-c:a", "aac", "-b:a", "160k"]
+                args += ["-map", "[aout]", "-c:a", "aac", "-b:a", "160k", "-ac", "2"]
             args += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
                      "-r", str(FPS), "-movflags", "+faststart", "-t", f"{plan.duration:.3f}",
                      os.path.abspath(partial)]

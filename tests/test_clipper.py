@@ -1466,7 +1466,7 @@ def test_edit_plan_changes_the_graph(monkeypatch):
     graph = render.build_filtergraph(plan, INFO, 1.0)
     assert plan.duration == pytest.approx((4.0 + render._END_HOLD) / 1.12, abs=0.05)  # plus the closing beat
     assert "setpts=PTS/1.12" in graph and "atempo=1.12" in graph
-    assert "[2:a]amix" in graph and "drawbox=x=0:y=0" in graph and "sin(t*75)" in graph
+    assert "[sfxst]amix" in graph and "drawbox=x=0:y=0" in graph and "sin(t*75)" in graph
 
 
 def test_crop_position_is_held_inside_each_frame():
@@ -3463,7 +3463,9 @@ def test_music_is_ducked_under_the_voice_and_mixed_with_the_effects():
     plan.music, plan.has_sfx = "/music/bed.mp3", True
     graph = render.build_filtergraph(plan, INFO, 0.0)
     assert "sidechaincompress" in graph and "[bed][vkey]" in graph
-    assert "[vmix][2:a][ducked]amix=inputs=3" in graph
+    assert "[vmix][sfxst][ducked]amix=inputs=3" in graph
+    # Every layer is stereo so the music bed keeps its width, and the output is pinned stereo.
+    assert graph.count("aformat=channel_layouts=stereo") >= 4 and graph.rstrip().endswith("[aout]")
     plan.music = ""
     assert "sidechaincompress" not in render.build_filtergraph(plan, INFO, 0.0)
 
