@@ -563,7 +563,10 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
     ``source_captioned`` means the footage burns in its own captions. In the framed layout their band is cut
     from the bottom of the picture and ours replace them; otherwise ours are left out. ``captions=False``
     always leaves ours out."""
-    font = resolve_font(settings.clip_font)
+    # Resolve the font from the clip's own text: a Devanagari clip gets a Devanagari font (if installed)
+    # for its captions and overlays, while a Latin clip resolves the same font as before.
+    sample = " ".join(w.text for w in words) + f" {moment.title or ''} {creator}"
+    font = resolve_font(settings.clip_font, sample)
     # Only speech clips close up their pauses; captions apply to either kind.
     cut_on = words if moment.kind == "speech" else []
     if edit:

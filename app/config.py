@@ -176,6 +176,10 @@ class Settings(BaseSettings):
     clip_ai_timeout_sec: int = 240
     deepgram_api_key: str = ""
     deepgram_model: str = "nova-3"
+    # Hindi speech-to-text (Sarvam). Empty = Hindi speech clips take the no-speech (motion) path, where
+    # their Hindi title/credit still render once a Devanagari font is installed. With a key, a Hindi
+    # transcription path can caption them (not yet wired — the English Deepgram path is the only captioner).
+    sarvam_api_key: str = ""
     # Empty means PATH, then ~/.opencode/bin/opencode.
     opencode_bin: str = ""
     # Chosen by the owner for every call. It reads images too.

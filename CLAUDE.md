@@ -213,6 +213,14 @@ graph — backslash-escaping does *not* help, because the parser closes a quoted
 whose script the resolved font has no glyphs for, so non-Latin titles are dropped rather than drawn as
 empty boxes.
 
+**Devanagari (Hindi) is script-aware** (`fonts.py`). `dominant_script()` detects Devanagari text;
+`resolve_font(configured, text)` returns a Devanagari font for it (if one is installed — e.g.
+`apt install fonts-noto-devanagari`), and the clipper resolves the font from each clip's own text so its
+captions and overlays use it. So a Hindi creator's title/credit now renders instead of being dropped —
+this works today on the no-speech (motion) path (good for visual Indian creators like Mr Indian Hacker).
+Hindi *speech* captioning still needs a transcription path: `SARVAM_API_KEY` is the config hook, but the
+English Deepgram path is the only captioner wired, so Hindi speech clips take the motion path for now.
+
 Fonts resolve through `app/transformers/fonts.py`. The historical `TRANSFORM_CAPTION_FONT` default was a
 Debian DejaVu path that does not exist on Windows or macOS, and a missing font file fails the whole render,
 so a non-existent configured path falls back to autodetecting a bold system font.
