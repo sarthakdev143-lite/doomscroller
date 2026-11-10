@@ -44,6 +44,20 @@ def show_doctor(live: bool) -> int:
     return 1
 
 
+def show_reload() -> int:
+    from app.db import init_db
+    from app.growth.channels import reload_channels
+
+    init_db()
+    result = reload_channels()
+    if result.get("error"):
+        print(f"channels.json NOT applied — the running loop keeps its channels: {result['error']}")
+        return 1
+    print(f"Reloaded. Active channels: {', '.join(result['active']) or 'none'}. "
+          "The running loop picks this up on its next tick (no restart needed).")
+    return 0
+
+
 def show_resume(slug: str | None) -> int:
     where = f" {slug}" if slug else ""
     if resume(slug):
@@ -120,13 +134,15 @@ def show_report() -> int:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", choices=("doctor", "report", "resume", "unblock"))
+    parser.add_argument("command", choices=("doctor", "report", "resume", "unblock", "reload"))
     parser.add_argument("name", nargs="?", help="unblock: the author/source/parent to lift; resume: a channel slug")
     parser.add_argument("--offline", action="store_true", help="doctor: skip asking Google and reading feeds")
     args = parser.parse_args()
     init_db()
     if args.command == "unblock":
         sys.exit(show_unblock(args.name))
+    if args.command == "reload":
+        sys.exit(show_reload())
     if args.command == "resume":
         sys.exit(show_resume(args.name))
     if args.command == "doctor":

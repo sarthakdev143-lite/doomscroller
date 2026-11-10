@@ -232,6 +232,13 @@ def growth_doctor(live: bool = False) -> dict:
     return doctor(live=live)
 
 
+@app.post("/growth/channels/reload", response_model=dict)
+def growth_channels_reload() -> dict:
+    """Re-apply channels.json without a restart. The loop reads channels fresh each tick, so edits take effect next tick."""
+    from .growth.channels import reload_channels
+    return reload_channels()
+
+
 # ==================== Autonomous scheduler endpoints ====================
 @app.get("/scheduler/jobs", response_model=dict)
 def list_jobs() -> dict:

@@ -107,6 +107,18 @@ def test_a_channel_dropped_from_config_is_retired_not_deleted(tmp_path, monkeypa
         assert channels.channel_by_slug(db, "gone").enabled is False
 
 
+def test_reload_applies_channel_edits_without_a_restart(tmp_path, monkeypatch):
+    _write(tmp_path, monkeypatch, {"channels": [{"slug": "tech"}]})
+    with session_scope() as db:
+        channels.sync_channels(db)
+    # The owner adds a channel and runs `growth.py reload` — no restart.
+    _write(tmp_path, monkeypatch, {"channels": [{"slug": "tech"}, {"slug": "comedy"}]})
+    result = channels.reload_channels()
+    assert set(result["active"]) == {"tech", "comedy"} and "error" not in result
+    with session_scope() as db:
+        assert {c.slug for c in channels.active_channels(db)} == {"tech", "comedy"}
+
+
 def test_adding_a_channel_is_picked_up_by_a_resync_the_app_runs_at_boot(tmp_path, monkeypatch):
     _write(tmp_path, monkeypatch, {"channels": [{"slug": "tech"}]})
     with session_scope() as db:

@@ -264,7 +264,7 @@ For **each** channel, do the whole [YouTube token](#youtube-token) checklist aga
 venv/bin/python scripts/youtube_oauth.py --channel <slug> --force   # pick the RIGHT channel in the account chooser
 ```
 
-Then set `"enabled": true` for that channel and **restart the app** (`scripts/run.py --stop` then `--start`) so the new config is loaded. `scripts/growth.py doctor` prints a readiness block per channel; a broken `channels.json` is reported there too. With no `channels.json`, the loop runs a single channel from the `GROWTH_*` settings exactly as before.
+Then set `"enabled": true` for that channel and apply the change with `scripts/growth.py reload` (no restart needed — the loop re-reads channels each tick; only `GROWTH_*`/`.env` changes still need a restart). `scripts/growth.py doctor` prints a readiness block per channel; a broken `channels.json` is reported there too. With no `channels.json`, the loop runs a single channel from the `GROWTH_*` settings exactly as before.
 
 ## Growth loop
 

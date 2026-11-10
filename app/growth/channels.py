@@ -163,6 +163,18 @@ def _ensure_seeded(db) -> None:
         sync_channels(db)
 
 
+def reload_channels() -> dict:
+    """Re-apply channels.json to the DB now. The running daemon reads channels fresh each tick, so an
+    edit takes effect on the next tick without a restart (named channels only; GROWTH_* still needs a restart)."""
+    from app.db import session_scope
+
+    with session_scope() as db:
+        active = sync_channels(db)
+        health = config_health(db)
+        slugs = [c.slug for c in active]
+    return {**health, "active": slugs}
+
+
 def active_channels(db) -> list[Channel]:
     """Every enabled channel, seeding from config on first use."""
     _ensure_seeded(db)
