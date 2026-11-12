@@ -122,14 +122,18 @@ def _record_analytics(insights, now: datetime, scope=None) -> int:
             except Exception as exc:
                 log.warning("growth: no feed share for %s: %s", yt_id, exc)
     with session_scope() as db:
+        recorded = 0
         for video_id, yt_id, _ in due:
             if yt_id not in numbers:
                 continue
             video = db.get(Video, video_id)
+            if video is None:
+                continue
             video.meta = {**(video.meta or {}), "yt_analytics": {
                 **numbers[yt_id], "shorts_feed_share": shares.get(yt_id), "updated": now.isoformat(),
             }}
-    return len(numbers)
+            recorded += 1
+    return recorded
 
 
 def _health_key(channel=None) -> str:
