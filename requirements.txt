@@ -20,7 +20,7 @@ moviepy==2.1.2
 pillow==10.4.0
 
 # Face-aware framing in the clipper. OpenCV 5 dropped the bundled face detector.
-opencv-python-headless==4.14.0
+opencv-python-headless==4.14.0.94
 numpy==2.5.4
 
 # Language detection (for source-language preservation)
