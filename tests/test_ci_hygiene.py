@@ -93,9 +93,9 @@ def test_ci_workflow_targets_next_and_master_with_os_gating_and_lint():
     assert set(matrix["os"]) >= {"ubuntu-latest", "windows-latest"}
     assert "3.11" in [str(v) for v in matrix["python-version"]]
 
-    job_if = str(first_job.get("if", ""))
-    assert "ubuntu-latest" in job_if and "master" in job_if, (
-        "test job must gate windows-latest to master / workflow_dispatch so next PRs run Ubuntu-only"
+    exclude_expr = str(matrix.get("exclude", ""))
+    assert "windows-latest" in exclude_expr and "master" in exclude_expr, (
+        "test matrix must exclude windows-latest on next PRs while keeping it on master / workflow_dispatch"
     )
     assert any(
         isinstance(step, dict) and (step.get("with") or {}).get("cache") == "pip"

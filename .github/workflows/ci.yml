@@ -17,7 +17,6 @@ concurrency:
 jobs:
   test:
     name: Test (${{ matrix.os }}, py${{ matrix.python-version }})
-    if: ${{ matrix.os == 'ubuntu-latest' || github.base_ref == 'master' || (github.event_name == 'push' && github.ref_name == 'master') || github.event_name == 'workflow_dispatch' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
@@ -25,6 +24,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
         python-version: ["3.11"]
+        exclude: ${{ (github.base_ref == 'master' || (github.event_name == 'push' && github.ref_name == 'master') || github.event_name == 'workflow_dispatch') && fromJSON('[]') || fromJSON('[{"os":"windows-latest"}]') }}
 
     steps:
       - name: Checkout repository
