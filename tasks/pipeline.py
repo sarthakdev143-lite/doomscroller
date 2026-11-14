@@ -58,6 +58,9 @@ def content_safety_reason(item: ScrapedItem) -> str | None:
     for term in _BLOCKED_TERMS:
         if term in haystack:
             return f"blocked term: {term}"
+    for term in settings.blocked_title_words_list:
+        if term and term in haystack:
+            return f"blocked term: {term}"
     return None
 
 
@@ -188,20 +191,24 @@ def persist_scraped_items(items: list[ScrapedItem]) -> dict:
     yesterday may have gone viral since.
     """
     created = skipped = refreshed = 0
+    seen_in_batch: dict[tuple[str, str], Video] = {}
     with session_scope() as db:
         for item in items:
-            existing = db.execute(
-                select(Video).where(
-                    Video.source == item.source, Video.source_id == item.source_id
-                )
-            ).scalar_one_or_none()
+            key = (item.source, item.source_id)
+            existing = seen_in_batch.get(key)
+            if existing is None:
+                existing = db.execute(
+                    select(Video).where(
+                        Video.source == item.source, Video.source_id == item.source_id
+                    )
+                ).scalars().first()
 
             if existing is not None:
                 # Refresh volatile counters; never touch curation state.
-                existing.views = max(existing.views, item.views)
-                existing.likes = max(existing.likes, item.likes)
-                existing.comments = max(existing.comments, item.comments)
-                existing.shares = max(existing.shares, item.shares)
+                existing.views = max(existing.views or 0, item.views or 0)
+                existing.likes = max(existing.likes or 0, item.likes or 0)
+                existing.comments = max(existing.comments or 0, item.comments or 0)
+                existing.shares = max(existing.shares or 0, item.shares or 0)
                 if item.local_path and not existing.local_path:
                     existing.local_path = item.local_path
                 recompute_scores([existing])
@@ -238,6 +245,7 @@ def persist_scraped_items(items: list[ScrapedItem]) -> dict:
             )
             recompute_scores([video])
             db.add(video)
+            seen_in_batch[key] = video
             created += 1
     return {"created": created, "skipped": skipped, "refreshed": refreshed}
 
@@ -294,12 +302,15 @@ def apply_queue_filters(dry_run: bool = False) -> dict:
         ).scalars().all()
 
         for video in rows:
-            item = _item_view(video)
-            reason = (
-                content_safety_reason(item)
-                or channel_focus_reason(item)
-                or _shorts_shape_reason(item)
-            )
+            if (video.meta or {}).get("clip_rendered"):
+                reason = clip_gate_reason(video)
+            else:
+                item = _item_view(video)
+                reason = (
+                    content_safety_reason(item)
+                    or channel_focus_reason(item)
+                    or _shorts_shape_reason(item)
+                )
             if reason is None:
                 kept += 1
                 continue
@@ -528,17 +539,11 @@ def transform_task(video_id: str, recipe_dict: dict | None = None) -> dict:
         video = db.get(Video, video_id)
         if video is None:
             return {"ok": False, "error": "video not found"}
-        if not video.local_path:
-            video.local_path = _ensure_mock_input(video)
-        if not os.path.exists(video.local_path):
-            video.status = VideoStatus.FAILED
-            video.error = "transform: source file missing from disk"
-            return {"ok": False, "error": video.error}
 
         # The clipper's output is already final; re-rendering would add the crop
         # and variation made for scraped sources on top of finished graphics.
         finished = bool((video.meta or {}).get("clip_rendered")) and bool(
-            video.transformed_path and os.path.exists(video.transformed_path)
+            video.transformed_path and os.path.isfile(video.transformed_path)
         )
         if finished:
             video.status = VideoStatus.TRANSFORMED
@@ -546,6 +551,12 @@ def transform_task(video_id: str, recipe_dict: dict | None = None) -> dict:
             video.error = None
             finished_path = video.transformed_path
         else:
+            if not video.local_path and settings.use_mock:
+                video.local_path = _ensure_mock_input(video)
+            if not video.local_path or not os.path.isfile(video.local_path):
+                video.status = VideoStatus.FAILED
+                video.error = "transform: source file missing from disk"
+                return {"ok": False, "error": video.error}
             video.status = VideoStatus.TRANSFORMING
             video.error = None
     if finished:
@@ -679,13 +690,17 @@ def _ffmpeg_available() -> bool:
 
 def _probe_quality(path: str, source: str = "") -> dict:
     """Return video quality metrics via ffprobe: duration, width, height, bit_rate, size_bytes."""
-    import subprocess, os
+    import math
+    import os
+    import subprocess
+    from app.winproc import background_subprocess_kwargs
+
     result = {
         "duration": 0.0,
         "width": 0,
         "height": 0,
         "bit_rate": 0,
-        "size_bytes": os.path.getsize(path) if os.path.exists(path) else 0,
+        "size_bytes": os.path.getsize(path) if os.path.isfile(path) else 0,
         "valid": False,
     }
     try:
@@ -695,21 +710,31 @@ def _probe_quality(path: str, source: str = "") -> dict:
              "-show_entries", "stream=duration,width,height,bit_rate",
              "-of", "default=noprint_wrappers=1",
              path],
-            capture_output=True, text=True, check=True,
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, check=True,
+            timeout=30,
+            **background_subprocess_kwargs(low_priority=True),
         )
         for line in out.stdout.splitlines():
-            if "=" in line:
-                k, v = line.split("=", 1)
-                k = k.strip()
-                v = v.strip()
+            if "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            k = k.strip()
+            v = v.strip()
+            if not v or v.upper() == "N/A":
+                continue
+            try:
                 if k == "duration":
-                    result["duration"] = float(v)
+                    dur = float(v)
+                    if math.isfinite(dur) and dur >= 0:
+                        result["duration"] = dur
                 elif k == "width":
-                    result["width"] = int(v)
+                    result["width"] = max(0, int(v))
                 elif k == "height":
-                    result["height"] = int(v)
+                    result["height"] = max(0, int(v))
                 elif k == "bit_rate":
-                    result["bit_rate"] = int(v)
+                    result["bit_rate"] = max(0, int(v))
+            except ValueError:
+                continue
 
         # A file is "valid" if ffprobe found a real video stream with plausible
         # dimensions and a non-trivial size. Editorial judgement (duration,
@@ -857,6 +882,8 @@ def count_publish_failure(video_pk: str) -> None:
     """For a failure that never reached the publisher, so a clip that keeps raising still goes behind the others."""
     with session_scope() as db:
         video = db.get(Video, video_pk)
+        if video is None:
+            return
         video.meta = {**(video.meta or {}), "publish_failures": _publish_failures(video) + 1}
 
 
@@ -954,6 +981,19 @@ def _publisher_for(channel_id: str | None):
         return channels.publisher_for(channel)
 
 
+def _mark_missing_publish_file(video_pk: str, message: str = "publish: transformed file missing from disk") -> dict:
+    try:
+        with session_scope() as db:
+            video = db.get(Video, video_pk)
+            if video is not None and video.status in (VideoStatus.TRANSFORMED, VideoStatus.PUBLISHING):
+                video.status = VideoStatus.FAILED
+                video.error = message
+                video.meta = {k: v for k, v in (video.meta or {}).items() if k not in _CLAIM_META}
+    except Exception as exc:
+        log.error("publish: could not record missing file for %s: %s", video_pk[:8], exc)
+    return {"ok": False, "retryable": False, "account_level": False, "error": message}
+
+
 def publish_task(video_id: str, meta: dict | None = None) -> dict:
     """Upload a transformed video to YouTube."""
     if not settings.enable_publish:
@@ -964,14 +1004,16 @@ def publish_task(video_id: str, meta: dict | None = None) -> dict:
         video = db.get(Video, video_id)
         if video is None:
             return {"ok": False, "error": "video not found"}
-        if not video.transformed_path:
-            return {"ok": False, "error": "video not transformed yet"}
         if video.status != VideoStatus.TRANSFORMED:
+            if not video.transformed_path and video.status in (
+                VideoStatus.PENDING, VideoStatus.APPROVED, VideoStatus.TRANSFORMING,
+            ):
+                return {"ok": False, "error": "video not transformed yet"}
             return _claim_lost(video.status)
-        if not os.path.exists(video.transformed_path):
+        if not video.transformed_path or not str(video.transformed_path).strip() or not os.path.isfile(video.transformed_path):
             video.status = VideoStatus.FAILED
             video.error = "publish: transformed file missing from disk"
-            return {"ok": False, "error": video.error}
+            return {"ok": False, "retryable": False, "account_level": False, "error": video.error}
         if quota.remaining(db, video.channel_id) <= 0:
             return {"ok": False, "error": "daily quota exhausted"}
 
@@ -991,7 +1033,7 @@ def publish_task(video_id: str, meta: dict | None = None) -> dict:
 
         draft = db.execute(
             select(MetadataDraft).where(MetadataDraft.video_id == video_id)
-        ).scalar_one_or_none()
+        ).scalars().first()
         if draft is not None and draft.title:
             title = meta.get("title") or draft.title
             description = meta.get("description") or draft.description
@@ -1005,6 +1047,9 @@ def publish_task(video_id: str, meta: dict | None = None) -> dict:
         video.meta = {**(video.meta or {}), "publish_claimed_at": datetime.now(timezone.utc).isoformat(),
                       "publish_title": title}
 
+    if not file_path or not os.path.isfile(file_path):
+        return _mark_missing_publish_file(video_pk)
+
     try:
         result = _publisher_for(channel_id).upload(
             file_path=file_path,
@@ -1012,6 +1057,8 @@ def publish_task(video_id: str, meta: dict | None = None) -> dict:
             category=settings.youtube_default_category,
             privacy=privacy,
         )
+    except (FileNotFoundError, IsADirectoryError) as exc:
+        return _mark_missing_publish_file(video_pk, f"publish: {exc}")
     except Exception as exc:
         return _publish_failed(video_pk, exc)
 
@@ -1030,22 +1077,40 @@ _CLAIM_META = ("publish_claimed_at", "publish_title", "publish_stuck_noted")
 _RELEASED = "An upload that stopped midway never reached the channel, so the clip went back on the shelf."
 
 
-def _claimed_at(video: Video) -> Optional[datetime]:
-    try:
-        claimed = datetime.fromisoformat((video.meta or {})["publish_claimed_at"])
-    except (KeyError, TypeError, ValueError):
+def _as_utc(dt: datetime) -> datetime:
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
+
+
+def _coerce_utc(raw: object) -> Optional[datetime]:
+    if raw is None:
         return None
-    return claimed if claimed.tzinfo else claimed.replace(tzinfo=timezone.utc)
+    if isinstance(raw, datetime):
+        return _as_utc(raw)
+    if isinstance(raw, str):
+        cleaned = raw.strip()
+        if not cleaned:
+            return None
+        if cleaned.endswith("Z"):
+            cleaned = cleaned[:-1] + "+00:00"
+        try:
+            return _as_utc(datetime.fromisoformat(cleaned))
+        except ValueError:
+            return None
+    return None
+
+
+def _claimed_at(video: Video) -> Optional[datetime]:
+    return _coerce_utc((video.meta or {}).get("publish_claimed_at"))
 
 
 def publish_claim_is_stale(video: Video, now: datetime) -> bool:
     """A row with no stamp predates claims, so it cannot be an upload this process is still running."""
     claimed = _claimed_at(video)
-    return claimed is None or now - claimed >= PUBLISH_CLAIM_TTL
+    return claimed is None or _as_utc(now) - claimed >= PUBLISH_CLAIM_TTL
 
 
 def _title_key(title: str) -> str:
-    return unicodedata.normalize("NFKC", " ".join(title.split())).casefold()
+    return unicodedata.normalize("NFKC", " ".join((title or "").split())).casefold()
 
 
 def _sent_title(db: Session, video: Video) -> Optional[str]:
@@ -1053,7 +1118,7 @@ def _sent_title(db: Session, video: Video) -> Optional[str]:
     meta = video.meta or {}
     title = meta.get("publish_title") or meta.get("growth_title")
     if not title:
-        draft = db.execute(select(MetadataDraft).where(MetadataDraft.video_id == video.id)).scalar_one_or_none()
+        draft = db.execute(select(MetadataDraft).where(MetadataDraft.video_id == video.id)).scalars().first()
         title = (draft.title if draft else None) or (f"{video.title} #Shorts" if video.title else None)
     return youtube_title(title) if title else None
 
@@ -1107,17 +1172,20 @@ def _uploads_for(stuck: list[dict], channel_id: Optional[str] = None) -> list[di
     wrong = account_mismatch(channel, insights)
     if wrong:  # the upload would never be found there, and "not found" posts the clip again
         raise RuntimeError(wrong)
-    claims = [row["claimed"] for row in stuck]
+    claims = [_coerce_utc(row.get("claimed")) for row in stuck]
     return insights.uploads_since(None if None in claims else min(claims) - _CLOCK_SKEW)
 
 
 def _matching_upload(row: dict, uploads: list[dict], taken: set[str]) -> Optional[dict]:
+    claimed = _coerce_utc(row.get("claimed"))
+    row_title = row.get("title") or ""
     for upload in uploads:
-        if upload["id"] in taken or _title_key(upload["title"]) != _title_key(row["title"]):
+        uid = upload.get("id")
+        if not uid or uid in taken or _title_key(upload.get("title") or "") != _title_key(row_title):
             continue
         # Same title from before the claim means an older video, not this one.
-        when = upload.get("published_at")
-        if row["claimed"] is None or when is None or when >= row["claimed"] - _CLOCK_SKEW:
+        when = _coerce_utc(upload.get("published_at"))
+        if claimed is None or when is None or when >= claimed - _CLOCK_SKEW:
             return upload
     return None
 
@@ -1128,30 +1196,32 @@ def _fill_planned_post(video_id: str, sent_at: datetime) -> None:
     from app.growth.autopilot import fill_post
 
     try:
-        fill_post(video_id, sent_at)
+        fill_post(video_id, _as_utc(sent_at))
     except Exception as exc:
         log.warning("publish recovery: could not update the plan for %s: %s", video_id[:8], exc)
 
 
 def _publish_recovered(row: dict, upload: dict, now: datetime) -> bool:
-    published_at = upload.get("published_at") or now
+    now_utc = _as_utc(now)
+    published_at = _coerce_utc(upload.get("published_at")) or now_utc
+    claimed_utc = _coerce_utc(row.get("claimed"))
     summary = f"An upload that stopped midway turned out to be live as {upload['id']}."
     if not _settle_stuck(row["id"], VideoStatus.PUBLISHED, summary, error=None,
                          youtube_video_id=upload["id"], published_at=published_at):
         return False
     # The cap is per day, so an upload from an earlier day has nothing to count against.
     _settle_upload(row["id"], count_quota=published_at.date() == datetime.now(timezone.utc).date())
-    _fill_planned_post(row["id"], row["claimed"] or published_at)
+    _fill_planned_post(row["id"], claimed_utc or published_at)
     return True
 
 
 def recover_stuck_publishes(now: Optional[datetime] = None) -> dict:
     """Settle rows left in PUBLISHING by a crash. YouTube may have the file, so they are never just re-uploaded."""
-    now = now or datetime.now(timezone.utc)
+    now_utc = _as_utc(now) if now is not None else datetime.now(timezone.utc)
     out = {"published": 0, "released": 0, "left": 0}
     with session_scope() as db:
         rows = db.execute(select(Video).where(Video.status == VideoStatus.PUBLISHING)).scalars().all()
-        stale = [v for v in rows if publish_claim_is_stale(v, now)]
+        stale = [v for v in rows if publish_claim_is_stale(v, now_utc)]
         stuck = [{"id": v.id, "claimed": _claimed_at(v), "title": _sent_title(db, v), "channel_id": v.channel_id,
                   "mock": (v.youtube_video_id or "").startswith("MOCK_")} for v in stale]
         taken = set(db.execute(select(Video.youtube_video_id).where(Video.youtube_video_id.isnot(None))).scalars())
@@ -1186,7 +1256,7 @@ def recover_stuck_publishes(now: Optional[datetime] = None) -> dict:
             upload = _matching_upload(row, uploads, taken)
             if upload:
                 taken.add(upload["id"])
-                out["published"] += _publish_recovered(row, upload, now)
+                out["published"] += _publish_recovered(row, upload, now_utc)
             else:
                 out["released"] += _settle_stuck(row["id"], VideoStatus.TRANSFORMED, _RELEASED)
     return out
@@ -1201,40 +1271,42 @@ def _ensure_mock_input(v: Video) -> str:
     if os.path.exists(path):
         return path
     import subprocess, shutil
+    from app.winproc import background_subprocess_kwargs
+
     if shutil.which("ffmpeg"):
         subprocess.run(
-            ["ffmpeg", "-y", "-f", "lavfi", "-i",
+            ["ffmpeg", "-nostdin", "-y", "-f", "lavfi", "-i",
              f"color=c=black:s={settings.transform_width}x{settings.transform_height}:d=3",
              "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
              "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p",
              "-c:a", "aac", path],
-            check=True, capture_output=True,
+            stdin=subprocess.DEVNULL, check=True, capture_output=True,
+            **background_subprocess_kwargs(low_priority=True),
         )
     else:
         open(path, "wb").close()
     return path
 
 
-# ---------- Optional Celery wrappers ----------
-try:
-    from celery import shared_task  # type: ignore
+# ---------- Sync task shims (.delay()/.apply() compatibility without Celery) ----------
+class _SyncDelay:
+    def __init__(self, fn):
+        self.fn = fn
 
-    scrape_task_async = shared_task(name="tasks.pipeline.scrape_task")(scrape_task)
-    transform_task_async = shared_task(name="tasks.pipeline.transform_task")(transform_task)
-    publish_task_async = shared_task(name="tasks.pipeline.publish_task")(publish_task)
-except Exception:
-    # Celery not available — async variants fall back to sync via .delay() shim
-    class _SyncDelay:
-        def __init__(self, fn):
-            self.fn = fn
-        def delay(self, *a, **kw):
-            return self.fn(*a, **kw)
-        def apply(self, *a, **kw):
-            class _R:
-                def __init__(self, v): self.v = v
-                def get(self, **_): return self.v
-            return _R(self.fn(*a, **kw))
+    def delay(self, *a, **kw):
+        return self.fn(*a, **kw)
 
-    scrape_task_async = _SyncDelay(scrape_task)
-    transform_task_async = _SyncDelay(transform_task)
-    publish_task_async = _SyncDelay(publish_task)
+    def apply(self, *a, **kw):
+        class _R:
+            def __init__(self, v):
+                self.v = v
+
+            def get(self, **_):
+                return self.v
+
+        return _R(self.fn(*a, **kw))
+
+
+scrape_task_async = _SyncDelay(scrape_task)
+transform_task_async = _SyncDelay(transform_task)
+publish_task_async = _SyncDelay(publish_task)

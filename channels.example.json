@@ -9,11 +9,12 @@
     "press 'Publish app' so it reads 'In production' (SKIP THIS AND THE TOKEN DIES IN 7 DAYS,",
     "silently stopping the channel), make an OAuth client, download its client_secret.json to",
     "the client_secrets path below, then run:",
-    "   venv/bin/python scripts/youtube_oauth.py --channel <slug> --force",
-    "which writes that channel's token. Doctor (scripts/growth.py doctor) reports each channel.",
+    "   venv/bin/python scripts/channels.py connect <slug>",
+    "(or `scripts/youtube_oauth.py --channel <slug> --force` directly; check offline with `--status`).",
+    "Doctor (`scripts/growth.py doctor --channel <slug>`) and status (`scripts/growth.py status`) report readiness.",
     "",
-    "Easier than editing this by hand: venv/bin/python scripts/channels.py add|enable|disable|feed|list.",
-    "A channel with enabled=false is skipped; set it true once its token is in place.",
+    "Easier than editing this by hand: venv/bin/python scripts/channels.py add|connect|set|enable|disable|feed|list.",
+    "A channel with enabled=false is skipped; `channels.py connect <slug>` verifies Google APIs + feeds before enabling it.",
     "Feeds are the source creators clipped for that niche.",
     "",
     "ALREADY RUNNING ONE CHANNEL FROM .env? Add {\"slug\": \"default\"} to the list below to keep it.",
@@ -21,8 +22,8 @@
     "(scripts/channels.py add writes it for you.)",
     "",
     "Optional per-channel trust (default: a human approves everything):",
-    "  auto_approve_score  0 = off; e.g. 0.8 auto-approves clips scoring >= 0.8 that pass the safety gate.",
-    "  cadence_backstop    false = off; true auto-approves the best waiting clip rather than miss a window."
+    "  auto_approve_score  0.0 = off; e.g. 0.8 auto-approves AI-titled clips scoring >= 0.8 that pass the safety gate.",
+    "  cadence_backstop    false = off; true auto-approves the best waiting clip rather than miss a posting window."
   ],
   "channels": [
     {
@@ -35,6 +36,8 @@
       "uploads_per_day": 3,
       "timezone": "Asia/Kolkata",
       "require_approval": true,
+      "auto_approve_score": 0.0,
+      "cadence_backstop": false,
       "enabled": false,
       "feeds": [
         "https://www.youtube.com/@mkbhd",
@@ -52,6 +55,8 @@
       "uploads_per_day": 3,
       "timezone": "Asia/Kolkata",
       "require_approval": true,
+      "auto_approve_score": 0.0,
+      "cadence_backstop": false,
       "enabled": false,
       "feeds": [
         "https://www.youtube.com/@MrBeast",
@@ -69,6 +74,8 @@
       "uploads_per_day": 3,
       "timezone": "Asia/Kolkata",
       "require_approval": true,
+      "auto_approve_score": 0.0,
+      "cadence_backstop": false,
       "enabled": false,
       "feeds": [
         "https://www.youtube.com/@IShowSpeed",
@@ -85,6 +92,8 @@
       "uploads_per_day": 3,
       "timezone": "Asia/Kolkata",
       "require_approval": true,
+      "auto_approve_score": 0.0,
+      "cadence_backstop": false,
       "enabled": false,
       "feeds": [
         "https://www.youtube.com/@KSI",

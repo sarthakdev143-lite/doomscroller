@@ -3,13 +3,15 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
-from sqlalchemy import select
+from sqlalchemy import desc, func, select
 from sqlalchemy.exc import OperationalError
 
 from app.config import settings
@@ -35,6 +37,7 @@ Progress = Callable[[str], None]
 # Rendering is CPU-heavy, so one job at a time. Holding this also proves that any
 # row still marked running was orphaned by a crash or restart.
 _queue_lock = threading.Lock()
+_active_job_id: Optional[str] = None
 # A job stopped this many times is probably what is stopping things.
 _MAX_ATTEMPTS = 3
 _FINISH_RETRY_SECONDS = (1, 3, 10)
@@ -466,6 +469,285 @@ def enqueue(source: str, *, count: Optional[int] = None, auto_queue: Optional[bo
         return job.id
 
 
+def enqueue_from_panel(source: str, *, count: int = 3, auto_queue: Optional[bool] = None,
+                       channel_slug: str = "") -> str:
+    """Queue a manual clip request from the Control Panel while respecting approval policy."""
+    cleaned = source.strip()
+    if not cleaned:
+        raise ValueError("source link or path is empty")
+    capped = max(1, min(10, int(count)))
+    slug = (channel_slug or "").strip()
+    channel_id: Optional[str] = None
+    if slug:
+        from app.growth import channels
+
+        with session_scope() as db:
+            channels._ensure_seeded(db)
+            ch = channels.channel_by_slug(db, slug)
+            if ch is None:
+                raise ValueError(f"unknown channel {slug!r}")
+            channel_id = channels.event_channel(ch)
+            effective_auto_queue = (not channels.require_approval(ch)) if auto_queue is None else bool(auto_queue)
+    elif auto_queue is not None:
+        effective_auto_queue = bool(auto_queue)
+    elif settings.growth_enabled:
+        from app.growth import channels
+
+        with session_scope() as db:
+            ch = channels.default_channel(db)
+            channel_id = channels.event_channel(ch) if ch else None
+            effective_auto_queue = (not channels.require_approval(ch)) if ch else bool(settings.clip_auto_queue)
+    else:
+        effective_auto_queue = bool(settings.clip_auto_queue)
+    return enqueue(cleaned, count=capped, auto_queue=effective_auto_queue, channel_id=channel_id)
+
+
+ALLOWED_UPLOAD_EXTS = frozenset({".mp4", ".mov", ".mkv", ".webm", ".m4v"})
+MAX_UPLOAD_BYTES = 512 * 1024 * 1024  # 512 MB
+
+
+def prepare_inbox_upload(filename: str) -> tuple[Path, Path]:
+    """Validate an uploaded video filename and return (temp_part_path, final_dest_path) inside content/inbox/."""
+    raw = str(filename or "").replace("\\", "/")
+    base_name = Path(raw.rsplit("/", 1)[-1]).name
+    ext = Path(base_name).suffix.lower()
+    if ext not in ALLOWED_UPLOAD_EXTS:
+        raise ValueError(f"unsupported video type {ext or '(none)'}; use mp4, mov, mkv, webm, or m4v")
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(base_name).stem).strip("._-") or "upload"
+    inbox = (settings.content_path / "inbox").resolve()
+    inbox.mkdir(parents=True, exist_ok=True)
+    final_path = (inbox / f"{stem[:48]}_{uuid.uuid4().hex[:8]}{ext}").resolve()
+    if os.path.commonpath([str(inbox), str(final_path)]) != str(inbox):
+        raise ValueError("invalid upload filename")
+    part_path = final_path.with_name(final_path.name + ".part")
+    return part_path, final_path
+
+
+def job_view(job: ClipJob, channel_slugs: Optional[dict[str, str]] = None) -> dict:
+    return {
+        "id": job.id,
+        "source": job.source,
+        "status": job.status,
+        "stage": job.stage,
+        "error": job.error,
+        "result": job.result or {},
+        "count": job.count,
+        "auto_queue": job.auto_queue,
+        "channel_slug": (channel_slugs or {}).get(job.channel_id, "") if job.channel_id else "",
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+    }
+
+
+def _channel_slug_map(db, jobs: list[ClipJob]) -> dict[str, str]:
+    ids = {j.channel_id for j in jobs if j.channel_id}
+    if not ids:
+        return {}
+    from app.models import Channel
+
+    rows = db.execute(select(Channel.id, Channel.slug).where(Channel.id.in_(ids))).all()
+    return {cid: slug for cid, slug in rows}
+
+
+_TERMINAL_STATUSES = ("done", "succeeded", "failed", "cancelled", "canceled")
+_LIST_BATCH = 100
+
+
+def _is_dismissed(result: object) -> bool:
+    return isinstance(result, dict) and result.get("dismissed") is True
+
+
+def visible_job_rows(db, limit: int, *conditions) -> list[ClipJob]:
+    """Newest-first jobs a person has not dismissed, filled up to ``limit`` past any dismissed ones."""
+    rows: list[ClipJob] = []
+    offset = 0
+    while len(rows) < limit:
+        batch = db.execute(
+            select(ClipJob).where(*conditions).order_by(desc(ClipJob.created_at), ClipJob.id)
+            .offset(offset).limit(_LIST_BATCH)
+        ).scalars().all()
+        rows.extend(job for job in batch if not _is_dismissed(job.result))
+        if len(batch) < _LIST_BATCH:
+            break
+        offset += len(batch)
+    return rows[:limit]
+
+
+def list_jobs(limit: int = 20, db=None) -> list[dict]:
+    capped = max(1, min(100, int(limit)))
+    if db is not None:
+        rows = visible_job_rows(db, capped)
+        slugs = _channel_slug_map(db, rows)
+        return [job_view(job, slugs) for job in rows]
+    with session_scope() as s:
+        rows = visible_job_rows(s, capped)
+        slugs = _channel_slug_map(s, rows)
+        return [job_view(job, slugs) for job in rows]
+
+
+_OUTCOME_KEYS = ("ok", "error", "permanent", "clips", "warnings", "queued", "kind", "source", "dismissed")
+
+
+def retry_job(job_id: str) -> dict:
+    """Reset a failed clip job back to ``queued`` while preserving source/feed notes."""
+    with session_scope() as db:
+        job = db.get(ClipJob, job_id)
+        if job is None:
+            raise LookupError("no such clip job")
+        if job.status != "failed":
+            raise ValueError(f"cannot retry a {job.status} job")
+        job.status = "queued"
+        job.stage = ""
+        job.error = None
+        job.attempts = 0
+        job.started_at = None
+        job.finished_at = None
+        job.result = {k: v for k, v in (job.result or {}).items() if k not in _OUTCOME_KEYS}
+        slugs = _channel_slug_map(db, [job])
+        return job_view(job, slugs)
+
+
+def dismiss_job(job_id: str) -> dict:
+    """Take a non-running job off the list.
+
+    A finished job stays in the table marked ``dismissed``: supply and the inbox scan read those rows to
+    know a source was already cut, and deleting them would have it cut again. A job that never ran has
+    nothing to remember and is deleted.
+    """
+    with session_scope() as db:
+        job = db.get(ClipJob, job_id)
+        if job is None:
+            raise LookupError("no such clip job")
+        if job.status == "running":
+            raise ValueError("cannot dismiss a running job")
+        if str(job.status or "").strip().lower() in _TERMINAL_STATUSES:
+            if not _is_dismissed(job.result):
+                job.result = {**(job.result or {}), "dismissed": True}
+        else:
+            db.delete(job)
+    return {"id": job_id, "dismissed": True}
+
+
+def clear_finished_jobs() -> dict:
+    """Hide every finished job (done, succeeded, failed, cancelled) and keep queued and running ones.
+
+    The rows stay, marked dismissed, for the same reason as in :func:`dismiss_job`.
+    """
+    with session_scope() as db:
+        rows = db.execute(
+            select(ClipJob).where(func.lower(ClipJob.status).in_(_TERMINAL_STATUSES))
+        ).scalars().all()
+        fresh = [row for row in rows if not _is_dismissed(row.result)]
+        for row in fresh:
+            row.result = {**(row.result or {}), "dismissed": True}
+        ids = [row.id for row in fresh]
+    return {"cleared": len(ids), "ids": ids}
+
+
+def _normal_path(raw: str) -> str:
+    try:
+        return os.path.normcase(str(Path(raw).expanduser().resolve()))
+    except (OSError, RuntimeError, ValueError):
+        return ""
+
+
+def scan_inbox_sources(channel_slug: str = "") -> list[str]:
+    """Video files in the inbox that no clip job has taken yet, as absolute paths in name order.
+
+    A file counts as taken when a job names its path, or holds the same bytes under another name.
+    With ``channel_slug`` only that channel's jobs count; without it, any channel's job does.
+    Half-copied files (``.part``, still locked, hidden) are left for a later scan.
+    """
+    slug = (channel_slug or "").strip()
+    scope: Optional[tuple[str, bool]] = None
+    if slug:
+        from app.growth import channels
+
+        with session_scope() as db:
+            channels._ensure_seeded(db)
+            channel = channels.channel_by_slug(db, slug)
+            if channel is None:
+                raise ValueError(f"unknown channel {slug!r}")
+            scope = (channel.id, channels.is_default(channel))
+    try:
+        entries = sorted(settings.growth_inbox_path.iterdir(), key=lambda p: p.name.lower())
+    except OSError:
+        return []
+
+    taken_paths: set[str] = set()
+    taken_prints: set[str] = set()
+    with session_scope() as db:
+        for source, result, channel_id in db.execute(
+            select(ClipJob.source, ClipJob.result, ClipJob.channel_id)
+        ).all():
+            if scope is not None and not (channel_id == scope[0] or (scope[1] and channel_id is None)):
+                continue
+            if source and not is_url(source):
+                taken_paths.add(_normal_path(source))
+            fingerprint = result.get("fingerprint") if isinstance(result, dict) else None
+            if isinstance(fingerprint, str) and fingerprint:
+                taken_prints.add(fingerprint)
+
+    found: list[str] = []
+    for entry in entries:
+        if entry.name.startswith(".") or entry.suffix.lower() not in ALLOWED_UPLOAD_EXTS:
+            continue
+        if not entry.is_file():
+            continue
+        resolved = _normal_path(str(entry))
+        if not resolved or resolved in taken_paths:
+            continue
+        try:
+            if file_fingerprint(entry) in taken_prints:
+                continue
+        except (OSError, RuntimeError, ValueError):
+            continue  # unreadable for now, most likely still being copied in
+        found.append(str(entry.resolve()))
+    return found
+
+
+def _recover_orphaned_locked() -> int:
+    """Reset any orphaned ``running`` ClipJob rows while holding ``_queue_lock``."""
+    with session_scope() as db:
+        stmt = select(ClipJob).where(ClipJob.status == "running")
+        if _active_job_id is not None:
+            stmt = stmt.where(ClipJob.id != _active_job_id)
+        stale = db.execute(stmt).scalars().all()
+        for row in stale:
+            row.status = "queued"
+            row.stage = ""
+            row.started_at = None
+        if stale:
+            db.flush()
+        return len(stale)
+
+
+def recover_interrupted_jobs() -> int:
+    """Recover orphaned ``status='running'`` jobs left behind by a crashed process.
+
+    Safe to call on startup or while a worker may be active: if ``_queue_lock`` is held
+    in-process, an active worker owns the queue and nothing is touched.
+    """
+    if not _queue_lock.acquire(blocking=False):
+        return 0
+    try:
+        recovered = _recover_orphaned_locked()
+    finally:
+        _queue_lock.release()
+    if recovered:
+        log.info("clipper: recovered %d interrupted clip job(s) back to queued", recovered)
+    return recovered
+
+
+def start_queue_worker() -> None:
+    """Recover any orphaned jobs and drain queued clip jobs in a background daemon thread."""
+    try:
+        recover_interrupted_jobs()
+    except OperationalError as exc:
+        log.warning("clipper: could not recover interrupted jobs on startup: %s", exc)
+    threading.Thread(target=clip_queue_job, name="clip-queue", daemon=True).start()
+
+
 def _set_stage(job_id: str, stage: str) -> None:
     # Only a progress label, so a locked database must not fail the job.
     try:
@@ -482,6 +764,8 @@ def _next_job() -> Optional[tuple[str, str, Optional[int], Optional[bool], bool,
         stale = db.execute(select(ClipJob).where(ClipJob.status == "running")).scalars().all()
         for job in stale:
             job.status = "queued"
+            job.stage = ""
+            job.started_at = None
         db.flush()
         while True:
             job = db.execute(
@@ -507,6 +791,8 @@ def _finish_job(job_id: str, result: dict) -> None:
         try:
             with session_scope() as db:
                 job = db.get(ClipJob, job_id)
+                if job is None:
+                    return
                 job.status = "done" if result.get("ok") else "failed"
                 job.stage = ""
                 job.result = {**(job.result or {}), **result}
@@ -521,6 +807,7 @@ def _finish_job(job_id: str, result: dict) -> None:
 
 def clip_queue_job() -> dict:
     """Work through queued clip jobs. Every outcome lands on the job's row."""
+    global _active_job_id
     if not _queue_lock.acquire(blocking=False):
         return {"skipped": "already running"}
     processed = failed = 0
@@ -530,6 +817,7 @@ def clip_queue_job() -> dict:
             if claimed is None:
                 break
             job_id, source, count, auto_queue, mine, channel_id = claimed
+            _active_job_id = job_id
             try:
                 result = clip_source(source, count=count, auto_queue=auto_queue,
                                      progress=lambda stage, jid=job_id: _set_stage(jid, stage),
@@ -538,14 +826,22 @@ def clip_queue_job() -> dict:
                 # The app is stopping. Leave the job to run again after the restart.
                 with session_scope() as db:
                     job = db.get(ClipJob, job_id)
-                    job.status, job.stage = "queued", ""
+                    if job is not None:
+                        job.status, job.stage = "queued", ""
                 break
             except Exception as exc:
                 log.exception("clip job %s crashed", job_id)
                 result = {"ok": False, "error": str(exc)}
+            finally:
+                _active_job_id = None
             _finish_job(job_id, result)
             processed += 1
             failed += 0 if result.get("ok") else 1
     finally:
+        _active_job_id = None
         _queue_lock.release()
+        if processed or failed:
+            from app.winproc import reclaim_memory
+
+            reclaim_memory()
     return {"processed": processed, "failed": failed}

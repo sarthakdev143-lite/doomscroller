@@ -10,7 +10,7 @@ from sqlalchemy.orm import object_session
 from app.db import session_scope
 from app.models import GrowthEvent, GrowthState, Video, VideoStatus
 
-from .factors import author_names
+from .factors import author_names, aware
 from .learn import set_state
 
 # YouTube acting on the content or the account. A wrong pause costs one resume; posting on through these can cost the channel.
@@ -25,7 +25,16 @@ _UNBLOCK = "scripts/growth.py unblock"
 
 def _value(db, key: str) -> Optional[dict]:
     state = db.get(GrowthState, key)
-    return dict(state.value) if state else None
+    return dict(state.value) if state and isinstance(state.value, dict) else None
+
+
+def _iso(raw: object) -> Optional[datetime]:
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        return aware(datetime.fromisoformat(raw))
+    except ValueError:
+        return None
 
 
 def _ckey(channel, name: str) -> str:
@@ -49,23 +58,24 @@ def _blocks(db) -> dict[str, dict]:
 
 
 def blocked_parents(db) -> set[str]:
-    return {b["parent"] for b in _blocks(db).values() if b["parent"]}
+    return {b["parent"] for b in _blocks(db).values() if b.get("parent")}
 
 
 def blocked_sources(db) -> set[str]:
-    return {b["source"] for b in _blocks(db).values() if b["source"]}
+    return {b["source"] for b in _blocks(db).values() if b.get("source")}
 
 
 def blocked_authors(db) -> set[str]:
-    return {name for b in _blocks(db).values() for name in b["authors"]}
+    return {name.casefold() for b in _blocks(db).values() for name in (b.get("authors") or ()) if name}
 
 
 def block_list(db) -> list[dict]:
-    return sorted(_blocks(db).values(), key=lambda b: b["at"])
+    return sorted(_blocks(db).values(), key=lambda b: b.get("at", ""))
 
 
 def describe_blocks(blocks: list[dict]) -> str:
-    names = sorted({name for b in blocks for name in b["authors"]} or {b["source"] or "?" for b in blocks})
+    names = sorted({name for b in blocks for name in (b.get("authors") or ()) if name}
+                   or {b.get("source") or "?" for b in blocks})
     return f"{', '.join(names)}. Their feeds are skipped. Lift with: {_UNBLOCK} <name>"
 
 
@@ -89,11 +99,11 @@ def _lift(db, video_ids: list[str]) -> None:
     for video_id in video_ids:
         blocks.pop(video_id, None)
     set_state(db, "quarantine", {"videos": blocks})
-    still_blocked = {b["parent"] for b in blocks.values()}
+    still_blocked = {b["parent"] for b in blocks.values() if b.get("parent")}
     held = db.execute(select(Video).where(Video.meta["growth_quarantined"].as_string().isnot(None))).scalars().all()
     for row in held:
-        if row.meta.get("clip_parent") not in still_blocked:
-            row.meta = {k: v for k, v in row.meta.items() if k != "growth_quarantined"}
+        if (row.meta or {}).get("clip_parent") not in still_blocked:
+            row.meta = {k: v for k, v in (row.meta or {}).items() if k != "growth_quarantined"}
 
 
 def clear_missing(video: Video) -> None:
@@ -102,7 +112,7 @@ def clear_missing(video: Video) -> None:
     if not earlier or earlier["reason"] != "missing":
         return
     db = object_session(video)
-    video.meta = {k: v for k, v in video.meta.items() if k != "growth_strike"}
+    video.meta = {k: v for k, v in (video.meta or {}).items() if k != "growth_strike"}
     _lift(db, [video.id])
     key = _vkey(db, video, "strikes")
     logged = (_value(db, key) or {}).get("log", [])
@@ -114,13 +124,20 @@ def clear_missing(video: Video) -> None:
 
 def unblock(name: str) -> int:
     """The owner's call. Any block naming this author, source or parent goes, and the strike behind it still counts."""
-    wanted = name.casefold()
+    cleaned = (name or "").strip()
+    wanted = cleaned.casefold()
+    if not wanted:
+        return 0
     with session_scope() as db:
-        matched = [b["video_id"] for b in _blocks(db).values()
-                   if wanted in {*b["authors"], (b["source"] or "").casefold(), (b["parent"] or "").casefold()}]
+        matched = []
+        for b in _blocks(db).values():
+            targets = {a.casefold() for a in (b.get("authors") or ()) if a}
+            targets |= {s.casefold() for s in (b.get("source"), b.get("parent"), b.get("video_id")) if s}
+            if wanted in targets:
+                matched.append(b["video_id"])
         if matched:
             _lift(db, matched)
-            db.add(GrowthEvent(kind="unblocked", summary=f"The owner lifted {len(matched)} block(s) on {name}."))
+            db.add(GrowthEvent(kind="unblocked", summary=f"The owner lifted {len(matched)} block(s) on {cleaned}."))
     return len(matched)
 
 
@@ -136,7 +153,7 @@ def _pause_for(strikes: list[dict]) -> Optional[str]:
 def record_strike(video: Video, reason: str, *, now: Optional[datetime] = None) -> None:
     """A video went missing or YouTube rejected it. Runs in the session that loaded the video, and is safe to repeat."""
     db = object_session(video)
-    now = now or datetime.now(timezone.utc)
+    now = aware(now) if now is not None else datetime.now(timezone.utc)
     hard = reason.casefold() in _HARD_REASONS
     earlier = (video.meta or {}).get("growth_strike")
     # Collect sees the same video every few hours, and that must not undo a resume.
@@ -152,7 +169,7 @@ def record_strike(video: Video, reason: str, *, now: Optional[datetime] = None) 
     cutoff = now - STRIKE_WINDOW
     strikes_key, paused_key = _vkey(db, video, "strikes"), _vkey(db, video, "paused")
     logged = (_value(db, strikes_key) or {}).get("log", [])
-    strikes = [s for s in logged if s["video_id"] != video.id and datetime.fromisoformat(s["at"]) > cutoff]
+    strikes = [s for s in logged if s.get("video_id") != video.id and (at := _iso(s.get("at"))) is not None and at > cutoff]
     strikes.append({"video_id": video.id, "reason": reason, "hard": hard, "at": now.isoformat()})
     set_state(db, strikes_key, {"log": strikes})
     reason_to_pause = _pause_for(strikes)
@@ -184,7 +201,11 @@ def pause(slug: str) -> bool:
     """
     from . import channels
 
+    slug = (slug or "").strip()
+    if not slug:
+        return False
     with session_scope() as db:
+        channels.all_channels(db)
         channel = channels.channel_by_slug(db, slug)
         if channel is None:
             return False
@@ -205,11 +226,13 @@ def _paused_keys(db, slug: Optional[str]) -> list[tuple[str, Optional[str]]]:
     """Each pause a resume covers, as (state key, the channel_id its event carries)."""
     from . import channels
 
+    slug = (slug or "").strip() or None
+    all_chs = channels.all_channels(db)
     if slug:
         channel = channels.channel_by_slug(db, slug)
         return [(channels.state_key(channel, "paused"), channels.event_channel(channel))] if channel else []
     # No slug: every channel (the legacy bare key plus each named one).
-    return [("paused", None)] + [(channels.state_key(c, "paused"), c.id) for c in channels.all_channels(db)
+    return [("paused", None)] + [(channels.state_key(c, "paused"), c.id) for c in all_chs
                                  if not channels.is_default(c)]
 
 
@@ -227,18 +250,21 @@ def resume(slug: Optional[str] = None) -> bool:
             db.delete(state)
             # Stamped with the channel, so the report shows the resume beside that channel's pause.
             db.add(GrowthEvent(kind="resumed", channel_id=channel_id,
-                               summary=f"The owner cleared the pause: {state.value.get('reason')}"))
+                               summary=f"The owner cleared the pause: {(state.value or {}).get('reason')}"))
             cleared += 1
     return cleared > 0
 
 
 def active_hold(db, now: datetime, channel=None) -> Optional[dict]:
+    now = aware(now)
     hold = _value(db, _ckey(channel, "hold"))
-    return hold if hold and now < datetime.fromisoformat(hold["until"]) else None
+    until = _iso(hold.get("until")) if hold else None
+    return hold if until is not None and now < until else None
 
 
 def set_hold(db, now: datetime, reason: Optional[str], channel=None) -> None:
     """The next clip would fail the same way. The row stays after the hour, so a long outage logs one event."""
+    now = aware(now)
     key = _ckey(channel, "hold")
     if db.get(GrowthState, key) is None:
         from . import channels

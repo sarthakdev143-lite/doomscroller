@@ -28,8 +28,11 @@ a file sidesteps escaping entirely, and ``expansion=none`` additionally stops
 """
 from __future__ import annotations
 
+import json
 import logging
+import math
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -38,13 +41,14 @@ from typing import List, Optional
 
 from .base import Transformer, TransformRecipe
 from .fonts import ffmpeg_path, resolve_font
-from .geometry import CropPlan, plan_crop, upscale_factor
+from .geometry import CropPlan, _even, plan_crop, upscale_factor
 from .variation import VariationPlan, watermark_position, wrap_caption
 
 log = logging.getLogger(__name__)
 
 # atempo is only well behaved within [0.5, 2.0].
 _ATEMPO_MIN, _ATEMPO_MAX = 0.5, 2.0
+_TEXT_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
 
 # Unicode blocks a plain Latin font (Arial, DejaVu, Liberation) cannot draw.
 # Burning text we cannot render produces a row of empty boxes, so we skip it.
@@ -64,37 +68,91 @@ _NON_LATIN_RANGES = (
 )
 
 
+def _rotation_degrees(stream: dict) -> int:
+    """Clockwise display rotation of a video stream, normalised to 0/90/180/270.
+
+    Phones record landscape pixels and tag the file as rotated. ffmpeg autorotates, so the
+    filter graph sees the *displayed* frame, while ffprobe's ``width``/``height`` are the coded
+    ones. Reading either source of the tag (display matrix side data or the legacy ``rotate``
+    tag) keeps the crop plan in the orientation the filters actually receive.
+    """
+    candidates: list[object] = []
+    side_data = stream.get("side_data_list")
+    if isinstance(side_data, list):
+        candidates.extend(item.get("rotation") for item in side_data if isinstance(item, dict))
+    tags = stream.get("tags")
+    if isinstance(tags, dict):
+        candidates.append(tags.get("rotate"))
+    for raw in candidates:
+        try:
+            value = float(raw)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value) and value != 0:
+            return int(round(value)) % 360
+    return 0
+
+
+# A loaded laptop (ffmpeg clip jobs, scheduled work) can make a trivial ffprobe overshoot a short
+# timeout. Treating that as "no audio" / "no crop" would silently ship a muted or still-branded
+# Short, so a timeout is retried with a generous budget and then raised, never swallowed.
+_PROBE_TIMEOUT_SEC = 15
+_PROBE_RETRY_TIMEOUT_SEC = 90
+
+
+def _run_probe(args: List[str], path: str) -> "subprocess.CompletedProcess[str]":
+    from app.winproc import background_subprocess_kwargs
+
+    last: Optional[BaseException] = None
+    for timeout in (_PROBE_TIMEOUT_SEC, _PROBE_RETRY_TIMEOUT_SEC):
+        try:
+            return subprocess.run(
+                [*args, path],
+                stdin=subprocess.DEVNULL, capture_output=True, text=True, check=True, timeout=timeout,
+                **background_subprocess_kwargs(low_priority=True),
+            )
+        except subprocess.TimeoutExpired as exc:
+            last = exc
+            log.warning("ffprobe timed out after %ss on %s", timeout, os.path.basename(path))
+    raise RuntimeError(f"ffprobe timed out on {os.path.basename(path)}") from last
+
+
 def _probe_dims(path: str) -> tuple[int, int]:
-    """Return (width, height) via ffprobe, or (0, 0) if unreadable."""
+    """Return the *displayed* (width, height) via ffprobe, or (0, 0) if unreadable."""
     try:
-        out = subprocess.run(
+        out = _run_probe(
             ["ffprobe", "-v", "error", "-select_streams", "v:0",
-             "-show_entries", "stream=width,height",
-             "-of", "default=noprint_wrappers=1", path],
-            capture_output=True, text=True, check=True, timeout=15,
+             "-show_entries", "stream=width,height:stream_side_data=rotation:stream_tags=rotate",
+             "-of", "json"],
+            path,
         )
-        width = height = 0
-        for line in out.stdout.splitlines():
-            if "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            if key.strip() == "width":
-                width = int(value.strip())
-            elif key.strip() == "height":
-                height = int(value.strip())
+        streams = json.loads(out.stdout or "{}").get("streams")
+        if not isinstance(streams, list) or not streams or not isinstance(streams[0], dict):
+            return 0, 0
+        stream = streams[0]
+        width, height = int(stream.get("width") or 0), int(stream.get("height") or 0)
+        if width <= 0 or height <= 0:
+            return 0, 0
+        if _rotation_degrees(stream) in (90, 270):
+            width, height = height, width
         return width, height
+    except RuntimeError:
+        raise
     except Exception:
         return 0, 0
 
 
 def _probe_duration(path: str) -> float:
     try:
-        out = subprocess.run(
+        out = _run_probe(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-             "-of", "default=noprint_wrappers=1:nokey=1", path],
-            capture_output=True, text=True, check=True, timeout=15,
+             "-of", "default=noprint_wrappers=1:nokey=1"],
+            path,
         )
-        return float((out.stdout or "0").strip() or 0)
+        val = float((out.stdout or "0").strip() or 0)
+        return val if (math.isfinite(val) and val >= 0.0) else 0.0
+    except RuntimeError:
+        raise
     except Exception:
         return 0.0
 
@@ -102,13 +160,15 @@ def _probe_duration(path: str) -> float:
 def _has_audio(path: str) -> bool:
     """Whether the file carries an audio stream (many Spotlight clips do not)."""
     try:
-        out = subprocess.run(
+        out = _run_probe(
             ["ffprobe", "-v", "error", "-select_streams", "a:0",
              "-show_entries", "stream=codec_type",
-             "-of", "default=noprint_wrappers=1:nokey=1", path],
-            capture_output=True, text=True, check=True, timeout=15,
+             "-of", "default=noprint_wrappers=1:nokey=1"],
+            path,
         )
         return "audio" in (out.stdout or "")
+    except RuntimeError:
+        raise
     except Exception:
         return False
 
@@ -136,7 +196,9 @@ def is_renderable(text: str) -> bool:
 
 def _atempo_chain(speed: float) -> str:
     """Build an atempo chain that stays inside the filter's supported range."""
-    remaining = speed
+    if not isinstance(speed, (int, float)) or isinstance(speed, bool) or not math.isfinite(speed) or speed <= 0:
+        raise ValueError(f"speed must be a finite positive number, got {speed!r}")
+    remaining = float(speed)
     stages: list[str] = []
     while remaining > _ATEMPO_MAX:
         stages.append(f"atempo={_ATEMPO_MAX}")
@@ -166,11 +228,15 @@ class FFmpegTransformer(Transformer):
             raise FileNotFoundError(input_path)
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
-        width, height = recipe.width, recipe.height
+        width, height = _even(recipe.width), _even(recipe.height)
         source_w, source_h = _probe_dims(input_path)
         duration = _probe_duration(input_path)
         has_audio = _has_audio(input_path)
-        speed = plan.speed if (plan and plan.changes_timing) else recipe.speed_factor
+        raw_speed = plan.speed if (plan and plan.changes_timing) else recipe.speed_factor
+        speed = float(raw_speed) if (
+            isinstance(raw_speed, (int, float)) and not isinstance(raw_speed, bool)
+            and math.isfinite(raw_speed) and raw_speed > 0
+        ) else 1.0
         crop = self.crop_plan(source_w, source_h)
         if crop.active:
             log.info(
@@ -179,41 +245,54 @@ class FFmpegTransformer(Transformer):
             )
 
         # drawtext reads its strings from files in here; both are torn down
-        # together once ffmpeg has exited.
-        with tempfile.TemporaryDirectory(prefix="doomscroller_text_") as text_dir:
-            video_chain = self._build_video_chain(
-                recipe=recipe, plan=plan, canvas=(width, height),
-                duration=duration, speed=speed, text_dir=text_dir, crop=crop,
-            )
-            filter_parts = [f"{video_chain}[vout]"]
-            if has_audio:
-                if abs(speed - 1.0) > 0.001:
-                    filter_parts.append(f"[0:a]{_atempo_chain(speed)}[aout]")
+        # together once ffmpeg has exited. Render to a sibling .tmp.mp4 first
+        # and os.replace atomically so a failed/interrupted encode never leaves
+        # a corrupt output file behind or clobbers an existing render.
+        tmp_out = f"{output_path}.tmp.mp4"
+        try:
+            with tempfile.TemporaryDirectory(
+                prefix="doomscroller_text_", ignore_cleanup_errors=True
+            ) as text_dir:
+                video_chain = self._build_video_chain(
+                    recipe=recipe, plan=plan, canvas=(width, height),
+                    duration=duration, speed=speed, text_dir=text_dir, crop=crop,
+                )
+                filter_parts = [f"{video_chain}[vout]"]
+                if has_audio:
+                    if abs(speed - 1.0) > 0.001:
+                        filter_parts.append(f"[0:a]{_atempo_chain(speed)}[aout]")
+                    else:
+                        filter_parts.append("[0:a]anull[aout]")
+                filter_complex = ";".join(filter_parts)
+
+                args = ["-i", input_path, "-filter_complex", filter_complex,
+                        "-map", "[vout]"]
+                if has_audio:
+                    args += ["-map", "[aout]", "-c:a", "aac", "-b:a", "128k"]
                 else:
-                    filter_parts.append("[0:a]anull[aout]")
-            filter_complex = ";".join(filter_parts)
+                    args += ["-an"]
+                args += [
+                    "-c:v", "libx264",
+                    "-preset", "veryfast",
+                    "-crf", "21",
+                    "-pix_fmt", "yuv420p",
+                    "-r", "30",
+                    "-movflags", "+faststart",
+                    tmp_out,
+                ]
 
-            args = ["-i", input_path, "-filter_complex", filter_complex,
-                    "-map", "[vout]"]
-            if has_audio:
-                args += ["-map", "[aout]", "-c:a", "aac", "-b:a", "128k"]
-            else:
-                args += ["-an"]
-            args += [
-                "-c:v", "libx264",
-                "-preset", "veryfast",
-                "-crf", "21",
-                "-pix_fmt", "yuv420p",
-                "-r", "30",
-                "-movflags", "+faststart",
-                output_path,
-            ]
+                log.debug("ffmpeg filter_complex: %s", filter_complex)
+                self._run(args)
 
-            log.debug("ffmpeg filter_complex: %s", filter_complex)
-            self._run(args)
-
-        if not os.path.exists(output_path) or os.path.getsize(output_path) < 1000:
-            raise RuntimeError("ffmpeg produced no usable output")
+            if not os.path.exists(tmp_out) or os.path.getsize(tmp_out) < 1000:
+                raise RuntimeError("ffmpeg produced no usable output")
+            os.replace(tmp_out, output_path)
+        finally:
+            if os.path.exists(tmp_out):
+                try:
+                    os.remove(tmp_out)
+                except OSError:
+                    pass
         log.info(
             "render: %s (%dx%d -> %dx%d)%s",
             os.path.basename(output_path), source_w, source_h, width, height,
@@ -242,9 +321,10 @@ class FFmpegTransformer(Transformer):
                            canvas: tuple[int, int], duration: float,
                            speed: float, text_dir: str,
                            crop: Optional[CropPlan] = None) -> str:
-        width, height = canvas
+        width, height = _even(canvas[0]), _even(canvas[1])
+        even_canvas = (width, height)
         suffix = self._post_framing_suffix(
-            plan=plan, canvas=canvas, duration=duration,
+            plan=plan, canvas=even_canvas, duration=duration,
             recipe=recipe, speed=speed, text_dir=text_dir,
         )
         crop_prefix = crop.prefix if crop else ""
@@ -261,13 +341,13 @@ class FFmpegTransformer(Transformer):
                 f"[0:v]{crop_prefix}split=2[bg][fg];"
                 f"[bg]scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,"
                 f"crop={width}:{height},boxblur={blur}:1[bgb];"
-                f"[fg]scale={width}:{height}:force_original_aspect_ratio=decrease:flags=lanczos[fgs];"
+                f"[fg]scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos[fgs];"
                 f"[bgb][fgs]overlay=(W-w)/2:(H-h)/2" + suffix
             )
 
         return (
             f"[0:v]{crop_prefix}"
-            f"scale={width}:{height}:force_original_aspect_ratio=decrease:flags=lanczos,"
+            f"scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos,"
             f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black" + suffix
         )
 
@@ -305,9 +385,10 @@ class FFmpegTransformer(Transformer):
     # ------------------------------------------------------------------
     def _write_text(self, text_dir: str, name: str, text: str) -> str:
         """Write one overlay string to a file and return its escaped path."""
+        cleaned = _TEXT_CONTROL_CHARS.sub("", (text or "").replace("\r\n", "\n").replace("\r", "\n"))
         path = os.path.join(text_dir, f"{name}.txt")
-        with open(path, "w", encoding="utf-8") as handle:
-            handle.write(text)
+        with open(path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(cleaned)
         return ffmpeg_path(path)
 
     def _drawtext(self, *, text_dir: str, name: str, text: str,
@@ -330,15 +411,16 @@ class FFmpegTransformer(Transformer):
             filter_str += f":enable='{gate}'"
         return filter_str
 
+    def _font_for(self, text: str) -> Optional[str]:
+        chosen = resolve_font(self.settings.transform_caption_font, text) or self.font
+        return ffmpeg_path(chosen) if chosen else None
+
     def _text_filters(self, *, plan: Optional[VariationPlan],
                       canvas: tuple[int, int], duration: float,
                       recipe: TransformRecipe, speed: float,
                       text_dir: str) -> list[str]:
         """drawtext filters for caption, watermark and end card."""
-        if self.font is None:
-            return []
         width, _height = canvas
-        font = ffmpeg_path(self.font)
         filters: list[str] = []
         # setpts rescales the timeline, so time-gated overlays must use the
         # post-retime duration or they drift off the end of a sped-up video.
@@ -353,48 +435,54 @@ class FFmpegTransformer(Transformer):
             log.info("skipping caption: font cannot render %r", caption[:40])
             caption = ""
         if caption:
-            seconds = float(self.settings.caption_seconds)
-            gate = ""
-            if effective_duration > seconds > 0:
-                gate = f"between(t,0,{seconds:.2f})"
-            filters.append(self._drawtext(
-                text_dir=text_dir, name="caption",
-                text=wrap_caption(caption), font=font,
-                size=max(30, width // 22), color="white",
-                x="(w-text_w)/2", y="h*0.19", border=6,
-                box="black@0.35", gate=gate, line_spacing=10,
-            ))
+            cap_font = self._font_for(caption)
+            if cap_font:
+                seconds = float(self.settings.caption_seconds)
+                gate = ""
+                if effective_duration > seconds > 0:
+                    gate = f"between(t,0,{seconds:.2f})"
+                filters.append(self._drawtext(
+                    text_dir=text_dir, name="caption",
+                    text=wrap_caption(caption), font=cap_font,
+                    size=max(30, width // 22), color="white",
+                    x="(w-text_w)/2", y="h*0.19", border=6,
+                    box="black@0.35", gate=gate, line_spacing=10,
+                ))
 
         if plan and plan.brand_text and is_renderable(plan.brand_text):
-            x_expr, y_expr = watermark_position(plan.watermark_position)
-            opacity = float(self.settings.brand_watermark_opacity)
-            filters.append(self._drawtext(
-                text_dir=text_dir, name="brand", text=plan.brand_text, font=font,
-                size=max(22, width // 34), color=f"white@{opacity:.2f}",
-                x=x_expr, y=y_expr, border=2,
-            ))
+            brand_font = self._font_for(plan.brand_text)
+            if brand_font:
+                x_expr, y_expr = watermark_position(plan.watermark_position)
+                opacity = float(self.settings.brand_watermark_opacity)
+                filters.append(self._drawtext(
+                    text_dir=text_dir, name="brand", text=plan.brand_text, font=brand_font,
+                    size=max(22, width // 34), color=f"white@{opacity:.2f}",
+                    x=x_expr, y=y_expr, border=2,
+                ))
 
         if plan and plan.end_card_text and effective_duration > 3:
             if is_renderable(plan.end_card_text):
-                seconds = float(self.settings.end_card_seconds)
-                start = max(0.0, effective_duration - seconds)
-                filters.append(self._drawtext(
-                    text_dir=text_dir, name="endcard", text=plan.end_card_text,
-                    font=font, size=max(30, width // 24), color="white",
-                    x="(w-text_w)/2", y="h*0.80", border=5, box="black@0.45",
-                    gate=f"between(t,{start:.2f},{effective_duration:.2f})",
-                ))
+                end_font = self._font_for(plan.end_card_text)
+                if end_font:
+                    seconds = float(self.settings.end_card_seconds)
+                    start = max(0.0, effective_duration - seconds)
+                    filters.append(self._drawtext(
+                        text_dir=text_dir, name="endcard", text=plan.end_card_text,
+                        font=end_font, size=max(30, width // 24), color="white",
+                        x="(w-text_w)/2", y="h*0.80", border=5, box="black@0.45",
+                        gate=f"between(t,{start:.2f},{effective_duration:.2f})",
+                    ))
         return filters
 
     # ------------------------------------------------------------------
     @staticmethod
     def _run(args: List[str]) -> None:
-        proc = subprocess.run(
-            ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", *args],
-            capture_output=True, text=True,
-        )
-        if proc.returncode != 0:
-            raise RuntimeError(f"ffmpeg failed: {(proc.stderr or '')[-1800:]}")
+        from ..clipper.media import MediaError, run_ffmpeg
+
+        try:
+            run_ffmpeg(list(args))
+        except MediaError as exc:
+            raise RuntimeError(str(exc)) from exc
 
 
 def recipe_from_dict(d: dict) -> TransformRecipe:

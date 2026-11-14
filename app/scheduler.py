@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+import stat
 from datetime import datetime, timedelta, timezone
 
 from apscheduler.executors.pool import ThreadPoolExecutor
@@ -208,6 +209,11 @@ def auto_approve_job() -> dict:
             ).scalars().all()
 
             for video in rows:
+                # Clips have no views to judge, and CLIP_AUTO_QUEUE / per-channel auto_approve_score own clip review.
+                if (video.meta or {}).get("clip_rendered"):
+                    note("clip awaits review")
+                    continue
+
                 scraped_at = video.scraped_at
                 if scraped_at is not None and scraped_at.tzinfo is None:
                     scraped_at = scraped_at.replace(tzinfo=timezone.utc)
@@ -230,11 +236,6 @@ def auto_approve_job() -> dict:
                         "auto_rejected": disqualified,
                     }
                     note(disqualified.split(":")[0])
-                    continue
-
-                # Clips have no views to judge, and CLIP_AUTO_QUEUE is the switch for skipping review.
-                if (video.meta or {}).get("clip_rendered"):
-                    note("clip awaits review")
                     continue
 
                 if not video.local_path or not os.path.exists(video.local_path):
@@ -356,10 +357,22 @@ def publish_job() -> dict:
                 .order_by(Video.transformed_at)
             ).scalars().all()
 
-            if not ready:
+            valid_ready: list[Video] = []
+            for candidate in ready:
+                if (
+                    not candidate.transformed_path
+                    or not str(candidate.transformed_path).strip()
+                    or not os.path.isfile(candidate.transformed_path)
+                ):
+                    candidate.status = VideoStatus.FAILED
+                    candidate.error = "publish: transformed file missing from disk"
+                else:
+                    valid_ready.append(candidate)
+
+            if not valid_ready:
                 return {"skipped": "no transformed videos ready"}
             from tasks.pipeline import least_failed
-            v = least_failed(ready)[0]
+            v = least_failed(valid_ready)[0]
 
             today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
             todays = db.execute(select(Video.id).where(Video.status == VideoStatus.PUBLISHED, Video.published_at >= today_start)).scalars().all()
@@ -389,8 +402,81 @@ def publish_job() -> dict:
 _ORPHAN_GRACE = timedelta(hours=6)
 
 
+def _as_utc(dt: datetime) -> datetime:
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
+
+
+def _norm_path(path: str) -> str:
+    return os.path.normcase(os.path.abspath(path))
+
+
+def _is_link_or_junction(path: str) -> bool:
+    """True for POSIX/Windows symlinks and Windows NTFS junctions/mount-points."""
+    if os.path.islink(path):
+        return True
+    isjunction = getattr(os.path, "isjunction", None)
+    if isjunction is not None and isjunction(path):
+        return True
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    if reparse_flag and (getattr(st, "st_file_attributes", 0) & reparse_flag):
+        tag = getattr(st, "st_reparse_tag", 0)
+        link_tags = {
+            getattr(stat, "IO_REPARSE_TAG_SYMLINK", 0xA000000C),
+            getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003),
+        }
+        if not tag or tag in link_tags:
+            return True
+    return False
+
+
+def _has_link_or_junction(path: str, *, stop_at: str | None = None) -> bool:
+    """True if ``path`` or any ancestor inside ``stop_at`` is a symlink or junction."""
+    cur = os.path.abspath(path)
+    stop_norm = _norm_path(stop_at) if stop_at else None
+    while True:
+        if _is_link_or_junction(cur):
+            return True
+        cur_norm = os.path.normcase(cur)
+        if stop_norm and cur_norm == stop_norm:
+            break
+        parent = os.path.dirname(cur)
+        if not parent or parent == cur:
+            break
+        if stop_norm and not (
+            os.path.normcase(parent) == stop_norm
+            or os.path.normcase(parent).startswith(stop_norm + os.sep)
+        ):
+            break
+        cur = parent
+    return False
+
+
+def _is_inbox_path(path: str) -> bool:
+    """True when ``path`` lives inside the dedicated growth inbox directory."""
+    try:
+        inbox = _norm_path(str(settings.growth_inbox_path))
+        content = _norm_path(str(settings.content_path))
+    except Exception:
+        return False
+    target = _norm_path(path)
+    if inbox != content:
+        return target == inbox or target.startswith(inbox + os.sep)
+    # If growth_inbox_dir was pointed directly at content_dir, protect .part uploads & open inbox files.
+    if target.endswith(".part"):
+        return True
+    try:
+        from .growth.supply import open_inbox_files
+        return target in {_norm_path(p) for p in open_inbox_files()}
+    except Exception:
+        return False
+
+
 def _content_files() -> list[str]:
-    """Every media file under the content directory, including transforms."""
+    """Every regular media file under the content directory, skipping links and inbox."""
     import glob
 
     root = str(settings.content_path)
@@ -400,6 +486,9 @@ def _content_files() -> list[str]:
         # Leading underscore marks internal scaffolding such as the mock
         # master clip, which has no database row by design.
         if not os.path.basename(path).startswith("_")
+        and not _has_link_or_junction(path, stop_at=root)
+        and not _is_inbox_path(path)
+        and os.path.isfile(path)
     ]
 
 
@@ -414,12 +503,16 @@ def _source_cache_files() -> list[str]:
     return [
         path for pattern in ("long/*", "broll/*", f"*{_TRANSCRIPT_SUFFIX}", "transcripts/*.json")
         for path in glob.glob(os.path.join(root, pattern))
-        if os.path.isfile(path)
+        if not _has_link_or_junction(path, stop_at=root)
+        and not _is_inbox_path(path)
+        and os.path.isfile(path)
     ]
 
 
 def _remove(path: str) -> int:
-    """Delete a file, returning the bytes reclaimed (0 on failure)."""
+    """Delete a regular file, returning the bytes reclaimed (0 on failure)."""
+    if _is_link_or_junction(path):
+        return 0
     try:
         size = os.path.getsize(path)
         os.remove(path)
@@ -442,7 +535,11 @@ def cleanup_job(dry_run: bool = False) -> dict:
        row-driven cleanup can never see.
     """
     try:
+        content_root = str(settings.content_path)
+
         def drop(path: str) -> int:
+            if _has_link_or_junction(path, stop_at=content_root) or _is_inbox_path(path):
+                return 0
             if dry_run:
                 try:
                     return os.path.getsize(path)
@@ -456,40 +553,92 @@ def cleanup_job(dry_run: bool = False) -> dict:
         reclaimed = 0
         removed_sources = removed_transforms = removed_orphans = 0
         referenced: set[str] = set()
+        protected_paths: set[str] = set()
 
         with session_scope() as db:
+            active_jobs = db.execute(
+                select(ClipJob.source).where(ClipJob.status.in_(("queued", "running")))
+            ).scalars().all()
+            clip_jobs_active = len(active_jobs)
+            for src in active_jobs:
+                raw_src = (src or "").strip()
+                if raw_src and not raw_src.lower().startswith(("http://", "https://")):
+                    norm_src = _norm_path(raw_src)
+                    protected_paths.add(norm_src)
+                    protected_paths.add(_norm_path(raw_src + _TRANSCRIPT_SUFFIX))
+
             rows = db.execute(select(Video)).scalars().all()
 
-            for video in rows:
+            def _is_expired_finished(video: Video) -> bool:
                 curated = video.published_at or video.curated_at or video.scraped_at
-                if curated is not None and curated.tzinfo is None:
-                    curated = curated.replace(tzinfo=timezone.utc)
+                if curated is not None:
+                    curated = _as_utc(curated)
                 expired = curated is not None and curated < cutoff
                 finished = video.status in (VideoStatus.PUBLISHED, VideoStatus.REJECTED)
+                return expired and finished
 
-                if expired and finished and video.local_path:
-                    if os.path.exists(video.local_path):
-                        reclaimed += drop(video.local_path)
-                        removed_sources += 1
-                    if not dry_run:
-                        video.local_path = None
+            # First pass: collect every path still needed by a live/unexpired Video row
+            # (including Wave 6 rendered clips in PENDING/APPROVED/TRANSFORMED/PUBLISHING).
+            for video in rows:
+                if not _is_expired_finished(video):
+                    for path in (video.local_path, video.transformed_path):
+                        if path:
+                            protected_paths.add(_norm_path(path))
+
+            referenced.update(protected_paths)
+
+            # Second pass: reclaim expired PUBLISHED/REJECTED files unless protected, inbox, or link/junction.
+            for video in rows:
+                if not _is_expired_finished(video):
+                    continue
+
+                shared_clip_path = (
+                    bool(video.local_path and video.transformed_path)
+                    and _norm_path(video.local_path) == _norm_path(video.transformed_path)
+                )
+
+                if video.local_path:
+                    local_norm = _norm_path(video.local_path)
+                    can_drop = (
+                        local_norm not in protected_paths
+                        and not _is_inbox_path(video.local_path)
+                        and not _has_link_or_junction(video.local_path, stop_at=content_root)
+                    )
+                    if can_drop:
+                        if os.path.isfile(video.local_path):
+                            reclaimed += drop(video.local_path)
+                            removed_sources += 1
+                        if not dry_run:
+                            video.local_path = None
+                            if shared_clip_path and video.status == VideoStatus.REJECTED:
+                                video.transformed_path = None
+                    else:
+                        referenced.add(local_norm)
 
                 # A published video no longer needs its rendered output either.
-                if (expired and video.status == VideoStatus.PUBLISHED
-                        and video.transformed_path):
-                    if os.path.exists(video.transformed_path):
-                        reclaimed += drop(video.transformed_path)
-                        removed_transforms += 1
-                    if not dry_run:
-                        video.transformed_path = None
+                if video.status == VideoStatus.PUBLISHED and video.transformed_path:
+                    trans_norm = _norm_path(video.transformed_path)
+                    can_drop = (
+                        trans_norm not in protected_paths
+                        and not _is_inbox_path(video.transformed_path)
+                        and not _has_link_or_junction(video.transformed_path, stop_at=content_root)
+                    )
+                    if can_drop:
+                        if os.path.isfile(video.transformed_path):
+                            reclaimed += drop(video.transformed_path)
+                            removed_transforms += 1
+                        if not dry_run:
+                            video.transformed_path = None
+                    else:
+                        referenced.add(trans_norm)
 
                 for path in (video.local_path, video.transformed_path):
                     if path:
-                        referenced.add(os.path.normcase(os.path.abspath(path)))
+                        referenced.add(_norm_path(path))
 
         # Orphans: on disk, referenced by nothing, old enough to be safe.
         for path in _content_files():
-            key = os.path.normcase(os.path.abspath(path))
+            key = _norm_path(path)
             if key in referenced:
                 continue
             try:
@@ -505,10 +654,6 @@ def cleanup_job(dry_run: bool = False) -> dict:
         # transcript and could delete a file mid-render. They carry no job id, so
         # leave them all alone while any clip job is waiting or running.
         removed_cache = 0
-        with session_scope() as db:
-            clip_jobs_active = db.scalar(
-                select(func.count(ClipJob.id)).where(ClipJob.status.in_(("queued", "running")))
-            )
         if not clip_jobs_active:
             cache_age = max(timedelta(days=max_age_days), _ORPHAN_GRACE)
             files = _source_cache_files()
@@ -521,12 +666,16 @@ def cleanup_job(dry_run: bool = False) -> dict:
                     return False
 
             for path in files:
+                if _norm_path(path) in protected_paths:
+                    continue
                 if not path.endswith(_TRANSCRIPT_SUFFIX) and too_old(path):
                     reclaimed += drop(path)
                     removed_cache += 1
                     gone.add(path)
             # A sidecar transcript goes with its video, and is kept for as long as the video is.
             for path in files:
+                if _norm_path(path) in protected_paths:
+                    continue
                 if path.endswith(_TRANSCRIPT_SUFFIX):
                     video = path[:-len(_TRANSCRIPT_SUFFIX)]
                     if video in gone or not os.path.exists(video):
@@ -684,7 +833,7 @@ def reschedule_publish(sched: BackgroundScheduler | None = None) -> dict:
 def _make_scheduler() -> BackgroundScheduler:
     """Build a configured BackgroundScheduler (does NOT start it)."""
     executors = {
-        "default": ThreadPoolExecutor(max_workers=8),
+        "default": ThreadPoolExecutor(max_workers=max(1, settings.scheduler_max_workers)),
     }
     sched = BackgroundScheduler(
         timezone="UTC",
@@ -753,7 +902,7 @@ def overdue_jobs(now: datetime | None = None) -> list[str]:
     rather than running it late, so a laptop that slept for ten hours simply
     skips that work. This reads the run history and reports what to catch up.
     """
-    now = now or datetime.now(timezone.utc)
+    now = _as_utc(now) if now is not None else datetime.now(timezone.utc)
     history = last_run_times()
     stale: list[str] = []
     for job_id, interval in _job_intervals().items():

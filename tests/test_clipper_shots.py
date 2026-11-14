@@ -1,10 +1,11 @@
 """The AI choosing stock shots from thumbnails, and everything that can go wrong with that."""
 import http.server
+from io import BytesIO
 import os
 import threading
 
-import cv2
 import numpy as np
+from PIL import Image
 import pytest
 
 from app.clipper import ai, broll, shots
@@ -126,7 +127,8 @@ def test_crop_keeps_the_centre_of_the_picture():
 def test_sheet_has_a_numbered_tile_for_every_shot(tmp_path, count, rows):
     path = str(tmp_path / "sheet.jpg")
     assert shots._write_sheet([_image() for _ in range(count)], path)
-    sheet = cv2.imread(path)
+    with Image.open(path) as img:
+        sheet = np.asarray(img)
     assert sheet.shape[0] == rows * (shots._TILE_HEIGHT + shots._GAP)
     assert sheet.shape[1] == shots._COLUMNS * (shots._TILE_WIDTH + shots._GAP)
     for index in range(count):
@@ -236,10 +238,8 @@ def test_no_thumbnails_means_the_ai_is_not_asked(monkeypatch):
     assert not calls
 
 
-def test_missing_opencv_means_the_ai_is_not_asked(monkeypatch):
-    monkeypatch.setattr(shots, "cv2", None)
-    with pytest.raises(shots.NothingToShow):
-        shots.judge([_candidate(1)], "x")
+def test_shots_has_no_opencv_dependency():
+    assert not hasattr(shots, "cv2")
 
 
 def test_sheet_that_cannot_be_written_counts_as_failure(monkeypatch):
@@ -258,7 +258,9 @@ def test_rejection_says_which_shots_were_seen(monkeypatch):
 
 @pytest.fixture
 def thumbnails():
-    good = cv2.imencode(".jpg", _image(640, 360))[1].tobytes()
+    buf = BytesIO()
+    Image.fromarray(_image(640, 360), mode="RGB").save(buf, format="JPEG", quality=85)
+    good = buf.getvalue()
     routes = {"/good.jpg": (200, good), "/gone.jpg": (404, b"no"), "/html.jpg": (200, b"<html>sorry</html>"),
               "/empty.jpg": (200, b""), "/huge.jpg": (200, b"x" * (shots._MAX_THUMBNAIL_BYTES + 1000))}
 

@@ -47,8 +47,9 @@ def _author_names(entry: dict) -> set[str]:
 def _read_feed(feed: str, depth: int) -> dict:
     from yt_dlp import YoutubeDL
 
+    feed = feed.strip()
     options = {"quiet": True, "no_warnings": True, "extract_flat": True, "playlistend": depth, **network_options()}
-    match = _CHANNEL_HOME.match(feed.strip())
+    match = _CHANNEL_HOME.match(feed)
     with YoutubeDL(options) as ydl:
         if not match:
             return ydl.extract_info(feed, download=False) or {}
@@ -90,8 +91,9 @@ def _forget_empty_feed(feed: str) -> None:
 def empty_feeds(db) -> set[str]:
     """Feeds that came back with no videos lately."""
     since = datetime.now(timezone.utc) - _EMPTY_FEED_WINDOW
-    return {(data or {}).get("key", "") for data in db.execute(
-        select(GrowthEvent.data).where(GrowthEvent.kind == _EMPTY_FEED, GrowthEvent.created_at >= since)).scalars()}
+    return {k for data in db.execute(
+        select(GrowthEvent.data).where(GrowthEvent.kind == _EMPTY_FEED, GrowthEvent.created_at >= since)).scalars()
+        if (k := (data or {}).get("key"))}
 
 
 def _feed_links(feed: str) -> Iterator[str]:
@@ -167,8 +169,10 @@ def can_take(jobs: Sequence, now: datetime) -> bool:
         return True
     if len(jobs) > _MAX_RETRIES:
         return False
-    last = max(aware(job.finished_at or job.created_at) for job in jobs)
-    return now - last >= len(jobs) * _RETRY_WAIT
+    times = [t for job in jobs if (t := aware(job.finished_at or job.created_at)) is not None]
+    if not times:
+        return True
+    return aware(now) - max(times) >= len(jobs) * _RETRY_WAIT
 
 
 def _can_take_file(path: str, jobs: Sequence, now: datetime) -> bool:
@@ -249,23 +253,30 @@ def _brief(error: Optional[str]) -> str:
     return " ".join((error or "no reason recorded").split())[:_ERROR_LENGTH]
 
 
-def _failed_in_a_row(db) -> list:
-    latest = db.execute(select(ClipJob.status, ClipJob.error).where(ClipJob.finished_at.is_not(None))
+def _failed_in_a_row(db, scope=None) -> list:
+    conds = [ClipJob.finished_at.is_not(None)]
+    if scope is not None:
+        conds.append(scope)
+    latest = db.execute(select(ClipJob.status, ClipJob.error).where(*conds)
                         .order_by(ClipJob.finished_at.desc()).limit(_RECENT_JOBS))
     return list(takewhile(lambda job: job.status == "failed", latest))
 
 
-def _why_starved(db, unread: dict[str, str]) -> tuple[str, str]:
+def _why_starved(db, unread: dict[str, str], channel=None) -> tuple[str, str]:
     """What stopped supply, and the owner's next step. Adding more sources only helps when nothing is failing."""
     causes, steps = [], []
     if unread:
         causes += [f"could not read {feed}: {_brief(error)}" for feed, error in unread.items()]
         steps.append("Check the link and the connection, and update yt-dlp if it keeps failing.")
-    failed = _failed_in_a_row(db)
+    scope = None if channel is None else _clipjob_scope(channels.event_channel(channel))
+    failed = _failed_in_a_row(db, scope)
     if failed:
         causes.append(f"the last {len(failed)} clip jobs failed, most recently: {_brief(failed[0].error)}")
         steps.append("See why on the Clip tab, and fix that before adding more sources.")
-    return "; ".join(causes) or "no new source in the inbox or feeds", " ".join(steps) or ADD_SOURCES
+    named = channel is not None and not channels.is_default(channel)
+    default_cause = "no new source in this channel's feeds" if named else "no new source in the inbox or feeds"
+    default_step = f"Add a creator link with: scripts/channels.py feed {channel.slug} --add <link>" if named else ADD_SOURCES
+    return "; ".join(causes) or default_cause, " ".join(steps) or default_step
 
 
 def _supply_one(channel) -> dict:
@@ -294,7 +305,7 @@ def _supply_one(channel) -> dict:
         with session_scope() as db:
             blocks = safety.block_list(db)
             blocked = f". Blocked: {safety.describe_blocks(blocks)}" if blocks else ""
-            cause, step = _why_starved(db, unread)
+            cause, step = _why_starved(db, unread, channel)
             starved = f"{cause}{blocked}"
             # Keyed by the step, so a different kind of cause is news within the day but a reworded error is not.
             learn.note_once(db, "starved", f"Supply has nothing new to cut, with {stock} clips left: {starved}",
@@ -314,6 +325,8 @@ def supply_job() -> dict:
         return {"skipped": "GROWTH_ENABLED is off"}
     with session_scope() as db:
         active = channels.active_channels(db)
+    if not active:
+        return {"skipped": "no enabled channels"}
     # A single legacy channel keeps the old flat result shape; several report per channel by slug.
     if len(active) == 1 and channels.is_default(active[0]):
         return _supply_one(active[0])

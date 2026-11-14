@@ -7,6 +7,7 @@ also style and animate a single word, which is what word-by-word captions need.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 import struct
@@ -76,15 +77,45 @@ def framed_layout(picture_height: int) -> Layout:
     )
 
 
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0e-\x1f\x7f-\x9f]")
+_MAX_ASS_CENTIS = 9 * 360000 + 59 * 6000 + 59 * 100 + 99
+
+
 def _clock(seconds: float) -> str:
-    centis = max(0, int(round(seconds * 100)))
+    if not math.isfinite(seconds) or seconds <= 0:
+        centis = 0
+    else:
+        centis = min(_MAX_ASS_CENTIS, int(round(seconds * 100)))
     return f"{centis // 360000}:{centis // 6000 % 60:02d}:{centis // 100 % 60:02d}.{centis % 100:02d}"
 
 
 def _safe(text: str) -> str:
-    """Strip what ASS would read as an override tag or a line break."""
+    """Strip what ASS would read as an override tag, control byte, or line break."""
+    text = _CONTROL_CHARS.sub("", str(text or ""))
     text = text.replace("\\", "").replace("{", "(").replace("}", ")")
-    return re.sub(r"\s+", " ", text).strip()
+    return re.sub(r"[\s\u2028\u2029]+", " ", text).strip()
+
+
+def _safe_style_token(raw: str, fallback: str = "Arial") -> str:
+    """Keep Fontname and Style fields free of CSV delimiters, line breaks, and ASS tags."""
+    first_line = re.split(r"[\r\n\u2028\u2029]", str(raw or ""), maxsplit=1)[0]
+    cleaned = _safe(first_line).replace(",", "").replace(":", "").replace(";", "").strip()
+    return cleaned or fallback
+
+
+def _normalised_words(words: Sequence[Word]) -> list[Word]:
+    cleaned: list[Word] = []
+    last_start = 0.0
+    for word in words:
+        if not _safe(word.text):
+            continue
+        raw_start = word.start if math.isfinite(word.start) and word.start > 0 else 0.0
+        start = max(last_start, raw_start)
+        raw_end = word.end if math.isfinite(word.end) else start
+        end = max(start, raw_end)
+        cleaned.append(Word(word.text, start, end, word.confidence))
+        last_start = start
+    return cleaned
 
 
 def group_words(words: Sequence[Word]) -> list[list[Word]]:
@@ -146,7 +177,7 @@ def _fitted_size(lines: Sequence[str], base: int, pad: int, grow: float, font_pa
 
 def _caption_events(words: Sequence[Word], font_path: Optional[str] = None, y: int = Layout.caption_y) -> list[str]:
     events: list[str] = []
-    for group in group_words(words):
+    for group in group_words(_normalised_words(words)):
         plain = [_safe(w.text).upper() for w in group]
         # One size per group, so the text does not jump as the highlight moves.
         size = _fitted_size(_line_breaks(plain), _CAPTION_SIZE, _CAPTION_PAD, _HIGHLIGHT_GROW, font_path)
@@ -176,7 +207,7 @@ def _trim_overlaps(events: list[str]) -> list[str]:
             parts = event.split(",", 3)
             next_start = events[index + 1].split(",", 2)[1]
             if _seconds(parts[2]) > _seconds(next_start):
-                parts[2] = next_start
+                parts[2] = next_start if _seconds(next_start) >= _seconds(parts[1]) else parts[1]
                 event = ",".join(parts)
         trimmed.append(event)
     return trimmed
@@ -188,6 +219,8 @@ def _seconds(clock: str) -> float:
 
 
 def _hook_event(hook: str, duration: float, font_path: Optional[str] = None, y: int = Layout.hook_y) -> list[str]:
+    if not math.isfinite(duration) or duration <= 0:
+        return []
     text = _safe(hook)
     if not text or not is_renderable(text):
         return []
@@ -244,6 +277,9 @@ def _beat_events(beats: Sequence[tuple], font_path: Optional[str], y: int = Layo
     events: list[str] = []
     centre = _WIDTH // 2
     for when, text, style, label, seconds in beats:
+        if not math.isfinite(when) or not math.isfinite(seconds) or seconds <= 0:
+            continue
+        when = max(0.0, when)
         text = _safe(text)
         if style not in _BEAT_SIZES or not beat_is_drawable(text):
             continue
@@ -269,7 +305,7 @@ def _beat_events(beats: Sequence[tuple], font_path: Optional[str], y: int = Layo
             events.append(f"Dialogue: 3,{_clock(a)},{_clock(b)},Beat,,0,0,0,,"
                           f"{{\\an5\\pos({centre},{y})\\fs{reading_size}\\1c{_YELLOW}}}{reading}")
         label_text = _safe(label)
-        if label_text:
+        if label_text and beat_is_drawable(label_text):
             label_size = _fitted_size([label_text], 76, _BEAT_PAD, 1.0, font_path)
             events.append(f"Dialogue: 3,{start},{end},Beat,,0,0,0,,"
                           f"{{\\an5\\pos({centre},{y + 170})\\fs{label_size}\\fad(120,80)}}{label_text}")
@@ -278,6 +314,7 @@ def _beat_events(beats: Sequence[tuple], font_path: Optional[str], y: int = Layo
 
 def font_family(path: str) -> str:
     """Read a font file's family name, which is how ASS has to refer to it."""
+    fallback = _safe_style_token(os.path.splitext(os.path.basename(path))[0], "Arial")
     try:
         with open(path, "rb") as handle:
             data = handle.read()
@@ -293,14 +330,18 @@ def font_family(path: str) -> str:
                     ">6H", data[table + 6 + row * 12:table + 18 + row * 12])
                 if name_id == 1 and platform in (0, 3):
                     raw = data[table + strings + offset:table + strings + offset + length]
-                    return raw.decode("utf-16-be").strip()
+                    return _safe_style_token(raw.decode("utf-16-be").strip(), fallback)
     except (OSError, struct.error, UnicodeDecodeError) as exc:
         log.debug("could not read font name from %s: %s", path, exc)
-    return os.path.splitext(os.path.basename(path))[0]
+    return fallback
 
 
 def _steady_text(style: str, text: str, duration: float, y: int) -> list[str]:
     """Small text on screen for the whole clip. A name in a script the font lacks is left out."""
+    if not math.isfinite(duration) or duration <= 0:
+        return []
+    style = _safe_style_token(style, "Default")
+    text = _safe(text)
     if not text or not is_renderable(text):
         return []
     return [f"Dialogue: 0,{_clock(0)},{_clock(duration)},{style},,0,0,0,,{{\\an5\\pos({_WIDTH // 2},{y})}}{text}"]
@@ -310,6 +351,7 @@ def build_ass(words: Sequence[Word], hook: str, duration: float, font: str,
               font_path: Optional[str] = None, beats: Sequence[tuple] = (), creator: str = "", brand: str = "",
               layout: Layout = Layout()) -> str:
     """Full ASS document. ``words`` and ``beats`` must already be in output time."""
+    font = _safe_style_token(font, "Arial")
     creator = _safe(creator)
     events = (_steady_text("Credit", f"Credit: {creator}" if creator else "", duration, layout.credit_y)
               + _steady_text("Brand", _safe(brand), duration, layout.brand_y)

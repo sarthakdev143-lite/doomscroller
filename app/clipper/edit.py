@@ -22,7 +22,7 @@ from . import ai, broll, shots
 from .captions import COUNTABLE, beat_is_drawable
 from .media import Interrupted
 from .moments import Moment, Sentence, build_sentences, is_finished
-from .timeline import Segment, edit_segments, output_time, total_duration
+from .timeline import Segment, edit_segments, on_grid, output_time, total_duration
 from .transcribe import Word
 
 log = logging.getLogger(__name__)
@@ -87,19 +87,26 @@ class EditPlan:
     cutaways: list[Cutaway] = field(default_factory=list)
 
     @property
+    def _effective_speed(self) -> float:
+        return self.speed if math.isfinite(self.speed) and self.speed > 0 else 1.0
+
+    @property
     def duration(self) -> float:
-        return total_duration(self.segments) / self.speed
+        return total_duration(self.segments) / self._effective_speed
 
     def to_output(self, source_time: float) -> Optional[float]:
+        if not math.isfinite(source_time):
+            return None
         mapped = output_time(self.segments, source_time)
-        return None if mapped is None else mapped / self.speed
+        return None if mapped is None else max(0.0, mapped / self._effective_speed)
 
     def output_words(self) -> list[Word]:
         shifted = []
         for word in self.words:
             start, end = self.to_output(word.start), self.to_output(word.end)
             if start is not None:
-                shifted.append(Word(word.text, start, end if end is not None else self.duration, word.confidence))
+                raw_end = end if end is not None else self.duration
+                shifted.append(Word(word.text, start, max(start, raw_end), word.confidence))
         return shifted
 
 
@@ -377,7 +384,7 @@ def attach_stock(plan: EditPlan, session: Optional[broll.StockSession] = None) -
             clip = _fetch_fitting_shot(cutaway, used, chooser)
         except broll.SearchBlocked as exc:
             session.stopped = True
-            warnings.append(f"{exc}, so the rest of this job's B-roll was skipped")
+            warnings.append(f"{broll.scrub_secrets(exc)}, so the rest of this job's B-roll was skipped")
             break
         except broll.DownloadsFailed as exc:
             session.failed_files += exc.files
@@ -386,13 +393,14 @@ def attach_stock(plan: EditPlan, session: Optional[broll.StockSession] = None) -
             warnings.append("stock footage downloads are failing, so this job is missing some B-roll")
             continue
         except broll.StockError as exc:
-            warnings.append(f"B-roll search failed for {cutaway.query!r}: {exc}")
+            warnings.append(f"B-roll search failed for {cutaway.query!r}: {broll.scrub_secrets(exc)}")
             continue
         except Interrupted:
             raise
         except Exception as exc:  # B-roll is optional, so this must never cost the clip
-            log.warning("edit: stock lookup failed for %r", cutaway.query, exc_info=True)
-            warnings.append(f"B-roll search failed for {cutaway.query!r}: {exc}")
+            detail = broll.scrub_secrets(exc)
+            log.warning("edit: stock lookup failed for %r (%s): %s", cutaway.query, type(exc).__name__, detail)
+            warnings.append(f"B-roll search failed for {cutaway.query!r}: {detail}")
             continue
         if clip is None:
             log.info("edit: no stock footage for %r", cutaway.query)
@@ -452,7 +460,14 @@ def build_edit(moment: Moment, words: Sequence[Word], *, title: str = "") -> Edi
     if total_duration(segments) < _MIN_KEPT_SEC:
         kept = indices_for(every_sentence, set())
         segments = segments_for(kept)
-    plan = EditPlan(words=[inside[i] for i in kept], segments=segments, speed=settings.clip_speed)
+    if not segments:
+        safe_start = max(0.0, moment.start if math.isfinite(moment.start) else 0.0)
+        safe_end = moment.end if math.isfinite(moment.end) else safe_start
+        grid_start, grid_end = on_grid(safe_start), on_grid(max(safe_start, safe_end))
+        if grid_end > grid_start:
+            segments = [(grid_start, grid_end)]
+    safe_speed = settings.clip_speed if math.isfinite(settings.clip_speed) and settings.clip_speed > 0 else 1.0
+    plan = EditPlan(words=[inside[i] for i in kept], segments=segments, speed=safe_speed)
     beats = _reply_beats(reply, sentences, inside, set(kept)) or _rule_beats(inside, kept)
     plan.beats = _spaced(beats, plan)
     plan.cutaways = _spaced_cutaways(_reply_cutaways(reply, sentences, inside, set(kept)), plan)

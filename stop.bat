@@ -1,10 +1,13 @@
 @echo off
+setlocal
 cd /d "%~dp0"
 echo Stopping Doomscroller...
-if exist "venv\Scripts\python.exe" (
-  venv\Scripts\python.exe scripts\run.py --stop
+if exist "%~dp0venv\Scripts\python.exe" (
+  "%~dp0venv\Scripts\python.exe" "%~dp0scripts\run.py" --stop
 ) else (
-  python scripts\run.py --stop
+  python "%~dp0scripts\run.py" --stop
 )
+set "EXIT_CODE=%ERRORLEVEL%"
 echo Done. You can close this window.
-pause
+if /i not "%~1"=="--no-pause" pause
+exit /b %EXIT_CODE%

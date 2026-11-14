@@ -14,7 +14,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -50,6 +52,21 @@ _MAX_FAILED_DOWNLOADS = 2
 # A hung CDN costs a minute per attempt, so give up across cutaways too. This counts
 # files, because a cutaway may only have one to try once the AI has chosen.
 MAX_FAILED_FILES = 4
+_URL_KEY_RE = re.compile(r"([?&](?:key|api_key|apikey|token)=)[^&\s\"')]+", re.IGNORECASE)
+
+
+def scrub_secrets(text: object) -> str:
+    """Redact stock video API keys from any exception or log message."""
+    cleaned = str(text or "")
+    for secret in (settings.pixabay_api_key, settings.pexels_api_key):
+        if secret:
+            cleaned = cleaned.replace(secret, "[REDACTED]")
+    return _URL_KEY_RE.sub(r"\1[REDACTED]", cleaned)
+
+
+def _safe_video_id(raw: object) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_-]+", "_", str(raw or "")).strip("_")
+    return cleaned or "stock"
 
 
 class StockError(RuntimeError):
@@ -128,7 +145,7 @@ def best_file(video: dict) -> Optional[dict]:
         if not isinstance(item, dict) or not item.get("link"):
             continue
         width, height = item.get("width"), item.get("height")
-        if not isinstance(width, int) or not isinstance(height, int):
+        if isinstance(width, bool) or isinstance(height, bool) or not isinstance(width, int) or not isinstance(height, int):
             continue
         if item.get("file_type") != "video/mp4" or width < _MIN_FILE_WIDTH or height <= width:
             continue
@@ -137,10 +154,13 @@ def best_file(video: dict) -> Optional[dict]:
 
 
 def _number(raw: object) -> float:
+    if isinstance(raw, bool):
+        return 0.0
     try:
-        return float(raw or 0)
+        value = float(raw or 0)
     except (TypeError, ValueError):
         return 0.0
+    return value if math.isfinite(value) and value >= 0 else 0.0
 
 
 def _pexels_candidates(videos: object) -> list[Candidate]:
@@ -177,7 +197,8 @@ def _with_download_flag(link: str) -> str:
 
 
 def _smallest_thumbnail(hit: dict, chosen: dict) -> str:
-    tiny = hit["videos"].get("tiny")
+    videos = hit.get("videos") if isinstance(hit.get("videos"), dict) else {}
+    tiny = videos.get("tiny")
     link = tiny.get("thumbnail") if isinstance(tiny, dict) else None
     return str(link or chosen.get("thumbnail") or "")
 
@@ -201,10 +222,14 @@ def _request(url: str, params: dict, headers: Optional[dict] = None) -> dict:
     name = provider() or "the stock library"
     try:
         response = httpx.get(url, params=params, headers=headers or {}, timeout=_TIMEOUT)
-    except UnicodeEncodeError as exc:
-        raise BadKey(f"the {name} API key has a stray character in it, so paste it again") from exc
-    except (httpx.HTTPError, httpx.InvalidURL) as exc:
-        raise StockError(f"could not reach {name}") from exc
+    except UnicodeEncodeError:
+        raise BadKey(f"the {name} API key has a stray character in it, so paste it again") from None
+    except (httpx.HTTPError, httpx.InvalidURL):
+        raise StockError(f"could not reach {name}") from None
+    except StockError:
+        raise
+    except Exception:
+        raise StockError(f"could not reach {name}") from None
     if response.status_code == 429:
         raise RateLimited(f"{name} rate limit reached")
     # Pixabay answers 400 for a wrong key.
@@ -214,8 +239,8 @@ def _request(url: str, params: dict, headers: Optional[dict] = None) -> dict:
         raise StockError(f"{name} returned {response.status_code}")
     try:
         return response.json()
-    except ValueError as exc:
-        raise StockError(f"{name} sent an unreadable reply") from exc
+    except ValueError:
+        raise StockError(f"{name} sent an unreadable reply") from None
 
 
 def _search_cache(library: str, query: str) -> Path:
@@ -284,8 +309,10 @@ def _download(link: str, path: Path) -> None:
                         raise StockError("stock clip is too large")
                     handle.write(chunk)
         os.replace(partial, path)
+    except StockError:
+        raise
     except (httpx.HTTPError, httpx.InvalidURL, OSError) as exc:
-        raise StockError(f"download failed: {exc}") from exc
+        raise StockError(f"download failed: {scrub_secrets(exc)}") from None
     finally:
         try:
             partial.unlink()
@@ -311,7 +338,7 @@ def _playable(path: Path, seconds: float) -> bool:
 
 def _local_copy(candidate: Candidate, seconds: float) -> Optional[Path]:
     """A checked file for this result, downloading it if needed. None if it will not play."""
-    path = settings.content_path / "broll" / f"{candidate.video_id}.mp4"
+    path = settings.content_path / "broll" / f"{_safe_video_id(candidate.video_id)}.mp4"
     if path.exists() and not _playable(path, seconds):
         path.unlink()
     if path.exists():
@@ -330,6 +357,8 @@ def fetch(query: str, seconds: float, *, exclude: Iterable[str] = (),
 
     `choose` gets the results long enough to use, and returns those worth trying, best first.
     """
+    if not math.isfinite(seconds) or seconds <= 0:
+        return None
     skip = set(exclude)
     usable = [c for c in search(query) if c.video_id not in skip and c.duration >= seconds + _LEAD_IN_SEC]
     if choose is not None and usable:
@@ -341,7 +370,7 @@ def fetch(query: str, seconds: float, *, exclude: Iterable[str] = (),
         try:
             path = _local_copy(candidate, seconds)
         except (StockError, OSError) as exc:
-            log.warning("broll: %s", exc)
+            log.warning("broll: %s", scrub_secrets(exc))
             failed += 1
             continue
         if path is None:

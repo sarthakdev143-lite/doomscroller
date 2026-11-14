@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import tempfile
 from dataclasses import asdict, dataclass, field
@@ -75,29 +76,68 @@ class Transcript:
 
     @property
     def _is_speech(self) -> bool:
-        if not self.words or self.duration <= 0:
+        if not self.words or not math.isfinite(self.duration) or self.duration <= 0:
             return False
         per_minute = len(self.words) / (self.duration / 60)
-        confidence = sum(w.confidence for w in self.words) / len(self.words)
+        confidences = [w.confidence if math.isfinite(w.confidence) else 0.0 for w in self.words]
+        confidence = sum(confidences) / len(confidences)
         return per_minute >= _MIN_WORDS_PER_MINUTE and confidence >= _MIN_MEAN_CONFIDENCE
 
 
+def _clean_float(raw: object, default: float = 0.0, *, strict: bool = False) -> float:
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        if strict:
+            raise TypeError("boolean is not a timestamp")
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        if strict:
+            raise
+        return default
+    return value if math.isfinite(value) else default
+
+
+def _clean_word(text: object, start_raw: object, end_raw: object, conf_raw: object,
+                *, default_conf: float = 0.0, strict: bool = False) -> Optional[Word]:
+    cleaned_text = str(text or "").strip()
+    start = max(0.0, _clean_float(start_raw, 0.0, strict=strict))
+    end = max(start, _clean_float(end_raw, start, strict=strict))
+    confidence = min(1.0, max(0.0, _clean_float(conf_raw, default_conf, strict=strict)))
+    if not cleaned_text:
+        return None
+    return Word(text=cleaned_text, start=start, end=end, confidence=confidence)
+
+
 def parse_response(payload: dict, duration: float) -> Transcript:
-    channel = ((payload.get("results") or {}).get("channels") or [{}])[0]
-    alternative = (channel.get("alternatives") or [{}])[0]
-    words = [
-        Word(
-            text=str(w.get("punctuated_word") or w.get("word") or "").strip(),
-            start=float(w.get("start") or 0),
-            end=float(w.get("end") or 0),
-            confidence=float(w.get("confidence") or 0),
+    if not isinstance(payload, dict):
+        raise TypeError("Deepgram reply must be a JSON object")
+    raw_channels = (payload.get("results") or {}).get("channels") or [{}]
+    channels = [c for c in raw_channels if isinstance(c, dict)]
+    channel = channels[0] if channels else {}
+    alts = [a for a in (channel.get("alternatives") or [{}]) if isinstance(a, dict)]
+    alternative = alts[0] if alts else {}
+    words: list[Word] = []
+    for item in alternative.get("words") or []:
+        if item is None:
+            continue
+        word = _clean_word(
+            item.get("punctuated_word") or item.get("word"),
+            item.get("start"),
+            item.get("end"),
+            item.get("confidence"),
+            default_conf=0.0,
+            strict=True,
         )
-        for w in alternative.get("words") or []
-    ]
+        if word is not None:
+            words.append(word)
+    safe_duration = duration if math.isfinite(duration) and duration > 0 else 0.0
     return Transcript(
-        words=[w for w in words if w.text],
+        words=words,
         language=str(channel.get("detected_language") or ""),
-        duration=duration,
+        duration=safe_duration,
     )
 
 
@@ -109,7 +149,7 @@ def _request(audio_path: str) -> dict:
         "detect_language": "true",
     }
     headers = {
-        "Authorization": f"Token {settings.deepgram_api_key}",
+        "Authorization": f"Token {(settings.deepgram_api_key or '').strip()}",
         "Content-Type": "audio/mpeg",
     }
     try:
@@ -142,13 +182,30 @@ def _load_cache(path: str, fingerprint: dict, duration: float) -> Optional[Trans
     try:
         with open(path, encoding="utf-8") as handle:
             data = json.load(handle)
-        if data.get("source") != fingerprint:
+        if not isinstance(data, dict) or data.get("source") != fingerprint:
             return None
+        raw_words = data["words"]
+        if not isinstance(raw_words, list):
+            return None
+        words: list[Word] = []
+        for item in raw_words:
+            if not isinstance(item, dict):
+                return None
+            built = _clean_word(
+                item.get("text"),
+                item.get("start"),
+                item.get("end"),
+                item.get("confidence", 1.0),
+                default_conf=1.0,
+            )
+            if built is not None:
+                words.append(built)
+        safe_duration = duration if math.isfinite(duration) and duration > 0 else 0.0
         return Transcript(
-            words=[Word(**w) for w in data["words"]],
-            language=data.get("language", ""),
-            duration=duration,
-            engine=data.get("engine", "deepgram"),
+            words=words,
+            language=str(data.get("language") or ""),
+            duration=safe_duration,
+            engine=str(data.get("engine") or "deepgram"),
         )
     except (AttributeError, OSError, ValueError, KeyError, TypeError):
         return None
@@ -169,7 +226,7 @@ def _write_cache(paths: tuple[str, str], fingerprint: dict, transcript: Transcri
 
 def transcribe(video_path: str, info: MediaInfo) -> Optional[Transcript]:
     """Return a transcript, or None when there is no audio or no API key."""
-    if not info.has_audio:
+    if not info.has_audio or not math.isfinite(info.duration) or info.duration <= 0:
         return None
     # Taken first, so a file replaced during the request is not stamped as current.
     fingerprint = _fingerprint(video_path)
@@ -178,7 +235,7 @@ def transcribe(video_path: str, info: MediaInfo) -> Optional[Transcript]:
         cached = _load_cache(cache, fingerprint, info.duration)
         if cached is not None:
             return cached
-    if not settings.deepgram_api_key:
+    if not (settings.deepgram_api_key or "").strip():
         log.warning("DEEPGRAM_API_KEY not set; treating this video as no-speech")
         return None
     with tempfile.TemporaryDirectory(prefix="clipper-audio-") as tmp:

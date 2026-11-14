@@ -12,20 +12,17 @@ import os
 import re
 import tempfile
 from dataclasses import dataclass
+from io import BytesIO
 from typing import Optional, Sequence
 
 import httpx
 import numpy as np
+from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
 
 from app.config import settings
 
 from . import ai
 from .broll import Candidate
-
-try:
-    import cv2
-except ImportError:
-    cv2 = None
 
 log = logging.getLogger(__name__)
 
@@ -35,8 +32,26 @@ _COLUMNS = 4
 _TILE_WIDTH, _TILE_HEIGHT = 270, 480
 _GAP = 6
 _MAX_THUMBNAIL_BYTES = 5_000_000
+_MAX_THUMBNAIL_PIXELS = 25_000_000
 _TIMEOUT = httpx.Timeout(15, connect=10)
 _MAX_SPOKEN_CHARS = 400
+_CTRL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]+")
+
+
+def _to_rgb_uint8(image: np.ndarray) -> Optional[np.ndarray]:
+    if not isinstance(image, np.ndarray) or image.ndim < 2:
+        return None
+    h, w = image.shape[:2]
+    if h <= 0 or w <= 0:
+        return None
+    arr = image if image.dtype == np.uint8 else np.clip(image, 0, 255).astype(np.uint8)
+    if arr.ndim == 2:
+        return np.repeat(arr[:, :, None], 3, axis=2)
+    if arr.ndim == 3 and arr.shape[2] == 1:
+        return np.repeat(arr, 3, axis=2)
+    if arr.ndim == 3 and arr.shape[2] >= 3:
+        return np.ascontiguousarray(arr[:, :, :3])
+    return None
 
 
 class NothingToShow(RuntimeError):
@@ -64,44 +79,66 @@ def _thumbnail(client: httpx.Client, link: str) -> Optional[np.ndarray]:
                 data += chunk
                 if len(data) > _MAX_THUMBNAIL_BYTES:
                     return None
-        return cv2.imdecode(np.frombuffer(bytes(data), np.uint8), cv2.IMREAD_COLOR) if data else None
-    except (httpx.HTTPError, httpx.InvalidURL, cv2.error) as exc:
+        if not data:
+            return None
+        with Image.open(BytesIO(bytes(data))) as img:
+            if img.width <= 0 or img.height <= 0 or img.width * img.height > _MAX_THUMBNAIL_PIXELS:
+                return None
+            return np.asarray(img.convert("RGB"), dtype=np.uint8)
+    except (httpx.HTTPError, httpx.InvalidURL, UnidentifiedImageError, OSError, ValueError) as exc:
         log.info("shots: no thumbnail: %s", exc)
         return None
 
 
 def _as_rendered(image: np.ndarray) -> np.ndarray:
     """The centre of the picture that the render will keep: 9:16, or about 16:9 in the framed layout."""
-    height, width = image.shape[:2]
+    rgb = _to_rgb_uint8(image)
+    if rgb is None:
+        return np.zeros((1, 1, 3), dtype=np.uint8)
+    height, width = rgb.shape[:2]
     across, down = (16, 9) if settings.clip_layout == "framed" else (9, 16)
     keep_width = max(1, min(width, height * across // down))
     keep_height = max(1, min(height, width * down // across))
     left, top = (width - keep_width) // 2, (height - keep_height) // 2
-    return image[top:top + keep_height, left:left + keep_width]
+    return rgb[top:top + keep_height, left:left + keep_width]
 
 
 def _write_sheet(images: Sequence[np.ndarray], path: str) -> bool:
-    rows = (len(images) + _COLUMNS - 1) // _COLUMNS
-    sheet = np.zeros((rows * (_TILE_HEIGHT + _GAP), _COLUMNS * (_TILE_WIDTH + _GAP), 3), np.uint8)
-    for index, image in enumerate(images):
+    valid = [rgb for img in images if (rgb := _to_rgb_uint8(img)) is not None]
+    if not valid:
+        return False
+    rows = (len(valid) + _COLUMNS - 1) // _COLUMNS
+    sheet = Image.new("RGB", (_COLUMNS * (_TILE_WIDTH + _GAP), rows * (_TILE_HEIGHT + _GAP)), (0, 0, 0))
+    font = ImageFont.load_default(size=36)
+    for index, image in enumerate(valid):
         shown = _as_rendered(image)
+        pil_img = Image.fromarray(shown, mode="RGB")
         if settings.clip_layout == "framed":  # letterbox, so the shape on the sheet is the shape on screen
             bar = max(0, (shown.shape[1] * _TILE_HEIGHT // _TILE_WIDTH - shown.shape[0]) // 2)
-            shown = cv2.copyMakeBorder(shown, bar, bar, 0, 0, cv2.BORDER_CONSTANT, value=(0, 0, 0))
-        tile = cv2.resize(shown, (_TILE_WIDTH, _TILE_HEIGHT), interpolation=cv2.INTER_AREA)
-        cv2.rectangle(tile, (0, 0), (64, 56), (0, 0, 0), -1)
-        cv2.putText(tile, str(index + 1), (8, 44), cv2.FONT_HERSHEY_SIMPLEX, 1.4, (255, 255, 255), 3, cv2.LINE_AA)
+            if bar > 0:
+                framed = Image.new("RGB", (pil_img.width, pil_img.height + 2 * bar), (0, 0, 0))
+                framed.paste(pil_img, (0, bar))
+                pil_img = framed
+        tile = pil_img.resize((_TILE_WIDTH, _TILE_HEIGHT), Image.Resampling.BOX)
+        draw = ImageDraw.Draw(tile)
+        draw.rectangle((0, 0, 63, 55), fill=(0, 0, 0))
+        draw.text((12, 8), str(index + 1), fill=(255, 255, 255), font=font, stroke_width=2, stroke_fill=(255, 255, 255))
         row, column = divmod(index, _COLUMNS)
         top, left = row * (_TILE_HEIGHT + _GAP), column * (_TILE_WIDTH + _GAP)
-        sheet[top:top + _TILE_HEIGHT, left:left + _TILE_WIDTH] = tile
-    return bool(cv2.imwrite(path, sheet, [cv2.IMWRITE_JPEG_QUALITY, 85]))
+        sheet.paste(tile, (left, top))
+    try:
+        sheet.save(path, format="JPEG", quality=85)
+        return True
+    except OSError:
+        return False
 
 
 def _prompt(spoken: str, count: int) -> str:
+    clean_spoken = _CTRL_CHARS_RE.sub(" ", str(spoken or "")).strip()
     return f"""The attached image shows {count} stock video shots, numbered in their top-left corners and cropped exactly as they would appear in a vertical video.
 
 One of them will play for a couple of seconds while a speaker says:
-"{spoken[:_MAX_SPOKEN_CHARS]}"
+"{clean_spoken[:_MAX_SPOKEN_CHARS]}"
 
 Choose the shots a viewer would immediately connect to those words. A shot should show what is being talked about, not just share a mood or a loose association: a campfire does not illustrate a heatwave.
 
@@ -124,14 +161,13 @@ def _reply_numbers(reply: object, count: int) -> Optional[list[int]]:
 
 
 def _reply_search(reply: dict) -> str:
-    search = re.sub(r"\s+", " ", str(reply.get("search") or "")).strip()
+    raw = _CTRL_CHARS_RE.sub("", str(reply.get("search") or "")) if isinstance(reply, dict) else ""
+    search = re.sub(r"\s+", " ", raw).strip()
     return search if len(search) <= MAX_SEARCH_CHARS else ""
 
 
 def judge(found: Sequence[Candidate], spoken: str) -> Optional[Verdict]:
     """What the AI makes of these results. None if it failed, which is worth not repeating."""
-    if cv2 is None:
-        raise NothingToShow("opencv is not installed")
     shown: list[Candidate] = []
     images: list[np.ndarray] = []
     with httpx.Client(timeout=_TIMEOUT, follow_redirects=True) as client:
@@ -144,7 +180,7 @@ def judge(found: Sequence[Candidate], spoken: str) -> Optional[Verdict]:
                 images.append(image)
     if not shown:
         raise NothingToShow("no thumbnail could be loaded")
-    with tempfile.TemporaryDirectory(prefix="clipper-shots-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="clipper-shots-", ignore_cleanup_errors=True) as tmp:
         sheet = os.path.join(tmp, "shots.jpg")
         if not _write_sheet(images, sheet):
             return None

@@ -16,15 +16,19 @@ log = logging.getLogger(__name__)
 _lock = threading.RLock()
 
 
-def choose() -> dict[str, str]:
+def choose(channel=None) -> dict[str, str]:
     """A recipe for the next speech clip. Rendering must not depend on the loop, so failure means no recipe."""
     if not settings.growth_enabled:
         return {}
     from .autopilot import pick_arm, policy
 
     try:
-        current = policy()
-        return {factor: pick_arm(current, factor, arms) for factor, arms in RECIPE_FACTORS.items()}
+        current = policy(channel=channel)
+        return {
+            "pace": pick_arm(current, "pace", RECIPE_FACTORS["pace"]),
+            "sfx": pick_arm(current, "sfx", RECIPE_FACTORS["sfx"]) if settings.clip_sfx else "off",
+            "broll": pick_arm(current, "broll", RECIPE_FACTORS["broll"]) if settings.clip_broll else "off",
+        }
     except Exception as exc:
         log.warning("growth: could not choose a recipe: %s", exc)
         return {}
@@ -32,17 +36,24 @@ def choose() -> dict[str, str]:
 
 @contextmanager
 def applied(recipe: dict[str, str]) -> Iterator[None]:
-    if not recipe:
+    if not recipe or not isinstance(recipe, dict):
         yield
         return
-    speed, target = PACES[recipe["pace"]]
     with _lock:
         # Inside the lock, or these would read another render's temporary values.
-        wanted = {
-            "clip_speed": speed, "clip_edit_target_sec": target,
-            "clip_sfx": settings.clip_sfx and recipe["sfx"] == "on",
-            "clip_broll": settings.clip_broll and recipe["broll"] == "on",
-        }
+        wanted: dict[str, object] = {}
+        pace = recipe.get("pace")
+        if pace in PACES:
+            speed, target = PACES[pace]
+            wanted["clip_speed"] = speed
+            wanted["clip_edit_target_sec"] = target
+        if "sfx" in recipe:
+            wanted["clip_sfx"] = bool(settings.clip_sfx and recipe["sfx"] == "on")
+        if "broll" in recipe:
+            wanted["clip_broll"] = bool(settings.clip_broll and recipe["broll"] == "on")
+        if not wanted:
+            yield
+            return
         before = {name: getattr(settings, name) for name in wanted}
         try:
             for name, value in wanted.items():

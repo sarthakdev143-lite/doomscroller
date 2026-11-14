@@ -37,6 +37,15 @@ _TAGS_MAX_COUNT = 15
 _TAGS_MAX_TOTAL_CHARS = 480  # the real cap is 500; leave headroom
 
 _ANGLE_BRACKETS = re.compile(r"[<>]")  # YouTube refuses these in a title or description
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
+
+
+def _strip_unsafe(value: Optional[str]) -> str:
+    """Strip angle brackets, null bytes, and C0/C1 control chars, normalising CRLF to LF."""
+    if not value:
+        return ""
+    normalized = str(value).replace("\r\n", "\n").replace("\r", "\n")
+    return _CONTROL_CHARS.sub("", _ANGLE_BRACKETS.sub("", normalized))
 
 _SHORTS_HASHTAG = "#Shorts"
 _BASE_TAGS = ("shorts", "viral", "trending", "reels")
@@ -75,7 +84,7 @@ def detect_language(text: str) -> str:
 # ---------------------------------------------------------------------------
 def _clean_title(title: str) -> str:
     """Trim a title to YouTube's limit, leaving room for the Shorts hashtag."""
-    title = re.sub(r"\s+", " ", (title or "").strip())
+    title = re.sub(r"\s+", " ", _strip_unsafe(title).strip())
     if not title:
         return ""
     budget = _TITLE_MAX - len(_SHORTS_HASHTAG) - 1
@@ -93,7 +102,7 @@ def _clean_title(title: str) -> str:
 
 def finished_title(title: str) -> str:
     """A title as it goes out: within YouTube's limit and carrying the Shorts hashtag."""
-    clean = _clean_title(_ANGLE_BRACKETS.sub("", title or "")) or "Watch this"
+    clean = _clean_title(title or "") or "Watch this"
     if _SHORTS_HASHTAG.lower() not in clean.lower():
         clean = f"{clean} {_SHORTS_HASHTAG}"
     return clean[:_TITLE_MAX]
@@ -101,28 +110,36 @@ def finished_title(title: str) -> str:
 
 def youtube_title(title: Optional[str]) -> str:
     """The last word on a title: whatever it says, YouTube will accept it."""
-    clean = " ".join(_ANGLE_BRACKETS.sub("", title or "").split())[:_TITLE_MAX].strip()
+    clean = " ".join(_strip_unsafe(title).split())[:_TITLE_MAX].strip()
     return clean or finished_title("")
 
 
 def youtube_description(description: Optional[str], limit: int = _DESCRIPTION_MAX) -> str:
     """YouTube counts bytes here, not characters, and Hindi runs to three bytes each."""
-    clean = _ANGLE_BRACKETS.sub("", description or "")
+    if limit <= 0:
+        return ""
+    clean = _strip_unsafe(description)
     return clean.encode("utf-8", "ignore")[:limit].decode("utf-8", "ignore").strip()
 
 
 def _slug_tag(raw: str) -> str:
     """Normalise one tag: lowercase, no punctuation, length-capped."""
-    tag = re.sub(r"[^\w\s]", "", str(raw or ""), flags=re.UNICODE).strip().lower()
+    if raw is None:
+        return ""
+    cleaned = _strip_unsafe(str(raw))
+    tag = re.sub(r"[^\w\s]", "", cleaned, flags=re.UNICODE).strip().lower()
     tag = re.sub(r"\s+", " ", tag)
     return tag[:_TAG_MAX_CHARS].strip()
 
 
-def build_tags(keywords: Sequence[str], author: str = "") -> list[str]:
+def build_tags(keywords: Sequence[str] | str | None, author: str = "") -> list[str]:
     """Build a deduped, length-capped YouTube tag list."""
+    kw_items: list[object] = [keywords] if isinstance(keywords, str) else list(keywords or [])
     candidates: list[str] = []
-    for keyword in list(keywords or []) + list(_BASE_TAGS):
-        tag = _slug_tag(keyword)
+    for keyword in kw_items + list(_BASE_TAGS):
+        if keyword is None:
+            continue
+        tag = _slug_tag(str(keyword))
         if not tag or len(tag) < 2 or tag in _TAG_STOPWORDS:
             continue
         candidates.append(tag)
@@ -178,11 +195,14 @@ def compose(
     burned-in attribution. The description credit is then the only attribution
     the viewer gets, so it is emitted even when the creator handle is unknown.
     """
-    author = (author or "").lstrip("@").strip()
+    author = " ".join(_strip_unsafe(author).lstrip("@").split())
+    author_name = " ".join(_strip_unsafe(author_name).split())
+    platform = " ".join(_strip_unsafe(platform).split())
+    source_url = "".join(_strip_unsafe(source_url).split())
     tags = build_tags(keywords, author=author)
 
-    description = _ANGLE_BRACKETS.sub("", description or "")
-    clean_title = _clean_title(_ANGLE_BRACKETS.sub("", title or ""))
+    description = _strip_unsafe(description)
+    clean_title = _clean_title(title or "")
     if not clean_title:
         clean_title = _clean_title(description) or "Watch this"
     if _SHORTS_HASHTAG.lower() not in clean_title.lower():
@@ -293,10 +313,13 @@ def _call_llm(system_prompt: str, user_prompt: str) -> Optional[str]:
     if not shutil.which("z-ai"):
         log.debug("z-ai CLI not on PATH; skipping LLM provider")
         return None
+    from app.winproc import background_subprocess_kwargs
+
     try:
         proc = subprocess.run(
             ["z-ai", "chat", "--prompt", user_prompt, "--system", system_prompt],
-            capture_output=True, text=True, timeout=settings.llm_timeout_sec,
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=settings.llm_timeout_sec,
+            **background_subprocess_kwargs(low_priority=True),
         )
     except subprocess.TimeoutExpired:
         log.warning("z-ai CLI timed out after %ss", settings.llm_timeout_sec)

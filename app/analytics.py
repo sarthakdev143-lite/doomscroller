@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import math
 from datetime import datetime, timezone
-from typing import Iterable
+from typing import Any, Iterable
 
 from .models import Video
 
@@ -43,17 +43,36 @@ _W_FRESHNESS = 0.20
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
-    """Normalise a possibly naive datetime to UTC-aware."""
+    """Normalise a possibly naive or offset-aware datetime to UTC-aware."""
     if value is None:
         return None
-    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _clean_count(value: Any) -> float:
+    """Coerce nullable/corrupt counters to a non-negative finite float."""
+    if value is None or isinstance(value, bool):
+        return 0.0
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(parsed) or parsed <= 0.0:
+        return 0.0
+    return parsed
 
 
 def age_hours(v: Video, now: datetime | None = None) -> float:
     """Hours since the video was published (or scraped, if publish time is unknown)."""
-    now = now or datetime.now(timezone.utc)
-    reference = _as_utc(getattr(v, "source_published_at", None)) or _as_utc(v.scraped_at) or now
-    return max(0.0, (now - reference).total_seconds() / 3600.0)
+    now_utc = _as_utc(now) or datetime.now(timezone.utc)
+    reference = (
+        _as_utc(getattr(v, "source_published_at", None))
+        or _as_utc(getattr(v, "scraped_at", None))
+        or now_utc
+    )
+    return max(0.0, (now_utc - reference).total_seconds() / 3600.0)
 
 
 def engagement_score(v: Video) -> float:
@@ -62,31 +81,36 @@ def engagement_score(v: Video) -> float:
     Shares are weighted highest because they are the mechanic that actually
     spreads a video; comments next; passive likes least.
     """
-    if v.views <= 0:
+    views = _clean_count(getattr(v, "views", 0))
+    if views <= 0.0:
         return 0.0
-    weighted = v.likes + 2 * v.comments + 3 * v.shares
-    if weighted <= 0:
+    likes = _clean_count(getattr(v, "likes", 0))
+    comments = _clean_count(getattr(v, "comments", 0))
+    shares = _clean_count(getattr(v, "shares", 0))
+    weighted = likes + 2.0 * comments + 3.0 * shares
+    if weighted <= 0.0:
         return 0.0
-    rate = weighted / v.views
-    return round(min(1.0, rate / _ENGAGEMENT_CEILING), 4)
+    rate = weighted / views
+    return round(min(1.0, max(0.0, rate / _ENGAGEMENT_CEILING)), 4)
 
 
 def reach_score(v: Video) -> float:
     """Log-compressed absolute view count. 10k -> 0.5, 1M -> 0.75, 100M -> 1.0."""
-    if v.views <= 0:
+    views = _clean_count(getattr(v, "views", 0))
+    if views <= 1.0:
         return 0.0
-    return round(min(1.0, math.log10(v.views) / _REACH_CEILING_LOG), 4)
+    return round(min(1.0, max(0.0, math.log10(views) / _REACH_CEILING_LOG)), 4)
 
 
 def velocity_score(v: Video, now: datetime | None = None) -> float:
     """Engagement rate decayed by age (48h half-life)."""
     decay = 0.5 ** (age_hours(v, now) / _VELOCITY_HALFLIFE_H)
-    return round(engagement_score(v) * decay, 4)
+    return round(min(1.0, max(0.0, engagement_score(v) * decay)), 4)
 
 
 def freshness(v: Video, now: datetime | None = None) -> float:
     """Pure recency factor in ``[0, 1]`` (72h half-life)."""
-    return 0.5 ** (age_hours(v, now) / _FRESHNESS_HALFLIFE_H)
+    return min(1.0, max(0.0, 0.5 ** (age_hours(v, now) / _FRESHNESS_HALFLIFE_H)))
 
 
 def viral_score(v: Video, now: datetime | None = None) -> float:
@@ -96,14 +120,16 @@ def viral_score(v: Video, now: datetime | None = None) -> float:
         + _W_ENGAGEMENT * engagement_score(v)
         + _W_FRESHNESS * freshness(v, now)
     )
-    return round(min(1.0, blended), 4)
+    return round(min(1.0, max(0.0, blended)), 4)
 
 
 def recompute_scores(videos: Iterable[Video], now: datetime | None = None) -> None:
     """Mutate each video in place so all four scores are current."""
-    now = now or datetime.now(timezone.utc)
+    now_utc = _as_utc(now) or datetime.now(timezone.utc)
     for v in videos:
+        if v is None:
+            continue
         v.engagement_score = engagement_score(v)
         v.reach_score = reach_score(v)
-        v.velocity_score = velocity_score(v, now=now)
-        v.viral_score = viral_score(v, now=now)
+        v.velocity_score = velocity_score(v, now=now_utc)
+        v.viral_score = viral_score(v, now=now_utc)

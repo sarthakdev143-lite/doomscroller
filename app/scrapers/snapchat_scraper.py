@@ -31,11 +31,14 @@ HTTP fetch is challenged; it is never required for normal operation.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import math
 import os
 import random
 import re
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Any, Iterable
@@ -49,12 +52,15 @@ _SPOTLIGHT_URL = f"{_BASE}/spotlight"
 _PROFILE_URL_TEMPLATE = f"{_BASE}/@{{user}}"
 _STORY_URL_TEMPLATE = f"{_BASE}/spotlight/{{story_id}}"
 _HANDLE_IN_URL_RE = re.compile(
-    r"https?://(?:www\.)?snapchat\.com/(?:add/|@)(?P<user>[^/?#]+)", re.I
+    r"^(?:https?://)?(?:(?:www|m|story)\.)?snapchat\.com/(?:add/|@)(?P<user>[^/?#\s]+)", re.I
 )
 _VALID_HANDLE_RE = re.compile(r"^[A-Za-z0-9_.\-]{2,64}$")
 _NEXT_DATA_RE = re.compile(
-    r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', re.S
+    r"""<script\b[^>]*\bid=["']__NEXT_DATA__["'][^>]*>(.*?)</script>""", re.I | re.S
 )
+_TRANSIENT_HTTP_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
+_MAX_EPOCH_SEC = 10_000_000_000
+_MAX_DOWNLOAD_BYTES = 200 * 1024 * 1024
 
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -86,27 +92,6 @@ _PLACEHOLDER_DESC_PREFIX = "another spotlight snap brought to you"
 # fields, and wraps many scalars in a {"value": ...} box.
 # ---------------------------------------------------------------------------
 
-def _num(value: Any, default: int = 0) -> int:
-    """Coerce an int-or-numeric-string-or-None field to an int."""
-    if isinstance(value, bool):
-        return default
-    if isinstance(value, (int, float)):
-        return int(value)
-    if isinstance(value, str):
-        try:
-            return int(float(value.strip()))
-        except (TypeError, ValueError):
-            return default
-    return default
-
-
-def _flt(value: Any, default: float = 0.0) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
-
-
 def _unwrap(value: Any) -> Any:
     """Unwrap Snapchat's ``{"value": x}`` scalar boxes."""
     if isinstance(value, dict) and "value" in value and len(value) == 1:
@@ -114,16 +99,75 @@ def _unwrap(value: Any) -> Any:
     return value
 
 
+def _num(value: Any, default: int = 0) -> int:
+    """Coerce an int-or-numeric-string-or-None (or scalar box) field to an int."""
+    value = _unwrap(value)
+    if isinstance(value, bool) or value is None:
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if math.isfinite(value) else default
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return default
+        try:
+            parsed = float(raw)
+        except (TypeError, ValueError):
+            return default
+        return int(parsed) if math.isfinite(parsed) else default
+    return default
+
+
+def _flt(value: Any, default: float = 0.0) -> float:
+    value = _unwrap(value)
+    if isinstance(value, bool) or value is None:
+        return default
+    try:
+        parsed = float(value.strip() if isinstance(value, str) else value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if math.isfinite(parsed) else default
+
+
 def _text(value: Any) -> str:
     value = _unwrap(value)
     return value.strip() if isinstance(value, str) else ""
+
+
+def _http_url(value: Any) -> str:
+    url = _text(value)
+    return url if url.lower().startswith(("http://", "https://")) else ""
+
+
+def _safe_utc_datetime(timestamp: int) -> datetime | None:
+    if timestamp <= 0:
+        return None
+    if timestamp > _MAX_EPOCH_SEC:
+        timestamp //= 1000
+    if timestamp <= 0 or timestamp > _MAX_EPOCH_SEC:
+        return None
+    try:
+        return datetime.fromtimestamp(timestamp, tz=timezone.utc)
+    except (OSError, OverflowError, ValueError):
+        return None
+
+
+def _safe_snap_filename(source_id: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]", "", source_id or "").lstrip(".")
+    if cleaned and cleaned == source_id and len(cleaned) <= 60:
+        return f"snap_{cleaned}.mp4"
+    digest = hashlib.sha1((source_id or "").encode("utf-8")).hexdigest()[:10]
+    prefix = (cleaned[:45] or "snap").rstrip(".")
+    return f"snap_{prefix}_{digest}.mp4"
 
 
 class SnapchatScraper(Scraper):
     """Scrape Snapchat Spotlight via the embedded ``__NEXT_DATA__`` payload."""
 
     def __init__(self, *, timeout: float = 20.0) -> None:
-        self._timeout = timeout
+        self._timeout = max(1.0, float(timeout or 20.0))
         self._client: Any = None
         # Playwright handles, only created if the HTTP path is challenged.
         self._browser: Any = None
@@ -148,16 +192,38 @@ class SnapchatScraper(Scraper):
             )
         return self._client
 
-    def _fetch_next_data(self, url: str, *, allow_browser: bool = True) -> dict | None:
+    def _fetch_next_data(
+        self, url: str, *, allow_browser: bool = True, retries: int = 2
+    ) -> dict | None:
         """GET ``url`` and return its parsed ``__NEXT_DATA__`` payload."""
-        try:
-            response = self._http().get(url)
-        except Exception as exc:
-            log.warning("snapchat: GET %s failed: %s", url, exc)
-            return None
-        if response.status_code != 200:
+        response = None
+        attempts = max(1, int(retries) + 1)
+        for attempt in range(1, attempts + 1):
+            try:
+                response = self._http().get(url)
+            except Exception as exc:
+                log.warning(
+                    "snapchat: GET %s failed (attempt %d/%d): %s",
+                    url, attempt, attempts, exc,
+                )
+                if attempt < attempts:
+                    time.sleep(min(2.0, 0.3 * attempt))
+                    continue
+                return None
+
+            if response.status_code == 200:
+                break
+            if response.status_code in _TRANSIENT_HTTP_STATUSES and attempt < attempts:
+                headers = getattr(response, "headers", None) or {}
+                retry_after = _flt(headers.get("Retry-After"), default=0.3 * attempt)
+                time.sleep(min(2.0, max(0.1, retry_after)))
+                continue
             log.warning("snapchat: GET %s -> HTTP %s", url, response.status_code)
             return None
+
+        if response is None or response.status_code != 200:
+            return None
+
         data = self._parse_next_data(response.text)
         if data is None and allow_browser:
             log.info("snapchat: no __NEXT_DATA__ in %s, retrying via browser", url)
@@ -172,10 +238,11 @@ class SnapchatScraper(Scraper):
         if not match:
             return None
         try:
-            return json.loads(match.group(1))
+            parsed = json.loads(match.group(1))
         except json.JSONDecodeError as exc:
             log.warning("snapchat: __NEXT_DATA__ parse failed: %s", exc)
             return None
+        return parsed if isinstance(parsed, dict) else None
 
     @staticmethod
     def _page_props(data: dict | None) -> dict:
@@ -195,7 +262,7 @@ class SnapchatScraper(Scraper):
         except ImportError:
             log.debug("snapchat: playwright unavailable, cannot fall back")
             return None
-        playwright = browser = None
+        playwright = browser = context = None
         try:
             playwright = sync_playwright().start()
             browser = playwright.chromium.launch(
@@ -215,7 +282,7 @@ class SnapchatScraper(Scraper):
                 "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
             )
             page = context.new_page()
-            page.set_default_timeout(20_000)
+            page.set_default_timeout(int(self._timeout * 1000))
             page.goto(url, wait_until="domcontentloaded")
             page.wait_for_timeout(1500)
             return page.content()
@@ -224,6 +291,7 @@ class SnapchatScraper(Scraper):
             return None
         finally:
             for closer in (
+                getattr(context, "close", None),
                 getattr(browser, "close", None),
                 getattr(playwright, "stop", None),
             ):
@@ -238,13 +306,14 @@ class SnapchatScraper(Scraper):
     # ------------------------------------------------------------------
     def _normalize_handle(self, handle: str) -> str | None:
         """Extract a bare username from a handle, @handle or profile URL."""
-        raw = (handle or "").strip()
+        if not isinstance(handle, str):
+            return None
+        raw = handle.strip()
         if not raw:
             return None
         match = _HANDLE_IN_URL_RE.match(raw)
-        if match:
-            return match.group("user")
-        candidate = raw.lstrip("@").strip("/")
+        candidate = match.group("user") if match else raw
+        candidate = candidate.strip("/").lstrip("@").strip("/")
         return candidate if _VALID_HANDLE_RE.match(candidate) else None
 
     def _profile_url(self, username: str) -> str:
@@ -279,28 +348,40 @@ class SnapchatScraper(Scraper):
             return None
 
         snap_urls = snap.get("snapUrls") if isinstance(snap.get("snapUrls"), dict) else {}
-        media_url = _text(video_meta.get("contentUrl")) or _text(snap_urls.get("mediaUrl"))
+        media_url = _http_url(video_meta.get("contentUrl")) or _http_url(snap_urls.get("mediaUrl"))
         if not media_url:
             return None
 
         creator = video_meta.get("creator") if isinstance(video_meta.get("creator"), dict) else {}
         person = creator.get("personCreator") if isinstance(creator.get("personCreator"), dict) else {}
-        author = _text(person.get("username")) or fallback_author
+        author = (_text(person.get("username")) or fallback_author).lstrip("@").strip()
         author_name = _text(person.get("name"))
         if not author:
             # Context cards carry the creator when videoMetadata does not.
-            for card in metadata.get("contextCards") or []:
-                if isinstance(card, dict) and _text(card.get("subtitle")):
-                    author = _text(card.get("subtitle"))
-                    author_name = author_name or _text(card.get("title"))
-                    break
+            raw_cards = metadata.get("contextCards")
+            cards = raw_cards if isinstance(raw_cards, list) else []
+            for card in cards:
+                if isinstance(card, dict):
+                    card_sub = _text(card.get("subtitle")).lstrip("@").strip()
+                    if card_sub:
+                        author = card_sub
+                        author_name = author_name or _text(card.get("title"))
+                        break
 
         keywords, language = self._parse_cu_signals(metadata)
         if not keywords:
-            keywords = [k for k in (video_meta.get("keywords") or []) if isinstance(k, str)]
+            raw_kw = video_meta.get("keywords")
+            if isinstance(raw_kw, list):
+                keywords = [k.strip() for k in raw_kw if isinstance(k, str) and k.strip()]
+            elif isinstance(raw_kw, str) and raw_kw.strip():
+                keywords = [part.strip() for part in raw_kw.split(",") if part.strip()]
+        keywords = list(dict.fromkeys(keywords))
+
+        raw_tags = metadata.get("hashtags")
+        tag_list = raw_tags if isinstance(raw_tags, list) else []
         hashtags = [
-            (h.strip() if isinstance(h, str) else _text(h)).lstrip("#")
-            for h in (metadata.get("hashtags") or [])
+            (h.strip() if isinstance(h, str) else _text(h)).lstrip("#").strip()
+            for h in tag_list
         ]
         hashtags = [h for h in hashtags if h]
 
@@ -318,27 +399,26 @@ class SnapchatScraper(Scraper):
             raw_desc = ""
         description = llm_desc or raw_desc or _text(metadata.get("description"))
 
-        duration_ms = _num(video_meta.get("durationMs"))
-        timestamp = _num(_unwrap(snap.get("timestampInSec")))
-        if not timestamp:
-            timestamp = _num(video_meta.get("uploadDateMs")) // 1000
-        published_at = (
-            datetime.fromtimestamp(timestamp, tz=timezone.utc) if timestamp else None
-        )
+        duration_ms = max(0, _num(video_meta.get("durationMs")))
+        timestamp = _num(snap.get("timestampInSec"))
+        if timestamp <= 0:
+            upload_ms = _num(video_meta.get("uploadDateMs"))
+            timestamp = upload_ms // 1000 if upload_ms > 0 else 0
+        published_at = _safe_utc_datetime(timestamp)
 
-        views = _num(stats.get("viewCount")) or _num(video_meta.get("viewCount"))
+        views = max(0, _num(stats.get("viewCount"))) or max(0, _num(video_meta.get("viewCount")))
         # Snapchat has no "likes"; a Spotlight boost is the closest equivalent.
-        boosts = _num(stats.get("boostCount"))
-        recommends = _num(stats.get("recommendCount"))
-        shares = _num(stats.get("shareCount")) or _num(video_meta.get("shareCount"))
+        boosts = max(0, _num(stats.get("boostCount")))
+        recommends = max(0, _num(stats.get("recommendCount")))
+        shares = max(0, _num(stats.get("shareCount"))) or max(0, _num(video_meta.get("shareCount")))
 
         thumbnail = (
-            _text(video_meta.get("thumbnailUrl"))
-            or _text(story.get("thumbnailUrl") or {})
-            or _text(snap_urls.get("mediaPreviewUrl") or {})
+            _http_url(video_meta.get("thumbnailUrl"))
+            or _http_url(story.get("thumbnailUrl") or {})
+            or _http_url(snap_urls.get("mediaPreviewUrl") or {})
         )
         one_link = metadata.get("oneLinkParams")
-        canonical = _text((one_link or {}).get("deepLinkUrl")) if isinstance(one_link, dict) else ""
+        canonical = _http_url((one_link or {}).get("deepLinkUrl")) if isinstance(one_link, dict) else ""
         if not canonical:
             canonical = (
                 f"{_BASE}/@{author}/spotlight/{story_id}"
@@ -358,15 +438,15 @@ class SnapchatScraper(Scraper):
             media_url=media_url,
             views=views,
             likes=boosts + recommends,
-            comments=_num(stats.get("commentCount")),
+            comments=max(0, _num(stats.get("commentCount"))),
             shares=shares,
             duration_sec=round(duration_ms / 1000) if duration_ms else 0,
-            width=_num(video_meta.get("width")),
-            height=_num(video_meta.get("height")),
+            width=max(0, _num(video_meta.get("width"))),
+            height=max(0, _num(video_meta.get("height"))),
             language=language,
             keywords=[k for k in keywords if k][:15],
             published_at=published_at,
-            follower_count=_num(person.get("followerCount")),
+            follower_count=max(0, _num(person.get("followerCount"))),
             meta={
                 "scrape_method": "next_data",
                 "boost_count": boosts,
@@ -375,7 +455,7 @@ class SnapchatScraper(Scraper):
                 "llm_title": llm_title,
                 "llm_description": llm_desc,
                 "caption": caption,
-                "creator_url": _text(person.get("url")),
+                "creator_url": _http_url(person.get("url")),
             },
         )
 
@@ -385,26 +465,32 @@ class SnapchatScraper(Scraper):
         keywords: list[str] = []
         language = ""
         best_score = 0.0
-        for wrapper in metadata.get("cuSignals") or []:
+        raw_signals = metadata.get("cuSignals")
+        wrappers = raw_signals if isinstance(raw_signals, list) else []
+        for wrapper in wrappers:
             if not isinstance(wrapper, dict):
                 continue
             signal = wrapper.get("signal")
             if not isinstance(signal, dict):
                 continue
             case = signal.get("$case")
-            payload = signal.get(case) if isinstance(signal.get(case), dict) else {}
+            payload = signal.get(case) if isinstance(case, str) and isinstance(signal.get(case), dict) else {}
             if case == "textMetadata":
-                for keyword in payload.get("keywords") or []:
-                    if isinstance(keyword, str) and keyword.strip():
-                        keywords.append(keyword.strip())
+                kw_list = payload.get("keywords")
+                if isinstance(kw_list, list):
+                    for keyword in kw_list:
+                        if isinstance(keyword, str) and keyword.strip():
+                            keywords.append(keyword.strip())
             elif case == "detectedLanguage":
-                for entry in payload.get("languageScores") or []:
-                    if not isinstance(entry, dict):
-                        continue
-                    score = _flt(entry.get("score"))
-                    code = entry.get("languageCode")
-                    if isinstance(code, str) and code and score > best_score:
-                        best_score, language = score, code
+                scores = payload.get("languageScores")
+                if isinstance(scores, list):
+                    for entry in scores:
+                        if not isinstance(entry, dict):
+                            continue
+                        score = _flt(entry.get("score"))
+                        code = entry.get("languageCode")
+                        if isinstance(code, str) and code.strip() and score > best_score:
+                            best_score, language = score, code.strip()
         # Preserve order while dropping duplicates.
         return list(dict.fromkeys(keywords)), language
 
@@ -424,6 +510,8 @@ class SnapchatScraper(Scraper):
         ``/spotlight`` seeds the crawl; each story id then acts as a cursor via
         ``/spotlight/<id>``, which returns a fresh page of related stories.
         """
+        if max_results <= 0 or max_requests <= 0:
+            return []
         collected: dict[str, ScrapedItem] = {}
         frontier: list[str] = []
         visited: set[str] = set()
@@ -478,6 +566,8 @@ class SnapchatScraper(Scraper):
     # ------------------------------------------------------------------
     def scrape_profile(self, handle: str, max_results: int) -> list[ScrapedItem]:
         """Scrape one public profile's Spotlight highlights."""
+        if max_results <= 0:
+            return []
         username = self._normalize_handle(handle)
         if not username:
             log.warning("snapchat: unparseable handle %r", handle)
@@ -491,7 +581,7 @@ class SnapchatScraper(Scraper):
         profile = page_props.get("userProfile")
         info = profile.get("publicProfileInfo") if isinstance(profile, dict) else None
         info = info if isinstance(info, dict) else {}
-        follower_count = _num(info.get("subscriberCount"))
+        follower_count = max(0, _num(info.get("subscriberCount")))
         display_name = _text(info.get("title"))
 
         highlights = page_props.get("spotlightHighlights")
@@ -507,7 +597,8 @@ class SnapchatScraper(Scraper):
                 break
             if not isinstance(highlight, dict):
                 continue
-            snaps = highlight.get("snapList") or []
+            raw_snaps = highlight.get("snapList")
+            snaps = raw_snaps if isinstance(raw_snaps, list) else []
             snap = snaps[0] if snaps and isinstance(snaps[0], dict) else {}
             story_id = _text(highlight.get("storyId") or {}) or _text(snap.get("snapId") or {})
             if not story_id:
@@ -537,14 +628,20 @@ class SnapchatScraper(Scraper):
     # ------------------------------------------------------------------
     def scrape_handles(self, handles: list[str], max_per_run: int,
                        download: bool = True) -> list[ScrapedItem]:
-        usernames = [u for u in (self._normalize_handle(h) for h in handles or []) if u]
-        if not usernames or max_per_run <= 0:
+        if max_per_run <= 0:
             return []
-        per_handle = max(1, max_per_run // len(usernames))
+        usernames = list(dict.fromkeys(
+            u for u in (self._normalize_handle(h) for h in (handles or [])) if u
+        ))
+        if not usernames:
+            return []
         items: list[ScrapedItem] = []
-        for username in usernames:
-            if len(items) >= max_per_run:
+        for idx, username in enumerate(usernames):
+            remaining_budget = max_per_run - len(items)
+            if remaining_budget <= 0:
                 break
+            remaining_handles = len(usernames) - idx
+            per_handle = max(1, (remaining_budget + remaining_handles - 1) // remaining_handles)
             try:
                 items.extend(self.scrape_profile(username, per_handle))
             except Exception as exc:
@@ -563,7 +660,11 @@ class SnapchatScraper(Scraper):
         """
         if max_per_run <= 0:
             return []
-        tags = {t.lstrip("#").lower() for t in (hashtags or []) if t}
+        tags = {
+            t.strip().lstrip("#").strip().lower()
+            for t in (hashtags or [])
+            if isinstance(t, str) and t.strip().lstrip("#").strip()
+        }
         # Over-fetch so tag ranking has something to choose between.
         items = self.scrape_spotlight(max_results=max_per_run * 2 if tags else max_per_run)
 
@@ -593,66 +694,101 @@ class SnapchatScraper(Scraper):
         metadata -- no guessing and no cross-assignment between videos.
         """
         import concurrent.futures
+        import httpx
 
         from ..config import settings
 
-        pending = [item for item in items if not item.local_path and item.media_url]
+        pending = [
+            item for item in (items or [])
+            if item is not None and not item.local_path and _http_url(item.media_url)
+        ]
         if not pending:
             return 0
 
         content_dir = str(settings.content_path)
         os.makedirs(content_dir, exist_ok=True)
+        min_bytes = max(1, int(getattr(settings, "min_file_size_bytes", 50_000) or 50_000))
+        proxy = (settings.proxy_url or "").strip() or None
 
-        def fetch(item: ScrapedItem) -> bool:
-            # Name the file after the stable story id so a retry overwrites
-            # rather than accumulating duplicates.
-            safe_id = re.sub(r"[^A-Za-z0-9_.-]", "", item.source_id)[:60] or "snap"
-            dest = os.path.join(content_dir, f"snap_{safe_id}.mp4")
-            if os.path.exists(dest) and os.path.getsize(dest) > 50_000:
-                item.local_path = dest
-                return True
-            tmp = f"{dest}.part"
-            try:
-                import httpx
+        # Group duplicates by destination so concurrent threads never race on the same file.
+        groups: dict[str, list[ScrapedItem]] = {}
+        for item in pending:
+            dest = os.path.join(content_dir, _safe_snap_filename(item.source_id))
+            groups.setdefault(dest, []).append(item)
 
-                written = 0
-                with httpx.Client(
-                    headers=_CDN_HEADERS, timeout=60.0, follow_redirects=True
-                ) as client:
-                    with client.stream("GET", item.media_url) as response:
+        def fetch_group(entry: tuple[str, list[ScrapedItem]], client: Any) -> int:
+            dest, group_items = entry
+            lead = group_items[0]
+            if os.path.exists(dest) and os.path.getsize(dest) >= min_bytes:
+                size = os.path.getsize(dest)
+                for it in group_items:
+                    it.local_path = dest
+                    it.meta["size_bytes"] = size
+                return len(group_items)
+
+            tmp = f"{dest}.{os.getpid()}.{threading.get_ident()}.part"
+            for attempt in (1, 2):
+                try:
+                    written = 0
+                    with client.stream("GET", lead.media_url) as response:
                         if response.status_code != 200:
                             log.warning(
                                 "snapchat: CDN HTTP %s for %s",
-                                response.status_code, item.source_id[:16],
+                                response.status_code, lead.source_id[:16],
                             )
-                            return False
+                            if response.status_code in _TRANSIENT_HTTP_STATUSES and attempt == 1:
+                                time.sleep(0.3)
+                                continue
+                            return 0
                         with open(tmp, "wb") as handle:
                             for chunk in response.iter_bytes(64 * 1024):
-                                handle.write(chunk)
                                 written += len(chunk)
-                if written < 50_000:
+                                if written > _MAX_DOWNLOAD_BYTES:
+                                    raise ValueError(
+                                        f"stream exceeded {_MAX_DOWNLOAD_BYTES} bytes"
+                                    )
+                                handle.write(chunk)
+                    if written < min_bytes:
+                        log.warning(
+                            "snapchat: %s too small (%d bytes)", lead.source_id[:16], written
+                        )
+                        return 0
+                    os.replace(tmp, dest)
+                    for it in group_items:
+                        it.local_path = dest
+                        it.meta["size_bytes"] = written
+                    return len(group_items)
+                except Exception as exc:
                     log.warning(
-                        "snapchat: %s too small (%d bytes)", item.source_id[:16], written
+                        "snapchat: download failed for %s (attempt %d): %s",
+                        lead.source_id[:16], attempt, exc,
                     )
-                    return False
-                os.replace(tmp, dest)
-                item.local_path = dest
-                item.meta["size_bytes"] = written
-                return True
-            except Exception as exc:
-                log.warning("snapchat: download failed for %s: %s", item.source_id[:16], exc)
-                return False
-            finally:
-                if os.path.exists(tmp):
-                    try:
-                        os.remove(tmp)
-                    except OSError:
-                        pass
+                    if attempt == 1:
+                        time.sleep(0.3)
+                        continue
+                    return 0
+                finally:
+                    if os.path.exists(tmp):
+                        try:
+                            os.remove(tmp)
+                        except OSError:
+                            pass
+            return 0
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
-            results = list(pool.map(fetch, pending))
-        downloaded = sum(1 for ok in results if ok)
-        log.info("snapchat: downloaded %d/%d files", downloaded, len(pending))
+        workers = max(1, min(int(max_workers) if max_workers and max_workers > 0 else 1, len(groups)))
+        client_kwargs: dict[str, Any] = {
+            "headers": _CDN_HEADERS,
+            "timeout": 60.0,
+            "follow_redirects": True,
+        }
+        if proxy:
+            client_kwargs["proxy"] = proxy
+
+        with httpx.Client(**client_kwargs) as client:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+                results = list(pool.map(lambda entry: fetch_group(entry, client), groups.items()))
+        downloaded = sum(results)
+        log.info("snapchat: downloaded %d/%d items", downloaded, len(pending))
         return downloaded
 
     # ------------------------------------------------------------------

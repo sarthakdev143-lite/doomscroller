@@ -8,23 +8,35 @@ name, and that line goes into the description.
 from __future__ import annotations
 
 import hashlib
+import re
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 from app.config import settings
 
 _AUDIO = {".mp3", ".m4a", ".aac", ".wav", ".ogg", ".opus", ".flac"}
+_UNSAFE_CREDIT_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f<>]")
 
 
 def folder() -> Path:
-    return Path(settings.clip_music_dir) if settings.clip_music_dir else settings.content_path / "music"
+    configured = (settings.clip_music_dir or "").strip()
+    return Path(configured).expanduser() if configured else settings.content_path / "music"
+
+
+def _usable_track(path: Path) -> bool:
+    if path.name.startswith(".") or path.suffix.lower() not in _AUDIO:
+        return False
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
 
 
 def library() -> list[Path]:
     root = folder()
     if not root.is_dir():
         return []
-    return sorted(p for p in root.iterdir() if p.is_file() and p.suffix.lower() in _AUDIO)
+    return sorted(p for p in root.iterdir() if _usable_track(p))
 
 
 def pick(seed: str) -> Optional[Path]:
@@ -36,11 +48,22 @@ def pick(seed: str) -> Optional[Path]:
     return tracks[index]
 
 
-def credit(track: Optional[Path]) -> str:
-    if track is None:
+def credit(track: Optional[Union[Path, str]]) -> str:
+    if not track:
         return ""
-    note = track.with_suffix(".txt")
-    try:
-        return note.read_text(encoding="utf-8").strip()[:300] if note.is_file() else ""
-    except OSError:
-        return ""
+    path = Path(track).expanduser()
+    candidates = []
+    if path.suffix:
+        candidates.append(path.with_suffix(".txt"))
+    candidates.append(path.with_name(f"{path.name}.txt"))
+    for note in candidates:
+        try:
+            if not note.is_file():
+                continue
+            raw = note.read_text(encoding="utf-8-sig", errors="replace")
+            cleaned = re.sub(r"[\s\u2028\u2029]+", " ", raw)
+            cleaned = _UNSAFE_CREDIT_CHARS.sub("", cleaned).strip()
+            return cleaned[:300]
+        except OSError:
+            continue
+    return ""

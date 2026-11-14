@@ -5,6 +5,9 @@
     venv/bin/python scripts/channels.py connect tech     # sign in to YouTube, check it, switch it on
     venv/bin/python scripts/channels.py feed tech --add https://www.youtube.com/@MarkRober --remove <link>
     venv/bin/python scripts/channels.py set tech --uploads 4 --brand @techclips
+    venv/bin/python scripts/channels.py clone tech tech-2 --name "Tech Secondary"
+    venv/bin/python scripts/channels.py export --out channels_backup.json
+    venv/bin/python scripts/channels.py import channels_backup.json --dry-run
     venv/bin/python scripts/channels.py disable tech     # stop one channel, leave the rest running
 
 A new channel is two commands: add, then connect. Every change is checked, written in one piece and
@@ -13,6 +16,7 @@ picked up by the running loop on its next tick, so nothing needs a restart.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -131,7 +135,7 @@ def connect(slug: str, *, again: bool = False, no_browser: bool = False, port: i
     return 0
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command")
     commands.add_parser("list", help="every channel and its next step (the default)")
@@ -148,13 +152,34 @@ def main() -> int:
     link.add_argument("--again", action="store_true", help="sign in again even though a sign-in is saved")
     link.add_argument("--no-browser", action="store_true", help="print the link (for a server reached over SSH)")
     link.add_argument("--port", type=int, default=0)
-    edit = commands.add_parser("set", help="change a channel's name, handle, pace or timezone")
+    edit = commands.add_parser("set", help="change a channel's name, handle, pace, timezone or approval policy")
     edit.add_argument("slug")
     edit.add_argument("--name")
     edit.add_argument("--niche")
     edit.add_argument("--brand", dest="brand_name", help="the @handle shown on its clips")
     edit.add_argument("--uploads", dest="uploads_per_day", type=int, help="posts a day")
     edit.add_argument("--timezone")
+    edit.add_argument(
+        "--require-approval",
+        dest="require_approval",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="whether a person must approve clips before upload",
+    )
+    edit.add_argument(
+        "--auto-approve-score",
+        dest="auto_approve_score",
+        type=float,
+        default=None,
+        help="AI score threshold (0-1) for unattended clip approval; 0 turns it off",
+    )
+    edit.add_argument(
+        "--cadence-backstop",
+        dest="cadence_backstop",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="approve the best waiting clip rather than miss a posting slot",
+    )
     for name, text in (("enable", "switch a channel on without checking it"), ("disable", "stop one channel")):
         toggle = commands.add_parser(name, help=text)
         toggle.add_argument("slug")
@@ -164,7 +189,19 @@ def main() -> int:
     feed.add_argument("slug")
     feed.add_argument("--add", action="append", default=[])
     feed.add_argument("--remove", action="append", default=[])
-    args = parser.parse_args()
+    exp = commands.add_parser("export", help="export portable channel settings and feeds as JSON (no secrets)")
+    exp.add_argument("--out", default="", help="write snapshot to FILE instead of stdout")
+    exp.add_argument("--json", action="store_true", dest="as_json", help="machine-readable JSON output")
+    imp = commands.add_parser("import", help="import channels and feeds from a portable JSON snapshot")
+    imp.add_argument("file", help="path to exported channels JSON file")
+    imp.add_argument("--dry-run", action="store_true", help="validate without writing changes")
+    imp.add_argument("--json", action="store_true", dest="as_json", help="machine-readable JSON output")
+    cln = commands.add_parser("clone", help="clone a channel's settings and feeds into a new unlinked slug")
+    cln.add_argument("source_slug", help="existing channel slug to copy from")
+    cln.add_argument("new_slug", help="new channel slug to create")
+    cln.add_argument("--name", default="", help="display name for the cloned channel")
+    cln.add_argument("--json", action="store_true", dest="as_json", help="machine-readable JSON output")
+    args = parser.parse_args(argv)
 
     init_db()
     try:
@@ -191,9 +228,22 @@ def main() -> int:
         if args.command == "connect":
             return connect(args.slug, again=args.again, no_browser=args.no_browser, port=args.port)
         if args.command == "set":
-            fields = {key: getattr(args, key) for key in ("name", "niche", "brand_name", "uploads_per_day", "timezone")}
+            editable_keys = (
+                "name",
+                "niche",
+                "brand_name",
+                "uploads_per_day",
+                "timezone",
+                "require_approval",
+                "auto_approve_score",
+                "cadence_backstop",
+            )
+            fields = {key: getattr(args, key) for key in editable_keys}
             if all(value is None for value in fields.values()):
-                print("Nothing to change. Give at least one of --name --niche --brand --uploads --timezone.")
+                print(
+                    "Nothing to change. Give at least one of --name --niche --brand --uploads --timezone "
+                    "--require-approval/--no-require-approval --auto-approve-score --cadence-backstop/--no-cadence-backstop."
+                )
                 return 1
             return _applied(channels.update_channel(args.slug, **fields))
         if args.command == "enable":
@@ -208,9 +258,87 @@ def main() -> int:
             return _applied(channels.set_enabled(args.slug, True))
         if args.command == "disable":
             return _applied(channels.set_enabled(args.slug, False))
+        if args.command == "export":
+            with session_scope() as db:
+                channels.sync_channels(db)
+                snap = channels.export_channels_snapshot(db)
+            rendered = json.dumps(snap, indent=2, ensure_ascii=False)
+            if args.out:
+                out_path = Path(args.out)
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                temp = out_path.with_name(out_path.name + ".tmp")
+                temp.write_text(rendered + "\n", encoding="utf-8")
+                os.replace(temp, out_path)
+                if args.as_json:
+                    print(json.dumps({"ok": True, "out": str(out_path), "count": snap["count"]}, indent=2))
+                else:
+                    print(f"Exported {snap['count']} channel(s) to {out_path}.")
+            else:
+                print(rendered)
+            return 0
+        if args.command == "import":
+            in_path = Path(args.file)
+            try:
+                raw_text = in_path.read_text(encoding="utf-8")
+            except OSError as exc:
+                msg = f"cannot read {in_path}: {exc}"
+                print(json.dumps({"ok": False, "error": msg}, indent=2) if args.as_json else f"ERROR: {msg}")
+                return 1
+            try:
+                payload = json.loads(raw_text)
+            except json.JSONDecodeError as exc:
+                msg = f"{in_path} is not valid JSON ({exc})"
+                print(json.dumps({"ok": False, "error": msg}, indent=2) if args.as_json else f"ERROR: {msg}")
+                return 1
+            with session_scope() as db:
+                result = channels.import_channels_snapshot(db, payload, dry_run=args.dry_run)
+            if args.as_json:
+                print(json.dumps(result, indent=2))
+            elif args.dry_run:
+                print(
+                    f"Dry run OK: {len(result['created'])} to create, {len(result['updated'])} to update "
+                    f"({result['feeds']} feed(s)). No changes written."
+                )
+            else:
+                running = ", ".join(result.get("active", [])) or "no channels"
+                print(
+                    f"Imported {result['count']} channel(s) "
+                    f"({len(result['created'])} created, {len(result['updated'])} updated). "
+                    f"Running now: {running}."
+                )
+            return 0
+        if args.command == "clone":
+            with session_scope() as db:
+                cloned = channels.clone_channel(db, args.source_slug, args.new_slug, name=args.name)
+                feed_count = len(channels.feeds_for(db, cloned))
+                slug = cloned.slug
+                cname = cloned.name or slug
+                enabled = bool(cloned.enabled)
+                secrets = cloned.client_secrets or f"secrets/{slug}_client_secret.json"
+            if args.as_json:
+                print(
+                    json.dumps(
+                        {
+                            "ok": True,
+                            "slug": slug,
+                            "cloned_from": args.source_slug,
+                            "name": cname,
+                            "enabled": enabled,
+                            "feeds": feed_count,
+                        },
+                        indent=2,
+                    )
+                )
+            else:
+                print(f"Cloned {args.source_slug} -> {slug} ({cname}, {feed_count} source(s), off for now).")
+                print(_GOOGLE.format(slug=slug, secrets=secrets))
+            return 0
         return _applied(channels.change_feeds(args.slug, add=tuple(args.add), remove=tuple(args.remove)))
     except channels.ChannelsConfigError as exc:
-        print(f"ERROR: {exc}")
+        if getattr(args, "as_json", False):
+            print(json.dumps({"ok": False, "error": str(exc)}, indent=2))
+        else:
+            print(f"ERROR: {exc}")
         return 1
 
 

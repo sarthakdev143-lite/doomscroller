@@ -8,9 +8,8 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Sequence
+from typing import TYPE_CHECKING, Optional, Sequence
 
-import numpy as np
 from sqlalchemy import or_, select
 
 from app import quota
@@ -23,8 +22,10 @@ from app.publishers.base import TokenProblem
 from . import channels, safety, titles
 from .factors import CLIP_FACTORS, SLOTS, aware, channel_zone, clip_arms, published_arms
 from .learn import build_model, matured_results, set_state
-from .model import Draw
 from .youtube import account_mismatch, insights_for
+
+if TYPE_CHECKING:
+    from .model import Draw
 
 log = logging.getLogger(__name__)
 
@@ -83,12 +84,22 @@ class Policy:
     rng: random.Random
 
 
+def _iso(raw: object) -> Optional[datetime]:
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        return aware(datetime.fromisoformat(raw))
+    except ValueError:
+        return None
+
+
 def started_at(db, channel=None) -> Optional[datetime]:
     """When the first real post went out. A stamp naming no video came from a render or a rehearsal."""
     state = db.get(GrowthState, _skey(channel, "started"))
-    if state is None or "video_id" not in state.value:
+    value = state.value if state and isinstance(state.value, dict) else {}
+    if "video_id" not in value:
         return None
-    return datetime.fromisoformat(state.value["at"])
+    return _iso(value.get("at"))
 
 
 def _start_clock(db, channel=None) -> None:
@@ -105,12 +116,12 @@ def _start_clock(db, channel=None) -> None:
 
 def explore_rate(started: datetime, now: datetime) -> float:
     """Test hard for the first month, then spend most uploads on what the data favours."""
-    day = (now - started).total_seconds() / 86400
+    day = (aware(now) - aware(started)).total_seconds() / 86400
     return settings.growth_explore_rate if day < settings.growth_explore_days else settings.growth_settled_explore_rate
 
 
 def policy(now: Optional[datetime] = None, rng: Optional[random.Random] = None, channel=None) -> Policy:
-    now = now or datetime.now(timezone.utc)
+    now = aware(now) if now is not None else datetime.now(timezone.utc)
     rng = rng or random.Random()
     with session_scope() as db:
         zone = channel_zone(channel)
@@ -127,7 +138,7 @@ def policy(now: Optional[datetime] = None, rng: Optional[random.Random] = None, 
                 for factor, arm in published_arms(video, zone).items():
                     tried.setdefault(factor, {}).setdefault(arm, 0)
                     tried[factor][arm] += 1
-    draw = build_model(results).draw(np.random.default_rng(rng.getrandbits(32)))
+    draw = build_model(results).draw(rng.getrandbits(32))
     return Policy(draw, tried, rate, focus_factors, rng)
 
 
@@ -151,11 +162,13 @@ def _day_bounds(local_day: datetime) -> list[tuple[str, datetime, datetime]]:
 
 def build_plan(current: Policy, now: datetime, channel=None) -> dict:
     """Today's posts: distinct windows until there are more posts than windows, at a random minute in each."""
-    local = now.astimezone(channel_zone(channel))
+    local = aware(now).astimezone(channel_zone(channel))
     windows = [w for w in _day_bounds(local) if w[2] > local]
     by_slot = {slot: (start, end) for slot, start, end in windows}
-    posts, pool = [], list(by_slot)
     uploads = _uploads_per_day(channel)
+    if not by_slot or uploads <= 0:
+        return {"day": local.date().isoformat(), "posts": []}
+    posts, pool = [], list(by_slot)
     # Started late in the day, the remaining windows get their usual share rather than the whole day's posts.
     per_window = math.ceil(uploads / len(SLOTS))
     for _ in range(min(uploads, len(by_slot) * per_window)):
@@ -171,18 +184,29 @@ def build_plan(current: Policy, now: datetime, channel=None) -> dict:
     return {"day": local.date().isoformat(), "posts": sorted(posts, key=lambda p: p["due"])}
 
 
+def _pinned_at(video: Video) -> Optional[datetime]:
+    """When the owner pinned this clip as the next one to publish, or None when it is not pinned."""
+    raw = (video.meta or {}).get("pinned_at")
+    if not raw:
+        return None
+    return _iso(raw) or datetime.min.replace(tzinfo=timezone.utc)
+
+
 def ready_clips(db, scope=None) -> list[Video]:
     """Only finished clips. Scraped reposts never go out through this loop, nor anything from a source with a takedown.
 
-    `scope` is an optional SQLAlchemy filter limiting the clips to one managed channel.
+    `scope` is an optional SQLAlchemy filter limiting the clips to one managed channel. Clips the owner pinned as
+    "publish next" come first (most recently pinned first), then the rest oldest first.
     """
     conds = [Video.status == VideoStatus.TRANSFORMED, Video.transformed_path.isnot(None)]
     if scope is not None:
         conds.append(scope)
     rows = db.execute(select(Video).where(*conds).order_by(Video.transformed_at)).scalars().all()
     blocked = safety.blocked_parents(db)  # a job still running can finish a clip after the strike
-    return [v for v in rows if (v.meta or {}).get("clip_rendered") and not (v.meta or {}).get("growth_quarantined")
-            and (v.meta or {}).get("clip_parent") not in blocked]
+    ready = [v for v in rows if (v.meta or {}).get("clip_rendered") and not (v.meta or {}).get("growth_quarantined")
+             and (v.meta or {}).get("clip_parent") not in blocked]
+    pinned = sorted((v for v in ready if _pinned_at(v) is not None), key=_pinned_at, reverse=True)
+    return pinned + [v for v in ready if _pinned_at(v) is None]
 
 
 def _screen(db, clips: Sequence[Video], now: datetime) -> list[Video]:
@@ -208,7 +232,11 @@ def pick_clip(clips: Sequence[Video], current: Policy, last_parent: Optional[str
     from tasks.pipeline import least_failed
 
     clips = least_failed(clips)
-    pool = [c for c in clips if (c.meta or {}).get("clip_parent") != last_parent] or list(clips)
+    # The owner's "publish next" pin beats testing, but never a clip that keeps failing (least_failed went first).
+    pinned = [c for c in clips if _pinned_at(c) is not None]
+    if pinned:
+        return max(pinned, key=_pinned_at)
+    pool = ([c for c in clips if (c.meta or {}).get("clip_parent") != last_parent] if last_parent else []) or list(clips)
     focused = [f for f in CLIP_FACTORS if f in current.focus]
     if current.rng.random() < min(current.rate + (_FOCUS_BOOST if focused else 0.0), _MAX_EXPLORE_RATE):
         factor = current.rng.choice(focused or CLIP_FACTORS)
@@ -236,6 +264,7 @@ def _posted_for_pacing(channel=None) -> tuple:
 def _gap_is_clear(db, now: datetime, channel=None) -> bool:
     from tasks.pipeline import publish_claim_is_stale
 
+    now = aware(now)
     # A manual upload still running will be a post any minute now. Each channel paces on its own uploads.
     conds = [Video.status == VideoStatus.PUBLISHING]
     scope = _scope(channel)
@@ -294,6 +323,7 @@ def _send_clip(current: Policy, video_id: str, title: str, spoken: str, post_id:
 
 def fill_post(video_id: str, sent_at: datetime) -> None:
     """An upload found after a crash was this post, which would otherwise send a second clip."""
+    sent_at = aware(sent_at)
     with session_scope() as db:
         video = db.get(Video, video_id)
         channel = channels.get_channel(db, video.channel_id) if video and video.channel_id else None
@@ -301,8 +331,8 @@ def fill_post(video_id: str, sent_at: datetime) -> None:
         state = db.get(GrowthState, key)
         posts = [dict(p) for p in (state.value if state else {}).get("posts", [])]
         for post in posts:
-            if post["state"] == "waiting" and (
-                    datetime.fromisoformat(post["due"]) <= sent_at <= datetime.fromisoformat(post["ends"]) + _LATE_GRACE):
+            due, ends = _iso(post.get("due")), _iso(post.get("ends"))
+            if post.get("state") == "waiting" and due is not None and ends is not None and due <= sent_at <= ends + _LATE_GRACE:
                 post.update(state="posted", video_id=video_id)
                 set_state(db, key, {**state.value, "posts": posts})
                 return
@@ -339,7 +369,8 @@ def _note_missed(db, post: dict, channel=None) -> None:
 
 
 def _past_grace(post: dict, now: datetime) -> bool:
-    return now > datetime.fromisoformat(post["ends"]) + _LATE_GRACE
+    ends = _iso(post.get("ends"))
+    return ends is not None and aware(now) > ends + _LATE_GRACE
 
 
 def _roll_over(db, old_posts: list[dict], current: Policy, now: datetime, channel=None) -> tuple[dict, list[dict]]:
@@ -431,6 +462,7 @@ def _recover_stuck(now: datetime) -> None:
 
 def _autopilot_one(channel, now: datetime, rng: Optional[random.Random]) -> dict:
     """Plan and post for one managed channel, to its own token at its own pace."""
+    now = aware(now)
     if not settings.use_mock and isinstance(_publisher(channel), MockPublisher):
         missing = ("YOUTUBE_CLIENT_SECRETS is not set" if channel is None or channels.is_default(channel)
                    else f"channel {channel.slug} has no client_secrets in channels.json")
@@ -441,7 +473,8 @@ def _autopilot_one(channel, now: datetime, rng: Optional[random.Random]) -> dict
     if paused:
         return {"skipped": f"paused until the owner resumes: {paused}"}
     from . import approval
-    approval.auto_approve_sweep(channel)  # opt-in per-channel trust; 0 threshold = off
+    if channel is not None:
+        approval.auto_approve_sweep(channel)  # opt-in per-channel trust; 0 threshold = off
     current = policy(now, rng, channel)
     today = now.astimezone(channel_zone(channel)).date().isoformat()
     key = _skey(channel, "plan")
@@ -455,7 +488,7 @@ def _autopilot_one(channel, now: datetime, rng: Optional[random.Random]) -> dict
         for post in posts:
             if post["state"] == "waiting" and _past_grace(post, now):
                 _note_missed(db, post, channel)
-        due = next((p for p in posts if p["state"] == "waiting" and datetime.fromisoformat(p["due"]) <= now), None)
+        due = next((p for p in posts if p["state"] == "waiting" and (d := _iso(p.get("due"))) is not None and d <= now), None)
         held = _held_back(db, now, channel) if due else None
         if held:  # kept on the post, so that a missed window can say why
             due["last_error"] = next(iter(held.values()))
@@ -468,7 +501,7 @@ def _autopilot_one(channel, now: datetime, rng: Optional[random.Random]) -> dict
     # A window is due. If the shelf is empty but clips sit in review, the opted-in backstop posts the best one.
     with session_scope() as db:
         has_stock = bool(ready_clips(db, _scope(channel)))
-    if not has_stock:
+    if not has_stock and channel is not None:
         approval.backstop_approve(channel)
     try:
         outcome = _cannot_upload(channel) or _publish_next(current, now, _post_id(due), channel)
@@ -490,10 +523,12 @@ def autopilot_job(now: Optional[datetime] = None, rng: Optional[random.Random] =
     if not _lock.acquire(blocking=False):
         return {"skipped": "already running"}
     try:
-        now = now or datetime.now(timezone.utc)
+        now = aware(now) if now is not None else datetime.now(timezone.utc)
         _recover_stuck(now)
         with session_scope() as db:
             active = channels.active_channels(db)
+        if not active:
+            return {"skipped": "no enabled channels"}
         # A single legacy channel keeps the old flat result; several report per channel by slug.
         if len(active) == 1 and channels.is_default(active[0]):
             return _autopilot_one(active[0], now, rng)

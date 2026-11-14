@@ -12,10 +12,13 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 from collections import Counter
-from typing import Callable, Optional
+from datetime import datetime, timezone
+from typing import Callable, Iterable, Optional
+from urllib.parse import parse_qs, urlsplit
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
@@ -28,6 +31,22 @@ log = logging.getLogger(__name__)
 DEFAULT_SLUG = "default"
 _CONFIG_HEALTH = "channels_config"
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+_CTRL_RE = re.compile(r"[\x00-\x1f\x7f]+")
+_BARE_HANDLE_RE = re.compile(r"^@([A-Za-z0-9._%-]{1,64})/?$")
+_BARE_UC_RE = re.compile(r"^(UC[0-9A-Za-z_-]{20,40})$")
+_YT_BARE_DOMAIN_RE = re.compile(r"^(?:www\.|m\.)?youtube\.com/(.+)$", re.IGNORECASE)
+_YT_HANDLE_PATH_RE = re.compile(
+    r"^/@([A-Za-z0-9._%-]{1,64})(?:/(?:videos|featured|shorts|streams|playlists|community|about))?/?$",
+    re.IGNORECASE,
+)
+_YT_CHANNEL_PATH_RE = re.compile(
+    r"^/channel/(UC[0-9A-Za-z_-]{20,40})(?:/(?:videos|featured|shorts|streams|playlists|community|about))?/?$",
+    re.IGNORECASE,
+)
+_YT_CUSTOM_PATH_RE = re.compile(
+    r"^/(c|user)/([A-Za-z0-9._%-]{1,64})(?:/(?:videos|featured|shorts|streams|playlists|community|about))?/?$",
+    re.IGNORECASE,
+)
 # "error" is the key a multi-channel job result uses to say that some channel failed.
 _RESERVED_SLUGS = frozenset({"error"})
 
@@ -67,27 +86,96 @@ def _load_config() -> Optional[list[dict]]:
     return valid
 
 
+def normalize_feed(url: str) -> str:
+    """Canonicalize pasted YouTube handles, UC... IDs, or mobile/tab URLs into clean https://www.youtube.com/... links."""
+    s = _CTRL_RE.sub("", str(url or "").strip())
+    if not s:
+        return ""
+    m_handle = _BARE_HANDLE_RE.match(s)
+    if m_handle:
+        return f"https://www.youtube.com/@{m_handle.group(1)}"
+    m_uc = _BARE_UC_RE.match(s)
+    if m_uc:
+        return f"https://www.youtube.com/channel/{m_uc.group(1)}"
+    if _YT_BARE_DOMAIN_RE.match(s):
+        s = f"https://{s}"
+    if s.startswith(("http://", "https://")):
+        parts = urlsplit(s)
+        host = (parts.hostname or "").lower()
+        if host in ("youtube.com", "www.youtube.com", "m.youtube.com"):
+            path = parts.path or ""
+            mh = _YT_HANDLE_PATH_RE.match(path)
+            if mh:
+                return f"https://www.youtube.com/@{mh.group(1)}"
+            mc = _YT_CHANNEL_PATH_RE.match(path)
+            if mc:
+                return f"https://www.youtube.com/channel/{mc.group(1)}"
+            mcustom = _YT_CUSTOM_PATH_RE.match(path)
+            if mcustom:
+                return f"https://www.youtube.com/{mcustom.group(1).lower()}/{mcustom.group(2)}"
+            if path.rstrip("/") == "/playlist":
+                lists = parse_qs(parts.query).get("list")
+                if lists and lists[0].strip():
+                    return f"https://www.youtube.com/playlist?list={lists[0].strip()}"
+        if not parts.query and not parts.fragment and s.endswith("/") and len(parts.path or "") > 1:
+            return s.rstrip("/")
+    return s
+
+
 def _feed_key(url: str) -> str:
     """One creator's link written two ways is still one feed."""
-    return re.sub(r"^https?://(www\.|m\.)?", "", str(url).strip().casefold()).rstrip("/")
+    norm = normalize_feed(url)
+    return re.sub(r"^https?://(www\.|m\.)?", "", norm.casefold()).rstrip("/")
+
+
+def _dedupe_feeds(urls: Iterable[str]) -> list[str]:
+    """Normalize and case-insensitively deduplicate feed entries while preserving order."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in urls or ():
+        if not isinstance(raw, str):
+            continue
+        norm = normalize_feed(raw)
+        if not norm:
+            continue
+        key = _feed_key(norm)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(norm)
+    return out
 
 
 def _config_problem(entries: list[dict]) -> Optional[str]:
     """Why this set of channels cannot be used, naming the channel, or None."""
     seen: set[str] = set()
-    owners: dict[str, str] = {}
+    owners: dict[str, tuple[str, bool, Optional[str]]] = {}
     for entry in entries:
         slug = str(entry["slug"]).strip()
         problem = _entry_problem(entry, seen)
         if problem:
             return f"channel {slug!r}: {problem}"
         seen.add(slug)
+        is_enabled = True if slug == DEFAULT_SLUG else bool(entry.get("enabled", True))
+        cloned_from = entry.get("cloned_from").strip() if isinstance(entry.get("cloned_from"), str) else None
+        # A disabled clone may hold template feeds copied from its source until it is switched on.
+        if not is_enabled and cloned_from:
+            continue
         # The legacy channel's feeds live in .env, and it is running them whenever it is listed.
         feeds = settings.growth_feeds_list if slug == DEFAULT_SLUG else (entry.get("feeds") or [])
         for url in feeds:
-            owner = owners.setdefault(_feed_key(url), slug)
-            if owner != slug:
-                return f"channel {slug!r}: {_shared_feed(url, owner, slug)}"
+            key = _feed_key(url)
+            if not key:
+                continue
+            prev = owners.get(key)
+            if prev is None:
+                owners[key] = (slug, is_enabled, cloned_from)
+            elif prev[0] != slug:
+                # Allow a clone to take over feeds once its source channel has been switched off.
+                if not prev[1] and cloned_from == prev[0]:
+                    owners[key] = (slug, is_enabled, cloned_from)
+                    continue
+                return f"channel {slug!r}: {_shared_feed(url, prev[0], slug)}"
     return None
 
 
@@ -112,20 +200,35 @@ def _entry_problem(entry: dict, seen: set[str]) -> Optional[str]:
     if pace is not None and (isinstance(pace, bool) or not isinstance(pace, int) or not 0 <= pace <= 50):
         return "uploads_per_day must be a whole number from 0 to 50"
     score = entry.get("auto_approve_score")
-    if score is not None and (isinstance(score, bool) or not isinstance(score, (int, float)) or not 0 <= score <= 1):
+    if score is not None and (
+        isinstance(score, bool)
+        or not isinstance(score, (int, float))
+        or not math.isfinite(score)
+        or not 0.0 <= float(score) <= 1.0
+    ):
         return "auto_approve_score must be a number from 0 to 1"
     for flag in ("require_approval", "enabled", "cadence_backstop"):
         if entry.get(flag) is not None and not isinstance(entry[flag], bool):
             return f"{flag} must be true or false"
     zone = entry.get("timezone")
     if zone is not None:
+        if not isinstance(zone, str) or not zone.strip():
+            return f"unknown timezone {zone!r}"
         try:
-            ZoneInfo(str(zone))
+            ZoneInfo(zone.strip())
         except Exception:
             return f"unknown timezone {zone!r}"
     feeds = entry.get("feeds")
-    if feeds is not None and (not isinstance(feeds, list) or not all(isinstance(f, str) for f in feeds)):
-        return "feeds must be a list of links"
+    if feeds is not None:
+        if not isinstance(feeds, list) or not all(isinstance(f, str) for f in feeds):
+            return "feeds must be a list of links"
+        for f in feeds:
+            if f.strip() and not normalize_feed(f).startswith(("http://", "https://")):
+                return f"feeds must contain valid links, @handles, or UC... channel IDs (got {f!r})"
+    cloned_from = entry.get("cloned_from")
+    if cloned_from is not None:
+        if not isinstance(cloned_from, str) or not _SLUG.match(cloned_from.strip()):
+            return f"invalid cloned_from slug {cloned_from!r}"
     return None
 
 
@@ -179,12 +282,17 @@ def _legacy_channel() -> dict:
 def _apply(channel: Channel, entry: dict) -> None:
     for field in _CONFIG_FIELDS:
         if field in entry and entry[field] is not None:
-            setattr(channel, field, entry[field])
+            val = entry[field]
+            if field == "auto_approve_score":
+                val = float(val)
+            elif field == "timezone":
+                val = str(val).strip()
+            setattr(channel, field, val)
 
 
 def _sync_feeds(db, channel: Channel, urls: list[str]) -> None:
     """Make the channel's feed rows match the config: add new links, drop ones no longer listed."""
-    wanted = [u.strip() for u in urls if isinstance(u, str) and u.strip()]
+    wanted = _dedupe_feeds(urls)
     existing = {f.url: f for f in db.execute(select(Feed).where(Feed.channel_id == channel.id)).scalars()}
     for url in wanted:
         feed = existing.pop(url, None)
@@ -255,6 +363,14 @@ def _read_file() -> dict:
     return data
 
 
+def _write_config_file(data: dict) -> None:
+    path = settings.channels_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(path.name + ".tmp")
+    temp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    os.replace(temp, path)
+
+
 def edit_config(change: Callable[[list[dict]], None]) -> dict:
     """Change channels.json through code rather than by hand: validated, written whole, then applied.
 
@@ -268,10 +384,7 @@ def edit_config(change: Callable[[list[dict]], None]) -> dict:
     problem = _config_problem(entries)
     if problem:
         raise ChannelsConfigError(problem)
-    path = settings.channels_path
-    temp = path.with_name(path.name + ".tmp")
-    temp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    os.replace(temp, path)
+    _write_config_file(data)
     return reload_channels()
 
 
@@ -296,8 +409,8 @@ def add_channel(slug: str, *, name: str = "", niche: str = "", brand_name: str =
         entries.append({
             "slug": slug, "name": name or slug, "niche": niche, "brand_name": brand_name,
             "client_secrets": f"secrets/{slug}_client_secret.json", "token_path": f"secrets/{slug}_token.json",
-            "uploads_per_day": uploads_per_day, "timezone": timezone or settings.growth_timezone,
-            "require_approval": True, "enabled": False, "feeds": list(feeds),
+            "uploads_per_day": uploads_per_day, "timezone": timezone.strip() or settings.growth_timezone or "UTC",
+            "require_approval": True, "enabled": False, "feeds": _dedupe_feeds(feeds),
         })
     return edit_config(change)
 
@@ -308,7 +421,16 @@ def set_enabled(slug: str, enabled: bool) -> dict:
     return edit_config(change)
 
 
-_EDITABLE = ("name", "niche", "brand_name", "uploads_per_day", "timezone", "require_approval")
+_EDITABLE = (
+    "name",
+    "niche",
+    "brand_name",
+    "uploads_per_day",
+    "timezone",
+    "require_approval",
+    "auto_approve_score",
+    "cadence_backstop",
+)
 
 
 def update_channel(slug: str, **fields) -> dict:
@@ -350,8 +472,13 @@ def next_step(db, channel: Channel) -> str:
 def change_feeds(slug: str, *, add: tuple[str, ...] = (), remove: tuple[str, ...] = ()) -> dict:
     def change(entries: list[dict]) -> None:
         entry = _entry(entries, slug)
-        feeds = [f for f in entry.get("feeds") or [] if f not in remove]
-        entry["feeds"] = feeds + [f for f in add if f not in feeds]
+        remove_keys = {_feed_key(f) for f in remove if isinstance(f, str) and f.strip()}
+        kept = [f for f in _dedupe_feeds(entry.get("feeds") or []) if _feed_key(f) not in remove_keys]
+        raw_added = [f for f in add if isinstance(f, str) and f.strip()]
+        for raw in raw_added:
+            if not normalize_feed(raw).startswith(("http://", "https://")):
+                raise ChannelsConfigError(f"feeds must contain valid links, @handles, or UC... channel IDs (got {raw!r})")
+        entry["feeds"] = _dedupe_feeds([*kept, *raw_added])
     return edit_config(change)
 
 
@@ -365,6 +492,282 @@ def reload_channels() -> dict:
         health = config_health(db)
         slugs = [c.slug for c in active]
     return {**health, "active": slugs}
+
+
+def _clean_str(val: object) -> str:
+    if not isinstance(val, str):
+        return ""
+    return _CTRL_RE.sub("", val).strip()
+
+
+def _channel_to_entry(db, channel: Channel) -> dict:
+    slug = channel.slug
+    return {
+        "slug": slug,
+        "name": channel.name or slug,
+        "niche": channel.niche or "",
+        "brand_name": channel.brand_name or "",
+        "client_secrets": channel.client_secrets or f"secrets/{slug}_client_secret.json",
+        "token_path": channel.token_path or f"secrets/{slug}_token.json",
+        "uploads_per_day": uploads_per_day(channel),
+        "timezone": (timezone_of(channel) or "UTC").strip(),
+        "require_approval": bool(require_approval(channel)),
+        "auto_approve_score": float(channel.auto_approve_score or 0.0),
+        "cadence_backstop": bool(channel.cadence_backstop),
+        "enabled": bool(channel.enabled),
+        "feeds": _dedupe_feeds(feeds_for(db, channel)),
+    }
+
+
+def _base_entries(db) -> list[dict]:
+    """Current channels.json entries, augmented with any live DB channels not yet materialized on disk."""
+    data = _read_file()
+    entries = [dict(e) for e in data["channels"] if isinstance(e, dict) and e.get("slug")]
+    seen = {str(e["slug"]).strip() for e in entries}
+    if not entries and (settings.growth_feeds_list or settings.youtube_client_secrets):
+        entries.append({"slug": DEFAULT_SLUG})
+        seen.add(DEFAULT_SLUG)
+    for ch in db.execute(select(Channel).order_by(Channel.slug)).scalars():
+        if not is_default(ch) and ch.slug not in seen:
+            entries.append(_channel_to_entry(db, ch))
+            seen.add(ch.slug)
+    return entries
+
+
+def export_channels_snapshot(db=None) -> dict:
+    """Export portable, sanitized JSON of managed channels and feeds (never OAuth tokens or secret paths)."""
+    if db is None:
+        from app.db import session_scope
+
+        with session_scope() as s:
+            return export_channels_snapshot(s)
+
+    loaded: Optional[list[dict]] = None
+    cloned_map: dict[str, str] = {}
+    try:
+        loaded = _load_config()
+    except ChannelsConfigError:
+        loaded = None
+
+    listed_slugs: Optional[set[str]] = None
+    if loaded is not None:
+        listed_slugs = {str(e["slug"]).strip() for e in loaded}
+        cloned_map = {
+            str(e["slug"]).strip(): e["cloned_from"].strip()
+            for e in loaded
+            if isinstance(e.get("cloned_from"), str) and e["cloned_from"].strip()
+        }
+        existing_db_slugs = set(db.execute(select(Channel.slug)).scalars())
+        if not listed_slugs.issubset(existing_db_slugs):
+            sync_channels(db)
+    else:
+        _ensure_seeded(db)
+
+    items: list[dict] = []
+    for channel in all_channels(db):
+        if is_default(channel):
+            continue
+        if listed_slugs is not None and channel.slug not in listed_slugs:
+            continue
+        item: dict = {
+            "slug": channel.slug,
+            "name": channel.name or channel.slug,
+            "niche": channel.niche or "",
+            "brand_name": channel.brand_name or "",
+            "uploads_per_day": uploads_per_day(channel),
+            "timezone": (timezone_of(channel) or "UTC").strip(),
+            "require_approval": bool(require_approval(channel)),
+            "auto_approve_score": float(channel.auto_approve_score or 0.0),
+            "cadence_backstop": bool(channel.cadence_backstop),
+            "enabled": bool(channel.enabled),
+            "feeds": _dedupe_feeds(feeds_for(db, channel)),
+        }
+        if channel.slug in cloned_map:
+            item["cloned_from"] = cloned_map[channel.slug]
+        items.append(item)
+
+    return {
+        "version": 1,
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "count": len(items),
+        "channels": items,
+    }
+
+
+def import_channels_snapshot(db, payload: dict, *, dry_run: bool = False) -> dict:
+    """Validate and upsert portable channel definitions without touching OAuth tokens or secret paths."""
+    if db is None:
+        from app.db import session_scope
+
+        with session_scope() as s:
+            return import_channels_snapshot(s, payload, dry_run=dry_run)
+
+    if not isinstance(payload, dict):
+        raise ChannelsConfigError("snapshot payload must be a JSON object with a 'channels' list")
+    version = payload.get("version", 1)
+    if version is not None and (isinstance(version, bool) or not isinstance(version, int) or version < 1):
+        raise ChannelsConfigError(f"unsupported snapshot version {version!r}")
+    incoming = payload.get("channels")
+    if not isinstance(incoming, list):
+        raise ChannelsConfigError("snapshot payload has no 'channels' list")
+
+    seen_incoming: set[str] = set()
+    for raw in incoming:
+        if not isinstance(raw, dict) or not isinstance(raw.get("slug"), str) or not raw["slug"].strip():
+            raise ChannelsConfigError("every imported channel needs a slug")
+        slug = raw["slug"].strip()
+        if slug == DEFAULT_SLUG:
+            raise ChannelsConfigError(f"channel {slug!r}: cannot import into the legacy default channel")
+        for text_field in ("name", "niche", "brand_name"):
+            if raw.get(text_field) is not None and not isinstance(raw[text_field], str):
+                raise ChannelsConfigError(f"channel {slug!r}: {text_field} must be a string")
+        problem = _entry_problem(raw, seen_incoming)
+        if problem:
+            raise ChannelsConfigError(f"channel {slug!r}: {problem}")
+        seen_incoming.add(slug)
+
+    merged = _base_entries(db)
+    by_slug: dict[str, dict] = {str(e["slug"]).strip(): e for e in merged}
+    created: list[str] = []
+    updated: list[str] = []
+    total_feeds = 0
+
+    for raw in incoming:
+        slug = raw["slug"].strip()
+        norm_feeds = _dedupe_feeds(raw.get("feeds") or []) if "feeds" in raw and raw["feeds"] is not None else None
+        if norm_feeds is not None:
+            total_feeds += len(norm_feeds)
+
+        if slug in by_slug:
+            updated.append(slug)
+            target = by_slug[slug]
+            for text_field in ("name", "niche", "brand_name"):
+                if raw.get(text_field) is not None:
+                    target[text_field] = _clean_str(raw[text_field])
+            if raw.get("uploads_per_day") is not None:
+                target["uploads_per_day"] = int(raw["uploads_per_day"])
+            if raw.get("timezone") is not None:
+                target["timezone"] = raw["timezone"].strip()
+            for flag in ("require_approval", "enabled", "cadence_backstop"):
+                if raw.get(flag) is not None:
+                    target[flag] = bool(raw[flag])
+            if raw.get("auto_approve_score") is not None:
+                target["auto_approve_score"] = float(raw["auto_approve_score"])
+            if norm_feeds is not None:
+                target["feeds"] = norm_feeds
+            if isinstance(raw.get("cloned_from"), str) and raw["cloned_from"].strip():
+                target["cloned_from"] = raw["cloned_from"].strip()
+            # Never accept token_path, client_secrets, or youtube_channel_id from untrusted snapshots.
+            target.setdefault("client_secrets", f"secrets/{slug}_client_secret.json")
+            target.setdefault("token_path", f"secrets/{slug}_token.json")
+        else:
+            created.append(slug)
+            new_entry: dict = {
+                "slug": slug,
+                "name": _clean_str(raw.get("name")) or slug,
+                "niche": _clean_str(raw.get("niche")),
+                "brand_name": _clean_str(raw.get("brand_name")),
+                "client_secrets": f"secrets/{slug}_client_secret.json",
+                "token_path": f"secrets/{slug}_token.json",
+                "uploads_per_day": int(raw["uploads_per_day"]) if raw.get("uploads_per_day") is not None else 3,
+                "timezone": raw["timezone"].strip() if raw.get("timezone") is not None else (settings.growth_timezone or "UTC"),
+                "require_approval": bool(raw["require_approval"]) if raw.get("require_approval") is not None else True,
+                "auto_approve_score": float(raw["auto_approve_score"]) if raw.get("auto_approve_score") is not None else 0.0,
+                "cadence_backstop": bool(raw["cadence_backstop"]) if raw.get("cadence_backstop") is not None else False,
+                "enabled": bool(raw["enabled"]) if raw.get("enabled") is not None else False,
+                "feeds": norm_feeds if norm_feeds is not None else [],
+            }
+            if isinstance(raw.get("cloned_from"), str) and raw["cloned_from"].strip():
+                new_entry["cloned_from"] = raw["cloned_from"].strip()
+            merged.append(new_entry)
+            by_slug[slug] = new_entry
+
+    problem = _config_problem(merged)
+    if problem:
+        raise ChannelsConfigError(problem)
+
+    if dry_run:
+        return {
+            "ok": True,
+            "dry_run": True,
+            "created": created,
+            "updated": updated,
+            "count": len(incoming),
+            "feeds": total_feeds,
+        }
+
+    _write_config_file({"channels": merged})
+    active = sync_channels(db)
+    return {
+        "ok": True,
+        "dry_run": False,
+        "created": created,
+        "updated": updated,
+        "count": len(incoming),
+        "feeds": total_feeds,
+        "active": [c.slug for c in active],
+    }
+
+
+def clone_channel(db, source_slug: str, new_slug: str, *, name: str = "") -> Channel:
+    """Clone cadence, niche, brand, approval policy, and feeds into a fresh disabled, unlinked channel."""
+    if db is None:
+        from app.db import session_scope
+
+        with session_scope() as s:
+            return clone_channel(s, source_slug, new_slug, name=name)
+
+    src_slug = str(source_slug or "").strip()
+    dst_slug = str(new_slug or "").strip()
+    if not _SLUG.match(dst_slug):
+        raise ChannelsConfigError(f"channel {dst_slug!r}: the slug must be lowercase letters, digits, - or _")
+    if dst_slug in _RESERVED_SLUGS or dst_slug == DEFAULT_SLUG:
+        raise ChannelsConfigError(f"channel {dst_slug!r}: {dst_slug!r} is a reserved name")
+
+    if settings.channels_path.exists() and channel_by_slug(db, src_slug) is None:
+        sync_channels(db)
+    else:
+        _ensure_seeded(db)
+
+    src = channel_by_slug(db, src_slug)
+    if src is None:
+        known = ", ".join(c.slug for c in all_channels(db)) or "none"
+        raise ChannelsConfigError(f"no channel {src_slug!r}. Known: {known}.")
+
+    merged = _base_entries(db)
+    if any(str(e.get("slug", "")).strip() == dst_slug for e in merged) or channel_by_slug(db, dst_slug) is not None:
+        raise ChannelsConfigError(f"channel {dst_slug!r} already exists")
+
+    cloned_entry: dict = {
+        "slug": dst_slug,
+        "name": _clean_str(name) or f"{src.name or src_slug} (copy)",
+        "niche": src.niche or "",
+        "brand_name": src.brand_name or "",
+        "client_secrets": f"secrets/{dst_slug}_client_secret.json",
+        "token_path": f"secrets/{dst_slug}_token.json",
+        "uploads_per_day": uploads_per_day(src),
+        "timezone": (timezone_of(src) or "UTC").strip(),
+        "require_approval": bool(require_approval(src)),
+        "auto_approve_score": float(src.auto_approve_score or 0.0),
+        "cadence_backstop": bool(src.cadence_backstop),
+        "enabled": False,
+        "cloned_from": src_slug,
+        "feeds": _dedupe_feeds(feeds_for(db, src)),
+    }
+    merged.append(cloned_entry)
+    problem = _config_problem(merged)
+    if problem:
+        raise ChannelsConfigError(problem)
+
+    _write_config_file({"channels": merged})
+    sync_channels(db)
+    cloned = channel_by_slug(db, dst_slug)
+    if cloned is None:  # pragma: no cover - defensive
+        raise ChannelsConfigError(f"failed to persist cloned channel {dst_slug!r}")
+    cloned.youtube_channel_id = None
+    cloned.enabled = False
+    db.flush()
+    return cloned
 
 
 def active_channels(db) -> list[Channel]:
@@ -419,7 +822,7 @@ def for_each(active: list[Channel], run: Callable[[Channel], dict]) -> dict:
 def feeds_for(db, channel: Channel) -> list[str]:
     """The legacy channel reads its feeds live from GROWTH_FEEDS; a named channel from its Feed rows."""
     if is_default(channel):
-        return settings.growth_feeds_list
+        return _dedupe_feeds(settings.growth_feeds_list)
     return list(db.execute(
         select(Feed.url).where(Feed.channel_id == channel.id, Feed.enabled.is_(True))).scalars())
 
@@ -427,7 +830,13 @@ def feeds_for(db, channel: Channel) -> list[str]:
 # The legacy channel resolves these live from settings, so a deployment that still drives everything
 # through GROWTH_* (and the tests that monkeypatch those settings) behaves exactly as before.
 def uploads_per_day(channel: Channel) -> int:
-    return settings.growth_uploads_per_day if is_default(channel) else channel.uploads_per_day
+    raw = settings.growth_uploads_per_day if is_default(channel) else channel.uploads_per_day
+    if raw is None or isinstance(raw, bool):
+        return 0
+    try:
+        return max(0, min(50, int(raw)))
+    except (TypeError, ValueError):
+        return 0
 
 
 def timezone_of(channel: Channel) -> str:

@@ -24,6 +24,7 @@ crop is active -- see ``metadata.compose``.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 # The Shorts canvas ratio.
@@ -98,9 +99,16 @@ def plan_crop(width: int, height: int, *, top_pct: float = 0.0,
     """
     if width <= 0 or height <= 0:
         return CropPlan(filters=[], out_width=width, out_height=height)
+    try:
+        raw_top = float(top_pct)
+        raw_bottom = float(bottom_pct)
+    except (TypeError, ValueError):
+        return CropPlan(filters=[], out_width=width, out_height=height)
+    if not (math.isfinite(raw_top) and math.isfinite(raw_bottom)):
+        return CropPlan(filters=[], out_width=width, out_height=height)
 
-    top = max(0.0, min(45.0, float(top_pct))) / 100.0
-    bottom = max(0.0, min(45.0, float(bottom_pct))) / 100.0
+    top = max(0.0, min(45.0, raw_top)) / 100.0
+    bottom = max(0.0, min(45.0, raw_bottom)) / 100.0
     if top + bottom > MAX_TOTAL_CROP:
         # Refuse rather than silently gutting the frame.
         return CropPlan(filters=[], out_width=width, out_height=height,
@@ -108,14 +116,15 @@ def plan_crop(width: int, height: int, *, top_pct: float = 0.0,
     if top <= 0 and bottom <= 0:
         return CropPlan(filters=[], out_width=width, out_height=height)
 
+    even_w = _even(width)
     keep_h = _even(height * (1.0 - top - bottom))
     offset_y = _even(height * top)
-    if keep_h < 120:
+    if keep_h < 120 or even_w < 120:
         return CropPlan(filters=[], out_width=width, out_height=height,
                         mode="rejected: result too small")
 
-    filters = [f"crop={width}:{keep_h}:0:{offset_y}"]
-    out_w, out_h = width, keep_h
+    filters = [f"crop={even_w}:{keep_h}:0:{offset_y}"]
+    out_w, out_h = even_w, keep_h
     sides = 0.0
 
     if mode == "fill" and (out_w / out_h) > TARGET_RATIO + RATIO_TOLERANCE:

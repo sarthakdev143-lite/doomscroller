@@ -1388,12 +1388,17 @@ def test_refreshed_token_is_saved_privately_and_atomically(token_publisher, monk
     open(token_publisher.token_path, "w").write(json.dumps(TOKEN))
     os.chmod(token_publisher.token_path, 0o644)
     replaced = []
+    chmods = []
     real_replace = os.replace
+    real_chmod = os.chmod
     monkeypatch.setattr(os, "replace", lambda a, b: (replaced.append((a, b)), real_replace(a, b))[1])
+    monkeypatch.setattr(os, "chmod", lambda p, m: (chmods.append(m), real_chmod(p, m))[1])
     assert token_publisher._credentials().token == "new"
     assert [b for _, b in replaced] == [token_publisher.token_path]
     assert json.load(open(token_publisher.token_path))["token"] == "new"
-    assert stat_module.S_IMODE(os.stat(token_publisher.token_path).st_mode) == 0o600
+    assert chmods == [0o600]
+    if os.name != "nt":
+        assert stat_module.S_IMODE(os.stat(token_publisher.token_path).st_mode) == 0o600
     assert set(os.listdir(os.path.dirname(token_publisher.token_path))) == {"token.json"}
 
 
@@ -1715,7 +1720,7 @@ def test_one_bad_clip_cannot_block_the_publish_job(tmp_path, monkeypatch):
     monkeypatch.setattr("tasks.pipeline.get_publisher", lambda: fake)
     for _ in range(3):
         scheduler.publish_job()
-    assert [a.rsplit("/", 1)[-1] for a in fake.attempts] == ["clip0.mp4", "clip1.mp4", "clip2.mp4"]
+    assert [os.path.basename(a) for a in fake.attempts] == ["clip0.mp4", "clip1.mp4", "clip2.mp4"]
     with session_scope() as db:
         assert db.get(Video, ids[0]).status == VideoStatus.TRANSFORMED  # kept, and tried again when its turn comes
     scheduler.publish_job()
@@ -1752,7 +1757,7 @@ def test_when_every_clip_has_failed_they_all_get_turns(tmp_path, monkeypatch):
     tried = []
 
     def upload(**kwargs):
-        tried.append(kwargs["file_path"].rsplit("/", 1)[-1])
+        tried.append(os.path.basename(kwargs["file_path"]))
         raise TimeoutError("timed out")
 
     monkeypatch.setattr(fake, "upload", upload)
@@ -3851,7 +3856,12 @@ def test_a_job_keeps_its_fingerprint_and_feed_when_it_finishes():
 # ---------- supply: inbox ----------
 def test_a_dangling_symlink_does_not_stop_supply(monkeypatch, tmp_path):
     good = settled_file(tmp_path / "good.mp4")
-    (tmp_path / "gone.mp4").symlink_to(tmp_path / "moved-away.mp4")
+    try:
+        (tmp_path / "gone.mp4").symlink_to(tmp_path / "moved-away.mp4")
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip("symlinks require privilege on Windows")
+        raise
     use_feeds(monkeypatch, tmp_path)
     assert supply.next_source() == (str(good.resolve()), None)
 

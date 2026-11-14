@@ -19,7 +19,7 @@ mkdir -p "$UNITS"
 # Services start with a bare PATH, but the clipper needs ffmpeg, node (YouTube's challenge), opencode and claude.
 cat > "$UNITS/doomscroller.service" <<UNIT
 [Unit]
-Description=Doomscroller: API with scheduler, dashboard and review page
+Description=Doomscroller: API, scheduler and control panel
 After=network-online.target
 
 [Service]

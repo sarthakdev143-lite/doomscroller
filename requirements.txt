@@ -1,46 +1,33 @@
-# Web
+# Web & API (serves both local API :8000 and token-gated control panel :8600)
 fastapi==0.124.1
 uvicorn[standard]==0.38.0
-streamlit==1.66.1
+python-multipart==0.0.20
 
-# DB
+# DB & Config
 SQLAlchemy==2.0.49
 pydantic==2.12.5
 pydantic-settings==2.12.0
+python-dotenv==1.1.1
 
-# Scheduler (replaces Celery+Redis for local autonomous mode)
+# In-process Scheduler
 APScheduler==3.11.0
 
-# Scraping
+# Scraping & Media Download
 yt-dlp==2026.10.26
-playwright==1.62.0
+httpx==0.28.1
 
-# Video processing (ffmpeg must be on system PATH)
-moviepy==2.1.2
+# Image, Captions & Active-Speaker Face Framing (ffmpeg must be on system PATH)
 pillow==10.4.0
-
-# Face-aware framing in the clipper. OpenCV 5 dropped the bundled face detector.
-opencv-python-headless==4.14.0
+opencv-python-headless==4.14.0.94
 numpy==2.5.4
 
 # Language detection (for source-language preservation)
 langdetect==1.0.9
 
-# HTTP / utils
-httpx==0.28.1
-python-dotenv==1.1.1
-loguru==0.7.3
-python-multipart==0.0.20
-
-# YouTube API
+# YouTube Data & Analytics APIs
 google-auth==2.49.2
 google-auth-oauthlib==1.3.1
 google-api-python-client==2.194.0
 
 # Dev / test
 pytest==9.0.2
-
-# Celery is OPTIONAL — only needed if you want to run a separate worker process.
-# For local autonomous mode (default), APScheduler is used instead.
-celery==5.6.3
-redis==5.3.1

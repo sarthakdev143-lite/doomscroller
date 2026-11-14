@@ -14,20 +14,26 @@ target an Android/Termux deployment.
 Everything below assumes the repo venv (`venv/Scripts/python.exe` on Windows, `venv/bin/python` on POSIX).
 
 ```bash
-# One-time setup
+# One-time setup & preflight check
 python -m venv venv
 venv/Scripts/python.exe -m pip install -r requirements.txt
+venv/Scripts/python.exe scripts/doctor.py --fix     # offline preflight: bootstraps dirs, .env + REVIEW_TOKEN & SQLite DB (--json supported)
 venv/Scripts/python.exe scripts/init_db.py
+venv/Scripts/python.exe scripts/final_audit.py --offline
 
-# Run everything (API :8000 + Streamlit dashboard :8501)
-venv/Scripts/python.exe scripts/run.py            # foreground
-venv/Scripts/python.exe scripts/run.py --daemon   # background, logs to logs/
+# Run everything via unified slim runner (API :8000 + Control Panel :8600 + scheduler)
+# Auto-creates .env from .env.example and generates REVIEW_TOKEN if missing!
+venv/Scripts/python.exe scripts/run.py              # foreground
+venv/Scripts/python.exe scripts/run.py --daemon     # background, logs to logs/
+venv/Scripts/python.exe scripts/run.py --ensure     # idempotent watchdog check
+venv/Scripts/python.exe scripts/run.py --panel-url  # print local ?key= unlock link
 venv/Scripts/python.exe scripts/run.py --status
 venv/Scripts/python.exe scripts/run.py --stop
 
-# Windows one-click (creates venv, installs deps, inits db, then run.py)
-start.bat        # or start.ps1
-stop.bat
+# Windows one-click & scheduled watchdog
+start.bat        # or start.ps1 (opens unlocked Control Panel in browser)
+stop.bat         # or stop.ps1
+powershell -ExecutionPolicy Bypass -File scripts\windows_autostart.ps1 install
 
 # Tests. The fast tier is ~5s; the `slow` tier shells out to real ffmpeg (~3min).
 # conftest forces USE_MOCK=true + in-memory SQLite.
@@ -41,39 +47,51 @@ curl -X POST http://localhost:8000/scheduler/run/scrape
 # Seed fake data (mock mode only)
 venv/Scripts/python.exe scripts/seed.py 20
 
-# Cut one long video or link into finished Shorts
-venv/Scripts/python.exe scripts/clip.py "https://www.youtube.com/watch?v=..." --count 3
+# Cut one long video or link into finished Shorts (or inspect queued jobs)
+venv/Scripts/python.exe scripts/clip.py "https://www.youtube.com/watch?v=..." --count 3 --channel tech
+venv/Scripts/python.exe scripts/clip.py "https://www.youtube.com/watch?v=..." --mine --queue
+venv/Scripts/python.exe scripts/clip.py --jobs --json
+venv/Scripts/python.exe scripts/clip.py --inbox                  # clip new videos in content/inbox/ (--enqueue to queue instead)
+venv/Scripts/python.exe scripts/clip.py --batch links.txt        # one link/path per line; blank lines and # comments skipped
+venv/Scripts/python.exe scripts/clip.py --retry <JOB_ID>
+venv/Scripts/python.exe scripts/clip.py --clear-finished --json  # soft-dismiss finished jobs (rows stay, so inbox files are never re-cut)
 
 # YouTube OAuth (writes secrets/youtube_token.json; needs secrets/client_secret.json; steps in README.md)
 venv/Scripts/python.exe scripts/youtube_oauth.py
+venv/Scripts/python.exe scripts/youtube_oauth.py --status --channel tech --json
 
-# Growth loop: can it run, and what has it learned?
+# Growth loop: can it run, and what has it learned? (add --channel/-c <slug> and/or --json)
+venv/Scripts/python.exe scripts/growth.py status   # quick snapshot: stock, pauses/blocks, next post (default)
 venv/Scripts/python.exe scripts/growth.py doctor   # live: asks Google and reads feeds; --offline skips that
 venv/Scripts/python.exe scripts/growth.py report
-venv/Scripts/python.exe scripts/growth.py resume   # post again after a takedown pause; `resume <slug>` for one channel
+venv/Scripts/python.exe scripts/growth.py report --markdown --out weekly.md   # Markdown digest (`report --json` still works)
+venv/Scripts/python.exe scripts/growth.py notify-test                         # ntfy/Telegram delivery check
+venv/Scripts/python.exe scripts/growth.py pause tech   # pause posting on a channel (supply & learning continue)
+venv/Scripts/python.exe scripts/growth.py resume   # post again after a pause; `resume <slug>` for one channel
 venv/Scripts/python.exe scripts/growth.py unblock  # list takedown blocks; with a name, lift one
 venv/Scripts/python.exe scripts/growth.py reload   # re-read channels.json into the running loop
 
-# Channels: add, switch on or off, and change feeds without hand-editing channels.json
+# Channels: add, switch on or off, change feeds, and export/import/clone without hand-editing channels.json
 venv/Scripts/python.exe scripts/channels.py                       # every channel and its next setup step
 venv/Scripts/python.exe scripts/channels.py add tech --name "Tech" --feed https://www.youtube.com/@mkbhd
 venv/Scripts/python.exe scripts/channels.py connect tech          # sign in, check with Google, switch on
-venv/Scripts/python.exe scripts/channels.py set tech --uploads 4  # also --name --niche --brand --timezone
+venv/Scripts/python.exe scripts/channels.py set tech --uploads 4  # also --name --niche --brand --timezone --require-approval/--no-require-approval --auto-approve-score --cadence-backstop/--no-cadence-backstop
+venv/Scripts/python.exe scripts/channels.py export --out channels_backup.json   # sanitized snapshot (never OAuth tokens)
+venv/Scripts/python.exe scripts/channels.py import channels_backup.json --dry-run
+venv/Scripts/python.exe scripts/channels.py clone tech tech-clips --name "Tech Clips"
 ```
 
 `ffmpeg` and `ffprobe` must be on PATH for real operation. Playwright/Chromium is **optional** —
-only a fallback if the plain HTTP scrape is ever challenged. There is no linter or formatter configured.
+only a fallback if the plain HTTP scrape is ever challenged, and it is not in `requirements.txt`
+(`pip install playwright && playwright install chromium` to enable it). GitHub Actions CI (`.github/workflows/ci.yml`) runs `node --check` on `app.review_ui.PAGE`, `scripts/final_audit.py --offline`, and `pytest -q -m "not slow"` across Ubuntu and Windows; contributor rules and hard invariants are summarized in `CONTRIBUTING.md`.
 
 ## Architecture
 
-### Two processes, one SQLite file
+### Single unified slim process (`scripts/serve_slim.py`), one SQLite file
 
-- **FastAPI (`app/main.py`, port 8000)** — REST API *and* host of the APScheduler `BackgroundScheduler`,
-  started/stopped in the `lifespan` context manager. No separate worker process by default.
-- **Streamlit (`dashboard/app.py`, port 8501)** — reads/writes the SQLite DB **directly** (imports
-  `app.db`, `app.models`) for listing and approve/reject, but calls the **HTTP API** for scrape,
-  transform, publish, recompute and scheduler control. Both patterns are in use; match the surrounding code.
-- Celery (`tasks/celery_app.py`) is legacy/optional and not on the default path.
+- **Private FastAPI API (`app/main.py`, `127.0.0.1:8000`)** — internal REST API *and* host of the APScheduler `BackgroundScheduler`, started/stopped in the `lifespan` context manager. Never exposed to the public internet.
+- **Authenticated Control Panel (`app/review.py` + `app/review_ui.py`, `127.0.0.1:8600`)** — mobile-first & desktop-responsive dark-mode PWA gated by `REVIEW_TOKEN` (`?key=` -> `HttpOnly` cookie). Kept as a thin HTTP shell delegating to `app/growth/approval.py`, `app/growth/channels.py`, `app/growth/controls.py`, `app/clipper/job.py`, and `app/scheduler.py`. When `CLOUDFLARE_TUNNEL=true`, `serve_slim.py` supervises `cloudflared` pointing strictly at port `8600`.
+- **Low-overhead resource profile (`app/winproc.py`)** — runs at `BELOW_NORMAL_PRIORITY_CLASS` on Windows with `CREATE_NO_WINDOW` and `stdin=DEVNULL` on every background subprocess (`ffmpeg`, `ffprobe`, `yt-dlp`, `opencode`, `claude`, `z-ai`, `earshot`, `cloudflared`), SQLite WAL mode with bounded cache, and lazy heavy imports (`numpy` is never imported at idle server startup; `cv2` is not used in `shots.py`).
 
 ### Pipeline and status machine
 
@@ -86,9 +104,8 @@ PENDING → APPROVED → TRANSFORMING → TRANSFORMED → PUBLISHING → PUBLISH
 
 Work lives in `tasks/pipeline.py` as plain synchronous functions (`scrape_task`, `transform_task`,
 `publish_task`, `generate_metadata_for_video`, `long_to_shorts_task`). Scheduler jobs and API endpoints
-both call these directly. API endpoints first try `*_task_async.delay(...)` and fall back to the sync
-function in an `except` — with no Celery broker running, transforms/publishes execute **inline in the
-request thread**, which is why the dashboard uses long httpx timeouts.
+call these directly (heavy actions triggered from the Control Panel run in background daemon threads via
+`app/growth/controls.py` or `app/clipper/job.py` `ClipJob` queue worker).
 
 ### Snapchat acquisition (`app/scrapers/snapchat_scraper.py`)
 
@@ -245,7 +262,16 @@ Debian DejaVu path that does not exist on Windows or macOS, and a missing font f
 so a non-existent configured path falls back to autodetecting a bold system font.
 
 Because filter graphs only fail at ffmpeg's parser, `tests/test_render_integration.py` renders through the
-real binary (marked `slow`). Any change to the filter chain needs to run that tier.
+real binary (marked `slow`). Any change to the filter chain needs to run that tier. `tests/test_slow_integration_audit.py`
+adds real-ffmpeg edge cases (odd dimensions, rotated phone footage, apostrophe/unicode paths, speed vs audio sync) plus fast
+probe unit tests.
+
+**Probing sees the displayed frame, and never degrades silently.** `_probe_dims` swaps width/height for streams tagged
+rotated 90/270 (display-matrix side data or the legacy `rotate` tag), because ffmpeg autorotates and the crop plan must match
+the frame the filters receive; otherwise a portrait phone clip stored as landscape pixels fails the `crop=` filter. Every
+probe goes through `_run_probe`: a timeout is retried once with a 90s budget and then raises, because treating a slow ffprobe
+on a loaded laptop as "no audio" or "no crop" ships a muted or still-branded Short. A corrupt file still degrades quietly,
+since the render itself then fails loudly.
 
 ### Clipper (`app/clipper/`)
 
@@ -335,17 +361,16 @@ Off unless `GROWTH_ENABLED=true`. When on it owns publishing (`publish_job` no-o
 month). Supply and winner mining cut into `PENDING`; clips waiting for review count as stock, or supply would keep
 cutting while nobody reviews. `app/review.py` is a separate small server (port 8600, started by `run.py`) with only the
 review routes, so a tunnel to it never exposes the main API. It needs `REVIEW_TOKEN`, given once as `?key=` and then
-kept in a cookie. The page (`app/review_ui.py`, served by `app/review.py`) is a tabbed control panel — Review,
+kept in a cookie. The page (`app/review_ui.py`, served by `app/review.py`) is a six-tab control panel — Review, Clip,
 Channels, Status, Report, Controls — each tab backed by its own `/api` route; `approval.channels_overview` feeds the
-Channels tab, `report.doctor`/`build_report` the Status and Report tabs, and `app/growth/controls.py` runs a growth job
+Channels tab, `report.doctor`/`build_report` the Status and Report tabs, `app/clipper/job.py` drives Clip uploads/drag-and-drop and `clear-finished`, `notify.send_test_notification` powers `POST /api/notify/test`, `logging_config.read_recent_logs` powers the secret-scrubbed phone log viewer at `GET /api/logs`, `GET /api/media/{video_id}?download=1` serves one-tap `Save MP4` downloads (`Content-Disposition: attachment` while keeping inline streaming by default), `approval.export_snapshot` powers redacted JSON backups at `GET /api/backup`, and `app/growth/controls.py` runs a growth job
 early in a daemon thread (the panel polls `/api/controls` for the result). Every channel edit goes through the same
-validated `channels.edit_config`, so the file stays the source of truth. Approving moves a clip straight to
-`TRANSFORMED`; a title typed there becomes an edited draft, which
-the autopilot posts as written. On a phone a swipe right approves and left rejects, every decision shows an Undo
+validated `channels.edit_config` (with `channels.export_channels_snapshot`, `import_channels_snapshot`, and `clone_channel` supporting sanitized portable backups and cloning without copying `youtube_channel_id` OAuth bindings), so the file stays the source of truth. Approving moves a clip straight to
+`TRANSFORMED`; titles, YouTube descriptions and hashtags edited on Review or Up next save to `MetadataDraft` via `POST /api/clips/{id}/metadata`, which
+the autopilot posts as written, `POST /api/clips/approve-clean` (`approval.approve_clean`) batch-approves unflagged `awaiting_review` clips in two taps, and `POST /api/clips/reject-flagged` batch-rejects gate-flagged pending clips in one tap. `POST /api/clips/{id}/pin` (`approval.pin_clip_next`) stamps `meta.pinned_at` so `autopilot.ready_clips` and `pick_clip` publish that clip next (only among `least_failed` clips); `POST /api/channels/{slug}/clone` and `POST /api/channels/import` wrap `channels.clone_channel` / `import_channels_snapshot` (import defaults to `dry_run`, never enables a channel or carries OAuth bindings); `GET /api/system/doctor` + `POST /api/system/doctor/fix` expose `scripts/doctor.py` (the existing `GET /api/doctor` stays the growth/Google doctor). On a phone a swipe right approves and left rejects, every decision shows an Undo
 (`approval.undo` takes the row back with a guarded `UPDATE`, so it loses to an upload that claimed the clip first), a
 clip the gate flagged needs a second tap, and with
-several channels a strip at the top filters by channel and shows each one's stock and pause state. `run.py` binds every server to `127.0.0.1` (`DOOMSCROLLER_HOST`): the API and the
-Streamlit dashboard have no login, and this host has a public address. Tests set `DOOMSCROLLER_ENV_FILE` empty so the
+several channels a strip at the top filters by channel and shows each one's stock and pause state. `run.py` binds every server to `127.0.0.1` (`DOOMSCROLLER_HOST`): the internal API (`:8000`) has no login, while only the authenticated Control Panel (`:8600`) is ever tunnelled. Tests set `DOOMSCROLLER_ENV_FILE` empty so the
 owner's `.env` (which turns real uploads on) never reaches them.
 
 The review page also lists recent real uploads with views, likes, % watched and the loop's diagnosis.
@@ -353,7 +378,7 @@ The review page also lists recent real uploads with views, likes, % watched and 
 Telegram bot: new clips waiting, Shorts posted, and problem events. It keeps its clock in `GrowthState["notified"]`
 and only advances it after a delivery, so a failed send is retried. The link it sends carries no key: the phone keeps
 the sign-in cookie, and a notification server should never hold the password. The Telegram token travels in the URL,
-so failures log only the exception type. `scripts/tunnel.py` runs Cloudflare's quick tunnel to port 8600, records the
+so failures log only the exception type. `scripts/tunnel.py` runs Cloudflare's quick tunnel to port 8600 (falling back to `localhost.run` over SSH if `cloudflared` is missing or blocked), strips ANSI sequences, atomically records the
 changing address in `logs/tunnel_url.txt` and pushes it to the phone; `scripts/install_services.sh` installs it and
 the app as systemd user services that start at boot and restart after a crash.
 
@@ -578,11 +603,12 @@ a column is not handled and still needs manual work.
 ### Configuration
 
 `app/config.py` exposes a single `lru_cache`d `settings` object. List-valued settings
-(`TARGET_HANDLES`, `TARGET_HASHTAGS`, `ENABLED_PLATFORMS`, `YOUTUBE_DEFAULT_TAGS`) are stored as **JSON
-strings** and read through `*_list` properties — add new list settings the same way.
-`POST /config/publish` mutates `settings` in memory *and* rewrites `.env` with regex, then calls
-`scheduler.reschedule_publish()`. That mutation is per-process: the Streamlit process keeps its own
-`settings` loaded at its own startup.
+(`TARGET_HANDLES`, `TARGET_HASHTAGS`, `ENABLED_PLATFORMS`, `TARGET_LANGUAGES`, `TARGET_TOPICS`,
+`EXCLUDED_TOPICS`, `GROWTH_FEEDS`, `YOUTUBE_DEFAULT_TAGS`) accept **JSON strings** (e.g. `["en","hi"]`)
+or comma-separated strings (e.g. `en,hi`) and are read through `*_list` properties — add new list
+settings the same way. `POST /config/publish` mutates `settings` in memory *and* rewrites `.env` with
+regex, then calls `scheduler.reschedule_publish()` (in unified `serve_slim.py` both servers share the
+same process; separate CLI invocations load fresh settings at startup).
 
 ## Gotchas
 
@@ -596,16 +622,17 @@ strings** and read through `*_list` properties — add new list settings the sam
   returned, the video is live, so nothing after it reaches the classifier; quota and `boost_creator` cannot change its status.
 - **Publishing is claimed.** `publish_task` moves a row to `PUBLISHING` with `UPDATE ... WHERE status='transformed'` and
   stamps `meta.publish_claimed_at` and `meta.publish_title`. The `UPDATE` is what decides, not the status read before it:
-  writing a title can take minutes, and the dashboard is another process, so a reject or a manual publish can land in that
-  gap, and acting on the stale read would upload a rejected clip or post one twice. A crash leaves the row there, and YouTube may or may not
+  writing a title can take minutes, and a browser tab or CLI command can land in that
+  gap, so acting on the stale read would upload a rejected clip or post one twice. A crash leaves the row there, and YouTube may or may not
   have the file, so it is never just re-uploaded: `recover_stuck_publishes` (at startup and every autopilot tick) searches
   the channel's uploads for that title once the claim is 2h old. Found means `PUBLISHED`, not found means `TRANSFORMED`,
   and a failed lookup leaves the row and tries again.
 - **Only `scripts/youtube_oauth.py` opens a browser.** The publisher runs on the scheduler thread, where a login would
   hang forever, so a bad token raises a retryable error instead.
-- **Windows process control.** `os.killpg`/`os.getpgid` do not exist on Windows, and `os.kill(pid, 0)`
-  there *terminates* rather than probes. `scripts/run.py` therefore branches on `os.name` and uses
-  `tasklist`/`taskkill` on Windows. Keep that split if you touch it.
+- **Windows process control & recycled PIDs.** `os.killpg`/`os.getpgid` do not exist on Windows, and `os.kill(pid, 0)`
+  there *terminates* rather than probes. `scripts/run.py` therefore branches on `os.name`, uses `tasklist`/`taskkill` on
+  Windows, and verifies that the process command line matches a Doomscroller daemon marker (`serve_slim`, `doomscroller`,
+  `app.main`, `app.review`) before treating a PID from `logs/pids.json` as alive or terminating it. Keep that guard if you touch it.
 - **Every scheduled job must go through `scheduler.instrumented()`.** It times the run, logs it, and
   appends a line to `logs/job_history.jsonl`. The previous code had a `_run_job` wrapper that
   `_make_scheduler` never used — it registered the raw functions — so no history was ever written and a
@@ -613,9 +640,7 @@ strings** and read through `*_list` properties — add new list settings the sam
   guards against that regressing. `configure_logging()` likewise must be called once per process (it is,
   from the FastAPI lifespan and the dashboard's cached init); without it the root logger sits at WARNING
   and all app-level INFO is silently dropped.
-- **`dashboard/app.py` starts with a sys.path/`sys.modules` fixup** so the `dashboard/` directory does
-  not shadow the `app` package. `dashboard/_launch.py` is the cleaner entry point, but `scripts/run.py`
-  launches `dashboard/app.py` directly — keep the fixup if you edit the top of that file.
+- **Windows background subprocess hygiene.** Every background `subprocess.Popen` / `subprocess.run` must pass `stdin=subprocess.DEVNULL` and `**background_subprocess_kwargs(low_priority=True)` from `app/winproc.py` so background jobs never flash `conhost.exe` console windows or hang on inherited stdin.
 - **Spotlight sources carry burned-in branding.** The CDN serves the "SpotlightSharing" asset variant,
   with Snapchat's ghost logo and the original creator's handle rendered into the pixels at the top-left.
   The 22% crop removes it, but overlay positions (`_WATERMARK_POSITIONS`, the end-card `y`) still assume

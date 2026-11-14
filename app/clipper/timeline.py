@@ -6,6 +6,7 @@ Boundaries sit on a frame grid so video and audio cut at the same instant.
 """
 from __future__ import annotations
 
+import math
 from typing import Optional, Sequence
 
 FPS = 30
@@ -19,18 +20,29 @@ _MAX_JOINED_GAP_SEC = 0.9
 
 
 def on_grid(seconds: float) -> float:
+    if not math.isfinite(seconds) or seconds <= 0:
+        return 0.0
     return round(seconds * FPS) / FPS
 
 
 def keep_segments(start: float, end: float, words: Sequence, max_gap: float) -> list[Segment]:
     """The parts of [start, end] to keep: every word, minus pauses over ``max_gap``."""
-    inside = [w for w in words if w.end > start and w.start < end]
+    if not math.isfinite(start) or not math.isfinite(end):
+        return []
+    start = max(0.0, start)
+    if on_grid(end) <= on_grid(start):
+        return []
+    safe_gap = max(0.0, max_gap) if math.isfinite(max_gap) else 0.0
+    inside = [
+        w for w in words
+        if math.isfinite(w.start) and math.isfinite(w.end) and w.end > start and w.start < end
+    ]
     if not inside:
         return [(on_grid(start), on_grid(end))]
     segments: list[list[float]] = []
     for word in inside:
         begin, finish = max(start, word.start - LEAD_IN_SEC), min(end, word.end + TAIL_SEC)
-        if segments and begin - segments[-1][1] <= max_gap:
+        if segments and begin - segments[-1][1] <= safe_gap:
             segments[-1][1] = max(segments[-1][1], finish)
         else:
             segments.append([begin, finish])
@@ -53,11 +65,13 @@ def keep_segments(start: float, end: float, words: Sequence, max_gap: float) -> 
 
 
 def total_duration(segments: Sequence[Segment]) -> float:
-    return sum(b - a for a, b in segments)
+    return sum(max(0.0, b - a) for a, b in segments if math.isfinite(a) and math.isfinite(b))
 
 
 def output_time(segments: Sequence[Segment], source_time: float) -> Optional[float]:
     """Where a source moment lands in the clip. Inside a removed gap it snaps forward."""
+    if not math.isfinite(source_time):
+        return None
     elapsed = 0.0
     for begin, finish in segments:
         if source_time < begin:
@@ -70,13 +84,17 @@ def output_time(segments: Sequence[Segment], source_time: float) -> Optional[flo
 
 def source_time(segments: Sequence[Segment], clip_time: float) -> float:
     """The source moment shown at a point in the clip: the inverse of output_time, at normal speed."""
+    if not segments:
+        return 0.0
+    if not math.isfinite(clip_time):
+        return segments[0][0]
     remaining = max(0.0, clip_time)
     for begin, finish in segments:
         # At a join the clip shows the next segment's first frame, not the last one's end.
         if remaining < finish - begin:
             return begin + remaining
         remaining -= finish - begin
-    return segments[-1][1] if segments else 0.0
+    return segments[-1][1]
 
 
 def edit_segments(words: Sequence, kept: Sequence[int], max_gap: float, *,

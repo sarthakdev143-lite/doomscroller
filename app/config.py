@@ -2,16 +2,53 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from functools import lru_cache
 from pathlib import Path
 from typing import List
 
-from pydantic import field_validator
+from pydantic import ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _parse_str_list(
+    raw: object,
+    *,
+    lower: bool = False,
+    invalid_fallback: list[str] | None = None,
+) -> list[str]:
+    """Parse a JSON array, comma-separated string, or Python sequence of strings."""
+    if raw is None:
+        return []
+    if isinstance(raw, (list, tuple, set)):
+        items = [s for x in raw if x is not None and (s := str(x).strip())]
+        return [s.lower() for s in items] if lower else items
+    s = str(raw).strip()
+    if not s:
+        return []
+    if s.startswith("["):
+        try:
+            parsed = json.loads(s)
+        except Exception:
+            return list(invalid_fallback) if invalid_fallback is not None else []
+        if not isinstance(parsed, list):
+            return list(invalid_fallback) if invalid_fallback is not None else []
+        items = [item for x in parsed if x is not None and (item := str(x).strip())]
+        return [item.lower() for item in items] if lower else items
+    if s.startswith("{"):
+        return list(invalid_fallback) if invalid_fallback is not None else []
+    items: list[str] = []
+    for part in s.split(","):
+        item = part.strip()
+        if len(item) >= 2 and item[0] == item[-1] and item[0] in ("'", '"'):
+            item = item[1:-1].strip()
+        if item:
+            items.append(item.lower() if lower else item)
+    return items
 
 
 class Settings(BaseSettings):
@@ -32,6 +69,7 @@ class Settings(BaseSettings):
     database_url: str = ""
 
     # Scheduler
+    scheduler_max_workers: int = 4
     scrape_interval_hours: int = 6
     scrape_max_per_run: int = 20
     scrape_target_pending: int = 20
@@ -79,6 +117,8 @@ class Settings(BaseSettings):
     target_topics: str = '[]'
     # Topics to reject outright even when they clear the safety blocklist.
     excluded_topics: str = '[]'
+    # Extra custom title/content words to block in addition to the built-in safety list.
+    blocked_title_words: str = '[]'
     proxy_url: str = ""
     # Browser cookies for yt-dlp (e.g. "edge" or "edge,Default" or "chrome,Profile 1")
     # Leave empty to skip cookie extraction.
@@ -91,6 +131,7 @@ class Settings(BaseSettings):
     source_video_max_age_days: int = 7
 
     # Transform
+    ffmpeg_threads: int = 0
     transform_width: int = 1080
     transform_height: int = 1920
     transform_blur_sigma: int = 20
@@ -253,14 +294,6 @@ class Settings(BaseSettings):
     llm_model: str = "glm-4-plus"
     llm_timeout_sec: int = 60
 
-    # Dashboard
-    dashboard_title: str = "Doomscroller"
-
-    # Legacy Celery
-    redis_url: str = "redis://localhost:6379/0"
-    celery_broker_url: str = "redis://localhost:6379/0"
-    celery_result_backend: str = "redis://localhost:6379/1"
-
     # ---- Derived helpers ----
     @property
     def db_url(self) -> str:
@@ -273,6 +306,8 @@ class Settings(BaseSettings):
             url = url[len("file:"):]
             if url.startswith("//"):
                 url = url[2:]
+            if len(url) >= 3 and url[0] == "/" and url[1].isalpha() and url[2] == ":":
+                url = url[1:]
         if "://" not in url:
             # Convert Windows backslashes to forward slashes for SQLite URL
             import pathlib
@@ -300,52 +335,38 @@ class Settings(BaseSettings):
 
     @property
     def handles_list(self) -> List[str]:
-        try:
-            return [str(x) for x in json.loads(self.target_handles or "[]")]
-        except Exception:
-            return []
+        return _parse_str_list(self.target_handles)
 
     @property
     def hashtags_list(self) -> List[str]:
-        try:
-            return [str(x) for x in json.loads(self.target_hashtags or "[]")]
-        except Exception:
-            return ["fyp", "viral", "shorts"]
+        return _parse_str_list(self.target_hashtags, invalid_fallback=["fyp", "viral", "shorts"])
 
     @property
     def enabled_platforms_list(self) -> List[str]:
-        try:
-            return [str(x) for x in json.loads(self.enabled_platforms or "[]")]
-        except Exception:
-            return ["instagram", "snapchat", "youtube"]
+        return _parse_str_list(
+            self.enabled_platforms,
+            invalid_fallback=["instagram", "snapchat", "youtube"],
+        )
 
     @property
     def languages_list(self) -> List[str]:
-        try:
-            return [str(x).lower() for x in json.loads(self.target_languages or "[]")]
-        except Exception:
-            return []
+        return _parse_str_list(self.target_languages, lower=True)
 
     @property
     def topics_list(self) -> List[str]:
-        try:
-            return [str(x).lower() for x in json.loads(self.target_topics or "[]")]
-        except Exception:
-            return []
+        return _parse_str_list(self.target_topics, lower=True)
 
     @property
     def excluded_topics_list(self) -> List[str]:
-        try:
-            return [str(x).lower() for x in json.loads(self.excluded_topics or "[]")]
-        except Exception:
-            return []
+        return _parse_str_list(self.excluded_topics, lower=True)
+
+    @property
+    def blocked_title_words_list(self) -> List[str]:
+        return _parse_str_list(self.blocked_title_words, lower=True)
 
     @property
     def growth_feeds_list(self) -> List[str]:
-        try:
-            return [str(x) for x in json.loads(self.growth_feeds or "[]")]
-        except Exception:
-            return []
+        return _parse_str_list(self.growth_feeds)
 
     @property
     def growth_inbox_path(self) -> Path:
@@ -357,10 +378,76 @@ class Settings(BaseSettings):
 
     @property
     def tags_list(self) -> List[str]:
-        try:
-            return [str(x) for x in json.loads(self.youtube_default_tags or "[]")]
-        except Exception:
-            return ["shorts"]
+        return _parse_str_list(self.youtube_default_tags, invalid_fallback=["shorts"])
+
+    @field_validator(
+        "target_handles", "target_hashtags", "enabled_platforms",
+        "target_languages", "target_topics", "excluded_topics",
+        "blocked_title_words", "growth_feeds", "youtube_default_tags",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_list_str(cls, v):
+        if v is None:
+            return ""
+        if isinstance(v, (list, tuple, set)):
+            return json.dumps([s for x in v if x is not None and (s := str(x).strip())])
+        return v
+
+    @field_validator(
+        "scheduler_max_workers", "scrape_interval_hours", "scrape_max_per_run",
+        "scrape_target_pending", "discovery_interval_hours", "uploads_per_day",
+        "upload_interval_hours", "upload_jitter_minutes", "min_approved_queue",
+        "auto_approve_veto_hours", "viral_preferred_min_duration",
+        "viral_preferred_max_duration", "viral_min_views", "min_source_duration_sec",
+        "max_source_duration_sec", "min_source_height", "min_file_size_bytes",
+        "source_video_max_age_days", "ffmpeg_threads", "transform_width",
+        "transform_height", "transform_blur_sigma", "caption_max_chars",
+        "clip_backdrop_blur", "max_clips_per_video", "clip_min_sec",
+        "clip_max_sec", "clip_visual_sec", "clip_source_max_height",
+        "clip_edit_target_sec", "clip_ai_timeout_sec", "earshot_qa_timeout_sec",
+        "max_uploads_per_day", "youtube_default_category", "growth_uploads_per_day",
+        "growth_explore_days", "growth_horizon_hours", "growth_min_gap_minutes",
+        "growth_min_inventory", "growth_clips_per_source", "growth_watch_minutes",
+        "growth_watch_min_seconds", "llm_timeout_sec",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_int(cls, v, info: ValidationInfo):
+        if v is None:
+            return cls.model_fields[info.field_name].default
+        if isinstance(v, str):
+            s = v.strip()
+            if not s:
+                return cls.model_fields[info.field_name].default
+            return s
+        return v
+
+    @field_validator(
+        "auto_approve_min_viral_score", "viral_min_engagement", "viral_min_velocity",
+        "brand_watermark_opacity", "caption_seconds", "end_card_seconds",
+        "zoom_min", "zoom_max", "speed_min", "speed_max",
+        "source_crop_top_pct", "source_crop_bottom_pct", "clip_silence_gap_sec",
+        "clip_speed", "clip_edit_gap_sec", "clip_music_db",
+        "growth_explore_rate", "growth_settled_explore_rate",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_float(cls, v, info: ValidationInfo):
+        if v is None:
+            return cls.model_fields[info.field_name].default
+        if isinstance(v, str):
+            s = v.strip()
+            if not s:
+                return cls.model_fields[info.field_name].default
+            parsed = float(s)
+            if not math.isfinite(parsed):
+                raise ValueError("must be a finite number")
+            return parsed
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            if not math.isfinite(float(v)):
+                raise ValueError("must be a finite number")
+        return v
 
     @field_validator(
         "use_mock", "use_llm_metadata", "auto_publish", "enable_publish",

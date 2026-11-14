@@ -5,6 +5,7 @@ noticed as sounds.
 """
 from __future__ import annotations
 
+import math
 import wave
 from dataclasses import dataclass
 from typing import Sequence
@@ -47,18 +48,22 @@ def _pop() -> np.ndarray:
 
 def build_track(path: str, duration: float, cues: Sequence[Cue]) -> None:
     """Write a mono WAV holding every cue at its time."""
+    safe_duration = duration if math.isfinite(duration) and duration > 0 else 0.0
     rng = np.random.default_rng(7)
-    track = np.zeros(int(RATE * (duration + 1.0)))
+    track = np.zeros(max(1, int(RATE * (safe_duration + 1.0))), dtype=np.float64)
     makers = {WHOOSH: lambda: _whoosh(rng), IMPACT: _impact, POP: _pop}
     for cue in cues:
+        if cue.sound not in makers or not math.isfinite(cue.at):
+            continue
         sound = makers[cue.sound]() * _GAIN[cue.sound]
         start = max(0, int(cue.at * RATE))
         end = min(len(track), start + len(sound))
         if end > start:
             track[start:end] += sound[:end - start]
-    samples = np.clip(track, -1, 1)
+    clean = np.nan_to_num(track, nan=0.0, posinf=1.0, neginf=-1.0)
+    pcm = np.clip(np.rint(np.clip(clean, -1.0, 1.0) * 32767.0), -32768, 32767).astype(np.int16)
     with wave.open(path, "wb") as handle:
         handle.setnchannels(1)
         handle.setsampwidth(2)
         handle.setframerate(RATE)
-        handle.writeframes((samples * 32767).astype(np.int16).tobytes())
+        handle.writeframes(pcm.tobytes())

@@ -250,3 +250,75 @@ def test_auto_approve_honours_the_veto_window():
             assert db.get(Video, fresh).status == VideoStatus.PENDING
     finally:
         settings.auto_approve, settings.auto_approve_veto_hours = saved
+
+
+def test_apply_queue_filters_and_auto_approve_respect_clip_source_text_and_rendered_clips():
+    """Rendered clips carry topic/source context in meta.clip_source_text and wait for human review."""
+    from datetime import datetime, timedelta, timezone
+    from app import scheduler
+
+    init_db()
+    settings.target_languages = "[]"
+    settings.target_topics = '["fitness"]'
+    saved = (settings.auto_approve, settings.auto_approve_veto_hours)
+    settings.auto_approve = True
+    settings.auto_approve_veto_hours = 0
+    old_stamp = datetime.now(timezone.utc) - timedelta(hours=48)
+    try:
+        with session_scope() as db:
+            # 1. Valid rendered clip whose topic match lives in clip_source_text, not clip title
+            valid_clip = _seed(
+                db,
+                source_id="clip-topic-in-source",
+                title="The one habit nobody keeps",
+                description="",
+                keywords=[],
+                duration_sec=52,
+                width=1080,
+                height=1920,
+                scraped_at=old_stamp,
+                meta={"clip_rendered": True, "clip_source_text": "Fitness podcast episode 12"},
+            )
+            # 2. Rendered clip whose source text contains a newly blocked term
+            unsafe_source_clip = _seed(
+                db,
+                source_id="clip-unsafe-in-source",
+                title="Wild story",
+                description="",
+                keywords=[],
+                duration_sec=30,
+                width=1080,
+                height=1920,
+                scraped_at=old_stamp,
+                meta={"clip_rendered": True, "clip_source_text": "Fitness podcast sponsored by 1xbet"},
+            )
+            # 3. Flagged clip held in PENDING for human review must not be auto-rejected by scraper auto_approve_job
+            held_clip = _seed(
+                db,
+                source_id="clip-held-for-human",
+                title="Unrelated moment",
+                description="",
+                keywords=[],
+                duration_sec=30,
+                width=1080,
+                height=1920,
+                scraped_at=old_stamp,
+                meta={"clip_rendered": True, "growth_flagged": "topic: no match"},
+            )
+
+        # Scraper auto_approve_job must leave ALL rendered clips alone for the review queue / growth loop
+        outcome = scheduler.auto_approve_job()
+        assert outcome["reasons"].get("clip awaits review", 0) >= 3
+        with session_scope() as db:
+            assert db.get(Video, valid_clip).status == VideoStatus.PENDING
+            assert db.get(Video, held_clip).status == VideoStatus.PENDING
+
+        # Explicit apply_queue_filters uses clip_gate_reason on rendered clips (seeing clip_source_text)
+        res = apply_queue_filters()
+        assert res["kept"] >= 1
+        with session_scope() as db:
+            assert db.get(Video, valid_clip).status == VideoStatus.PENDING
+            assert db.get(Video, unsafe_source_clip).status == VideoStatus.REJECTED
+    finally:
+        settings.auto_approve, settings.auto_approve_veto_hours = saved
+

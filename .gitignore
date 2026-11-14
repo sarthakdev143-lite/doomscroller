@@ -13,12 +13,17 @@ ENV/
 
 # Doomscroller runtime
 doomscroller.db
+doomscroller.db-wal
+doomscroller.db-shm
+doomscroller.db.bak*
 doomscroller.pid
 doomscroller.pids
 content/
 secrets/
 logs/
+.claude/
 .claude-logs/
+.opencode/
 
 # Env
 .env

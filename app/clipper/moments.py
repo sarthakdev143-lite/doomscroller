@@ -16,7 +16,7 @@ import math
 import os
 import re
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Sequence
 
 import numpy as np
@@ -157,12 +157,25 @@ def _finite_score(raw: object) -> float:
 
 
 def _reply_clips(reply: dict | None) -> list:
-    clips = (reply or {}).get("clips")
+    clips = reply.get("clips") if isinstance(reply, dict) else None
     return clips if isinstance(clips, list) else []
+
+
+def _safe_interest(signals: Signals) -> np.ndarray:
+    seconds = getattr(signals, "seconds", None)
+    if seconds is not None and seconds <= 0:
+        return np.zeros(0, dtype=float)
+    try:
+        values = np.asarray(signals.interest(), dtype=float)
+    except ValueError:
+        return np.zeros(0, dtype=float)
+    return np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
 
 
 def _dedupe(moments: Sequence[Moment], count: int, used: Sequence[Moment] = ()) -> list[Moment]:
     """Best first, dropping any that repeats footage already kept or already used."""
+    if count <= 0:
+        return []
     kept: list[Moment] = []
     for moment in sorted(moments, key=lambda m: m.score, reverse=True):
         if not any(clashes(moment, other) for other in (*used, *kept)):
@@ -174,10 +187,12 @@ def _dedupe(moments: Sequence[Moment], count: int, used: Sequence[Moment] = ()) 
 
 def _bounds(first: int, last: int, sentences: Sequence[Sentence], limit: float) -> tuple[float, float]:
     """Padded edges of a sentence range, stopping short of the neighbouring words."""
-    before = sentences[first - 1].end if first > 0 else 0.0
-    after = sentences[last + 1].start if last + 1 < len(sentences) else limit
-    return (max(sentences[first].start - LEAD_IN_SEC, before),
-            max(min(sentences[last].end + TAIL_SEC, after), sentences[last].end))
+    safe_limit = limit if math.isfinite(limit) and limit > 0 else max(0.0, sentences[last].end + TAIL_SEC)
+    before = max(0.0, sentences[first - 1].end) if first > 0 else 0.0
+    after = min(safe_limit, sentences[last + 1].start) if last + 1 < len(sentences) else safe_limit
+    start = min(safe_limit, max(0.0, sentences[first].start - LEAD_IN_SEC, before))
+    end = min(safe_limit, max(start, min(sentences[last].end + TAIL_SEC, after), min(sentences[last].end, safe_limit)))
+    return start, end
 
 
 def _spoken_length(first: int, last: int, sentences: Sequence[Sentence], words: Sequence[Word], limit: float) -> float:
@@ -255,6 +270,8 @@ def _moments_from_reply(reply: dict | None, sentences: Sequence[Sentence], words
                         limit: float) -> list[Moment]:
     moments: list[Moment] = []
     for clip in _reply_clips(reply):
+        if not isinstance(clip, dict):
+            continue
         try:
             first, last = int(clip["first"]), int(clip["last"])
             score = _finite_score(clip.get("score"))
@@ -286,14 +303,19 @@ def _opening_strength(text: str) -> float:
 
 def _rule_based_speech(sentences: Sequence[Sentence], words: Sequence[Word], signals: Signals, count: int,
                        used: Sequence[Moment] = ()) -> list[Moment]:
-    interest = signals.interest()
+    if count <= 0:
+        return []
+    interest = _safe_interest(signals)
     moments: list[Moment] = []
     for first in range(len(sentences)):
         fitted = _fit_range(first, first, sentences, words, signals.duration)
         if fitted is None:
             continue
         a, b = _bounds(fitted[0], fitted[1], sentences, signals.duration)
-        energy = float(interest[int(a):max(int(a) + 1, int(b))].mean())
+        lo = max(0, int(a))
+        hi = max(lo + 1, int(b))
+        band = interest[lo:hi]
+        energy = float(band.mean()) if len(band) else 0.0
         finished = 1.0 if is_finished(sentences[fitted[1]].text) else 0.0
         moments.append(Moment(
             start=a, end=b,
@@ -337,6 +359,8 @@ def _complete_payoffs(reply: dict | None, sentences: Sequence[Sentence], words: 
     clips = _reply_clips(reply)
     proposals = []
     for key, clip in enumerate(clips):
+        if not isinstance(clip, dict):
+            continue
         try:
             first, last = int(clip["first"]), int(clip["last"])
         except (KeyError, OverflowError, TypeError, ValueError):
@@ -348,6 +372,8 @@ def _complete_payoffs(reply: dict | None, sentences: Sequence[Sentence], words: 
     answer = ai.ask_json(_payoff_prompt(proposals, sentences))
     ranges = {key: (first, last) for key, first, last in proposals}
     for item in _reply_clips(answer):
+        if not isinstance(item, dict):
+            continue
         try:
             key, wanted = int(item["clip"]), int(item["last"])
         except (KeyError, OverflowError, TypeError, ValueError):
@@ -370,6 +396,8 @@ def _complete_payoffs(reply: dict | None, sentences: Sequence[Sentence], words: 
 def pick_speech(words: Sequence[Word], signals: Signals, *, count: int, title: str = "",
                 used: Sequence[Moment] = ()) -> list[Moment]:
     """The best `count` moments that share no footage with `used`, asking for extra because some may."""
+    if count <= 0 or not math.isfinite(signals.duration) or signals.duration <= 0:
+        return []
     sentences = build_sentences(words)
     if not sentences:
         return []
@@ -412,12 +440,19 @@ def rank_windows(signals: Signals, count: int, used: Sequence[Moment] = ()) -> l
 
     Scrolling names look like plenty of motion, so activity alone happily picks them.
     """
+    if count <= 0 or not math.isfinite(signals.duration) or signals.duration <= 0:
+        return []
     target = max(settings.clip_min_sec, min(settings.clip_visual_sec, settings.clip_max_sec))
-    interest = signals.interest()
+    interest = _safe_interest(signals)
     if signals.duration <= target:
-        return [Moment(start=0.0, end=signals.duration, score=float(interest.mean()),
+        mean_score = float(interest.mean()) if len(interest) else 0.0
+        return [Moment(start=0.0, end=signals.duration, score=mean_score,
                        reason="whole video", kind="visual")]
-    window = int(target)
+    window = max(1, int(target))
+    expected_len = max(window, int(math.ceil(signals.duration)))
+    if len(interest) < expected_len:
+        fill = float(interest[-1]) if len(interest) else 0.0
+        interest = np.pad(interest, (0, expected_len - len(interest)), constant_values=fill)
     # Keeps a window full at the end of the video rather than cutting it short.
     latest = signals.duration - target
     totals = np.convolve(interest, np.ones(window) / window, mode="valid")
@@ -469,6 +504,8 @@ Reply with JSON only:
 
 def pick_visual(path: str, info: MediaInfo, signals: Signals, *, count: int, title: str = "",
                 used: Sequence[Moment] = ()) -> list[Moment]:
+    if count <= 0 or not math.isfinite(signals.duration) or signals.duration <= 0:
+        return []
     candidates = [c for c in rank_windows(signals, (count + len(used)) * 2, used)
                   if not any(clashes(c, other) for other in used)]  # snapping to a cut can move an edge into used footage
     if not candidates:
@@ -476,6 +513,8 @@ def pick_visual(path: str, info: MediaInfo, signals: Signals, *, count: int, tit
     reply = _ai_rank_visual(path, candidates, title, used) if ai.available() else None
     rated: list[Moment] = []
     for clip in _reply_clips(reply):
+        if not isinstance(clip, dict):
+            continue
         try:
             number = int(clip["candidate"])
             score = _finite_score(clip.get("score"))
@@ -483,15 +522,17 @@ def pick_visual(path: str, info: MediaInfo, signals: Signals, *, count: int, tit
             continue
         if not 1 <= number <= len(candidates):
             continue
-        moment = candidates[number - 1]
-        moment.score = score
-        moment.title = clean_title(clip.get("title"))
-        moment.ai_title = bool(moment.title)
-        moment.hook = clean_hook(clip.get("hook"))
-        moment.description = clean_description(clip.get("description"))
-        moment.tags = clean_tags(clip.get("tags"))
-        moment.reason = "picked by AI from frames of the most active moments"
-        rated.append(moment)
+        written = clean_title(clip.get("title"))
+        rated.append(replace(
+            candidates[number - 1],
+            score=score,
+            title=written,
+            ai_title=bool(written),
+            hook=clean_hook(clip.get("hook")),
+            description=clean_description(clip.get("description")),
+            tags=clean_tags(clip.get("tags")),
+            reason="picked by AI from frames of the most active moments",
+        ))
     chosen = _dedupe(rated, count) if rated else candidates[:count]
     for number, moment in enumerate(chosen, len(used) + 1):
         moment.title = moment.title or clean_title(f"{title or 'Clip'} - part {number}")

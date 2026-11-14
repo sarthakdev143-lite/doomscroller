@@ -814,7 +814,7 @@ def test_failed_download_tries_the_next_result(monkeypatch):
     good = broll._download
 
     def flaky(link, path):
-        if "/8" in str(path):
+        if "/8" in Path(path).as_posix():
             raise broll.StockError("dropped")
         good(link, path)
 
@@ -1713,7 +1713,10 @@ def test_old_cache_without_a_fingerprint_is_not_trusted(tmp_path, monkeypatch):
     assert calls
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+@pytest.mark.skipif(
+    os.name == "nt" or getattr(os, "geteuid", lambda: -1)() == 0,
+    reason="Windows chmod and POSIX root ignore directory write bits",
+)
 def test_read_only_folder_still_keeps_the_paid_transcript(tmp_path, monkeypatch):
     folder = tmp_path / "ro"
     folder.mkdir()

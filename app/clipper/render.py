@@ -10,6 +10,7 @@ progress bar, an opening snap-zoom, and punch-ins that hide the jump cuts.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import shutil
 import tempfile
@@ -110,6 +111,39 @@ class ClipPlan:
     music: str = ""  # a track looped under the clip, ducked under speech
     focus_x_expr: str = ""  # where the speaker's face is in the picture, 0 to 1, when known
     focus_y_expr: str = ""
+    ass_path: str = "clip.ass"
+    fonts_dir: str = "fonts"
+
+
+_FILTER_QUOTE_CHARS = frozenset(":\\',;[] \t")
+
+
+def escape_filter_path(path: str) -> str:
+    """Escape a filesystem path for an ffmpeg filter option (e.g. ass='...':fontsdir='...')."""
+    clean = "".join(ch for ch in str(path or "") if ch >= " " and ch != "\x7f")
+    return clean.replace("\\", "/").replace(":", r"\:").replace("'", r"'\''")
+
+
+def _filter_path_arg(path: str) -> str:
+    raw = str(path or "")
+    escaped = escape_filter_path(raw)
+    if any(ch in _FILTER_QUOTE_CHARS for ch in raw):
+        return f"'{escaped}'"
+    return escaped
+
+
+def _atempo_chain(speed: float) -> str:
+    remaining = speed if math.isfinite(speed) and speed > 0 else 1.0
+    stages: list[str] = []
+    while remaining < 0.5 - 1e-9:
+        stages.append("atempo=0.5")
+        remaining /= 0.5
+    while remaining > 2.0 + 1e-9:
+        stages.append("atempo=2")
+        remaining /= 2.0
+    if not stages or abs(remaining - 1.0) > 1e-6:
+        stages.append(f"atempo={remaining:g}")
+    return ",".join(stages)
 
 
 def _piecewise(pieces: Sequence[tuple[float, float]]) -> str:
@@ -208,13 +242,16 @@ def sound_cues(edit: EditPlan, points: Sequence[float]) -> list[Cue]:
 
 
 def _shot_edges(moment: Moment, signals: Signals) -> list[float]:
-    return [moment.start] + [c for c in signals.cuts if moment.start < c < moment.end] + [moment.end]
+    return [moment.start] + [c for c in signals.cuts if math.isfinite(c) and moment.start < c < moment.end] + [moment.end]
 
 
 def _crop_pieces(moment: Moment, segments: Sequence[Segment], signals: Signals, info: MediaInfo,
                  crop_width: int, exact_cuts: Optional[dict[float, float]] = None,
                  faces: Optional[dict[float, float]] = None, speed: float = 1.0) -> list[tuple[float, float]]:
     """One crop position per shot: on the person if there is one, else on the motion."""
+    safe_speed = speed if math.isfinite(speed) and speed > 0 else 1.0
+    info_w = max(2, int(info.width) // 2 * 2)
+    cw = min(info_w, max(2, int(crop_width) // 2 * 2))
     exact = exact_cuts or {}
     known_faces = faces or {}
     edges = _shot_edges(moment, signals)
@@ -223,11 +260,14 @@ def _crop_pieces(moment: Moment, segments: Sequence[Segment], signals: Signals, 
         when = output_time(segments, exact.get(first, first))
         if when is None:
             continue
-        when /= speed
+        when /= safe_speed
         centre = known_faces.get(first)
-        if centre is None:
+        if centre is None or not math.isfinite(centre):
             centre = signals.centre_between(first, last)
-        left = min(max(0, centre * info.width - crop_width / 2), info.width - crop_width)
+        if not math.isfinite(centre):
+            centre = 0.5
+        centre = min(1.0, max(0.0, centre))
+        left = min(max(0.0, centre * info_w - cw / 2), float(max(0, info_w - cw)))
         left = float(int(left) // 2 * 2)
         if pieces and abs(pieces[-1][0] - when) < 1 / FPS:
             pieces[-1] = (pieces[-1][0], left)
@@ -235,7 +275,7 @@ def _crop_pieces(moment: Moment, segments: Sequence[Segment], signals: Signals, 
             pieces.append((when, left))
     if pieces:
         pieces[0] = (0.0, pieces[0][1])
-    return pieces or [(0.0, float(((info.width - crop_width) // 2) // 2 * 2))]
+    return pieces or [(0.0, float(max(0, (info_w - cw) // 2) // 2 * 2))]
 
 
 def _zoom_windows(moment: Moment, segments: Sequence[Segment], signals: Signals) -> list[tuple[float, float]]:
@@ -278,7 +318,9 @@ def _zoom_expression(windows: Sequence[tuple[float, float]]) -> str:
 
 
 def _needs_side_crop(info: MediaInfo) -> bool:
-    ratio = info.width / info.height if info.height else _TARGET_RATIO
+    if info.width <= 0 or info.height <= 0:
+        return False
+    ratio = info.width / info.height
     return ratio > _TARGET_RATIO + _RATIO_TOLERANCE
 
 
@@ -286,7 +328,8 @@ def _picture_height(info: MediaInfo, crop_bottom: float = 0.0) -> int:
     """Height of the centred picture, or 0 when this source fills the canvas instead."""
     if settings.clip_layout != "framed" or not _needs_side_crop(info):
         return 0
-    return round(WIDTH * info.height * (1 - crop_bottom) / info.width / 2) * 2
+    safe_crop = min(0.9, max(0.0, crop_bottom)) if math.isfinite(crop_bottom) else 0.0
+    return max(2, round(WIDTH * info.height * (1 - safe_crop) / info.width / 2) * 2)
 
 
 def with_end_hold(segments: Sequence[Segment], source_duration: float) -> list[Segment]:
@@ -294,8 +337,8 @@ def with_end_hold(segments: Sequence[Segment], source_duration: float) -> list[S
     held = list(segments)
     if held:
         begin, finish = held[-1]
-        limit = source_duration if source_duration > 0 else finish + _END_HOLD
-        held[-1] = (begin, on_grid(min(finish + _END_HOLD, limit)))
+        limit = source_duration if math.isfinite(source_duration) and source_duration > 0 else finish + _END_HOLD
+        held[-1] = (begin, max(begin, on_grid(min(finish + _END_HOLD, limit))))
     return held
 
 
@@ -303,13 +346,14 @@ def speaker_pieces(source: str, info: MediaInfo, signals: Signals, moment: Momen
                    edit: Optional[EditPlan], speed: float) -> list[tuple[float, float, float]]:
     """(clip time, x, y) of the person talking. It changes only where the framing changes anyway:
     at a beat of the edit or a cut in the footage, so a switch to the other speaker reads as an edit."""
-    duration = total_duration(segments) / speed
+    safe_speed = speed if math.isfinite(speed) and speed > 0 else 1.0
+    duration = total_duration(segments) / safe_speed
     points = set(rhythm_points(edit)) if edit else {0.0}
     for cut in signals.cuts:
-        if moment.start < cut < moment.end:
+        if math.isfinite(cut) and moment.start < cut < moment.end:
             when = output_time(segments, cut)
             if when is not None:
-                points.add(when / speed)
+                points.add(when / safe_speed)
     bounds: list[float] = []
     for point in sorted(p for p in points if 0 <= p < duration):
         if not bounds or point - bounds[-1] >= _FOCUS_MIN_PIECE_SEC:
@@ -318,7 +362,7 @@ def speaker_pieces(source: str, info: MediaInfo, signals: Signals, moment: Momen
     pieces: list[tuple[float, float, float]] = []
     for index, start in enumerate(bounds):
         end = bounds[index + 1] if index + 1 < len(bounds) else duration
-        found = speaker_position(source, source_time(segments, start * speed), source_time(segments, end * speed), info)
+        found = speaker_position(source, source_time(segments, start * safe_speed), source_time(segments, end * safe_speed), info)
         if found is None:
             continue
         if pieces and abs(found[0] - pieces[-1][1]) < _FOCUS_STEADY and abs(found[1] - pieces[-1][2]) < _FOCUS_STEADY:
@@ -335,10 +379,13 @@ def plan_clip(moment: Moment, words: Sequence[Word], signals: Signals, info: Med
               focus: Sequence[tuple[float, float, float]] = (), crop_bottom: float = 0.0) -> ClipPlan:
     segments = edit.segments if edit else keep_segments(moment.start, moment.end, words, settings.clip_silence_gap_sec)
     segments = with_end_hold(segments, info.duration)
-    speed = edit.speed if edit else 1.0
-    picture_height = _picture_height(info, crop_bottom)
+    raw_speed = edit.speed if edit else 1.0
+    speed = raw_speed if math.isfinite(raw_speed) and raw_speed > 0 else 1.0
+    safe_crop_bottom = min(0.9, max(0.0, crop_bottom)) if math.isfinite(crop_bottom) else 0.0
+    picture_height = _picture_height(info, safe_crop_bottom)
     side_crop = _needs_side_crop(info) and not picture_height
-    crop_width = int(info.height * _TARGET_RATIO) // 2 * 2 if side_crop else info.width
+    even_w = max(2, int(info.width) // 2 * 2) if info.width > 0 else WIDTH
+    crop_width = max(2, int(info.height * _TARGET_RATIO) // 2 * 2) if side_crop else even_w
     use_blur = (side_crop and moment.kind == "visual" and not faces
                 and signals.centre_spread(moment.start, moment.end) > _WIDE_SPREAD)
     pieces = (_crop_pieces(moment, segments, signals, info, crop_width, exact_cuts, faces, speed)
@@ -370,7 +417,7 @@ def plan_clip(moment: Moment, words: Sequence[Word], signals: Signals, info: Med
         has_sfx=bool(edit) and info.has_audio and settings.clip_sfx,
         broll=_broll_shots(edit) if edit else (),
         picture_height=picture_height,
-        picture_crop_bottom=crop_bottom if picture_height else 0.0,
+        picture_crop_bottom=safe_crop_bottom if picture_height else 0.0,
         focus_x_expr=_piecewise([(t, round(x, 3)) for t, x, _y in focus]) if focus else "",
         focus_y_expr=_piecewise([(t, round(y, 3)) for t, _x, y in focus]) if focus else "",
     )
@@ -393,10 +440,12 @@ def _framing(plan: ClipPlan, info: MediaInfo) -> str:
         return (f"[cut]split=2[bgsrc][fgsrc];"
                 f"[bgsrc]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,"
                 f"crop={WIDTH}:{HEIGHT},boxblur=25:2[bg];"
-                f"[fgsrc]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=decrease[fg];"
+                f"[fgsrc]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=decrease:force_divisible_by=2[fg];"
                 f"[bg][fg]overlay=(W-w)/2:(H-h)/2[canvas]")
-    if plan.crop_width < info.width:
-        return (f"[cut]crop={plan.crop_width}:{info.height}:x='{plan.crop_x_expr}':y=0,"
+    even_w = max(2, int(info.width) // 2 * 2) if info.width > 0 else WIDTH
+    even_h = max(2, int(info.height) // 2 * 2) if info.height > 0 else HEIGHT
+    if plan.crop_width < even_w:
+        return (f"[cut]crop={plan.crop_width}:{even_h}:x='{plan.crop_x_expr}':y=0,"
                 f"scale={WIDTH}:{HEIGHT}:flags=lanczos,setsar=1[canvas]")
     return (f"[cut]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,"
             f"crop={WIDTH}:{HEIGHT},setsar=1[canvas]")
@@ -431,12 +480,13 @@ def build_filtergraph(plan: ClipPlan, info: MediaInfo, seek: float) -> str:
                          f"afade=t=in:d={_AUDIO_EDGE_FADE},afade=t=out:st={fade_out:.4f}:d={_AUDIO_EDGE_FADE}[a{index}]")
             joined.append(f"[a{index}]")
     audio_flag = 1 if plan.has_audio else 0
+    safe_speed = plan.speed if math.isfinite(plan.speed) and plan.speed > 0 else 1.0
     video_out, audio_out = "[cut]", "[ajoined]" if plan.has_audio else ""
-    if plan.speed != 1.0:
+    if safe_speed != 1.0:
         video_out = "[joined]"
     parts.append(f"{''.join(joined)}concat=n={count}:v=1:a={audio_flag}{video_out}{audio_out}")
-    if plan.speed != 1.0:
-        parts.append(f"[joined]setpts=PTS/{plan.speed:g},fps={FPS}[cut]")
+    if safe_speed != 1.0:
+        parts.append(f"[joined]setpts=PTS/{safe_speed:g},fps={FPS}[cut]")
     parts.append(_framing(plan, info))
     # crop's own input size stays fixed at the first frame's, so its position has
     # to come from the zoom expression rather than from iw and ih.
@@ -445,7 +495,7 @@ def build_filtergraph(plan: ClipPlan, info: MediaInfo, seek: float) -> str:
     # crop only clamps against the first frame's size, which is wrong as the zoom changes,
     # so the position must stay inside this frame's real margins. A shake past them
     # reads outside the image, and ffmpeg crashes.
-    height = plan.picture_height or HEIGHT
+    height = max(2, plan.picture_height // 2 * 2) if plan.picture_height else HEIGHT
     room_x = f"(2*trunc({WIDTH // 2}*({zoom}))-{WIDTH})"
     room_y = f"(2*trunc({height // 2}*({zoom}))-{height})"
     chain = (f"{'[picture]' if plan.picture_height else '[canvas]'}"
@@ -469,13 +519,13 @@ def build_filtergraph(plan: ClipPlan, info: MediaInfo, seek: float) -> str:
     if plan.flash_expr:
         chain += f",drawbox=x=0:y=0:w=iw:h=ih:color=white@0.6:t=fill:enable='{plan.flash_expr}'"
     if plan.has_graphics:
-        chain += ",ass=clip.ass:fontsdir=fonts"
+        chain += f",ass={_filter_path_arg(plan.ass_path)}:fontsdir={_filter_path_arg(plan.fonts_dir)}"
     parts.append(chain + "[graphics]")
     parts.append(f"[graphics][1:v]overlay=x='-W+W*t/{max(plan.duration, 0.1):.3f}':y=0:shortest=1[vout]")
     if plan.has_audio:
         head = "[ajoined]"
-        if plan.speed != 1.0:
-            parts.append(f"{head}atempo={plan.speed:g}[atempoed]")
+        if safe_speed != 1.0:
+            parts.append(f"{head}{_atempo_chain(safe_speed)}[atempoed]")
             head = "[atempoed]"
         # loudnorm emits large irregular blocks, so renumber them or -t cuts one off.
         fade_at = max(0.0, plan.duration - _END_FADE)
@@ -594,7 +644,7 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
     if not captions or (source_captioned and not crop_bottom):
         clip_words = []
     brand = settings.brand_name if brand is None else brand
-    has_text =bool(font) and bool(clip_words or moment.hook or creator or brand)
+    has_text = bool(font and os.path.isfile(font)) and bool(clip_words or moment.hook or creator or brand)
     if total_duration(segments) <= 0:
         raise MediaError("clip has no duration")
 
@@ -624,7 +674,7 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
     # A row may already point at out_path, so a half-written file must never appear there.
     partial = f"{out_path}.tmp.mp4"
     try:
-        with tempfile.TemporaryDirectory(prefix="clipper-render-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="clipper-render-", ignore_cleanup_errors=True) as tmp:
             # Relative names keep paths, and their colons and quotes, out of the graph.
             if has_text:
                 fonts_dir = os.path.join(tmp, "fonts")

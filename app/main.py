@@ -2,31 +2,36 @@
 from __future__ import annotations
 
 import os
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import List, Optional
+from pathlib import Path
+from typing import Any, List
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, or_, select
 from sqlalchemy.orm import Session
 
+from . import metadata, quota, scheduler
 from .analytics import recompute_scores
 from .config import settings
 from .db import SessionLocal, get_db, init_db
 from .logging_config import configure_logging, job_health, read_job_history
 from .models import ClipJob, Creator, MetadataDraft, Video, VideoStatus
-from . import metadata, quota, scheduler
 from .schemas import (
     ApproveBody,
     ClipBody,
     HealthOut,
+    MetadataUpdateBody,
     PublishBody,
     QuotaOut,
     ScrapeBody,
     TransformBody,
     VideoOut,
 )
+
+_CLIP_JOB_STATUSES = frozenset({"queued", "running", "done", "failed"})
 
 
 @asynccontextmanager
@@ -39,10 +44,12 @@ async def lifespan(app: FastAPI):
     try:
         from .db import session_scope
         from .growth import channels
+
         with session_scope() as db:
             channels.sync_channels(db)
     except Exception as e:
         import logging
+
         logging.getLogger(__name__).warning("channel sync failed: %s", e)
     # Start autonomous scheduler in background
     try:
@@ -50,6 +57,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         # Don't fail API startup if scheduler can't start
         import logging
+
         logging.getLogger(__name__).warning("Scheduler start failed: %s", e)
     yield
     try:
@@ -59,6 +67,18 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Doomscroller API", version="0.2.0", lifespan=lifespan)
+
+
+def _resolve_channel(db: Session, slug: str):
+    """Resolve a channel slug lazily (keeps heavy growth/model imports off idle startup)."""
+    from .growth import channels
+
+    cleaned = slug.strip()
+    channels._ensure_seeded(db)
+    ch = channels.channel_by_slug(db, cleaned)
+    if ch is None:
+        raise HTTPException(status_code=404, detail=f"unknown channel: {cleaned}")
+    return ch, channels
 
 
 @app.get("/health", response_model=HealthOut)
@@ -75,30 +95,44 @@ def health(db: Session = Depends(get_db)) -> HealthOut:
 
 
 @app.get("/videos/pending", response_model=List[VideoOut])
-def list_pending(limit: int = 20, db: Session = Depends(get_db)) -> List[VideoOut]:
+def list_pending(
+    limit: int = Query(default=20, ge=1, le=200),
+    channel: str | None = None,
+    db: Session = Depends(get_db),
+) -> List[VideoOut]:
+    q = select(Video).where(Video.status == VideoStatus.PENDING)
+    if channel and channel.strip():
+        ch, channels = _resolve_channel(db, channel)
+        q = q.where(channels.video_scope(ch))
     rows = db.execute(
-        select(Video)
-        .where(Video.status == VideoStatus.PENDING)
-        .order_by(
+        q.order_by(
             desc(Video.viral_score),
             desc(Video.reach_score),
             desc(Video.velocity_score),
-        )
-        .limit(limit)
+        ).limit(limit)
     ).scalars().all()
     return [VideoOut.model_validate(r) for r in rows]
 
 
 @app.get("/videos", response_model=List[VideoOut])
-def list_videos(limit: int = 50, offset: int = 0,
-                status: str | None = None,
-                db: Session = Depends(get_db)) -> List[VideoOut]:
+def list_videos(
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    status: str | None = None,
+    channel: str | None = None,
+    db: Session = Depends(get_db),
+) -> List[VideoOut]:
     q = select(Video).order_by(desc(Video.scraped_at))
-    if status:
+    if status and status.strip():
+        normalized = status.strip().lower()
         try:
-            q = q.where(Video.status == VideoStatus(status))
+            q = q.where(Video.status == VideoStatus(normalized))
         except ValueError:
-            raise HTTPException(status_code=400, detail=f"invalid status: {status}")
+            valid = ", ".join(s.value for s in VideoStatus)
+            raise HTTPException(status_code=400, detail=f"invalid status: {status}. valid: {valid}")
+    if channel and channel.strip():
+        ch, channels = _resolve_channel(db, channel)
+        q = q.where(channels.video_scope(ch))
     q = q.limit(limit).offset(offset)
     rows = db.execute(q).scalars().all()
     return [VideoOut.model_validate(r) for r in rows]
@@ -113,8 +147,7 @@ def get_video(video_id: str, db: Session = Depends(get_db)) -> VideoOut:
 
 
 @app.post("/videos/{video_id}/approve", response_model=VideoOut)
-def approve_video(video_id: str, body: ApproveBody,
-                  db: Session = Depends(get_db)) -> VideoOut:
+def approve_video(video_id: str, body: ApproveBody, db: Session = Depends(get_db)) -> VideoOut:
     v = db.get(Video, video_id)
     if v is None:
         raise HTTPException(status_code=404, detail="not found")
@@ -130,22 +163,22 @@ def approve_video(video_id: str, body: ApproveBody,
 
 
 @app.post("/videos/{video_id}/transform", response_model=dict)
-def queue_transform(video_id: str, body: TransformBody,
-                    db: Session = Depends(get_db)) -> dict:
+def queue_transform(video_id: str, body: TransformBody, db: Session = Depends(get_db)) -> dict:
     v = db.get(Video, video_id)
     if v is None:
         raise HTTPException(status_code=404, detail="not found")
     if v.status not in (VideoStatus.APPROVED, VideoStatus.PENDING, VideoStatus.FAILED):
         raise HTTPException(status_code=400, detail=f"cannot transform from status={v.status.value}")
     recipe = body.model_dump(exclude_none=True)
-    from tasks.pipeline import transform_task_async, transform_task
+    from tasks.pipeline import transform_task, transform_task_async
+
     # If Celery is wired up, .delay() enqueues; otherwise it runs sync.
     try:
         result = transform_task_async.delay(video_id, recipe)
         if hasattr(result, "id"):
             return {"task_id": result.id, "video_id": video_id, "queued": True}
         return {"task_id": None, "video_id": video_id, "sync": True, "result": result}
-    except Exception as e:
+    except Exception:
         out = transform_task(video_id, recipe)
         return {"task_id": None, "video_id": video_id, "sync": True, "result": out}
 
@@ -156,15 +189,14 @@ def download_video(video_id: str, db: Session = Depends(get_db)):
     if v is None:
         raise HTTPException(status_code=404, detail="not found")
     path = v.transformed_path or v.local_path
-    if not path or not os.path.exists(path):
+    if not path or not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="file not found on disk")
     filename = f"{v.id}.mp4"
     return FileResponse(path, media_type="video/mp4", filename=filename)
 
 
 @app.post("/videos/{video_id}/publish", response_model=dict)
-def queue_publish(video_id: str, body: PublishBody,
-                  db: Session = Depends(get_db)) -> dict:
+def queue_publish(video_id: str, body: PublishBody, db: Session = Depends(get_db)) -> dict:
     if not settings.enable_publish:
         raise HTTPException(status_code=404, detail="publishing disabled (enable_publish=false)")
     v = db.get(Video, video_id)
@@ -173,7 +205,8 @@ def queue_publish(video_id: str, body: PublishBody,
     if v.status != VideoStatus.TRANSFORMED:
         raise HTTPException(status_code=400, detail=f"cannot publish from status={v.status.value}")
     meta = body.model_dump(exclude_none=True)
-    from tasks.pipeline import publish_task_async, publish_task
+    from tasks.pipeline import publish_task, publish_task_async
+
     try:
         result = publish_task_async.delay(video_id, meta)
         if hasattr(result, "id"):
@@ -190,9 +223,10 @@ def trigger_scrape(body: ScrapeBody | None = None) -> dict:
     payload = {
         "handles": body.handles or settings.handles_list,
         "hashtags": body.hashtags or settings.hashtags_list,
-        "max_per_run": body.max_per_run or settings.scrape_max_per_run,
+        "max_per_run": body.max_per_run if body.max_per_run is not None else settings.scrape_max_per_run,
     }
-    from tasks.pipeline import scrape_task_async, scrape_task
+    from tasks.pipeline import scrape_task, scrape_task_async
+
     try:
         result = scrape_task_async.delay(**payload)
         if hasattr(result, "id"):
@@ -222,6 +256,7 @@ def get_quota(db: Session = Depends(get_db)) -> QuotaOut:
 def growth_report() -> dict:
     """What the loop has tested, what it found, and what it is doing next."""
     from .growth.report import build_report
+
     return build_report()
 
 
@@ -229,6 +264,7 @@ def growth_report() -> dict:
 def growth_doctor(live: bool = False) -> dict:
     """Whether the loop can really run: token, scopes, privacy, stock. Live also asks Google and reads every feed."""
     from .growth.report import doctor
+
     return doctor(live=live)
 
 
@@ -236,6 +272,7 @@ def growth_doctor(live: bool = False) -> dict:
 def growth_channels_reload() -> dict:
     """Re-apply channels.json without a restart. The loop reads channels fresh each tick, so edits take effect next tick."""
     from .growth.channels import reload_channels
+
     return reload_channels()
 
 
@@ -249,11 +286,13 @@ def list_jobs() -> dict:
             return {"running": False, "jobs": []}
         jobs = []
         for j in sched.get_jobs():
-            jobs.append({
-                "id": j.id,
-                "next_run_time": j.next_run_time.isoformat() if j.next_run_time else None,
-                "trigger": str(j.trigger),
-            })
+            jobs.append(
+                {
+                    "id": j.id,
+                    "next_run_time": j.next_run_time.isoformat() if j.next_run_time else None,
+                    "trigger": str(j.trigger),
+                }
+            )
         return {"running": True, "jobs": jobs}
     except Exception as e:
         return {"running": False, "error": str(e)}
@@ -278,7 +317,10 @@ def list_available_jobs() -> dict:
 
 # ==================== Observability ====================
 @app.get("/scheduler/history", response_model=dict)
-def scheduler_history(limit: int = 50, job_id: str | None = None) -> dict:
+def scheduler_history(
+    limit: int = Query(default=50, ge=1, le=500),
+    job_id: str | None = None,
+) -> dict:
     """Recent scheduler job runs, newest last, plus per-job health."""
     return {
         "runs": read_job_history(limit=limit, job_id=job_id),
@@ -303,8 +345,10 @@ def storage() -> dict:
 
 
 @app.post("/storage/cleanup", response_model=dict)
-def run_cleanup() -> dict:
+def run_cleanup(dry_run: bool = False) -> dict:
     """Reclaim disk now instead of waiting for the daily job."""
+    if dry_run:
+        return {"job": "cleanup", "dry_run": True, "result": scheduler.cleanup_job(dry_run=True)}
     return {"job": "cleanup", "result": scheduler.run_job("cleanup")}
 
 
@@ -322,14 +366,13 @@ def apply_filters(dry_run: bool = False) -> dict:
 
 
 @app.get("/queue/focus", response_model=dict)
-def queue_focus() -> dict:
+def queue_focus(db: Session = Depends(get_db)) -> dict:
     """The channel-focus rules currently in force, plus the queue breakdown."""
-    with SessionLocal() as db:
-        rows = db.execute(
-            select(Video.language, func.count(Video.id))
-            .where(Video.status == VideoStatus.PENDING)
-            .group_by(Video.language)
-        ).all()
+    rows = db.execute(
+        select(Video.language, func.count(Video.id))
+        .where(Video.status == VideoStatus.PENDING)
+        .group_by(Video.language)
+    ).all()
     return {
         "target_languages": settings.languages_list,
         "allow_unknown_language": settings.allow_unknown_language,
@@ -340,10 +383,6 @@ def queue_focus() -> dict:
 
 
 # ==================== Metadata endpoints ====================
-class MetadataBody:
-    pass
-
-
 @app.get("/metadata/{video_id}", response_model=dict)
 def get_metadata(video_id: str, db: Session = Depends(get_db)) -> dict:
     v = db.get(Video, video_id)
@@ -355,10 +394,14 @@ def get_metadata(video_id: str, db: Session = Depends(get_db)) -> dict:
     if md is None:
         return {"video_id": video_id, "exists": False}
     return {
-        "video_id": video_id, "exists": True,
-        "title": md.title, "description": md.description,
-        "tags": md.tags, "language": md.detected_language,
-        "edited": md.edited, "generated_at": md.generated_at.isoformat(),
+        "video_id": video_id,
+        "exists": True,
+        "title": md.title,
+        "description": md.description,
+        "tags": md.tags,
+        "language": md.detected_language,
+        "edited": md.edited,
+        "generated_at": md.generated_at.isoformat() if md.generated_at else None,
     }
 
 
@@ -368,11 +411,16 @@ def generate_metadata_endpoint(video_id: str, db: Session = Depends(get_db)) -> 
     if v is None:
         raise HTTPException(status_code=404, detail="video not found")
     from tasks.pipeline import generate_metadata_for_video
+
     return generate_metadata_for_video(video_id)
 
 
 @app.put("/metadata/{video_id}", response_model=dict)
-def update_metadata(video_id: str, body: dict, db: Session = Depends(get_db)) -> dict:
+def update_metadata(
+    video_id: str,
+    body: MetadataUpdateBody,
+    db: Session = Depends(get_db),
+) -> dict:
     v = db.get(Video, video_id)
     if v is None:
         raise HTTPException(status_code=404, detail="video not found")
@@ -382,27 +430,44 @@ def update_metadata(video_id: str, body: dict, db: Session = Depends(get_db)) ->
     if md is None:
         md = MetadataDraft(video_id=video_id, title="", description="", tags=[])
         db.add(md)
-    if "title" in body:
-        md.title = str(body["title"])[:200]
-    if "description" in body:
-        md.description = str(body["description"])[:5000]
-    if "tags" in body and isinstance(body["tags"], list):
-        md.tags = [str(t) for t in body["tags"]][:15]
+    if body.title is not None:
+        md.title = body.title[:200]
+    if body.description is not None:
+        md.description = body.description[:5000]
+    if body.tags is not None:
+        cleaned_tags = [str(t).strip() for t in body.tags if t is not None and str(t).strip()]
+        md.tags = cleaned_tags[:15]
     md.edited = True
     db.commit()
-    return {"ok": True, "video_id": video_id}
+    return {
+        "ok": True,
+        "video_id": video_id,
+        "title": md.title,
+        "description": md.description,
+        "tags": md.tags,
+    }
 
 
 # ==================== Creators endpoints ====================
 @app.get("/creators", response_model=list)
-def list_creators(limit: int = 50, db: Session = Depends(get_db)) -> list:
+def list_creators(
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+) -> list:
     rows = db.execute(
-        select(Creator).order_by(desc(Creator.score), desc(Creator.is_seed)).limit(limit)
+        select(Creator)
+        .order_by(desc(Creator.score), desc(Creator.is_seed))
+        .limit(limit)
+        .offset(offset)
     ).scalars().all()
     return [
         {
-            "id": c.id, "handle": c.handle, "platform": c.platform,
-            "is_seed": c.is_seed, "score": c.score,
+            "id": c.id,
+            "handle": c.handle,
+            "platform": c.platform,
+            "is_seed": c.is_seed,
+            "score": c.score,
             "videos_scraped": c.videos_scraped,
             "last_scraped_at": c.last_scraped_at.isoformat() if c.last_scraped_at else None,
             "discovered_from": c.discovered_from,
@@ -418,50 +483,112 @@ def chop_long_to_shorts(video_id: str, db: Session = Depends(get_db)) -> dict:
     v = db.get(Video, video_id)
     if v is None:
         raise HTTPException(status_code=404, detail="not found")
-    if not v.local_path or not os.path.exists(v.local_path):
+    if not v.local_path or not os.path.isfile(v.local_path):
         raise HTTPException(status_code=400, detail="source file not on disk")
     from tasks.pipeline import long_to_shorts_task
+
     return long_to_shorts_task(video_id)
 
 
 # ==================== Clipper ====================
-def _clip_job_view(job: ClipJob) -> dict:
-    return {
-        "id": job.id,
-        "source": job.source,
-        "status": job.status,
-        "stage": job.stage,
-        "error": job.error,
-        "result": job.result or {},
-        "created_at": job.created_at.isoformat() if job.created_at else None,
-        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
-    }
-
-
 @app.post("/clip", response_model=dict)
-def queue_clip(body: ClipBody, background: BackgroundTasks) -> dict:
+def queue_clip(
+    body: ClipBody,
+    background: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> dict:
     """Queue a link or local file for clipping and start on it right away."""
     from .clipper.job import clip_queue_job, enqueue
 
-    if not body.source.strip():
+    cleaned = body.source.strip()
+    if not cleaned:
         raise HTTPException(status_code=400, detail="source is empty")
-    job_id = enqueue(body.source, count=body.count, auto_queue=body.auto_queue)
+
+    if body.channel and body.channel.strip():
+        ch, channels = _resolve_channel(db, body.channel)
+        channel_id = channels.event_channel(ch)
+        auto_queue = (not channels.require_approval(ch)) if body.auto_queue is None else body.auto_queue
+        job_id = enqueue(cleaned, count=body.count, auto_queue=auto_queue, channel_id=channel_id)
+        background.add_task(clip_queue_job)
+        return {"job_id": job_id, "status": "queued", "channel_slug": ch.slug}
+
+    job_id = enqueue(cleaned, count=body.count, auto_queue=body.auto_queue)
     background.add_task(clip_queue_job)
     return {"job_id": job_id, "status": "queued"}
 
 
 @app.get("/clip/jobs", response_model=list)
-def list_clip_jobs(limit: int = 20, db: Session = Depends(get_db)) -> list:
-    rows = db.execute(select(ClipJob).order_by(desc(ClipJob.created_at)).limit(limit)).scalars().all()
-    return [_clip_job_view(job) for job in rows]
+def list_clip_jobs(
+    limit: int = Query(default=20, ge=1, le=100),
+    status: str | None = None,
+    channel: str | None = None,
+    db: Session = Depends(get_db),
+) -> list:
+    from .clipper.job import (
+        _channel_slug_map,
+        job_view,
+        list_jobs as list_clip_job_views,
+        visible_job_rows,
+    )
+
+    has_status = bool(status and status.strip())
+    has_channel = bool(channel and channel.strip())
+    if not has_status and not has_channel:
+        return list_clip_job_views(limit=limit, db=db)
+
+    conditions = []
+    if has_status:
+        norm_status = status.strip().lower()  # type: ignore[union-attr]
+        if norm_status not in _CLIP_JOB_STATUSES:
+            valid = ", ".join(sorted(_CLIP_JOB_STATUSES))
+            raise HTTPException(status_code=400, detail=f"invalid clip job status: {status}. valid: {valid}")
+        conditions.append(func.lower(ClipJob.status) == norm_status)
+    if has_channel:
+        ch, channels = _resolve_channel(db, channel)  # type: ignore[arg-type]
+        if channels.is_default(ch):
+            conditions.append(or_(ClipJob.channel_id == ch.id, ClipJob.channel_id.is_(None)))
+        else:
+            conditions.append(ClipJob.channel_id == ch.id)
+
+    rows = visible_job_rows(db, limit, *conditions)
+    slugs = _channel_slug_map(db, rows)
+    return [job_view(job, slugs) for job in rows]
 
 
 @app.get("/clip/jobs/{job_id}", response_model=dict)
 def get_clip_job(job_id: str, db: Session = Depends(get_db)) -> dict:
+    from .clipper.job import _channel_slug_map, job_view
+
     job = db.get(ClipJob, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="not found")
-    return _clip_job_view(job)
+    return job_view(job, _channel_slug_map(db, [job]))
+
+
+@app.post("/clip/jobs/{job_id}/retry", response_model=dict)
+def retry_clip_job(job_id: str, background: BackgroundTasks) -> dict:
+    from .clipper.job import clip_queue_job, retry_job
+
+    try:
+        view = retry_job(job_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    background.add_task(clip_queue_job)
+    return view
+
+
+@app.delete("/clip/jobs/{job_id}", response_model=dict)
+def dismiss_clip_job(job_id: str) -> dict:
+    from .clipper.job import dismiss_job
+
+    try:
+        return dismiss_job(job_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 # ==================== Stats endpoint ====================
@@ -490,67 +617,91 @@ def stats(db: Session = Depends(get_db)) -> dict:
     }
 
 
+def _parse_bounded_int(value: Any, field: str, lo: int, hi: int) -> int:
+    if isinstance(value, bool):
+        raise HTTPException(status_code=400, detail=f"{field} must be an integer {lo}..{hi}")
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, str) and re.fullmatch(r"[+-]?\d+", value.strip()):
+        parsed = int(value.strip())
+    else:
+        raise HTTPException(status_code=400, detail=f"{field} must be an integer {lo}..{hi}")
+    if not lo <= parsed <= hi:
+        raise HTTPException(status_code=400, detail=f"{field} must be {lo}..{hi}")
+    return parsed
+
+
+def _parse_strict_bool(value: Any, field: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        norm = value.strip().lower()
+        if norm in {"true", "1", "yes", "y", "on"}:
+            return True
+        if norm in {"false", "0", "no", "n", "off"}:
+            return False
+    raise HTTPException(status_code=400, detail=f"{field} must be a boolean")
+
+
+def _persist_env_updates(updates: dict[str, str]) -> None:
+    """Persist runtime config changes to .env when an env file is active (never under test isolation)."""
+    if not updates:
+        return
+    env_override = os.environ.get("DOOMSCROLLER_ENV_FILE")
+    if env_override == "":
+        return
+    env_path = Path(env_override) if env_override is not None else (Path(__file__).resolve().parent.parent / ".env")
+    try:
+        if not env_path.exists():
+            return
+        txt = env_path.read_text(encoding="utf-8")
+        for key, val in updates.items():
+            pattern = rf"^{re.escape(key)}=.*$"
+            if re.search(pattern, txt, flags=re.MULTILINE):
+                txt = re.sub(pattern, f"{key}={val}", txt, flags=re.MULTILINE)
+            else:
+                if txt and not txt.endswith("\n"):
+                    txt += "\n"
+                txt += f"{key}={val}\n"
+        env_path.write_text(txt, encoding="utf-8")
+    except OSError:
+        pass
+
+
 @app.post("/config/publish", response_model=dict)
 def update_publish_config(body: dict, db: Session = Depends(get_db)) -> dict:
-    try:
-        if "uploads_per_day" in body:
-            v = int(body["uploads_per_day"])
-            if not 1 <= v <= 24:
-                raise HTTPException(status_code=400, detail="uploads_per_day must be 1..24")
-            settings.uploads_per_day = v
-            # keep interval consistent
-            settings.upload_interval_hours = max(1, round(24 / v))
-            try:
-                from pathlib import Path as _P
-                env_path = _P(settings.db_url) if False else None
-            except Exception:
-                pass
-            # persist to .env
-            try:
-                from pathlib import Path as __P
-                p = __P(__file__).resolve().parent.parent / ".env"
-                txt = p.read_text(encoding="utf-8") if p.exists() else ""
-                import re as _re
-                txt = _re.sub(r"UPLOADS_PER_DAY=\d+", f"UPLOADS_PER_DAY={v}", txt)
-                txt = _re.sub(r"UPLOAD_INTERVAL_HOURS=\d+", f"UPLOAD_INTERVAL_HOURS={settings.upload_interval_hours}", txt)
-                p.write_text(txt, encoding="utf-8")
-            except Exception:
-                pass
-            scheduler.reschedule_publish()
-        if "upload_jitter_minutes" in body:
-            j = int(body["upload_jitter_minutes"])
-            if not 0 <= j <= 120:
-                raise HTTPException(status_code=400, detail="jitter must be 0..120")
-            settings.upload_jitter_minutes = j
-            try:
-                from pathlib import Path as __P2
-                p2 = __P2(__file__).resolve().parent.parent / ".env"
-                txt2 = p2.read_text(encoding="utf-8") if p2.exists() else ""
-                import re as _re2
-                if "UPLOAD_JITTER_MINUTES" in txt2:
-                    txt2 = _re2.sub(r"UPLOAD_JITTER_MINUTES=\d+", f"UPLOAD_JITTER_MINUTES={j}", txt2)
-                else:
-                    txt2 += f"\nUPLOAD_JITTER_MINUTES={j}\n"
-                p2.write_text(txt2, encoding="utf-8")
-            except Exception:
-                pass
-        if "auto_approve" in body:
-            settings.auto_approve = bool(body["auto_approve"])
-            try:
-                from pathlib import Path as __P3
-                p3 = __P3(__file__).resolve().parent.parent / ".env"
-                txt3 = p3.read_text(encoding="utf-8") if p3.exists() else ""
-                import re as _re3
-                val = "true" if settings.auto_approve else "false"
-                if "AUTO_APPROVE" in txt3:
-                    txt3 = _re3.sub(r"AUTO_APPROVE=\w+", f"AUTO_APPROVE={val}", txt3)
-                else:
-                    txt3 += f"\nAUTO_APPROVE={val}\n"
-                p3.write_text(txt3, encoding="utf-8")
-            except Exception:
-                pass
-        return {"ok": True, "uploads_per_day": settings.uploads_per_day, "upload_interval_hours": settings.upload_interval_hours, "upload_jitter_minutes": settings.upload_jitter_minutes, "auto_approve": settings.auto_approve}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+
+    env_updates: dict[str, str] = {}
+    reschedule_needed = False
+
+    if "uploads_per_day" in body:
+        v = _parse_bounded_int(body["uploads_per_day"], "uploads_per_day", 1, 24)
+        settings.uploads_per_day = v
+        settings.upload_interval_hours = max(1, round(24 / v))
+        env_updates["UPLOADS_PER_DAY"] = str(v)
+        env_updates["UPLOAD_INTERVAL_HOURS"] = str(settings.upload_interval_hours)
+        reschedule_needed = True
+
+    if "upload_jitter_minutes" in body:
+        j = _parse_bounded_int(body["upload_jitter_minutes"], "upload_jitter_minutes", 0, 120)
+        settings.upload_jitter_minutes = j
+        env_updates["UPLOAD_JITTER_MINUTES"] = str(j)
+
+    if "auto_approve" in body:
+        auto = _parse_strict_bool(body["auto_approve"], "auto_approve")
+        settings.auto_approve = auto
+        env_updates["AUTO_APPROVE"] = "true" if auto else "false"
+
+    _persist_env_updates(env_updates)
+    if reschedule_needed:
+        scheduler.reschedule_publish()
+
+    return {
+        "ok": True,
+        "uploads_per_day": settings.uploads_per_day,
+        "upload_interval_hours": settings.upload_interval_hours,
+        "upload_jitter_minutes": settings.upload_jitter_minutes,
+        "auto_approve": settings.auto_approve,
+    }

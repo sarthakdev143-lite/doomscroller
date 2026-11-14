@@ -6,7 +6,7 @@ import math
 import statistics
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Sequence
+from typing import TYPE_CHECKING, Optional, Sequence
 
 from sqlalchemy import func, select
 
@@ -16,7 +16,9 @@ from app.models import ClipJob, GrowthEvent, GrowthState, Video, VideoSnapshot, 
 
 from . import channels
 from .factors import FACTORS, author_names, aware, channel_zone, published_arms
-from .model import Model, Observation
+
+if TYPE_CHECKING:
+    from .model import Model
 
 log = logging.getLogger(__name__)
 
@@ -76,13 +78,20 @@ class Result:
 
 def views_at(snapshots: Sequence[tuple[float, int]], hours: float) -> Optional[float]:
     """Views at an exact age, rising from zero at upload. None until that age, or if first seen far too late to say."""
-    points = sorted(snapshots)
+    if hours is None or not math.isfinite(hours) or hours <= 0:
+        return None
+    points = sorted(
+        (float(a), max(0, int(v)))
+        for a, v in snapshots
+        if a is not None and v is not None and math.isfinite(a) and a >= 0 and math.isfinite(v)
+    )
     if not points or points[-1][0] < hours or points[0][0] > hours * _LATE_FIRST_SNAPSHOT:
         return None
     before = [p for p in [(0.0, 0), *points] if p[0] <= hours]
     after = [p for p in points if p[0] >= hours]
     (t0, v0), (t1, v1) = before[-1], after[0]
-    return float(v0) if t1 == t0 else v0 + (v1 - v0) * (hours - t0) / (t1 - t0)
+    val = float(v0) if t1 == t0 else v0 + (v1 - v0) * (hours - t0) / (t1 - t0)
+    return max(0.0, val)
 
 
 def upload_turned_down(status: Optional[str]) -> bool:
@@ -93,7 +102,7 @@ def upload_turned_down(status: Optional[str]) -> bool:
 def _subscriber_rate(analytics: dict) -> Optional[float]:
     """Per 1000 views. A raw count keeps climbing with age, while the views a video is judged on stop at the horizon."""
     views, gained = analytics.get("views"), analytics.get("subscribersGained")
-    return 1000 * gained / views if views and gained is not None else None
+    return max(0.0, 1000 * gained / views) if views and views > 0 and gained is not None and math.isfinite(gained) else None
 
 
 def matured_results(db, *, include_diagnosed: bool = True, scope=None, zone=None) -> list[Result]:
@@ -127,9 +136,10 @@ def matured_results(db, *, include_diagnosed: bool = True, scope=None, zone=None
         analytics = (video.meta or {}).get("yt_analytics") or {}
         percent = analytics.get("averageViewPercentage")
         results.append(Result(
-            video_id=video.id, title=video.title or "", views=int(views), arms=published_arms(video, zone),
+            video_id=video.id, title=video.title or "", views=max(0, int(views)), arms=published_arms(video, zone),
             day=(aware(video.published_at) - first).total_seconds() / 86400,
-            retention=min(percent / 100, _MAX_RETENTION) if percent is not None else None,
+            retention=(min(max(0.0, float(percent) / 100), _MAX_RETENTION)
+                       if percent is not None and math.isfinite(percent) else None),
             subscribers=_subscriber_rate(analytics),
             source_url=video.source_url or "", diagnosed=diagnosed, authors=author_names(video),
             published_at=aware(video.published_at),
@@ -139,9 +149,12 @@ def matured_results(db, *, include_diagnosed: bool = True, scope=None, zone=None
 
 def reward(result: Result, typical_retention: float, typical_subscribers: float = 0.0) -> float:
     """Views on a log scale, nudged by whether people stayed and subscribed. Missing numbers count as typical."""
-    retention = typical_retention if result.retention is None else result.retention
-    subscribers = typical_subscribers if result.subscribers is None else result.subscribers
-    return (math.log1p(result.views) + _RETENTION_WEIGHT * (retention - typical_retention)
+    safe_views = max(0, result.views)
+    retention = (typical_retention if result.retention is None or not math.isfinite(result.retention)
+                 else max(0.0, result.retention))
+    subscribers = (typical_subscribers if result.subscribers is None or not math.isfinite(result.subscribers)
+                   else result.subscribers)
+    return (math.log1p(safe_views) + _RETENTION_WEIGHT * (retention - typical_retention)
             + _SUBSCRIBER_WEIGHT * math.log1p(max(subscribers, 0.0)))
 
 
@@ -155,6 +168,8 @@ def _typical_hold(length: Optional[str], others: Sequence[Result]) -> Optional[f
 
 def build_model(results: Sequence[Result]) -> Model:
     """The blended score, which is what choices are made on."""
+    from .model import Model, Observation
+
     holds = {length: _typical_hold(length, results) or 0.0 for length in {r.arms.get("length") for r in results}}
     known = [r.subscribers for r in results if r.subscribers is not None]
     subscribers = statistics.median(known) if known else 0.0
@@ -163,12 +178,16 @@ def build_model(results: Sequence[Result]) -> Model:
 
 def summarise(results: Sequence[Result]) -> dict:
     """Each arm's effect on views alone, with the blended score that drives choices under its `score` key."""
-    views = Model([Observation(r.arms, math.log1p(r.views), r.day) for r in results]).summary()
+    from .model import Model, Observation
+
+    views = Model([Observation(r.arms, math.log1p(max(0, r.views)), r.day) for r in results]).summary()
     blended = build_model(results).summary()
+    default_score = {"multiplier": 1.0, "low": 1.0, "high": 1.0, "p_best": 0.0}
     for factor, rows in views.items():
-        scores = {row["arm"]: row for row in blended[factor]}
+        scores = {row["arm"]: row for row in blended.get(factor, ())}
         for row in rows:
-            row["score"] = {key: scores[row["arm"]][key] for key in ("multiplier", "low", "high", "p_best")}
+            src = scores.get(row["arm"], default_score)
+            row["score"] = {key: src[key] for key in ("multiplier", "low", "high", "p_best")}
     return views
 
 
@@ -183,16 +202,17 @@ def diagnose(result: Result, others: Sequence[Result]) -> Diagnosis:
     """Why this video did what it did, against the videos it is compared with: see _baseline."""
     if len(others) < _MIN_BASELINE:
         return Diagnosis("too_early", f"Only {len(others)} other videos to compare with; {_MIN_BASELINE} are needed.")
-    views = statistics.median(o.views for o in others)
+    res_views = max(0, result.views)
+    views = statistics.median(max(0, o.views) for o in others)
     typical_hold = _typical_hold(result.arms.get("length"), others)
     hold = result.retention
     weak_hold = hold is not None and typical_hold is not None and hold < typical_hold * 0.8
-    low_views = result.views < views * 0.5
-    numbers = f"{result.views} views at {settings.growth_horizon_hours}h against a typical {views:.0f}"
+    low_views = res_views < views * 0.5
+    numbers = f"{res_views} views at {settings.growth_horizon_hours}h against a typical {views:.0f}"
     if hold is not None and typical_hold is not None:
         numbers += f", {hold:.0%} watched against a typical {typical_hold:.0%}"
 
-    if result.views >= max(views * 2, 10):
+    if res_views >= max(views * 2, 10):
         return Diagnosis("winner", f"Well above normal: {numbers}.")
     if weak_hold:
         return Diagnosis("weak_hold", f"Viewers left early: {numbers}. Testing length, pace and format harder.",
@@ -208,7 +228,7 @@ def diagnose(result: Result, others: Sequence[Result]) -> Diagnosis:
 
 def _baseline(result: Result, results: Sequence[Result]) -> list[Result]:
     """The channel's normal when this went out. Its first videos have no past, so they borrow what came next."""
-    others = sorted((o for o in results if o.video_id != result.video_id), key=lambda o: o.day)
+    others = sorted((o for o in results if o.video_id != result.video_id), key=lambda o: (o.day, o.video_id))
     earlier = [o for o in others if o.day <= result.day][-_BASELINE_WINDOW:]
     if len(earlier) >= _MIN_BASELINE:
         return earlier
@@ -231,18 +251,26 @@ def _coming_clips(db, cj_scope=None) -> int:
 def _mine_winner(db, result: Result, *, scope=None, channel_id: Optional[str] = None,
                  require_approval: Optional[bool] = None) -> Optional[str]:
     """Cut more from a source that worked, while the shelf has room. The clipper steers around moments it has used."""
+    from .approval import awaiting_review
     from .autopilot import ready_clips
-    from .safety import blocked_authors, blocked_sources
+    from .safety import blocked_authors, blocked_parents, blocked_sources
 
+    if settings.growth_clips_per_source <= 0:
+        return None
     cj_scope = _clipjob_scope(channel_id)
     approval = settings.growth_require_approval if require_approval is None else require_approval
     if not result.source_url.startswith(("http://", "https://")) or result.source_url in blocked_sources(db):
         return None
     if blocked_authors(db).intersection(result.authors):
         return None
+    video = db.get(Video, result.video_id)
+    parent = (video.meta or {}).get("clip_parent") if video else None
+    if parent and parent in blocked_parents(db):
+        return None
     active = db.scalar(select(func.count(ClipJob.id)).where(
         ClipJob.source == result.source_url, ClipJob.status.in_(("queued", "running")), cj_scope))
-    if active or len(ready_clips(db, scope)) + _coming_clips(db, cj_scope) >= settings.growth_min_inventory:
+    pending_stock = len(awaiting_review(db, scope)) if approval else 0
+    if active or len(ready_clips(db, scope)) + pending_stock + _coming_clips(db, cj_scope) >= settings.growth_min_inventory:
         return None
     mined = db.execute(select(ClipJob).where(
         ClipJob.source == result.source_url, ClipJob.mined.is_(True), cj_scope)).scalars()
@@ -257,29 +285,32 @@ def _mine_winner(db, result: Result, *, scope=None, channel_id: Optional[str] = 
     return job.id
 
 
-def _mining_due(db, result: Result, diagnosis: dict, now: datetime) -> bool:
+def _mining_due(db, result: Result, diagnosis: dict, now: datetime, channel_id: Optional[str] = None) -> bool:
     """Never tried, or the last try failed in a way that may clear up and has waited as long as any other source."""
     from .supply import can_take
 
+    now = aware(now)
     if not diagnosis.get("mined_job"):
         return True
     last = db.get(ClipJob, diagnosis["mined_job"])
     if last is None or last.status != "failed":
         return False
     failures = db.execute(select(ClipJob).where(
-        ClipJob.source == result.source_url, ClipJob.mined.is_(True), ClipJob.status == "failed")).scalars().all()
+        ClipJob.source == result.source_url, ClipJob.mined.is_(True),
+        ClipJob.status == "failed", _clipjob_scope(channel_id))).scalars().all()
     return can_take(failures, now)
 
 
 def mine_waiting_winner(db, now: datetime, *, scope=None, channel_id: Optional[str] = None,
                         require_approval: Optional[bool] = None) -> Optional[str]:
     """A winner judged while the shelf was full is still owed its follow-up. Newest first, inside the judging window."""
+    now = aware(now)
     oldest = now - timedelta(hours=settings.growth_horizon_hours) - _JUDGE_WITHIN
     recent = [r for r in matured_results(db, scope=scope) if r.published_at >= oldest]
     for result in sorted(recent, key=lambda r: r.published_at, reverse=True):
         video = db.get(Video, result.video_id)
         diagnosis = (video.meta or {}).get("growth_diagnosis", {})
-        if diagnosis.get("code") != "winner" or not _mining_due(db, result, diagnosis, now):
+        if diagnosis.get("code") != "winner" or not _mining_due(db, result, diagnosis, now, channel_id=channel_id):
             continue
         job_id = _mine_winner(db, result, scope=scope, channel_id=channel_id, require_approval=require_approval)
         if job_id:
@@ -337,6 +368,7 @@ def note_once(db, kind: str, summary: str, *, key: str = "", within: timedelta =
 
 def _learn_one(channel, now: datetime) -> dict:
     """Diagnose one managed channel's matured videos and update its own focus and findings."""
+    now = aware(now)
     oldest_age = timedelta(hours=settings.growth_horizon_hours) + _JUDGE_WITHIN
     scope, cid, approval = _scope(channel), _ev(channel), _approval(channel)
     counts: dict[str, int] = {}
@@ -383,9 +415,11 @@ def _learn_one(channel, now: datetime) -> dict:
 
 
 def learn_job(now: Optional[datetime] = None) -> dict:
-    now = now or datetime.now(timezone.utc)
+    now = aware(now) if now is not None else datetime.now(timezone.utc)
     with session_scope() as db:
         active = channels.active_channels(db)
+    if not active:
+        return {"skipped": "no enabled channels"}
     # A single legacy channel keeps the old flat result; several report per channel by slug.
     if len(active) == 1 and channels.is_default(active[0]):
         return _learn_one(active[0], now)

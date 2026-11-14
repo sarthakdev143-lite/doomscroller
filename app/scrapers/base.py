@@ -33,12 +33,14 @@ class ScrapedItem:
 
     @property
     def aspect_ratio(self) -> float:
-        return (self.width / self.height) if self.width and self.height else 0.0
+        if self.width and self.height and self.width > 0 and self.height > 0:
+            return self.width / self.height
+        return 0.0
 
     @property
     def is_vertical(self) -> bool:
         r = self.aspect_ratio
-        return bool(r) and r < 0.95
+        return 0.0 < r < 0.95
 
 
 class Scraper:
@@ -52,6 +54,16 @@ class Scraper:
                         download: bool = True) -> list[ScrapedItem]:
         raise NotImplementedError
 
+    def close(self) -> None:
+        """Release any held HTTP/browser resources."""
+        return None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
+
     @staticmethod
     def now_iso() -> datetime:
         return datetime.now(timezone.utc)
@@ -60,7 +72,13 @@ class Scraper:
         seen = set()
         out: list[ScrapedItem] = []
         for it in items:
-            key = (it.source, it.source_id)
+            if it is None:
+                continue
+            source = (it.source or "").strip()
+            source_id = (it.source_id or "").strip()
+            if not source or not source_id:
+                continue
+            key = (source, source_id)
             if key in seen:
                 continue
             seen.add(key)

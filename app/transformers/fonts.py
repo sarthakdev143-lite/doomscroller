@@ -60,9 +60,25 @@ _DEVANAGARI_CANDIDATES: dict[str, tuple[str, ...]] = {
               "/system/fonts/NotoSansDevanagariUI-Bold.ttf"),
 }
 _DEVANAGARI_NAME_HINTS = ("devanagari", "mangal", "nirmala", "lohit-devanagari", "kohinoor")
-_FONT_ROOTS = (r"C:\Windows\Fonts", "/usr/share/fonts", "/system/fonts",
-               "/Library/Fonts", "/System/Library/Fonts", os.path.expanduser("~/.fonts"))
 _DEVANAGARI_RANGE = (0x0900, 0x097F)
+
+
+def _font_roots() -> tuple[str, ...]:
+    roots = [
+        r"C:\Windows\Fonts",
+        "/usr/share/fonts",
+        "/system/fonts",
+        "/Library/Fonts",
+        "/System/Library/Fonts",
+        os.path.expanduser("~/.fonts"),
+    ]
+    local_app = os.environ.get("LOCALAPPDATA", "").strip()
+    if local_app:
+        roots.insert(1, os.path.join(local_app, "Microsoft", "Windows", "Fonts"))
+    return tuple(roots)
+
+
+_FONT_ROOTS = _font_roots()
 
 
 def dominant_script(text: str) -> str:
@@ -103,17 +119,12 @@ def _discovered_font() -> str | None:
         if os.path.isfile(path):
             return path
     # Fall back to scanning the usual directories for anything usable.
-    roots = [
-        r"C:\Windows\Fonts", "/usr/share/fonts", "/system/fonts",
-        "/Library/Fonts", "/System/Library/Fonts",
-        os.path.expanduser("~/.fonts"),
-    ]
-    for root in roots:
+    for root in _font_roots():
         if not os.path.isdir(root):
             continue
         for dirpath, _dirnames, filenames in os.walk(root):
             for name in sorted(filenames):
-                if name.lower().endswith((".ttf", ".otf")):
+                if name.lower().endswith((".ttf", ".otf", ".ttc")):
                     return os.path.join(dirpath, name)
     return None
 
@@ -131,7 +142,7 @@ def resolve_font(configured: str = "", text: str = "") -> str | None:
             return deva
         # No Devanagari font: fall through to the Latin font (the caller's is_renderable check
         # will have already decided whether to draw this text at all).
-    candidate = (configured or "").strip()
+    candidate = (configured or "").replace("\x00", "").strip().strip('"').strip("'").strip()
     if candidate and os.path.isfile(candidate):
         return candidate
     if candidate:
@@ -149,10 +160,12 @@ def ffmpeg_path(path: str) -> str:
 
     ffmpeg parses filter graphs itself, so on Windows both the backslashes and
     the drive-letter colon have to be escaped or ``C:\Windows`` reads as a new
-    filter argument.
+    filter argument. Single quotes are also escaped so paths such as
+    ``C:\Users\O'Connor\...`` remain valid inside ``drawtext=fontfile='...'``.
     """
-    escaped = path.replace("\\", "/")
-    return escaped.replace(":", r"\:")
+    clean = "".join(ch for ch in (path or "") if ch >= " " and ch != "\x7f")
+    escaped = clean.replace("\\", "/").replace(":", r"\:")
+    return escaped.replace("'", r"'\''")
 
 
 # Historical name; the function escapes any path, not just a font.

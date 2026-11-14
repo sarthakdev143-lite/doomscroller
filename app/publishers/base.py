@@ -23,6 +23,10 @@ class Publisher:
     def check_ready(self) -> None:
         """Raises if an upload could not start, so nothing is spent preparing one."""
 
+    def fetch_stats(self, video_ids: list[str]) -> dict:
+        """Return ``{video_id: {"viewCount": int, "likeCount": int, "commentCount": int}}``."""
+        return {}
+
     def upload(self, *, file_path: str, title: str, description: str,
                tags: list[str], category: int, privacy: str) -> PublishResult:
         raise NotImplementedError

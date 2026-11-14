@@ -11,38 +11,39 @@ to your YouTube channel on a paced 8-uploads-per-day schedule.
 ## How it runs
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                  FastAPI process (port 8000)                  │
-│  ┌────────────────┐  ┌──────────────┐  ┌──────────────────┐  │
-│  │  REST endpoints│  │  Scheduler   │  │  Pipeline funcs  │  │
-│  │  /videos/*     │  │  APScheduler │  │  scrape/transform│  │
-│  │  /metadata/*   │  │  - scrape 6h │  │  /publish        │  │
-│  │  /scheduler/*  │  │  - discover  │  │  + LLM metadata  │  │
-│  │  /creators     │  │    24h       │  │  via z-ai CLI    │  │
-│  └────────────────┘  │  - publish 3h│  └──────────────────┘  │
-│                      │  - cleanup   │                         │
-│                      │    24h       │                         │
-│                      └──────────────┘                         │
-└──────────────────────────────────────────────────────────────┘
-                              ▲
-                              │ HTTP
-                              ▼
-                 ┌────────────────────────┐
-                 │ Streamlit dashboard    │
-                 │ http://localhost:8501  │
-                 │ Approve/reject, edit   │
-                 │ metadata, watch quota  │
-                 └────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│             Unified Slim Process (scripts/serve_slim.py)                │
+│                                                                         │
+│  ┌────────────────────────────────────┐  ┌───────────────────────────┐  │
+│  │ Private FastAPI API (:8000)        │  │ Control Panel (:8600)     │  │
+│  │  • /videos/*, /metadata/*, /clip   │  │  • REVIEW_TOKEN cookie    │  │
+│  │  • /scheduler/*, /storage          │  │  • Review / Up Next /     │  │
+│  │  • APScheduler autonomous loop     │  │    Scraped / Posted       │  │
+│  │  • Clip queue worker               │  │  • Clip, Channels, Status │  │
+│  └────────────────────────────────────┘  │    Report, Controls, PWA  │  │
+│                                          └─────────────▲─────────────┘  │
+└────────────────────────────────────────────────────────┼────────────────┘
+                                                         │ HTTPS (optional)
+                                             ┌───────────┴───────────┐
+                                             │  Cloudflare Quick     │
+                                             │  Tunnel -> Phone UI   │
+                                             └───────────────────────┘
 ```
 
-No Docker. No Redis. No Celery (optional). One command starts everything.
+No Docker. No Redis. No Celery. No Streamlit overhead (~55 MB idle RAM). One command starts everything.
 
 ## Clip a long video
 
-Paste a link into the dashboard's ✂️ Clip tab, or run:
+Paste a link or drag-and-drop a video file into the Control Panel's **✂ Clip** tab (at `http://localhost:8600`), choose a target channel, or run:
 
 ```bash
-venv/bin/python scripts/clip.py "https://www.youtube.com/watch?v=..."
+venv/bin/python scripts/clip.py "https://www.youtube.com/watch?v=..." --count 3 --channel tech
+venv/bin/python scripts/clip.py "https://www.youtube.com/watch?v=..." --mine --queue   # cut fresh unused moments
+venv/bin/python scripts/clip.py --jobs --json                                          # inspect queued/running/done jobs
+venv/bin/python scripts/clip.py --inbox                                                # clip every new video dropped in content/inbox/
+venv/bin/python scripts/clip.py --batch links.txt --enqueue                            # one link/path per line (blank lines and # comments ignored)
+venv/bin/python scripts/clip.py --retry <JOB_ID>                                       # re-run a failed job
+venv/bin/python scripts/clip.py --clear-finished --json                                # hide finished jobs from the list
 ```
 
 English speech gets AI-picked moments, tightened pauses and word-by-word captions.
@@ -66,29 +67,39 @@ content to curate right away.
 
 ## Quickstart (mock mode — zero credentials)
 
+On Windows, double-click `start.bat` (or run `.\start.ps1`; stop anytime with `stop.bat` or `.\stop.ps1`). It creates `venv`, installs requirements, auto-creates `.env` with a generated `REVIEW_TOKEN`, initializes SQLite, starts the background daemon, and opens your authenticated Control Panel in the browser.
+
+Or from any terminal:
+
 ```bash
 cd doomscroller
-python -m venv venv && source venv/bin/activate
+python -m venv venv && source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env            # USE_MOCK=true, AUTO_PUBLISH=true by default
 
-# Initialize DB + seed some fake viral videos
-python scripts/init_db.py
+# Run offline system preflight (bootstraps missing dirs, .env + REVIEW_TOKEN, and SQLite DB)
+python scripts/doctor.py --fix
 python scripts/seed.py 20
 
-# Start everything (API + scheduler + dashboard) in foreground
+# Start everything (API :8000 + scheduler + Control Panel :8600) in foreground
+# Automatically creates .env from .env.example and generates REVIEW_TOKEN on first run!
 python scripts/run.py
 ```
 
-Open http://localhost:8501 — you'll see ~20 pending mock videos. Approve a
-few → the scheduler will transform them, generate LLM metadata, and publish
-on the 3-hour cadence.
+Open the printed `http://localhost:8600/?key=...` URL — you'll see pending mock videos under **Review → Scraped**. Approve a few → the scheduler transforms them, generates metadata, and publishes on cadence.
 
 For background daemon mode (logs to `logs/`):
 ```bash
-python scripts/run.py --daemon
+python scripts/run.py --daemon     # start in background and print unlock link
+python scripts/run.py --ensure     # idempotent watchdog check (start only if stopped)
+python scripts/run.py --panel-url  # print your local one-click unlock URL
 python scripts/run.py --status
 python scripts/run.py --stop
+```
+
+On Windows, install silent logon + 10-minute watchdog auto-start (no admin needed):
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\windows_autostart.ps1 install
+powershell -ExecutionPolicy Bypass -File scripts\windows_autostart.ps1 status
 ```
 
 ## Going to production (real scraping + real YouTube)
@@ -137,22 +148,35 @@ doomscroller/
 │   ├── metadata.py         # LLM metadata generation (z-ai CLI + fallback)
 │   ├── discovery.py        # creator auto-discovery from engagement graphs
 │   ├── scheduler.py        # APScheduler autonomous loop
-│   ├── scrapers/           # Snapchat (Playwright + CDN) + yt-dlp + mock scrapers
+│   ├── review.py           # Authenticated Web & Phone Control Panel (:8600)
+│   ├── review_ui.py        # Self-contained dark-mode PWA UI (touch + keyboard)
+│   ├── winproc.py          # Windows silent background process & RAM-trimming helpers
+│   ├── growth/             # Autonomous multi-channel growth loop, A/B model, safety
+│   ├── scrapers/           # Snapchat (HTTP + CDN) + yt-dlp + mock scrapers
 │   ├── transformers/       # FFmpeg vertical Shorts transformer
 │   ├── clipper/            # Long video or link → finished Shorts
 │   └── publishers/         # YouTube OAuth2 + mock publishers
 ├── tasks/
 │   └── pipeline.py         # scrape/transform/publish/metadata functions
-├── dashboard/
-│   └── app.py              # Streamlit UI
 ├── scripts/
 │   ├── init_db.py
 │   ├── seed.py
-│   └── run.py              # one-command launcher (foreground or daemon)
+│   ├── doctor.py           # Offline system preflight inspector (--fix, --json)
+│   ├── final_audit.py      # Platform routing, DB/storage & repo surface audit (--offline, --json)
+│   ├── channels.py         # Multi-channel CLI (add, connect, set, feed, export, import, clone)
+│   ├── growth.py           # Growth loop CLI (status, doctor, report, pause, resume, unblock)
+│   ├── clip.py             # Long video/URL -> finished Shorts CLI
+│   ├── serve_slim.py       # Single-process uvicorn host (:8000 + :8600 + tunnel)
+│   ├── windows_autostart.ps1 # Windows Task Scheduler logon + 10m watchdog
+│   └── run.py              # One-command launcher (foreground, daemon, --ensure)
+├── .github/workflows/ci.yml # Ubuntu + Windows CI (JS check, final_audit, fast pytest)
 ├── tests/                  # pytest
 ├── content/                # downloaded source videos (gitignore this)
 ├── secrets/                # OAuth token cache (gitignore this)
 ├── logs/                   # daemon logs (gitignore this)
+├── start.bat / start.ps1   # Windows one-click starter
+├── stop.bat / stop.ps1     # Windows one-click stopper
+├── CONTRIBUTING.md         # Architecture invariants, TDD workflow & CLI reference
 ├── requirements.txt
 ├── .env.example
 └── README.md
@@ -219,7 +243,8 @@ doomscroller/
 ## Free by default
 
 Everything in the default config costs nothing:
-- **Playwright + yt-dlp** — open source, no API keys
+- **yt-dlp + plain HTTP scraping** — open source, no API keys (Playwright is an optional fallback for
+  Snapchat: `pip install playwright && playwright install chromium`)
 - **z-ai CLI** for LLM metadata — in-house, free
 - **SQLite** — local file, no server
 - **APScheduler** — in-process, no Redis
@@ -247,6 +272,8 @@ The token lets the app upload to, and read the analytics of, one channel. It tak
    ```bash
    venv/bin/python scripts/youtube_oauth.py
    # On a machine with no screen, add --no-browser and follow what it prints.
+   # Check an existing token offline anytime:
+   venv/bin/python scripts/youtube_oauth.py --status --json
    ```
 7. Add what it prints to `.env`, then check with `venv/bin/python scripts/growth.py doctor`. It refreshes the token, reads your channel name and asks the Analytics API for one row, so a dead token or an API you forgot to enable shows up now rather than after a missed post.
 
@@ -288,9 +315,17 @@ venv/bin/python scripts/channels.py
 
 ```bash
 venv/bin/python scripts/channels.py feed tech --add <link> --remove <link>
-venv/bin/python scripts/channels.py set tech --uploads 4 --brand @techclips   # also --name --niche --timezone
+venv/bin/python scripts/channels.py set tech --uploads 4 --brand @techclips   # also --name --niche --timezone --require-approval/--no-require-approval --auto-approve-score --cadence-backstop/--no-cadence-backstop
 venv/bin/python scripts/channels.py disable tech          # switch one channel off completely
-venv/bin/python scripts/growth.py report                  # totals, then each channel's plan and results
+venv/bin/python scripts/channels.py export --out channels_backup.json         # sanitized portable snapshot (never OAuth tokens)
+venv/bin/python scripts/channels.py import channels_backup.json --dry-run     # validate & preview upsert (drop --dry-run to apply)
+venv/bin/python scripts/channels.py clone tech tech-clips --name "Tech Clips" # clone niche/cadence/feeds into a fresh unlinked channel
+venv/bin/python scripts/growth.py status                  # quick snapshot: stock, pauses/blocks, next post (--channel <slug>, --json)
+venv/bin/python scripts/growth.py report --channel tech   # totals or one channel's plan and results (--json)
+venv/bin/python scripts/growth.py report --markdown --out weekly.md   # shareable Markdown performance digest (secrets never included)
+venv/bin/python scripts/growth.py notify-test             # send a test alert to ntfy/Telegram and print per-channel delivery
+venv/bin/python scripts/growth.py pause tech              # pause posting on one channel (supply & learning continue)
+venv/bin/python scripts/growth.py resume tech             # resume posting
 venv/bin/python scripts/growth.py reload                  # only after editing channels.json by hand
 ```
 
@@ -324,32 +359,29 @@ A copyright takedown, a legal, policy or account rejection from YouTube, or thre
 
 It posts `GROWTH_UPLOADS_PER_DAY` clips in varied time windows and tests posting window, title style, format, length, source, pace, sound effects and B-roll. Half of all choices are tests for the first 30 days, then 10%.
 
-## The phone control panel
+## The web & phone control panel
 
-The same phone page is a full control panel, with tabs along the bottom. Everything is behind the one `?key=` login
-and the Cloudflare tunnel — nothing new is exposed.
+`app/review.py` (`http://localhost:8600`) is the unified desktop & phone control panel, installable as a fullscreen **PWA** ("Add to Home Screen" on iOS/Android). Everything sits behind the single `?key=<REVIEW_TOKEN>` cookie login, and only port `8600` is exposed when `CLOUDFLARE_TUNNEL=true` — never port `8000`.
 
-1. Start everything as services that survive reboots: `scripts/install_services.sh`. This also installs an
-   **auto-deploy** timer: once a minute it fast-forwards `master` and restarts the app, so shipping a change is
-   just clicking **Merge** on GitHub — the box updates itself within a minute, with nothing to run by hand. It only
-   ever fast-forwards master and never touches a checkout with local edits (`scripts/autodeploy.sh`;
-   logs: `journalctl --user -u doomscroller-deploy`).
-2. The phone address is in `logs/tunnel_url.txt`. Open it once as `<address>/?key=<REVIEW_TOKEN from .env>`.
-3. For alerts, install the ntfy app and subscribe to the `NTFY_TOPIC` from `.env`. New clips, posts, problems and
-   any new page address arrive there.
+1. Start everything as services that survive reboots:
+   - **Linux**: `scripts/install_services.sh` (also installs the 1-minute `master` fast-forward auto-deploy timer).
+   - **Windows**: `powershell -ExecutionPolicy Bypass -File scripts\windows_autostart.ps1 install` (registers a silent logon + 10-minute repeating watchdog task).
+   - **Android / Termux**: copy `scripts/termux_boot.sh` to `~/.termux/boot/doomscroller.sh`.
+2. Locally, `python scripts/run.py --panel-url` prints your one-click `http://localhost:8600/?key=...` link. Remotely, `scripts/tunnel.py` runs a Cloudflare Quick Tunnel (falling back automatically to `localhost.run` over SSH if `cloudflared` is missing or blocked), writes the public URL atomically to `logs/tunnel_url.txt`, and exposes a **Copy phone link** button in the **Controls** tab.
+3. For push alerts, install the ntfy app and subscribe to `NTFY_TOPIC` from `.env` (or configure `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`), then verify delivery with **Send test alert** in **Controls**.
 
-- **Review** — approve or reject clips (tap, or swipe right/left). An **Undo** appears for a few seconds and works
-  until the clip has posted. A flagged clip shows a warning, makes Reject the main button and asks for a second tap
-  to approve. With several channels, chips filter by channel and a strip shows each channel's queue, pause state and
-  anything that needs you.
-- **Channels** — every channel with its status and its one next setup step. Add a channel, add or remove creators,
-  change its name, handle, pace or timezone, switch it on or off, and pause or resume it. The Google sign-in is the
-  one step that still happens on a computer (`scripts/channels.py connect <slug>`); the panel shows exactly when a
-  channel is waiting on it.
-- **Status** — the doctor: what's ready, what needs fixing with the reason, and a button to run the full check that
-  asks Google.
-- **Report** — per channel: today's plan, what's published and in stock, what the A/B tests show, best and worst
-  videos, recent problems and activity.
-- **Controls** — run a job now (make clips, check for new uploads, refresh stats, learn), reload `channels.json`,
-  resume paused channels, and lift a takedown block.
+Tabs & shortcuts (press `?` on desktop for keyboard help: `J`/`K` navigate, `Space` play/pause, `S` cycle `1x`/`1.5x`/`2x` speed, `A` approve, `X`/`R` reject, `E` edit title, `/` search, `U` undo, `1`–`6` switch tabs, `Esc` close modal / clear search):
+- **Review** — segmented into **To review**, **Scraped** (when classic scraper candidates exist), **Up next** (the `TRANSFORMED` upload shelf, where you can edit titles, pull clips back to review, or reject before upload), and **Posted**, with instant search/filter (`/`), playback speed toggle (`S`), clip resolution & AI score badges, collapsible **Preview description & credit** editor (live YouTube description + hashtags save), one-tap **Save MP4** (`GET /api/media/{video_id}?download=1`) on Review, Up next, and Posted cards to save Shorts straight to your phone camera roll for Reels/TikTok/X, two-tap **Approve clean** (`POST /api/clips/approve-clean`) for unflagged clips alongside one-tap **Reject all N flagged** batch cleanup, timestamped YouTube source links, swipe right/left on mobile, and race-safe **Undo**.
+- **Clip** — paste a YouTube/video URL or server path, or **drag-and-drop** / upload a video file straight from your browser, pick a target channel, keep human review on by default (or opt in to skip review), watch live stage progress (`downloading` → `transcribing` → `rendering`), retry/cancel/dismiss individual jobs, or **Clear finished** jobs in one tap.
+- **Channels** — view every channel's live status, `.env` or per-channel creator feeds, next setup step, pause/resume toggle, and full settings (`name`, `niche`, `brand_name`, `uploads_per_day`, `timezone`, `require_approval`, `auto_approve_score`, `cadence_backstop`).
+- **Status** — offline and live Google/YouTube API doctor checks per channel.
+- **Report** — per-channel daily plan, stock, Bayesian A/B factor multipliers, best/worst Shorts, 30-day problems, recent events, and one-tap **Copy summary** for notes/Telegram.
+- **Controls** — copy phone tunnel link, **Send test alert** (per-channel ntfy/Telegram verification), collapsible **Daemon logs** viewer (`GET /api/logs`, secret-scrubbed with `All` / `Warnings & Errors` filter + `Refresh` for phone debugging without SSH), **Export channels & queue JSON** backup (`/api/backup`, secrets redacted), inspect APScheduler health & overnight job history, preview dry-run filter/cache cleanup before running, trigger one-off jobs (`supply`, `watch`, `collect`, `learn`, `scrape`, `transform`, `filter_queue`, `reload`, `cleanup`), resume channels, lift takedown blocks, or lock the browser session.
+
+**Wave 12 panel extras.** On **Up next**, **Publish next** (`POST /api/clips/{id}/pin`, `{"pinned": true|false}`) moves a clip to the front of its channel's queue (a repeatedly failing clip never jumps the line; **Unpin** undoes it). **Channels** gets a per-channel **Clone** (`POST /api/channels/{slug}/clone`) and an **Import channels JSON** card (`POST /api/channels/import`, preview first, never switches a channel on or carries OAuth bindings). **Controls** shows a **System health** strip from the offline preflight (`GET /api/system/doctor`; `POST /api/system/doctor/fix` creates missing folders, `.env` and the DB), booleans only, never secret values.
+
+## Contributing & CI
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the slim-daemon architecture, hard engineering/security invariants, TDD workflow, and CLI reference. GitHub Actions CI (`.github/workflows/ci.yml`) runs `node --check` on `app.review_ui.PAGE`, `python scripts/final_audit.py --offline`, and `pytest -q -m "not slow"` across Ubuntu and Windows on every push and pull request.
+
 

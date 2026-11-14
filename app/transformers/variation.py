@@ -26,6 +26,7 @@ seconds instead of appended, so it never lengthens the video either.
 from __future__ import annotations
 
 import hashlib
+import math
 from dataclasses import dataclass, field
 
 # Corners available to the watermark, as (x, y) ffmpeg expressions.
@@ -95,6 +96,8 @@ def wrap_caption(text: str, max_chars_per_line: int = 24,
     A single long line overflows the 1080px canvas and gets clipped at both
     edges. Short stacked lines also simply read better on a phone screen.
     """
+    if max_chars_per_line <= 0 or max_lines <= 0:
+        return ""
     words = (text or "").split()
     if not words:
         return ""
@@ -119,7 +122,8 @@ def wrap_caption(text: str, max_chars_per_line: int = 24,
         if len(tail) + 1 <= max_chars_per_line:
             lines[-1] = tail + "..."
         else:
-            lines[-1] = tail[: max_chars_per_line - 3].rstrip() + "..."
+            keep = max(0, max_chars_per_line - 3)
+            lines[-1] = (tail[:keep].rstrip() + "...") if keep else "..."
     return "\n".join(lines)
 
 
@@ -129,6 +133,8 @@ def caption_from(title: str, keywords: list[str] | None, max_chars: int) -> str:
     The title is preferred, trimmed at a word boundary. Snapchat titles often
     carry a ``A | B`` structure whose first half is the actual hook.
     """
+    if max_chars <= 0:
+        return ""
     text = " ".join((title or "").split())
     for separator in (" | ", " - ", ": "):
         if separator in text and len(text) > max_chars:
@@ -137,7 +143,8 @@ def caption_from(title: str, keywords: list[str] | None, max_chars: int) -> str:
                 text = head
                 break
     if not text and keywords:
-        text = " ".join(str(k) for k in keywords[:3])
+        clean_kw = [str(k).strip() for k in keywords if k is not None and str(k).strip()]
+        text = " ".join(clean_kw[:3])
     text = " ".join(text.split())
     if len(text) > max_chars:
         text = text[:max_chars].rsplit(" ", 1)[0].strip() or text[:max_chars].strip()
@@ -166,14 +173,22 @@ def plan_variation(
     rng = _rng(video_id or "seed")
 
     low, high = float(settings.zoom_min), float(settings.zoom_max)
-    if high > low:
-        plan.zoom = round(rng.uniform(low, high), 4)
-    elif low > 1.0:
-        plan.zoom = round(low, 4)
+    if low > high:
+        low, high = high, low
+    if math.isfinite(low) and math.isfinite(high):
+        if high > low and high > 0:
+            plan.zoom = round(rng.uniform(max(0.1, low), high), 4)
+        elif low > 1.0:
+            plan.zoom = round(low, 4)
 
     low, high = float(settings.speed_min), float(settings.speed_max)
-    if high > low:
-        plan.speed = round(rng.uniform(low, high), 4)
+    if low > high:
+        low, high = high, low
+    if math.isfinite(low) and math.isfinite(high):
+        if high > low and low > 0:
+            plan.speed = round(rng.uniform(low, high), 4)
+        elif low > 0 and abs(low - 1.0) > 0.001:
+            plan.speed = round(low, 4)
 
     # Mirroring is a strong visual difference but wrong for anything with text
     # or writing in frame, so it stays a minority treatment.

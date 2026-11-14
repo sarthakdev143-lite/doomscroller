@@ -8,6 +8,7 @@ touching the same rows is safe — the growth jobs are written to be idempotent 
 from __future__ import annotations
 
 import logging
+import math
 import threading
 from datetime import datetime, timezone
 from typing import Callable
@@ -24,17 +25,27 @@ ACTIONS: dict[str, tuple[str, str]] = {
     "watch": ("Check for new uploads", "Poll every watched creator's feed for a fresh upload right now."),
     "collect": ("Refresh stats", "Pull the latest views and retention from YouTube now."),
     "learn": ("Learn now", "Re-judge matured videos and update what the tests show."),
+    "scrape": ("Scrape viral candidates", "Fetch new viral Shorts into the scraper queue (classic scraper mode)."),
+    "transform": ("Transform approved", "Render approved scraped videos to 1080x1920 Shorts now."),
+    "filter_queue": ("Re-apply safety & language filters", "Sweep PENDING backlog against current safety, topic & language rules."),
     "reload": ("Reload channels.json", "Re-read the channels file after a hand edit."),
+    "cleanup": ("Reclaim expired cache", "Delete expired source videos and orphaned files now."),
+    "test_notify": ("Send test alert", "Send a test notification to ntfy / Telegram now to verify delivery."),
 }
-_INLINE = {"reload"}  # fast and local; the rest reach the network, so they go to a thread
+_INLINE = {"reload", "cleanup", "filter_queue", "test_notify"}  # fast or interactive; heavy batch jobs go to a thread
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-_COUNT_WORDS = {"queued": "queued", "snapshots": "stats updated", "analytics": "retention updated",
-                "findings": "new findings", "matured": "videos judged", "feeds": "feeds checked"}
+_COUNT_WORDS = {
+    "queued": "queued", "snapshots": "stats updated", "analytics": "retention updated",
+    "findings": "new findings", "matured": "videos judged", "feeds": "feeds checked",
+    "created": "scraped", "transformed": "transformed",
+    "rejected": "filtered out", "kept": "kept",
+    "mb_reclaimed": "MB reclaimed", "sources_deleted": "sources removed", "orphans_deleted": "orphans removed",
+}
 _NOTE_KEYS = ("skipped", "starved", "waiting", "queued", "mined")
 
 
@@ -45,10 +56,21 @@ def _summarise(result: object) -> str:
     (supply's `queued` is the source it took, `starved` is a reason), so only numbers are summed and a
     string falls through to a note. Defensive on purpose — a job result must never crash the panel.
     """
+    from . import notify
+
     if not isinstance(result, dict):
-        return str(result)[:200]
+        return notify._redact(str(result))[:200]
     if result.get("error"):
-        return str(result["error"])[:200]
+        return notify._redact(str(result["error"]))[:200]
+    if "configured" in result and isinstance(result.get("channels"), dict):
+        if not result.get("configured"):
+            return notify._redact(str(result.get("skipped") or "no NTFY_TOPIC or Telegram bot set"))[:160]
+        parts = [
+            f"{name}: sent" if ch.get("ok") else f"{name}: failed ({ch.get('error', 'error')})"
+            for name, ch in result["channels"].items()
+            if isinstance(ch, dict)
+        ]
+        return notify._redact(", ".join(parts) or "no notification channels configured")[:200]
     sections = [v for v in result.values() if isinstance(v, dict)]
     data = sections or [result]
     counts: dict[str, float] = {}
@@ -57,35 +79,58 @@ def _summarise(result: object) -> str:
         for key, value in d.items():
             if isinstance(value, bool):
                 continue
-            if isinstance(value, (int, float)):
+            if isinstance(value, (int, float)) and math.isfinite(value):
                 counts[key] = counts.get(key, 0) + value
             elif isinstance(value, str) and value and key in _NOTE_KEYS:
                 notes.append(value)
-    bits = [f"{int(n)} {_COUNT_WORDS[k]}" for k, n in counts.items() if k in _COUNT_WORDS and n]
+    bits = [
+        f"{int(n) if float(n).is_integer() else round(n, 1)} {_COUNT_WORDS[k]}"
+        for k, n in counts.items() if k in _COUNT_WORDS and n
+    ]
     if isinstance(result.get("active"), list):
         bits.append(f"{len(result['active'])} channels active")
     if not bits and notes:
-        return notes[0][:160]
-    return ", ".join(bits) or "done, nothing to do"
+        return notify._redact(notes[0])[:160]
+    return notify._redact(", ".join(bits) or "done, nothing to do")[:200]
 
 
 def _call(action: str) -> dict:
-    from . import channels, collect, learn, supply, watch
+    from app import scheduler
+    from tasks.pipeline import apply_queue_filters
+    from . import channels, collect, learn, notify, supply, watch
 
     funcs: dict[str, Callable[[], dict]] = {
         "supply": supply.supply_job, "watch": watch.watch_job,
         "collect": collect.collect_job, "learn": learn.learn_job,
+        "scrape": lambda: scheduler.run_job("scrape"),
+        "transform": lambda: scheduler.run_job("transform"),
+        "filter_queue": lambda: apply_queue_filters(dry_run=False),
         "reload": channels.reload_channels,
+        "cleanup": lambda: scheduler.run_job("cleanup"),
+        "test_notify": notify.send_test_notification,
     }
     return funcs[action]()
 
 
+def preview_maintenance() -> dict:
+    """Non-destructive dry-run preview of queue filter sweep and cache cleanup."""
+    from app import scheduler
+    from tasks.pipeline import apply_queue_filters
+
+    return {
+        "filters": apply_queue_filters(dry_run=True),
+        "cleanup": scheduler.cleanup_job(dry_run=True),
+    }
+
+
 def _run_tracked(action: str) -> None:
+    from . import notify
+
     try:
         st = {"state": "done", "result": _summarise(_call(action))}
     except Exception as exc:  # a manual run must never take the server down
         log.exception("control action %s failed", action)
-        st = {"state": "error", "error": f"{type(exc).__name__}: {exc}"}
+        st = {"state": "error", "error": notify._redact(f"{type(exc).__name__}: {exc}")[:200]}
     with _lock:
         _status[action] = {**st, "at": _now()}
 

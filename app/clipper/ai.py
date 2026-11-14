@@ -25,6 +25,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import math
 import os
 import shutil
 import subprocess
@@ -35,6 +36,7 @@ from typing import Optional, Sequence
 
 from app.config import settings
 from app.metadata import _extract_json
+from app.winproc import background_subprocess_kwargs
 
 log = logging.getLogger(__name__)
 
@@ -46,37 +48,89 @@ _OPENCODE_REST_SEC = 30 * 60
 _opencode_down_until = 0.0
 
 
-def opencode_path() -> Optional[str]:
-    configured = (settings.opencode_bin or "").strip()
+def _safe_utf8(raw: object) -> str:
+    if isinstance(raw, (bytes, bytearray, memoryview)):
+        text = bytes(raw).decode("utf-8-sig", errors="replace")
+    elif isinstance(raw, str):
+        text = raw.lstrip("\ufeff")
+    else:
+        return ""
+    return text.replace("\x00", "").encode("utf-8", errors="replace").decode("utf-8")
+
+
+def _timeout() -> float:
+    raw = getattr(settings, "clip_ai_timeout_sec", 120)
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return 120.0
+    return max(1.0, val) if math.isfinite(val) else 120.0
+
+
+def _resolve_cli(configured: str, name: str, fallbacks: Sequence[Path]) -> Optional[str]:
+    configured = (configured or "").strip()
     if configured:
-        return shutil.which(configured)
-    found = shutil.which("opencode")
+        expanded = str(Path(configured).expanduser())
+        return shutil.which(expanded) or (expanded if os.path.isfile(expanded) else None)
+    found = shutil.which(name)
     if found:
         return found
-    default = Path.home() / ".opencode" / "bin" / "opencode"
-    return str(default) if default.is_file() else None
+    for candidate in fallbacks:
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def _command_prefix(binary: str) -> list[str]:
+    """Build argv[0..] for ``binary``, resolving ``#!`` scripts on Windows where CreateProcess cannot."""
+    if os.name == "nt":
+        p = Path(binary)
+        if p.is_file() and p.suffix.lower() not in {".exe", ".com", ".bat", ".cmd"}:
+            try:
+                with p.open("rb") as fh:
+                    first = fh.readline(512)
+                if first.startswith(b"#!"):
+                    target = first[2:].decode("utf-8", errors="replace").strip()
+                    if target:
+                        if os.path.isfile(target):
+                            return [target, binary]
+                        parts = target.split()
+                        if parts[0] in {"/usr/bin/env", "/bin/env"} and len(parts) > 1:
+                            interp = shutil.which(parts[1]) or parts[1]
+                            return [interp, *parts[2:], binary]
+                        return [*parts, binary]
+            except OSError:
+                pass
+    return [binary]
+
+
+def opencode_path() -> Optional[str]:
+    home = Path.home()
+    appdata = Path(os.environ["APPDATA"]) if os.environ.get("APPDATA") else None
+    fallbacks = [home / ".opencode" / "bin" / "opencode.exe", home / ".opencode" / "bin" / "opencode"]
+    if appdata:
+        fallbacks.append(appdata / "npm" / "opencode.cmd")
+    return _resolve_cli(settings.opencode_bin, "opencode", fallbacks)
 
 
 def claude_path() -> Optional[str]:
     if not settings.claude_fallback:
         return None
-    configured = (settings.claude_bin or "").strip()
-    if configured:
-        return shutil.which(configured)
-    found = shutil.which("claude")
-    if found:
-        return found
-    default = Path.home() / ".local" / "bin" / "claude"
-    return str(default) if default.is_file() else None
+    home = Path.home()
+    appdata = Path(os.environ["APPDATA"]) if os.environ.get("APPDATA") else None
+    fallbacks = [home / ".local" / "bin" / "claude.exe", home / ".local" / "bin" / "claude"]
+    if appdata:
+        fallbacks.append(appdata / "npm" / "claude.cmd")
+    return _resolve_cli(settings.claude_bin, "claude", fallbacks)
 
 
 def available() -> bool:
     return opencode_path() is not None or claude_path() is not None
 
 
-def _text_from_events(stdout: str) -> str:
+def _text_from_events(stdout: str | bytes) -> str:
     parts = []
-    for line in stdout.splitlines():
+    for line in _safe_utf8(stdout).splitlines():
         try:
             event = json.loads(line)
         except ValueError:
@@ -118,13 +172,13 @@ def _claude_message(prompt: str, files: Sequence[str]) -> str:
             raise ValueError(f"cannot send {path} to Claude: not an image")
         data = base64.b64encode(Path(path).read_bytes()).decode("ascii")
         content.append({"type": "image", "source": {"type": "base64", "media_type": media, "data": data}})
-    content.append({"type": "text", "text": prompt})
+    content.append({"type": "text", "text": _safe_utf8(prompt)})
     return json.dumps({"type": "user", "session_id": "", "parent_tool_use_id": None,
                        "message": {"role": "user", "content": content}}) + "\n"
 
 
-def _result_from_stream(stdout: str) -> Optional[str]:
-    for line in stdout.splitlines():
+def _result_from_stream(stdout: str | bytes) -> Optional[str]:
+    for line in _safe_utf8(stdout).splitlines():
         try:
             event = json.loads(line)
         except ValueError:
@@ -140,59 +194,69 @@ def _result_from_stream(stdout: str) -> Optional[str]:
 
 def _ask_claude(prompt: str, *, files: Sequence[str] = ()) -> Optional[str]:
     binary = claude_path()
+    if binary is None:
+        return None
     try:
         message = _claude_message(prompt, files)
     except (OSError, ValueError) as exc:
         log.warning("claude: %s", exc)
         return None
-    command = [binary, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
+    timeout = _timeout()
+    command = [*_command_prefix(binary), "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
                "--tools", "", "--strict-mcp-config", "--safe-mode", "--disable-slash-commands",
                "--no-session-persistence", "--model", settings.claude_model, "--system-prompt", _CLAUDE_SYSTEM]
-    with tempfile.TemporaryDirectory(prefix="clipper-ai-") as empty_dir:
+    with tempfile.TemporaryDirectory(prefix="clipper-ai-", ignore_cleanup_errors=True) as empty_dir:
         try:
             proc = subprocess.run(command, input=message, capture_output=True, encoding="utf-8", errors="replace",
-                                  cwd=empty_dir, timeout=settings.clip_ai_timeout_sec,
-                                  env={**os.environ, "PWD": empty_dir})
+                                  cwd=empty_dir, timeout=timeout,
+                                  env={**os.environ, "PWD": empty_dir},
+                                  **background_subprocess_kwargs(low_priority=True))
         except subprocess.TimeoutExpired:
-            log.warning("claude timed out after %ss", settings.clip_ai_timeout_sec)
+            log.warning("claude timed out after %ss", timeout)
             return None
         except OSError as exc:
             log.warning("claude could not start: %s", exc)
             return None
+    err_text = _safe_utf8(proc.stderr) or _safe_utf8(proc.stdout)
     if proc.returncode != 0:
-        log.warning("claude failed: %s", (proc.stderr or proc.stdout or "")[-400:])
+        log.warning("claude failed: %s", err_text[-400:])
         return None
     return _result_from_stream(proc.stdout)
 
 
 def _ask_opencode(prompt: str, *, files: Sequence[str] = (), model: str = "") -> Optional[str]:
     binary = opencode_path()
-    command = [binary, "run", "--standalone", "--format", "json",
+    if binary is None:
+        return None
+    timeout = _timeout()
+    clean_prompt = _safe_utf8(prompt)
+    command = [*_command_prefix(binary), "run", "--standalone", "--format", "json",
                "--model", model or settings.opencode_model]
     for path in files:
         command += ["--file", str(path)]
     # With attachments the CLI takes its message as an argument. Prompts that
     # carry attachments are short, so the argument limit does not apply.
-    kwargs: dict = {"stdin": subprocess.DEVNULL} if files else {"input": prompt}
+    kwargs: dict = {"stdin": subprocess.DEVNULL} if files else {"input": clean_prompt}
     if files:
-        command.append(prompt)
-    with tempfile.TemporaryDirectory(prefix="clipper-ai-") as empty_dir:
+        command.append(clean_prompt)
+    with tempfile.TemporaryDirectory(prefix="clipper-ai-", ignore_cleanup_errors=True) as empty_dir:
         try:
             proc = subprocess.run(
                 command, capture_output=True, encoding="utf-8", errors="replace", cwd=empty_dir,
-                timeout=settings.clip_ai_timeout_sec,
+                timeout=timeout,
                 env={**os.environ, "PWD": empty_dir, "OPENCODE_DISABLE_PROJECT_CONFIG": "1",
                      "OPENCODE_CONFIG_CONTENT": LOCKDOWN_CONFIG},
+                **background_subprocess_kwargs(low_priority=True),
                 **kwargs,
             )
         except subprocess.TimeoutExpired:
-            log.warning("opencode timed out after %ss", settings.clip_ai_timeout_sec)
+            log.warning("opencode timed out after %ss", timeout)
             return None
         except OSError as exc:
             log.warning("opencode could not start: %s", exc)
             return None
     if proc.returncode != 0:
-        log.warning("opencode failed: %s", (proc.stderr or "")[-400:])
+        log.warning("opencode failed: %s", _safe_utf8(proc.stderr)[-400:])
         return None
     return _text_from_events(proc.stdout) or None
 
@@ -204,7 +268,7 @@ def ask_json(prompt: str, *, files: Sequence[str] = (), model: str = "") -> Opti
         if reply is None:
             return None
         parsed = _extract_json(reply)
-        if parsed is not None:
+        if isinstance(parsed, dict):
             return parsed
-        log.info("AI reply was not JSON: %s", reply[:200])
+        log.info("AI reply was not a JSON object: %s", reply[:200])
     return None

@@ -14,6 +14,9 @@ request logging cannot leak it.
 from __future__ import annotations
 
 import logging
+import math
+import os
+import tempfile
 from typing import Optional
 
 import httpx
@@ -38,12 +41,13 @@ def _segment(audio_path: str, out_path: str, start: float, length: float) -> Non
 
 
 def _call(path: str, language_code: str) -> dict:
+    filename = os.path.basename(path) or "audio.wav"
     with open(path, "rb") as audio:
         response = httpx.post(
             _STT_URL,
-            headers={"api-subscription-key": settings.sarvam_api_key},
+            headers={"api-subscription-key": (settings.sarvam_api_key or "").strip()},
             data={"model": _MODEL, "language_code": language_code, "with_timestamps": "true"},
-            files={"file": (path.rsplit("/", 1)[-1], audio, "audio/wav")},
+            files={"file": (filename, audio, "audio/wav")},
             timeout=_TIMEOUT,
         )
     if response.status_code != 200:
@@ -55,9 +59,12 @@ def _call(path: str, language_code: str) -> dict:
 def _split_chunk(text: str, start: float, end: float) -> list[Word]:
     """Turn one phrase chunk into evenly-spaced words. Sarvam gives chunk timings only, so word times are
     approximate within the chunk — good enough for caption display and never worse than no captions."""
+    if not math.isfinite(start) or not math.isfinite(end):
+        return []
     tokens = [t for t in (text or "").split() if t]
     if not tokens:
         return []
+    start = max(0.0, start)
     span = max(end - start, 0.0)
     step = span / len(tokens) if tokens else 0.0
     return [Word(text=tok, start=start + i * step, end=start + (i + 1) * step, confidence=1.0)
@@ -67,19 +74,30 @@ def _split_chunk(text: str, start: float, end: float) -> list[Word]:
 def _words_from(payload: dict, offset: float, seg_len: float) -> list[Word]:
     """Map one window's response onto the source clock. Prefers the chunk timestamps; if they are missing
     or malformed, spreads the whole window transcript across the window's own span."""
-    stamps = payload.get("timestamps") or {}
+    if not isinstance(payload, dict) or not math.isfinite(offset) or not math.isfinite(seg_len) or seg_len < 0:
+        return []
+    win_start = max(0.0, offset)
+    win_end = win_start + seg_len
+    stamps = payload.get("timestamps") if isinstance(payload.get("timestamps"), dict) else {}
     chunks = stamps.get("words") or []
     starts = stamps.get("start_time_seconds") or []
     ends = stamps.get("end_time_seconds") or []
     words: list[Word] = []
-    if chunks and len(chunks) == len(starts) == len(ends):
+    if (isinstance(chunks, list) and isinstance(starts, list) and isinstance(ends, list)
+            and chunks and len(chunks) == len(starts) == len(ends)):
         for text, s, e in zip(chunks, starts, ends):
             try:
-                words += _split_chunk(str(text), offset + float(s), offset + float(e))
+                s_val = float(s) if s is not None else 0.0
+                e_val = float(e) if e is not None else s_val
             except (TypeError, ValueError):
                 continue
+            if not math.isfinite(s_val):
+                s_val = 0.0
+            clamped_s = min(win_end, max(win_start, win_start + s_val))
+            clamped_e = clamped_s if not math.isfinite(e_val) else min(win_end, max(clamped_s, win_start + e_val))
+            words += _split_chunk(str(text or ""), clamped_s, clamped_e)
     if not words:
-        words = _split_chunk(str(payload.get("transcript") or ""), offset, offset + seg_len)
+        words = _split_chunk(str(payload.get("transcript") or ""), win_start, win_end)
     return words
 
 
@@ -89,10 +107,8 @@ def transcribe(audio_path: str, duration: float, *, language_code: str = "hi-IN"
     `audio_path` is the mono 16kHz file the clipper already made for Deepgram; `duration` is the source
     length. Never raises — a None here means the caller keeps the no-speech path.
     """
-    if not settings.sarvam_api_key or duration <= 0:
+    if not (settings.sarvam_api_key or "").strip() or not math.isfinite(duration) or duration <= 0:
         return None
-    import os
-    import tempfile
 
     words: list[Word] = []
     try:

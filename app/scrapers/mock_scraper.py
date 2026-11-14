@@ -10,10 +10,10 @@ from __future__ import annotations
 import hashlib
 import os
 import random
+import re
 from datetime import datetime, timedelta, timezone
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import List
 
@@ -84,18 +84,27 @@ def _seed_from(s: str) -> int:
 
 def _ensure_master_dummy(content_dir: str, master_path: str) -> str:
     """Create one shared dummy mp4 that we copy per scraped item."""
-    if os.path.exists(master_path):
+    if content_dir:
+        os.makedirs(content_dir, exist_ok=True)
+    Path(master_path).parent.mkdir(parents=True, exist_ok=True)
+    if os.path.exists(master_path) and os.path.getsize(master_path) > 0:
         return master_path
+    from app.winproc import background_subprocess_kwargs
+
     try:
         subprocess.run(
             [
-                "ffmpeg", "-y", "-f", "lavfi", "-i",
+                "ffmpeg", "-nostdin", "-y", "-f", "lavfi", "-i",
                 "color=c=black:s=1080x1920:d=3",
                 "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
                 "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p",
                 "-c:a", "aac", master_path,
             ],
-            check=True, capture_output=True,
+            stdin=subprocess.DEVNULL,
+            check=True,
+            capture_output=True,
+            timeout=30,
+            **background_subprocess_kwargs(low_priority=True),
         )
         return master_path
     except Exception:
@@ -108,51 +117,79 @@ class MockScraper(Scraper):
     def __init__(self) -> None:
         from ..config import settings
         self.content_dir = settings.content_path
+        os.makedirs(self.content_dir, exist_ok=True)
         self._master_path = os.path.join(self.content_dir, "_mock_master.mp4")
-        _ensure_master_dummy(self.content_dir, self._master_path)
+        _ensure_master_dummy(str(self.content_dir), self._master_path)
 
     def scrape_handles(self, handles: list[str], max_per_run: int,
                        download: bool = True) -> list[ScrapedItem]:
-        handles = handles or _AUTHORS
+        if max_per_run <= 0:
+            return []
+        clean_handles = [
+            h.strip() for h in (handles or []) if isinstance(h, str) and h.strip()
+        ] or list(_AUTHORS)
         from ..config import settings as _s
         snap_only = [p.lower() for p in _s.enabled_platforms_list] == ["snapchat"]
         source = "snapchat" if snap_only else "tiktok"
         out: List[ScrapedItem] = []
-        for h in handles:
-            n = max(1, max_per_run // max(1, len(handles)))
+        n = max(1, (max_per_run + len(clean_handles) - 1) // len(clean_handles))
+        for h in clean_handles:
+            if len(out) >= max_per_run:
+                break
             for i in range(n):
-                out.append(self._fake_item(source=source, handle=h, idx=i))
+                if len(out) >= max_per_run:
+                    break
+                out.append(self._fake_item(source=source, handle=h, idx=i, download=download))
         return self._dedup(out)[:max_per_run]
 
     def scrape_hashtags(self, hashtags: list[str], max_per_run: int,
                         download: bool = True) -> list[ScrapedItem]:
-        hashtags = hashtags or ["fyp", "viral", "shorts", "reels", "snapchat"]
+        if max_per_run <= 0:
+            return []
+        clean_tags = [
+            t.strip().lstrip("#").strip()
+            for t in (hashtags or [])
+            if isinstance(t, str) and t.strip().lstrip("#").strip()
+        ] or ["fyp", "viral", "shorts", "reels", "snapchat"]
         from ..config import settings as _s2
         snap_only = [p.lower() for p in _s2.enabled_platforms_list] == ["snapchat"]
         source = "snapchat" if snap_only else "instagram"
         out: List[ScrapedItem] = []
-        for tag in hashtags:
-            n = max(1, max_per_run // max(1, len(hashtags)))
+        n = max(1, (max_per_run + len(clean_tags) - 1) // len(clean_tags))
+        for tag in clean_tags:
+            if len(out) >= max_per_run:
+                break
             for i in range(n):
-                out.append(self._fake_item(source=source, handle=tag, idx=i))
+                if len(out) >= max_per_run:
+                    break
+                out.append(self._fake_item(source=source, handle=tag, idx=i, download=download))
         return self._dedup(out)[:max_per_run]
 
-    def _fake_item(self, *, source: str, handle: str, idx: int) -> ScrapedItem:
+    def _fake_item(
+        self, *, source: str, handle: str, idx: int, download: bool = True
+    ) -> ScrapedItem:
         rnd = random.Random(_seed_from(f"{handle}-{idx}"))
         title = rnd.choice(_TITLES)
         author = rnd.choice(_AUTHORS) if not handle.startswith("@") else handle
-        sid = f"{handle}_{idx}_{rnd.randint(1000, 9999)}"
+        safe_slug = re.sub(r"[^A-Za-z0-9_.-]", "_", handle.strip()).strip("_.")[:40] or "mock"
+        sid = f"{safe_slug}_{idx}_{rnd.randint(1000, 9999)}"
         views = rnd.randint(50_000, 8_000_000)
         likes = int(views * rnd.uniform(0.03, 0.18))
         comments = int(likes * rnd.uniform(0.01, 0.08))
         shares = int(likes * rnd.uniform(0.05, 0.3))
         duration_sec = rnd.randint(8, 58)
 
-        local_path = os.path.join(
-            self.content_dir, f"{source}_{sid}.mp4"
-        )
-        if not os.path.exists(local_path):
-            shutil.copy2(self._master_path, local_path)
+        local_path: str | None = None
+        if download:
+            os.makedirs(self.content_dir, exist_ok=True)
+            local_path = os.path.join(str(self.content_dir), f"{source}_{sid}.mp4")
+            if not os.path.exists(local_path):
+                if not os.path.exists(self._master_path):
+                    _ensure_master_dummy(str(self.content_dir), self._master_path)
+                if os.path.exists(self._master_path):
+                    shutil.copy2(self._master_path, local_path)
+                else:
+                    Path(local_path).write_bytes(b"")
 
         published_at = datetime.now(timezone.utc) - timedelta(
             hours=rnd.uniform(1, 96)
