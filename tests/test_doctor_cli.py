@@ -85,6 +85,7 @@ def test_doctor_happy_path_and_never_leaks_secrets(tmp_path, monkeypatch, capsys
         "PEXELS_API_KEY": True,
         "TENOR_API_KEY": True,
         "GIPHY_API_KEY": False,
+        "FREESOUND_API_KEY": False,
         "NTFY_TOPIC": True,
         "TELEGRAM_BOT_TOKEN": True,
     }
@@ -153,7 +154,8 @@ def test_doctor_fix_creates_dirs_bootstraps_env_token_and_initializes_db(tmp_pat
     import scripts.doctor as doctor
 
     for key in ("REVIEW_TOKEN", "DEEPGRAM_API_KEY", "SARVAM_API_KEY", "PIXABAY_API_KEY",
-                "PEXELS_API_KEY", "TENOR_API_KEY", "GIPHY_API_KEY", "NTFY_TOPIC", "TELEGRAM_BOT_TOKEN"):
+                "PEXELS_API_KEY", "TENOR_API_KEY", "GIPHY_API_KEY", "FREESOUND_API_KEY",
+                "NTFY_TOPIC", "TELEGRAM_BOT_TOKEN"):
         monkeypatch.delenv(key, raising=False)
 
     monkeypatch.setattr(doctor.shutil, "which", lambda name: f"/usr/bin/{name}")

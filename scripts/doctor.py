@@ -38,6 +38,7 @@ OPTIONAL_SECRET_KEYS: tuple[str, ...] = (
     "PEXELS_API_KEY",
     "TENOR_API_KEY",
     "GIPHY_API_KEY",
+    "FREESOUND_API_KEY",
     "NTFY_TOPIC",
     "TELEGRAM_BOT_TOKEN",
 )

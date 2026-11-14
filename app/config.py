@@ -218,6 +218,10 @@ class Settings(BaseSettings):
     # Owner-curated one-shot SFX pack (e.g. whoosh.wav). Empty means <CONTENT_DIR>/sfx.
     # Files whose stem names the cue kind win for that kind; without files the synth plays.
     clip_sfx_pack_dir: str = ""
+    # Trending CC0 SFX downloads from Freesound into content/sfx/ (needs a free key from
+    # https://freesound.org/apiv2/apply). The runtime pack picks them up with no code change.
+    clip_trending_sfx: bool = True
+    freesound_api_key: str = ""
     # Finished clips skip review and go straight to the publish queue.
     clip_auto_queue: bool = False
     clip_font: str = ""
@@ -461,6 +465,7 @@ class Settings(BaseSettings):
         "auto_discovery", "auto_approve", "allow_unknown_language",
         "transform_variation", "caption_enabled", "end_card_enabled",
         "upscale_sharpen", "clip_auto_queue", "clip_sfx", "clip_broll", "clip_music", "clip_memes",
+        "clip_trending_sfx",
         "growth_enabled", "youtube_made_for_kids", "claude_fallback", "growth_require_approval", "earshot_qa", mode="before",
     )
     @classmethod

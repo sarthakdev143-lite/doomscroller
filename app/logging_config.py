@@ -43,6 +43,7 @@ _SECRET_SETTINGS_ATTRS = (
     "pexels_api_key",
     "tenor_api_key",
     "giphy_api_key",
+    "freesound_api_key",
     "deepgram_api_key",
     "sarvam_api_key",
 )
@@ -54,12 +55,12 @@ _SECRET_DICT_KEYS = frozenset({
 })
 _BOT_TOKEN_RE = re.compile(r"bot\d+:[A-Za-z0-9_-]{4,}")
 _ENV_SECRET_RE = re.compile(
-    r"(\b(?:REVIEW_TOKEN|TELEGRAM_BOT_TOKEN|PIXABAY_API_KEY|PEXELS_API_KEY|TENOR_API_KEY|GIPHY_API_KEY|"
+    r"(\b(?:REVIEW_TOKEN|TELEGRAM_BOT_TOKEN|PIXABAY_API_KEY|PEXELS_API_KEY|TENOR_API_KEY|GIPHY_API_KEY|FREESOUND_API_KEY|"
     r"DEEPGRAM_API_KEY|SARVAM_API_KEY)\s*[=:]\s*)([^\s,;'\">&]+)",
     re.IGNORECASE,
 )
 _JSON_SECRET_RE = re.compile(
-    r'("(?:review_token|telegram_bot_token|pixabay_api_key|pexels_api_key|tenor_api_key|giphy_api_key|'
+    r'("(?:review_token|telegram_bot_token|pixabay_api_key|pexels_api_key|tenor_api_key|giphy_api_key|freesound_api_key|'
     r'deepgram_api_key|sarvam_api_key|access_token|refresh_token|client_secret)"\s*:\s*")([^"]*)(")',
     re.IGNORECASE,
 )
