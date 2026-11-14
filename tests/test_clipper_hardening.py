@@ -480,7 +480,11 @@ def test_transcribe_normalizes_missing_end_negative_nan_and_null_entries(tmp_pat
 def test_sarvam_basename_upload_clamped_timestamps_and_nan_duration_guard(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "sarvam_api_key", "sarvam_key")
 
-    # 1. Windows path must upload only basename, never leaking local directory hierarchy.
+    # 1. Only the basename is uploaded, never local directory hierarchy,
+    # on either OS separator style.
+    assert sarvam._basename("C:\\Users\\me\\audio\\seg_0.wav") == "seg_0.wav"
+    assert sarvam._basename("/tmp/audio/seg_0.wav") == "seg_0.wav"
+    assert sarvam._basename("") == "audio.wav"
     audio_seg = tmp_path / "seg_0.wav"
     audio_seg.write_bytes(b"RIFF")
     captured_filename = []
@@ -496,8 +500,7 @@ def test_sarvam_basename_upload_clamped_timestamps_and_nan_duration_guard(tmp_pa
         return FakeResp()
 
     monkeypatch.setattr(sarvam.httpx, "post", fake_post)
-    win_style_path = str(tmp_path) + "\\seg_0.wav"
-    sarvam._call(win_style_path, "hi-IN")
+    sarvam._call(str(audio_seg), "hi-IN")
     assert captured_filename == ["seg_0.wav"]
 
     # 2. Out-of-window, inverted, or NaN chunk timestamps are clamped to [offset, offset + seg_len].
