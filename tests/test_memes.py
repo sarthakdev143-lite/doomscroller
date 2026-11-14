@@ -38,8 +38,10 @@ def _giphy_trending():
 def test_provider_none_without_keys(monkeypatch):
     monkeypatch.setattr(settings, "tenor_api_key", "")
     monkeypatch.setattr(settings, "giphy_api_key", "")
-    assert memes.provider() is None
-    assert memes.available() is False
+    # MemeGen needs no key, so the pack is always available behind the flag.
+    assert memes.provider() == memes.MEMEGEN
+    monkeypatch.setattr(settings, "clip_memes", True)
+    assert memes.available() is True
 
 
 def test_provider_prefers_tenor(monkeypatch):
@@ -266,16 +268,22 @@ def test_attach_memes_no_beats(monkeypatch):
 
 
 def test_attach_memes_needs_key(monkeypatch):
-    from app.clipper.edit import attach_memes
+    from app.clipper import edit as edit_mod
+    from app.clipper import memes as memes_mod
     plan = _speech_plan(monkeypatch)
     monkeypatch.setattr(settings, "tenor_api_key", "")
     monkeypatch.setattr(settings, "giphy_api_key", "")
-    assert plan.meme_overlays == [] or True
-    warnings = attach_memes(plan)
-    assert plan.meme_overlays == []
-    assert warnings == ["TENOR_API_KEY is not set, so this clip has no meme overlays"]
+    # Keyless MemeGen still serves overlays behind the flag.
+    monkeypatch.setattr(edit_mod.memes, "fetch",
+                        lambda q, s, *, exclude=(), choose=None: memes_mod.MemeClip("m1", "/tmp/m1.jpg", "T", "MemeGen"))
+    assert edit_mod.attach_memes(plan) == []
+    assert [o.at for o in plan.meme_overlays] == [5.0, 12.0, 20.0]
+    assert all(o.clip.provider == "MemeGen" for o in plan.meme_overlays)
+    # Flag off clears.
+    plan2 = _speech_plan(monkeypatch)
     monkeypatch.setattr(settings, "clip_memes", False)
-    assert attach_memes(plan) == []
+    assert edit_mod.attach_memes(plan2) == []
+    assert plan2.meme_overlays == []
 
 
 def test_attach_memes_spaces_and_caps(monkeypatch):
@@ -299,11 +307,71 @@ def test_attach_memes_spaces_and_caps(monkeypatch):
     assert seen[0] == set() and seen[1] == {"m1"} and seen[2] == {"m1", "m2"}
 
 
+def _memegen_templates():
+    return [
+        {"id": "3hd", "name": "Three-Headed Dragon", "keywords": ["King Ghidorah"],
+         "blank": "https://api.memegen.link/images/3hd.jpg",
+         "source": "https://knowyourmeme.com/memes/three-headed-dragon"},
+        {"id": "drake", "name": "Drake Hotline Bling", "keywords": ["drake", "hotline"],
+         "blank": "https://api.memegen.link/images/drake.jpg", "source": ""},
+    ]
+
+
+def test_memegen_trending_needs_no_key(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "content_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "tenor_api_key", "")
+    monkeypatch.setattr(settings, "giphy_api_key", "")
+    monkeypatch.setattr(memes, "_request", lambda url, params: _memegen_templates())
+    found = memes.trending(limit=2)
+    assert [c.meme_id for c in found] == ["memegen-3hd", "memegen-drake"]
+    assert found[0].link == "https://api.memegen.link/images/3hd.jpg"
+    assert found[0].provider == memes.MEMEGEN
+
+
+def test_memegen_search_matches_keywords(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "content_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "tenor_api_key", "")
+    monkeypatch.setattr(settings, "giphy_api_key", "")
+    monkeypatch.setattr(memes, "_request", lambda url, params: _memegen_templates())
+    found = memes.search("ghidorah")
+    assert [c.meme_id for c in found] == ["memegen-3hd"]
+    assert memes.search("nothing matches this") == []
+
+
+def test_playable_still_needs_one_frame_but_clip_needs_window(monkeypatch, tmp_path):
+    monkeypatch.setattr(memes, "probe", lambda path: None)
+    monkeypatch.setattr(memes, "read_ffmpeg", lambda args: b"\x80" * 64)  # exactly one frame
+    assert memes._playable(tmp_path / "m.jpg", 1.5) is True
+    assert memes._playable(tmp_path / "m.mp4", 1.5) is False
+    monkeypatch.setattr(memes, "read_ffmpeg", lambda args: b"\x80" * 64 * 8)
+    assert memes._playable(tmp_path / "m.mp4", 1.5) is True
+
+
 def test_sfx_build_track_synth_fallback_without_pack(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "clip_sfx_pack_dir", str(tmp_path / "missing"))
     out = tmp_path / "sfx.wav"
     sfx.build_track(str(out), 1.0, [sfx.Cue(0.0, sfx.IMPACT)], seed="clip-9")
     assert out.stat().st_size > 1000
+
+
+def test_fetch_packs_handles_trending_path_and_search_memeclip(tmp_path, monkeypatch):
+    from scripts import fetch_memes
+
+    monkeypatch.setattr(settings, "tenor_api_key", "t")
+    monkeypatch.setattr(memes, "trending", lambda limit=10: [
+        memes.Candidate("tenor-1", "https://x/1.mp4", "One"),
+    ])
+    monkeypatch.setattr(memes, "_local_copy", lambda c, s: tmp_path / "trend_1.mp4")
+    monkeypatch.setattr(memes, "fetch", lambda q, s: memes.MemeClip("tenor-2", str(tmp_path / "search_2.mp4"), "Two", "Tenor"))
+
+    summary = fetch_memes.fetch_packs(limit=1, searches=["wow"])
+    assert summary == {
+        "ok": True,
+        "provider": "Tenor",
+        "downloaded": 2,
+        "skipped": 0,
+        "files": ["search_2.mp4", "trend_1.mp4"],
+    }
 
 
 @pytest.mark.slow

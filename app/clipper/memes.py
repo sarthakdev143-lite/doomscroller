@@ -32,11 +32,13 @@ log = logging.getLogger(__name__)
 # httpx logs every URL at INFO, and the meme keys travel in the URL.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-TENOR, GIPHY = "Tenor", "Giphy"
+TENOR, GIPHY, MEMEGEN = "Tenor", "Giphy", "MemeGen"
 _TENOR_FEATURED_URL = "https://tenor.googleapis.com/v2/featured"
 _TENOR_SEARCH_URL = "https://tenor.googleapis.com/v2/search"
 _GIPHY_TRENDING_URL = "https://api.giphy.com/v1/gifs/trending"
 _GIPHY_SEARCH_URL = "https://api.giphy.com/v1/gifs/search"
+# Keyless fallback: 209 evergreen meme templates, no account, no quota.
+_MEMEGEN_TEMPLATES_URL = "https://api.memegen.link/templates"
 _RESULTS_PER_SEARCH = 15
 _MAX_QUERY_CHARS = 100
 _MAX_DOWNLOAD_BYTES = 25_000_000
@@ -113,15 +115,17 @@ class MemeClip:
     provider: str = TENOR
 
 
-def provider() -> Optional[str]:
-    """Tenor when there is a key, else Giphy."""
+def provider() -> str:
+    """Tenor when there is a key, else Giphy, else keyless MemeGen templates."""
     if settings.tenor_api_key:
         return TENOR
-    return GIPHY if settings.giphy_api_key else None
+    if settings.giphy_api_key:
+        return GIPHY
+    return MEMEGEN
 
 
 def available() -> bool:
-    return bool(settings.clip_memes and provider())
+    return bool(settings.clip_memes)
 
 
 def _tenor_memes(results: object) -> list[Candidate]:
@@ -191,7 +195,7 @@ def _request(url: str, params: dict) -> dict:
         body = response.json()
     except ValueError:
         raise MemeError(f"{name} sent an unreadable reply") from None
-    return body if isinstance(body, dict) else {}
+    return body if isinstance(body, (dict, list)) else {}
 
 
 def _search_cache(library: str, query: str) -> Path:
@@ -217,10 +221,47 @@ def _write_search_cache(path: Path, results: object) -> None:
         log.warning("memes: could not cache a search: %s", exc)
 
 
+def _memegen_templates() -> list[dict]:
+    """The keyless template pack, cached for a day."""
+    cache = _search_cache(MEMEGEN, "templates")
+    cached = _read_search_cache(cache)
+    if isinstance(cached, list):
+        return [c for c in cached if isinstance(c, dict)]
+    body = _request(_MEMEGEN_TEMPLATES_URL, {})
+    if not isinstance(body, list):
+        raise MemeError(f"{MEMEGEN} sent an unreadable reply")
+    _write_search_cache(cache, body)
+    return [c for c in body if isinstance(c, dict)]
+
+
+def _memegen_memes(templates: object) -> list[Candidate]:
+    found = []
+    for item in templates if isinstance(templates, list) else []:
+        if not isinstance(item, dict) or not item.get("id") or not item.get("blank"):
+            continue
+        found.append(Candidate(f"memegen-{item['id']}", str(item["blank"]), str(item.get("name") or ""),
+                               str(item.get("source") or ""), MEMEGEN))
+    return found
+
+
+def _memegen_search(templates: list[dict], query: str) -> list[Candidate]:
+    words = [w for w in re.split(r"[^a-z0-9]+", query.lower()) if w]
+    if not words:
+        return []
+    scored = []
+    for item in templates:
+        haystack = f"{item.get('name', '')} {' '.join(item.get('keywords', []) or [])}".lower()
+        hits = sum(1 for w in words if w in haystack)
+        if hits:
+            scored.append((hits, str(item.get("name") or ""), item))
+    scored.sort(key=lambda t: (-t[0], t[1]))
+    return _memegen_memes([t[2] for t in scored])
+
+
 def search(query: str) -> list[Candidate]:
     library = provider()
-    if library is None:
-        raise MemeError("no meme API key is set")
+    if library == MEMEGEN:
+        return _memegen_search(_memegen_templates(), query[:_MAX_QUERY_CHARS])
     query = query[:_MAX_QUERY_CHARS]
     cache = _search_cache(library, f"q:{query}")
     cached = _read_search_cache(cache)
@@ -243,9 +284,9 @@ def search(query: str) -> list[Candidate]:
 def trending(limit: int = _RESULTS_PER_SEARCH) -> list[Candidate]:
     """The current featured/trending memes, fresh through the day."""
     library = provider()
-    if library is None:
-        raise MemeError("no meme API key is set")
     count = max(1, min(_RESULTS_PER_SEARCH, int(limit)))
+    if library == MEMEGEN:
+        return _memegen_memes(_memegen_templates())[:count]
     cache = _search_cache(library, "trending")
     cached = _read_search_cache(cache)
     if cached is None:
@@ -297,6 +338,7 @@ def _playable(path: Path, seconds: float) -> bool:
 
     A 200 response can carry an error page, and a dropped connection can leave a header
     that promises frames it does not have, so looking at the header is not enough.
+    Stills need a single good frame; clips need the full overlay window.
     """
     try:
         probe(str(path))
@@ -306,12 +348,16 @@ def _playable(path: Path, seconds: float) -> bool:
     except MediaError as exc:
         log.warning("memes: %s is not usable: %s", path.name, exc)
         return False
-    return len(raw) // 64 >= int(seconds * 4)
+    frames = len(raw) // 64
+    if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}:
+        return frames >= 1
+    return frames >= int(seconds * 4)
 
 
 def _local_copy(candidate: Candidate, seconds: float) -> Optional[Path]:
     """A checked file for this result, downloading it if needed. None if it will not play."""
-    suffix = ".mp4" if candidate.link.split("?")[0].lower().endswith(".mp4") else ".gif"
+    raw = candidate.link.split("?")[0].lower()
+    suffix = next((e for e in (".mp4", ".gif", ".jpg", ".jpeg", ".png", ".webp") if raw.endswith(e)), ".gif")
     path = settings.content_path / "memes" / f"{_safe_meme_id(candidate.meme_id)}{suffix}"
     if path.exists() and not _playable(path, seconds):
         path.unlink()

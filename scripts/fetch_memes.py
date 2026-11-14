@@ -1,8 +1,8 @@
 """Download the trending meme/GIF pack the clipper overlays on punch beats.
 
-Without a Tenor or Giphy key there is nothing to download; clips simply render
-without overlays. Files land in ``content/memes/`` and are reused from cache,
-so running this weekly keeps the pack fresh.
+Keyless MemeGen templates always work; Tenor or Giphy keys (see .env.example)
+unlock their fresher trending packs. Files land in ``content/memes/`` and are
+reused from cache, so running this weekly keeps the pack fresh.
 """
 from __future__ import annotations
 
@@ -15,7 +15,6 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.clipper import memes  # noqa: E402
-from app.config import settings  # noqa: E402
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -28,8 +27,6 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def fetch_packs(limit: int, searches: list[str]) -> dict:
-    if not memes.provider():
-        raise ValueError("set TENOR_API_KEY or GIPHY_API_KEY first (see .env.example)")
     if not 1 <= limit <= 50:
         raise ValueError(f"limit must be 1..50, got {limit}")
     downloaded: list[str] = []
@@ -47,7 +44,7 @@ def fetch_packs(limit: int, searches: list[str]) -> dict:
         if clip is None:
             skipped += 1
             continue
-        downloaded.append(Path(clip.path).name)
+        downloaded.append(clip.name)
     for query in searches:
         try:
             clip = memes.fetch(query, 1.5)

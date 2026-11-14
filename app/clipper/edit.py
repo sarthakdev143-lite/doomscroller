@@ -437,7 +437,7 @@ def attach_memes(plan: EditPlan, session: Optional[memes.MemeSession] = None) ->
         return []
     if not memes.available():
         plan.meme_overlays = []
-        return ["TENOR_API_KEY is not set, so this clip has no meme overlays"] if settings.clip_memes else []
+        return []
     session = session or memes.MemeSession()
     warnings: list[str] = []
     used: set[str] = set()
