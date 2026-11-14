@@ -19,7 +19,7 @@ httpx==0.28.1
 # Image, Captions & Active-Speaker Face Framing (ffmpeg must be on system PATH)
 pillow==10.4.0
 opencv-python-headless==4.14.0.94
-numpy==2.5.4
+numpy==2.4.6
 
 # Language detection (for source-language preservation)
 langdetect==1.0.9
@@ -28,6 +28,7 @@ langdetect==1.0.9
 google-auth==2.49.2
 google-auth-oauthlib==1.3.1
 google-api-python-client==2.194.0
+httplib2==0.32.1
 
 # Dev / test
 pytest==9.0.2

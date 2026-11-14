@@ -2,8 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [next, master]
   pull_request:
+    branches: [next, master]
   workflow_dispatch:
 
 permissions:
@@ -11,11 +12,12 @@ permissions:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
     name: Test (${{ matrix.os }}, py${{ matrix.python-version }})
+    if: ${{ matrix.os == 'ubuntu-latest' || github.base_ref == 'master' || (github.event_name == 'push' && github.ref_name == 'master') || github.event_name == 'workflow_dispatch' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
@@ -78,3 +80,22 @@ jobs:
       - name: Run fast test suite
         shell: bash
         run: pytest -q -m "not slow"
+
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ruff
+        run: python -m pip install --no-cache-dir ruff==0.16.6
+
+      - name: Run ruff lint
+        run: ruff check --isolated --target-version py311 --select E9,F,E71,E72 --ignore F401,F841 .
