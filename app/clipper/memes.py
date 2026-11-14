@@ -341,6 +341,12 @@ def _playable(path: Path, seconds: float) -> bool:
     Stills need a single good frame; clips need the full overlay window.
     """
     try:
+        if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}:
+            # Stills have no timeline: loop the picture and require one good frame.
+            raw = read_ffmpeg(["-xerror", "-loop", "1", "-t", "0.5", "-i", str(path),
+                               "-map", "0:v:0", "-an", "-vf", "fps=4,scale=8:8,format=gray",
+                               "-f", "rawvideo", "-"])
+            return len(raw) // 64 >= 1
         probe(str(path))
         raw = read_ffmpeg(["-xerror", "-t", f"{seconds + 0.2:.3f}", "-i", str(path),
                            "-map", "0:v:0", "-an", "-vf", "fps=4,scale=8:8,format=gray",
@@ -348,10 +354,7 @@ def _playable(path: Path, seconds: float) -> bool:
     except MediaError as exc:
         log.warning("memes: %s is not usable: %s", path.name, exc)
         return False
-    frames = len(raw) // 64
-    if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}:
-        return frames >= 1
-    return frames >= int(seconds * 4)
+    return len(raw) // 64 >= int(seconds * 4)
 
 
 def _local_copy(candidate: Candidate, seconds: float) -> Optional[Path]:
