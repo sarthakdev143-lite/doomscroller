@@ -27,7 +27,7 @@ def test_find_binary_resolves_windows_exe_and_path_fallback(tmp_path, monkeypatc
     tools_exe = tmp_path / "tools" / "cloudflared.exe"
     tools_exe.parent.mkdir(parents=True)
     tools_exe.write_bytes(b"exe")
-    monkeypatch.setattr(tunnel.os, "name", "nt")
+    monkeypatch.setattr(tunnel, "_is_windows", lambda: True)
     assert tunnel.find_binary() == str(tools_exe)
 
     # Explicit CLOUDFLARED_BIN wins over everything when the file exists

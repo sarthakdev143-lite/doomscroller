@@ -40,8 +40,14 @@ def _segment(audio_path: str, out_path: str, start: float, length: float) -> Non
                 "-ac", "1", "-ar", "16000", out_path])
 
 
+def _basename(path: str) -> str:
+    """Final path segment on either OS. Uploads must never leak local directories,
+    including when a Windows-style path reaches a POSIX host."""
+    return str(path or "").replace("\\", "/").rsplit("/", 1)[-1] or "audio.wav"
+
+
 def _call(path: str, language_code: str) -> dict:
-    filename = os.path.basename(path) or "audio.wav"
+    filename = _basename(path)
     with open(path, "rb") as audio:
         response = httpx.post(
             _STT_URL,

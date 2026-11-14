@@ -55,13 +55,18 @@ def extract_tunnel_url(line: str) -> str | None:
     return match.group(0).rstrip(".,;:!?)>]}'\"")
 
 
+def _is_windows() -> bool:
+    """OS check behind one name so tests can simulate Windows without touching global os."""
+    return os.name == "nt"
+
+
 def find_binary() -> str | None:
     """Locate cloudflared from CLOUDFLARED_BIN, ~/tools/, or PATH."""
     configured = os.environ.get("CLOUDFLARED_BIN", "").strip()
     if configured:
         return configured if Path(configured).is_file() else None
     tools_dir = Path.home() / "tools"
-    names = ("cloudflared.exe", "cloudflared") if os.name == "nt" else ("cloudflared",)
+    names = ("cloudflared.exe", "cloudflared") if _is_windows() else ("cloudflared",)
     for name in names:
         candidate = tools_dir / name
         if candidate.is_file():
