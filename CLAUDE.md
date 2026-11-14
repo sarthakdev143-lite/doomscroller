@@ -335,7 +335,9 @@ drive it through the `ClipJob` table, so queued work survives a restart.
 - **Sources with their own captions** (`subtitles.py`). Big channels burn captions in, and ours on top showed every
   word twice. One vision call per speech source looks at eight frames (some channels caption only stretches) and, if
   any show speech captions, the clips keep the hook, graphics and credit but drop our word captions.
-- **Sound.** Effects are on for every clip (no longer an A/B arm: the owner wants them). Music comes only from
+- **Sound.** Effects are on for every clip (no longer an A/B arm: the owner wants them). A one-shot in
+  `content/sfx/` (`CLIP_SFX_PACK_DIR`) whose stem names the cue kind replaces the synth for that kind;
+  without files every cue is synthesised, so there is nothing to license. Music comes only from
   `content/music/` (`CLIP_MUSIC_DIR`), tracks the owner chose, because music is what draws claims. One is picked per
   clip from its id, looped, set `CLIP_MUSIC_DB` below the levelled voice and ducked by it with `sidechaincompress`. A
   `<track>.txt` beside a track is its credit line, added to the description. An empty folder means no music.
@@ -350,6 +352,11 @@ drive it through the `ClipJob` table, so queued work survives a restart.
   a clip — it is information for the owner and for later analysis, not an auto-reject.
 - **On-screen text.** `Credit: <name>` runs the whole clip whenever the source names a creator, and `BRAND_NAME`, when
   set, does the same for the channel.
+- **Memes.** `scripts/fetch_memes.py` downloads the Tenor/Giphy trending pack into `content/memes/`
+  (needs `TENOR_API_KEY` or `GIPHY_API_KEY`); `attach_memes` flashes up to 3 of them top-right over
+  punch beats (`CLIP_MEMES` off skips it, no key means none). Reaction GIFs skip the vision judge —
+  they fail the literal-match filter — and rotate through trending instead. Attribution rides the
+  description credit like B-roll.
 - Changes to the filter graph need the `slow` tier in `tests/test_clipper_render.py`.
 
 ### Growth loop (`app/growth/`)

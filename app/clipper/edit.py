@@ -18,7 +18,7 @@ from typing import Optional, Sequence
 
 from app.config import settings
 
-from . import ai, broll, shots
+from . import ai, broll, memes, shots
 from .captions import COUNTABLE, beat_is_drawable
 from .media import Interrupted
 from .moments import Moment, Sentence, build_sentences, is_finished
@@ -54,6 +54,10 @@ _LAST_CUTAWAY_MARGIN_SEC = 1.5
 _MIN_CUTAWAY_GAP_SEC = 2.0
 _MIN_CUTAWAY_SEC, _MAX_CUTAWAY_SEC = 1.5, 3.2
 _MAX_CUTAWAY_SHARE = 0.45
+# Meme overlays flash on punch beats, never more than this many per clip.
+_MAX_MEMES = 3
+_MEME_SEC = 1.5
+_MIN_MEME_GAP_SEC = 4.0
 _SPOKEN_MARGIN_SEC = 1.0
 _MAX_QUERY_CHARS = 60
 
@@ -79,12 +83,20 @@ class Cutaway:
 
 
 @dataclass
+class MemeOverlay:
+    at: float  # source time
+    seconds: float  # output time
+    clip: Optional[memes.MemeClip] = None
+
+
+@dataclass
 class EditPlan:
     words: list[Word]  # the words that survive, in source time
     segments: list[Segment]
     beats: list[Beat] = field(default_factory=list)
     speed: float = 1.0
     cutaways: list[Cutaway] = field(default_factory=list)
+    meme_overlays: list[MemeOverlay] = field(default_factory=list)
 
     @property
     def _effective_speed(self) -> float:
@@ -410,6 +422,64 @@ def attach_stock(plan: EditPlan, session: Optional[broll.StockSession] = None) -
         used.add(clip.video_id)
         kept.append(cutaway)
     plan.cutaways = kept
+    return warnings
+
+
+def attach_memes(plan: EditPlan, session: Optional[memes.MemeSession] = None) -> list[str]:
+    """Flash trending memes over punch beats, keeping only downloads that worked.
+
+    The session spans a whole job, so a rate limit stops the lookups for every
+    clip rather than being rediscovered once per clip. Reaction GIFs would fail
+    the literal-match vision judge stock shots use, so overlays rotate through
+    the trending pack instead of being AI-picked.
+    """
+    if not [b for b in plan.beats if b.style == PUNCH]:
+        return []
+    if not memes.available():
+        plan.meme_overlays = []
+        return ["TENOR_API_KEY is not set, so this clip has no meme overlays"] if settings.clip_memes else []
+    session = session or memes.MemeSession()
+    warnings: list[str] = []
+    used: set[str] = set()
+    kept: list[MemeOverlay] = []
+    last_end = -_MIN_MEME_GAP_SEC
+    for beat in sorted((b for b in plan.beats if b.style == PUNCH), key=lambda b: b.at):
+        if len(kept) >= _MAX_MEMES:
+            break
+        when = plan.to_output(beat.at)
+        if when is None or when < last_end + _MIN_MEME_GAP_SEC or when + _MEME_SEC > plan.duration:
+            continue
+        if session.stopped:
+            break
+        try:
+            clip = memes.fetch("", _MEME_SEC, exclude=used)
+        except memes.SearchBlocked as exc:
+            session.stopped = True
+            warnings.append(f"{memes.scrub_secrets(exc)}, so the rest of this job's memes were skipped")
+            break
+        except memes.DownloadsFailed:
+            session.failed_files += 1
+            if session.failed_files >= memes.MAX_FAILED_FILES:
+                session.stopped = True
+            warnings.append("meme downloads are failing, so this job is missing some overlays")
+            continue
+        except memes.MemeError as exc:
+            warnings.append(f"meme lookup failed: {memes.scrub_secrets(exc)}")
+            continue
+        except Interrupted:
+            raise
+        except Exception as exc:  # Memes are optional, so this must never cost the clip
+            detail = memes.scrub_secrets(exc)
+            log.warning("edit: meme lookup failed (%s): %s", type(exc).__name__, detail)
+            warnings.append(f"meme lookup failed: {detail}")
+            continue
+        if clip is None:
+            continue
+        session.failed_files = 0
+        used.add(clip.meme_id)
+        kept.append(MemeOverlay(beat.at, _MEME_SEC, clip))
+        last_end = when + _MEME_SEC
+    plan.meme_overlays = kept
     return warnings
 
 

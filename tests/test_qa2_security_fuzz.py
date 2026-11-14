@@ -59,6 +59,8 @@ CANARIES = {
     "telegram_bot_token": "987654321:CANARY_TG_BOT_SECRET_AbCdEf1234",
     "pixabay_api_key": "CANARY_PIXABAY_KEY_1122334455",
     "pexels_api_key": "CANARY_PEXELS_KEY_6677889900",
+    "tenor_api_key": "CANARY_TENOR_KEY_4455667788",
+    "giphy_api_key": "CANARY_GIPHY_KEY_9988776655",
     "deepgram_api_key": "CANARY_DEEPGRAM_KEY_aabbccddee",
     "sarvam_api_key": "CANARY_SARVAM_KEY_ff00112233",
 }
@@ -824,6 +826,8 @@ def test_system_doctor_growth_doctor_oauth_status_and_backup_never_leak_secrets(
         f"TELEGRAM_BOT_TOKEN={CANARIES['telegram_bot_token']}",
         f"PIXABAY_API_KEY={CANARIES['pixabay_api_key']}",
         f"PEXELS_API_KEY={CANARIES['pexels_api_key']}",
+        f"TENOR_API_KEY={CANARIES['tenor_api_key']}",
+        f"GIPHY_API_KEY={CANARIES['giphy_api_key']}",
         f"DEEPGRAM_API_KEY={CANARIES['deepgram_api_key']}",
         f"SARVAM_API_KEY={CANARIES['sarvam_api_key']}",
         "NTFY_TOPIC=CANARY_NTFY_SECRET_TOPIC_555",

@@ -106,6 +106,7 @@ class ClipPlan:
     anchor_y: float = 0.5
     has_sfx: bool = False
     broll: tuple[tuple[float, float, str, float], ...] = ()  # output time, seconds, path, offset
+    memes: tuple[tuple[float, float, str], ...] = ()  # output time, seconds, path (corner overlays)
     picture_height: int = 0  # above zero, the whole picture sits centred over its own backdrop
     picture_crop_bottom: float = 0.0  # share of the picture's height cut from the bottom
     music: str = ""  # a track looped under the clip, ducked under speech
@@ -162,6 +163,15 @@ def _broll_shots(edit: EditPlan) -> tuple[tuple[float, float, str, float], ...]:
         when = edit.to_output(cutaway.at)
         if when is not None and cutaway.clip is not None:
             shots.append((when, cutaway.seconds, cutaway.clip.path, cutaway.clip.offset))
+    return tuple(shots)
+
+
+def _meme_shots(edit: EditPlan) -> tuple[tuple[float, float, str], ...]:
+    shots = []
+    for overlay in edit.meme_overlays:
+        when = edit.to_output(overlay.at)
+        if when is not None and overlay.clip is not None:
+            shots.append((when, overlay.seconds, overlay.clip.path))
     return tuple(shots)
 
 
@@ -416,6 +426,7 @@ def plan_clip(moment: Moment, words: Sequence[Word], signals: Signals, info: Med
         anchor_y=_FACE_ANCHOR if edit and not picture_height else 0.5,
         has_sfx=bool(edit) and info.has_audio and settings.clip_sfx,
         broll=_broll_shots(edit) if edit else (),
+        memes=_meme_shots(edit) if edit else (),
         picture_height=picture_height,
         picture_crop_bottom=safe_crop_bottom if picture_height else 0.0,
         focus_x_expr=_piecewise([(t, round(x, 3)) for t, x, _y in focus]) if focus else "",
@@ -513,6 +524,16 @@ def build_filtergraph(plan: ClipPlan, info: MediaInfo, seek: float) -> str:
         parts.append(f"[under{index}][broll{index}]overlay=eof_action=pass:repeatlast=0:"
                      f"enable='between(t,{start - _HALF_FRAME:.3f},{start + seconds - _HALF_FRAME:.3f})'[over{index}]")
         chain = f"[over{index}]null"
+    # Meme GIFs sit top-right over the picture, under the captions, so reactions
+    # flash without covering speech text or the Shorts buttons.
+    meme_base = first_input + len(plan.broll)
+    for index, (start, seconds, _path) in enumerate(plan.memes):
+        parts.append(f"[{meme_base + index}:v]scale=300:-2:flags=lanczos,setsar=1,fps={FPS},"
+                     f"setpts=PTS-STARTPTS+{start:.3f}/TB[meme{index}]")
+        parts.append(chain + f"[munder{index}]")
+        parts.append(f"[munder{index}][meme{index}]overlay=x='W-w-30':y=180:eof_action=pass:"
+                     f"enable='between(t,{start - _HALF_FRAME:.3f},{start + seconds - _HALF_FRAME:.3f})'[mover{index}]")
+        chain = f"[mover{index}]null"
     if plan.picture_height:
         parts.append(chain + "[framed]")
         chain = f"[backdrop][framed]overlay=x=0:y={top}"
@@ -536,7 +557,7 @@ def build_filtergraph(plan: ClipPlan, info: MediaInfo, seek: float) -> str:
         # dual-mono and the music carries the sides; without music a clip is honestly near-mono.
         if plan.music:
             # The voice is levelled first and also keys the ducking, so music drops whenever someone talks.
-            music_input = first_input + len(plan.broll)
+            music_input = first_input + len(plan.broll) + len(plan.memes)
             fade_out = max(0.0, plan.duration - _MUSIC_FADE_OUT)
             parts.append(f"{head}{normalised},{_STEREO}[voice]")
             parts.append("[voice]asplit=2[vmix][vkey]")
@@ -692,6 +713,8 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
                     *(["-i", "sfx.wav"] if plan.has_sfx else []),
                     *[item for start, seconds, path, offset in plan.broll
                       for item in ("-ss", f"{offset:.3f}", "-t", f"{seconds + 0.2:.3f}", "-i", os.path.abspath(path))],
+                    *[item for _start, _seconds, path in plan.memes
+                      for item in ("-i", os.path.abspath(path))],
                     *(["-stream_loop", "-1", "-i", plan.music] if plan.music else []),
                     "-filter_complex", build_filtergraph(plan, info, seek),
                     "-map", "[vout]"]

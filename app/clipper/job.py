@@ -22,7 +22,8 @@ from app.growth import learn, recipes
 
 from . import audio_qa, music, subtitles
 from .broll import StockSession, credit_line
-from .edit import attach_stock, build_edit, opening_line
+from .edit import attach_memes, attach_stock, build_edit, opening_line
+from .memes import MemeSession, credit_line as meme_credit_line
 from .ingest import IngestError, SourceVideo, fetch, file_fingerprint, is_url
 from .media import Interrupted, MediaError, probe, require_tools
 from .moments import Moment, clashes, pick_speech, pick_visual
@@ -344,6 +345,7 @@ def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
         branding = {} if brand is None else {"brand": brand}
         failed = 0
         stock = StockSession()
+        mstock = MemeSession()
         for number, moment in enumerate(fresh, 1):
             status, row_id, saved = _existing_row(src, moment)
             if status in (VideoStatus.REJECTED, VideoStatus.PUBLISHED):
@@ -371,16 +373,23 @@ def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
                         for message in attach_stock(edit, stock):
                             if message not in warnings:
                                 warn(message)
+                        for message in attach_memes(edit, mstock):
+                            if message not in warnings:
+                                warn(message)
                     try:
                         plan = render_moment(src.path, info, signals, moment, words, out_path, edit=edit,
                                              creator=src.author_name or src.author, music=track,
                                              source_captioned=burned_in, **branding)
                     except MediaError as exc:
-                        if not (edit and edit.cutaways):
+                        if not (edit and (edit.cutaways or edit.meme_overlays)):
                             raise
-                        # B-roll is optional, so a shot that will not render costs only itself.
-                        warn(f"clip {number} lost its B-roll, which would not render: {exc}")
+                        # B-roll and memes are optional, so shots that will not
+                        # render cost only themselves.
+                        lost = [n for n, items in (("B-roll", edit.cutaways),
+                                                  ("meme overlays", edit.meme_overlays)) if items]
+                        warn(f"clip {number} lost its {' and '.join(lost)}, which would not render: {exc}")
                         edit.cutaways = []
+                        edit.meme_overlays = []
                         plan = render_moment(src.path, info, signals, moment, words, out_path, edit=edit,
                                              creator=src.author_name or src.author, music=track,
                                              source_captioned=burned_in, **branding)
@@ -391,6 +400,10 @@ def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
                 credit = ""
                 if edit and edit.cutaways:
                     credit = credit_line((c.clip.author for c in edit.cutaways), edit.cutaways[0].clip.provider)
+                if edit and edit.meme_overlays:
+                    overlays = [c.clip for c in edit.meme_overlays if c.clip is not None]
+                    if overlays:
+                        credit = f"{credit} {meme_credit_line([c.title for c in overlays], overlays[0].provider)}".strip()
                 if plan.music:
                     credit = f"{credit} {music.credit(track)}".strip()
                 video_id, saved_status = _save_clip(src, moment, out_path, plan.duration, language=language,

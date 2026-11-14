@@ -36,6 +36,8 @@ OPTIONAL_SECRET_KEYS: tuple[str, ...] = (
     "SARVAM_API_KEY",
     "PIXABAY_API_KEY",
     "PEXELS_API_KEY",
+    "TENOR_API_KEY",
+    "GIPHY_API_KEY",
     "NTFY_TOPIC",
     "TELEGRAM_BOT_TOKEN",
 )

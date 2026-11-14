@@ -49,7 +49,9 @@ venv/bin/python scripts/clip.py --clear-finished --json                         
 English speech gets AI-picked moments, tightened pauses and word-by-word captions.
 Video with no speech is ranked on motion, sound and scene cuts, and the AI judges
 frames from the best candidates. Needs `ffmpeg` and, for captions, `DEEPGRAM_API_KEY`.
-`PIXABAY_API_KEY` adds stock B-roll.
+`PIXABAY_API_KEY` adds stock B-roll. `TENOR_API_KEY` (or `GIPHY_API_KEY`) plus a weekly
+`venv/bin/python scripts/fetch_memes.py` adds trending meme overlays on punch beats;
+one-shots dropped in `content/sfx/` (e.g. `whoosh.wav`) replace the matching synth cue.
 The AI runs through your local `opencode` login, with its tools switched off.
 
 ## Autonomous schedule (default)
