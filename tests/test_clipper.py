@@ -448,6 +448,7 @@ def test_unreadable_frames_mean_no_face(monkeypatch):
 def test_two_people_are_never_averaged_into_the_gap_between_them(monkeypatch):
     from app.clipper import faces
     picks = iter([(0.2, 5.0), (0.8, 9.0), (0.2, 4.0)])
+    monkeypatch.setattr(faces, "_detector", lambda: object())
     monkeypatch.setattr(faces, "_frames_at", lambda *a: (None, None))
     monkeypatch.setattr(faces, "speaker_in_pair", lambda a, b: next(picks))
     assert faces.face_centre("x.mp4", 0.0, 5.0, INFO) == 0.8
