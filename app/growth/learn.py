@@ -38,6 +38,19 @@ def _ev(channel) -> "Optional[str]":
 def _approval(channel) -> bool:
     return settings.growth_require_approval if channel is None else channels.require_approval(channel)
 
+
+# Judged posts a creator gets before the lab may rule it out.
+_BENCH_AFTER = 4
+
+
+def benched(db, channel) -> set[str]:
+    """Creators (casefolded) the lab has ruled out: tried enough, and even the hopeful end of their score is
+    below the channel's normal. Their feeds stop being cut; what is already in stock can still post."""
+    state = db.get(GrowthState, _skey(channel, "summary"))
+    rows = ((state.value or {}) if state else {}).get("series") or []
+    return {str(row["arm"]).casefold() for row in rows
+            if row.get("n", 0) >= _BENCH_AFTER and (row.get("score") or row).get("high", 1.0) < 1.0}
+
 _RETENTION_WEIGHT = 2.0
 _SUBSCRIBER_WEIGHT = 0.3
 _MIN_BASELINE = 8

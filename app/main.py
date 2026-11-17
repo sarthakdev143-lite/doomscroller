@@ -17,7 +17,7 @@ from . import metadata, quota, scheduler
 from .analytics import recompute_scores
 from .config import settings
 from .db import SessionLocal, get_db, init_db
-from .logging_config import configure_logging, job_health, read_job_history
+from .logging_config import configure_logging, job_health, mark_clean_exit, note_previous_exit, read_job_history
 from .models import ClipJob, Creator, MetadataDraft, Video, VideoStatus
 from .schemas import (
     ApproveBody,
@@ -38,6 +38,7 @@ _CLIP_JOB_STATUSES = frozenset({"queued", "running", "done", "failed"})
 async def lifespan(app: FastAPI):
     # Must run before anything logs, or app-level INFO is discarded.
     configure_logging()
+    note_previous_exit()
     init_db()
     # Reconcile channels.json into the channels/feeds tables on every boot, so editing it and
     # restarting actually adds/updates/retires a channel (the lazy seed only fires on an empty table).
@@ -64,6 +65,7 @@ async def lifespan(app: FastAPI):
         scheduler.stop_scheduler()
     except Exception:
         pass
+    mark_clean_exit()
 
 
 app = FastAPI(title="Doomscroller API", version="0.2.0", lifespan=lifespan)

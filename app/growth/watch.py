@@ -39,6 +39,7 @@ log = logging.getLogger(__name__)
 _RSS = "https://www.youtube.com/feeds/videos.xml"
 _ATOM = "{http://www.w3.org/2005/Atom}"
 _YT = "{http://www.youtube.com/xml/schemas/2015}"
+_MEDIA = "{http://search.yahoo.com/mrss/}"
 _UA = "Mozilla/5.0 (compatible; DoomscrollerBot/1.0)"
 _CHANNEL_URL = re.compile(r"/channel/(UC[0-9A-Za-z_-]{20,})")
 # The page's own id first: "channelId" also appears for other channels the page links to.
@@ -52,6 +53,7 @@ _YT_URL_VID = re.compile(
     re.IGNORECASE,
 )
 _FRESH_WINDOW = timedelta(hours=6)  # only react to genuinely new uploads, never an old one surfacing
+_ATTEMPTS = 4
 _RECHECK_AFTER = timedelta(minutes=20)  # how often a not-yet-aired video is looked at again
 _SEEN_KEEP = 60
 _TIMEOUT = 15
@@ -99,20 +101,35 @@ def _read_bounded(response: object) -> Optional[str]:
     return None if len(text.encode("utf-8", errors="replace")) > _MAX_FEED_BYTES else text
 
 
-def _fetch(url: str, *, client: Optional[httpx.Client] = None) -> Optional[str]:
-    """The page or feed body (bounded to 2 MB), or None on any network/URL trouble. Never raises."""
-    try:
-        if client is not None:
-            if hasattr(client, "stream"):
-                with client.stream("GET", url, headers={"User-Agent": _UA}, timeout=_TIMEOUT, follow_redirects=True) as resp:
-                    return _read_bounded(resp)
-            return _read_bounded(client.get(url, headers={"User-Agent": _UA}, timeout=_TIMEOUT, follow_redirects=True))
-        if hasattr(httpx, "stream"):
-            with httpx.stream("GET", url, headers={"User-Agent": _UA}, timeout=_TIMEOUT, follow_redirects=True) as resp:
+def _fetch_once(url: str, client: Optional[httpx.Client]) -> Optional[str]:
+    if client is not None:
+        if hasattr(client, "stream"):
+            with client.stream("GET", url, headers={"User-Agent": _UA}, timeout=_TIMEOUT, follow_redirects=True) as resp:
                 return _read_bounded(resp)
-        return _read_bounded(httpx.get(url, headers={"User-Agent": _UA}, timeout=_TIMEOUT, follow_redirects=True))
-    except (httpx.HTTPError, httpx.InvalidURL, ValueError) as exc:
-        log.info("watch: could not fetch %s: %s", _safe_url_for_log(url), type(exc).__name__)
+        return _read_bounded(client.get(url, headers={"User-Agent": _UA}, timeout=_TIMEOUT, follow_redirects=True))
+    if hasattr(httpx, "stream"):
+        with httpx.stream("GET", url, headers={"User-Agent": _UA}, timeout=_TIMEOUT, follow_redirects=True) as resp:
+            return _read_bounded(resp)
+    return _read_bounded(httpx.get(url, headers={"User-Agent": _UA}, timeout=_TIMEOUT, follow_redirects=True))
+
+
+def _fetch(url: str, *, client: Optional[httpx.Client] = None) -> Optional[str]:
+    """The page or feed body (bounded to 2 MB), or None on any network/URL trouble. Never raises.
+
+    YouTube's feed endpoint answers a real channel with 404 or 5xx at random, often twice in a row,
+    so those are asked again at once rather than costing a whole poll.
+    """
+    for attempt in range(_ATTEMPTS):
+        try:
+            return _fetch_once(url, client)
+        except httpx.HTTPStatusError as exc:
+            code = exc.response.status_code
+            if attempt + 1 < _ATTEMPTS and (code == 404 or code >= 500):
+                continue
+            error: Exception = exc
+        except (httpx.HTTPError, httpx.InvalidURL, ValueError) as exc:
+            error = exc
+        log.info("watch: could not fetch %s: %s", _safe_url_for_log(url), type(error).__name__)
         return None
 
 
@@ -157,15 +174,15 @@ def _rss_url(feed_url: str, *, client: Optional[httpx.Client] = None) -> Optiona
     return f"{_RSS}?channel_id={resolved}" if resolved else None
 
 
-def _entries(xml: str) -> list[tuple[str, datetime]]:
-    """(video id, published) for each upload in the Atom feed, newest first. A broken feed yields nothing."""
+def _parse(xml: str) -> list[tuple[str, datetime, int]]:
+    """(video id, published, views) for each upload in the Atom feed, newest first. A broken feed yields nothing."""
     if not xml or len(xml) > _MAX_FEED_BYTES or "<!ENTITY" in xml.upper():
         return []
     try:
         root = ElementTree.fromstring(xml)
     except (ElementTree.ParseError, ValueError, TypeError):
         return []
-    by_vid: dict[str, datetime] = {}
+    by_vid: dict[str, tuple[datetime, int]] = {}
     for entry in root.findall(f"{_ATOM}entry"):
         vid = (entry.findtext(f"{_YT}videoId") or "").strip()
         published = (entry.findtext(f"{_ATOM}published") or entry.findtext(f"{_ATOM}updated") or "").strip()
@@ -176,9 +193,29 @@ def _entries(xml: str) -> list[tuple[str, datetime]]:
         except ValueError:
             continue
         when_utc = when.astimezone(timezone.utc) if when.tzinfo else when.replace(tzinfo=timezone.utc)
-        if vid not in by_vid or when_utc > by_vid[vid]:
-            by_vid[vid] = when_utc
-    return sorted(by_vid.items(), key=lambda item: item[1], reverse=True)
+        link = entry.find(f"{_ATOM}link[@rel='alternate']")
+        if link is not None and "/shorts/" in (link.get("href") or ""):
+            continue  # a Short is too little footage to cut clips from
+        stats = entry.find(f"{_MEDIA}group/{_MEDIA}community/{_MEDIA}statistics")
+        raw_views = stats.get("views", "") if stats is not None else ""
+        views = int(raw_views) if raw_views.isdigit() else 0
+        if vid not in by_vid or when_utc > by_vid[vid][0]:
+            by_vid[vid] = (when_utc, views)
+    return sorted(((vid, when, views) for vid, (when, views) in by_vid.items()), key=lambda item: item[1], reverse=True)
+
+
+def _entries(xml: str) -> list[tuple[str, datetime]]:
+    """(video id, published) for each upload in the Atom feed, newest first."""
+    return [(vid, when) for vid, when, _views in _parse(xml)]
+
+
+def recent_uploads(feed_url: str, *, client: Optional[httpx.Client] = None) -> list[tuple[str, datetime, int]]:
+    """(video id, published, views) of a feed's latest uploads, from the Atom feed the watcher already resolved."""
+    with session_scope() as db:
+        state = db.get(GrowthState, _state_key(feed_url))
+        rss = (state.value or {}).get("rss") if state else None
+    rss = rss or _rss_url(feed_url, client=client)
+    return _parse(_call_fetch(rss, client) or "") if rss else []
 
 
 def _probe(link: str) -> Optional[dict]:
@@ -327,7 +364,10 @@ def watch_job(now: Optional[datetime] = None) -> dict:
     now = aware(now).astimezone(timezone.utc) if now is not None else datetime.now(timezone.utc)
     with session_scope() as db:
         active = channels.active_channels(db)
-        feeds = [(c, url) for c in active for url in channels.feeds_for(db, c)]
+        feeds = []
+        for c in active:
+            out = learn.benched(db, c)  # a creator the lab has ruled out is not worth cutting even fresh
+            feeds += [(c, url) for url in channels.feeds_for(db, c) if channels.creator(url).casefold() not in out]
     queued = 0
     with _http_client() as client:
         for channel, feed_url in feeds:

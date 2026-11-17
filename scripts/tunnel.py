@@ -21,6 +21,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from app.logging_config import LOG_DIR  # noqa: E402
 from app.winproc import background_subprocess_kwargs, trim_working_set  # noqa: E402
 
 def _env_port(name: str, default: int) -> int:
@@ -179,7 +180,7 @@ class TunnelSupervisor:
         providers = self._providers()
         if not providers:
             return
-        log_path = PROJECT_ROOT / "logs" / "tunnel.log"
+        log_path = PROJECT_ROOT / LOG_DIR / "tunnel.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         provider_idx = 0
         backoff = 5.0
@@ -231,6 +232,12 @@ class TunnelSupervisor:
                             timer = threading.Timer(3.0, trim_working_set, kwargs={"pid": proc.pid})
                             timer.daemon = True
                             timer.start()
+                    elif "Tunnel not found" in line:
+                        # Cloudflare deleted this quick tunnel. cloudflared retries it forever and never exits, so
+                        # the link would stay dead: stop it, and the loop asks for a new tunnel and announces it.
+                        log_file.write("[supervisor] Cloudflare dropped the quick tunnel; starting a new one\n")
+                        proc.terminate()
+                        break
             proc.wait()
             if self._stop.is_set():
                 break

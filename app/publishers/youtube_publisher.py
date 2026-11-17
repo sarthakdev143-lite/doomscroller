@@ -246,12 +246,14 @@ class YouTubePublisher(Publisher):
             raise self._token_invalid()
         try:
             creds.refresh(Request())
-        except Exception as e:
-            problem = TokenProblem if isinstance(e, RefreshError) else RuntimeError
-            raise problem(
+        except RefreshError as e:
+            raise TokenProblem(
                 f"YouTube token refresh failed: {e}. Tokens die after 7 days while the OAuth consent screen "
                 "is in Testing, so publish it to production, then re-auth via: python scripts/youtube_oauth.py --force"
             ) from e
+        except Exception as e:
+            # A dropped connection says nothing about the token, so no re-auth: the next run tries again.
+            raise RuntimeError(f"YouTube token refresh failed: could not reach Google ({type(e).__name__}): {e}") from e
         write_token_file(self.token_path, creds.to_json())
         return creds
 

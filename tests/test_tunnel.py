@@ -3,8 +3,45 @@ from __future__ import annotations
 
 from pathlib import Path
 import subprocess
+import sys
+import textwrap
+import threading
+import time
 
 import pytest
+
+
+def test_a_quick_tunnel_cloudflare_deleted_is_replaced_with_a_new_link(tmp_path, monkeypatch):
+    from scripts import tunnel
+
+    runs = tmp_path / "runs"
+    fake = tmp_path / "fake_cloudflared.py"
+    fake.write_text(textwrap.dedent(f"""
+        import pathlib, time
+        runs = pathlib.Path(r"{runs}")
+        n = int(runs.read_text()) + 1 if runs.exists() else 1
+        runs.write_text(str(n))
+        print("INF |  https://quick-tunnel-run-" + ("one" if n == 1 else "two") + ".trycloudflare.com  |", flush=True)
+        if n == 1:  # what cloudflared says once Cloudflare has deleted the tunnel; it then retries forever
+            print('ERR Register tunnel error from server side error="Unauthorized: Tunnel not found"', flush=True)
+        time.sleep(60)
+    """), encoding="utf-8")
+    monkeypatch.setattr(tunnel, "tunnel_command", lambda binary, port: [sys.executable, str(fake)])
+
+    class NoWait(threading.Event):
+        def wait(self, timeout=None):
+            return self.is_set()
+
+    sup = tunnel.TunnelSupervisor(binary="cloudflared", ssh_bin=None)
+    sup._stop = NoWait()
+    seen = []
+    monkeypatch.setattr(sup, "_announce", seen.append)
+    sup.start()
+    deadline = time.time() + 30
+    while len(seen) < 2 and time.time() < deadline:
+        time.sleep(0.2)
+    sup.stop()
+    assert seen[:2] == ["https://quick-tunnel-run-one.trycloudflare.com", "https://quick-tunnel-run-two.trycloudflare.com"]
 
 
 def test_find_binary_resolves_windows_exe_and_path_fallback(tmp_path, monkeypatch):

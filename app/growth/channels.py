@@ -30,6 +30,8 @@ log = logging.getLogger(__name__)
 
 DEFAULT_SLUG = "default"
 _CONFIG_HEALTH = "channels_config"
+_REMOVED = "removed_creators"
+_HANDLE = re.compile(r"youtube\.com/(@[^/?#]+)", re.I)
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 _CTRL_RE = re.compile(r"[\x00-\x1f\x7f]+")
 _BARE_HANDLE_RE = re.compile(r"^@([A-Za-z0-9._%-]{1,64})/?$")
@@ -161,8 +163,8 @@ def _config_problem(entries: list[dict]) -> Optional[str]:
         # A disabled clone may hold template feeds copied from its source until it is switched on.
         if not is_enabled and cloned_from:
             continue
-        # The legacy channel's feeds live in .env, and it is running them whenever it is listed.
-        feeds = settings.growth_feeds_list if slug == DEFAULT_SLUG else (entry.get("feeds") or [])
+        # The legacy channel's feeds live in .env, and it is running them whenever it is listed, plus any extras here.
+        feeds = [*settings.growth_feeds_list, *(entry.get("feeds") or [])] if slug == DEFAULT_SLUG else (entry.get("feeds") or [])
         for url in feeds:
             key = _feed_key(url)
             if not key:
@@ -302,6 +304,28 @@ def _sync_feeds(db, channel: Channel, urls: list[str]) -> None:
             feed.enabled = True
     for leftover in existing.values():
         db.delete(leftover)
+    if existing:
+        # Remembered so the scout never brings back a creator the owner took off.
+        key = state_key(channel, _REMOVED)
+        state = db.get(GrowthState, key)
+        gone = set((state.value or {}).get("creators") or []) if state else set()
+        gone.update(creator(url).casefold() for url in existing)
+        if state:
+            state.value = {"creators": sorted(gone)}
+        else:
+            db.add(GrowthState(key=key, value={"creators": sorted(gone)}))
+
+
+def creator(feed: str) -> str:
+    """A feed's creator as the lab names it: the @handle a clip's series arm carries, else the link itself."""
+    found = _HANDLE.search(feed or "")
+    return found.group(1) if found else (feed or "")
+
+
+def removed_creators(db, channel: Channel) -> set[str]:
+    """Creators (casefolded) the owner has ever taken off this channel."""
+    state = db.get(GrowthState, state_key(channel, _REMOVED))
+    return set((state.value or {}).get("creators") or []) if state else set()
 
 
 def sync_channels(db) -> list[Channel]:
@@ -820,11 +844,10 @@ def for_each(active: list[Channel], run: Callable[[Channel], dict]) -> dict:
 
 
 def feeds_for(db, channel: Channel) -> list[str]:
-    """The legacy channel reads its feeds live from GROWTH_FEEDS; a named channel from its Feed rows."""
-    if is_default(channel):
-        return _dedupe_feeds(settings.growth_feeds_list)
-    return list(db.execute(
-        select(Feed.url).where(Feed.channel_id == channel.id, Feed.enabled.is_(True))).scalars())
+    """A named channel's Feed rows. The legacy channel reads GROWTH_FEEDS live, plus any it was given in channels.json
+    (the scout adds creators there, since it cannot edit .env)."""
+    rows = list(db.execute(select(Feed.url).where(Feed.channel_id == channel.id, Feed.enabled.is_(True))).scalars())
+    return _dedupe_feeds([*settings.growth_feeds_list, *rows]) if is_default(channel) else rows
 
 
 # The legacy channel resolves these live from settings, so a deployment that still drives everything

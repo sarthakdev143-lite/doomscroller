@@ -27,7 +27,7 @@ from .edit import BEAT_SECONDS, CARD, EditPlan
 from .faces import face_centre, speaker_position
 from .media import MediaError, MediaInfo, probe, read_ffmpeg, run_ffmpeg
 from .moments import Moment
-from .sfx import IMPACT, POP, WHOOSH, Cue, build_track
+from .sfx import IMPACT, POP, RATE, WHOOSH, Cue, build_track, sting as load_sting
 from .signals import Signals
 from .timeline import FPS, Segment, keep_segments, on_grid, output_time, source_time, total_duration
 from .transcribe import Word
@@ -69,6 +69,8 @@ _BACKDROP_LOOK = "eq=brightness=-0.22:saturation=0.85"
 _BACKDROP_KEEP = 0.62
 _BACKDROP_TOP = 0.08
 _AUDIO_EDGE_FADE = 0.008
+# A meme sound ends this long before the held last frame does.
+_STING_PAD_SEC = 0.3
 # Decode from this far before the clip: some containers do not seek to keyframes.
 _PRE_ROLL_SEC = 10.0
 _SHORTFALL_LIMIT_SEC = 0.5
@@ -112,6 +114,7 @@ class ClipPlan:
     music: str = ""  # a track looped under the clip, ducked under speech
     focus_x_expr: str = ""  # where the speaker's face is in the picture, 0 to 1, when known
     focus_y_expr: str = ""
+    tail: float = 0.0  # seconds the last frame is held at the end, under a meme sound
     ass_path: str = "clip.ass"
     fonts_dir: str = "fonts"
 
@@ -492,12 +495,15 @@ def build_filtergraph(plan: ClipPlan, info: MediaInfo, seek: float) -> str:
             joined.append(f"[a{index}]")
     audio_flag = 1 if plan.has_audio else 0
     safe_speed = plan.speed if math.isfinite(plan.speed) and plan.speed > 0 else 1.0
-    video_out, audio_out = "[cut]", "[ajoined]" if plan.has_audio else ""
+    cut = "[held]" if plan.tail else "[cut]"
+    video_out, audio_out = cut, "[ajoined]" if plan.has_audio else ""
     if safe_speed != 1.0:
         video_out = "[joined]"
     parts.append(f"{''.join(joined)}concat=n={count}:v=1:a={audio_flag}{video_out}{audio_out}")
     if safe_speed != 1.0:
-        parts.append(f"[joined]setpts=PTS/{safe_speed:g},fps={FPS}[cut]")
+        parts.append(f"[joined]setpts=PTS/{safe_speed:g},fps={FPS}{cut}")
+    if plan.tail:
+        parts.append(f"[held]tpad=stop_mode=clone:stop_duration={plan.tail:.3f}[cut]")
     parts.append(_framing(plan, info))
     # crop's own input size stays fixed at the first frame's, so its position has
     # to come from the zoom expression rather than from iw and ih.
@@ -548,9 +554,15 @@ def build_filtergraph(plan: ClipPlan, info: MediaInfo, seek: float) -> str:
         if safe_speed != 1.0:
             parts.append(f"{head}{_atempo_chain(safe_speed)}[atempoed]")
             head = "[atempoed]"
+        if plan.tail:
+            parts.append(f"{head}apad=pad_dur={plan.tail:.3f}[apadded]")
+            head = "[apadded]"
         # loudnorm emits large irregular blocks, so renumber them or -t cuts one off.
         fade_at = max(0.0, plan.duration - _END_FADE)
-        normalised = (f"loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,asetpts=N/SR/TB,"
+        # Gentle levelling first: vlog dialogue is far more dynamic than produced clips, so without
+        # this soft speech stays soft after normalising. loudnorm after it still pins the final level.
+        normalised = (f"acompressor=threshold=0.1:ratio=3:attack=20:release=200:makeup=2,"
+                      f"loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,asetpts=N/SR/TB,"
                       f"afade=t=out:st={fade_at:.3f}:d={_END_FADE}")
         # The whole mix is stereo so a stereo music bed keeps its width instead of being folded to
         # mono (earshot: "the mix is mono ... use stereo music and ambience"). The voice is centred
@@ -639,16 +651,16 @@ def _exact_cuts(source: str, seek: float, span: float, cuts: Sequence[float]) ->
 def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment,
                   words: Sequence[Word], out_path: str, edit: Optional[EditPlan] = None, creator: str = "",
                   music: Optional[str] = None, captions: bool = True, source_captioned: bool = False,
-                  brand: Optional[str] = None) -> ClipPlan:
+                  brand: Optional[str] = None, sting: Optional[str] = None) -> ClipPlan:
     """Write the finished clip to ``out_path`` and return its plan.
 
     ``source_captioned`` means the footage burns in its own captions. In the framed layout their band is cut
     from the bottom of the picture and ours replace them; otherwise ours are left out. ``captions=False``
     always leaves ours out. ``brand`` is the handle shown on screen: a managed channel passes its own, and
-    ``None`` means ``BRAND_NAME``."""
+    ``None`` means ``BRAND_NAME``. ``sting`` is a meme sound file, played over the held last frame."""
     # Resolve the font from the clip's own text: a Devanagari clip gets a Devanagari font (if installed)
     # for its captions and overlays, while a Latin clip resolves the same font as before.
-    sample = " ".join(w.text for w in words) + f" {moment.title or ''} {creator}"
+    sample = " ".join(w.text for w in words) + f" {moment.title or ''} {moment.hook or ''} {creator}"
     font = resolve_font(settings.clip_font, sample)
     # Only speech clips close up their pauses; captions apply to either kind.
     cut_on = words if moment.kind == "speech" else []
@@ -690,6 +702,13 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
                      edit=edit, focus=focus, crop_bottom=crop_bottom)
     if music and info.has_audio:
         plan.music = os.path.abspath(music)
+    sound = load_sting(sting) if sting and info.has_audio and settings.clip_sfx else None
+    sting_at = plan.duration
+    if sound is not None:
+        # Hold the last frame under the sound, so it lands after the punchline and never over a word.
+        plan.tail = round(len(sound) / RATE + _STING_PAD_SEC, 3)
+        plan.duration += plan.tail
+        plan.has_sfx = True
 
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     # A row may already point at out_path, so a half-written file must never appear there.
@@ -705,7 +724,10 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
                     handle.write(build_ass(clip_words, moment.hook, plan.duration, font_family(font), font, beats, creator=creator, brand=brand,
                                          layout=framed_layout(plan.picture_height) if plan.picture_height else Layout()))
             if plan.has_sfx:
-                build_track(os.path.join(tmp, "sfx.wav"), plan.duration, sound_cues(edit, rhythm_points(edit)))
+                cues = sound_cues(edit, rhythm_points(edit)) if edit and settings.clip_sfx else []
+                if plan.tail:
+                    cues.append(Cue(sting_at, str(sting)))
+                build_track(os.path.join(tmp, "sfx.wav"), plan.duration, cues)
             # The bar needs an end: an endless source keeps ffmpeg running forever if
             # the moment turns out to have no frames.
             args = [*_seek_args(seek), "-i", os.path.abspath(source),

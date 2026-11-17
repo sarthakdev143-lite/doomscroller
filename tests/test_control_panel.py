@@ -18,7 +18,6 @@ def clean(monkeypatch):
     with session_scope() as db:
         for table in (Feed, Channel, ClipJob, GrowthEvent, GrowthState, QuotaUsage, Video):
             db.execute(delete(table))
-    monkeypatch.setattr(settings, "channels_file", "")
     monkeypatch.setattr(settings, "growth_feeds", "[]")
     monkeypatch.setattr(settings, "youtube_client_secrets", "")
     monkeypatch.setattr(settings, "brand_name", "@seduxing")

@@ -1457,6 +1457,7 @@ def test_voice_is_levelled_before_the_effects_go_on():
     plan = render.plan_clip(Moment(10, 40), [], _signals(), INFO, has_graphics=True, edit=edit)
     graph = render.build_filtergraph(plan, INFO, 1.0)
     assert graph.index("loudnorm") < graph.index("amix") < graph.index("alimiter")
+    assert graph.index("acompressor") < graph.index("loudnorm")
     assert "level=0" in graph
 
 
@@ -3515,6 +3516,91 @@ def test_captions_off_drops_our_words_but_keeps_the_hook(tmp_path):
     from app.clipper.captions import build_ass
     assert ",Caption,," in build_ass(words, "Hook", 5.0, "Arial")
     assert ",Caption,," not in build_ass([], "Hook", 5.0, "Arial") and ",Hook,," in build_ass([], "Hook", 5.0, "Arial")
+
+
+class _HindiTranscript(Transcript):
+    def __init__(self, words):
+        super().__init__(words=words, language="hi", duration=words[-1].end, engine="sarvam")
+
+    @property
+    def is_hindi_speech(self):
+        return True
+
+
+def test_hindi_clips_play_as_filmed_with_only_the_picked_sound(tmp_path, monkeypatch):
+    _talking_pipeline(monkeypatch)
+    words = _words(LINES)
+    monkeypatch.setattr(job, "transcribe", lambda path, _: _HindiTranscript(words))
+    sound = tmp_path / "faaah-fail.mp3"
+    sound.write_bytes(b"x")
+    monkeypatch.setattr(job.sfx, "trending", lambda: {"faaah-fail": sound})
+    asked = {}
+
+    def pick(*args, sounds=(), **kwargs):
+        asked["sounds"] = sounds
+        return [Moment(0, words[-1].end, title="T", hook="H", ai_title=True, kind="speech", sound="faaah-fail")]
+
+    monkeypatch.setattr(job, "pick_speech", pick)
+    monkeypatch.setattr(job, "build_edit", lambda *a, **k: pytest.fail("a Hindi clip gets no word-timed edit"))
+    seen = {}
+    real = job.render_moment
+
+    def spy(*args, **kwargs):
+        seen.update(words=args[4], edit=kwargs.get("edit"), sting=kwargs.pop("sting", None))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(job, "render_moment", spy)
+    _, meta = _saved(job.clip_source(_source(tmp_path, "hindi")))
+    assert asked["sounds"] == ("faaah-fail",)
+    assert seen == {"words": [], "edit": None, "sting": str(sound)}
+    assert meta["growth_recipe"] == {}  # nothing was tested, so nothing is learned from it
+
+
+def test_speech_prompt_asks_for_the_transcript_language():
+    prompt = moments._speech_prompt(build_sentences(_words("a b c")), 2, "x")
+    assert "Hinglish" in prompt and "same language as the transcript" in prompt
+
+
+def test_the_ai_may_name_one_sound_from_the_pack_and_nothing_else():
+    sentences = build_sentences(_words("a b c"))
+    assert '"sound"' not in moments._speech_prompt(sentences, 2, "x")
+    assert "one of: faaah-fail, vine-boom; or none" in moments._speech_prompt(sentences, 2, "x",
+                                                                               sounds=("faaah-fail", "vine-boom"))
+    words = _long_transcript()
+    sentences = build_sentences(words)
+    for named, kept in (("faaah-fail", "faaah-fail"), ("made-up", ""), ("none", "")):
+        reply = {"clips": [{"first": 2, "last": 6, "title": "T", "score": 90, "sound": named}]}
+        assert moments._moments_from_reply(reply, sentences, words, 300.0, ("faaah-fail",))[0].sound == kept
+
+
+def test_a_meme_sound_plays_over_a_held_last_frame_not_over_speech():
+    plan = render.plan_clip(Moment(10, 40), [], _signals(), INFO, has_graphics=True)
+    plan.tail, plan.has_sfx = 2.2, True
+    graph = render.build_filtergraph(plan, INFO, 0.0)
+    assert "[held]tpad=stop_mode=clone:stop_duration=2.200[cut]" in graph
+    assert graph.index("apad=pad_dur=2.200") < graph.index("amix")
+    plan.tail = 0.0
+    assert "tpad" not in render.build_filtergraph(plan, INFO, 0.0)
+
+
+def test_trending_sounds_are_named_by_file_and_mixed_capped_and_faded(tmp_path, monkeypatch):
+    import wave
+    from app.clipper import sfx
+    monkeypatch.setattr(settings, "clip_sfx_pack_dir", str(tmp_path))
+    (tmp_path / "trending").mkdir()
+    faaah = tmp_path / "trending" / "faaah-fail.mp3"
+    faaah.write_bytes(b"x")
+    (tmp_path / "trending" / "notes.txt").write_bytes(b"x")
+    assert sfx.trending() == {"faaah-fail": faaah}
+    tone = np.full(sfx.RATE * 4, 0.3, dtype=np.float32)  # longer than a sound may run
+    monkeypatch.setattr(media, "read_ffmpeg", lambda args: tone[:int(sfx.RATE * float(args[args.index("-t") + 1]))].tobytes())
+    sound = sfx.sting(str(faaah))
+    assert len(sound) == int(sfx.RATE * sfx._STING_MAX_SEC) and sound.max() == pytest.approx(sfx._STING_PEAK) and sound[-1] == 0
+    out = tmp_path / "track.wav"
+    sfx.build_track(str(out), 5.0, [sfx.Cue(1.0, str(faaah)), sfx.Cue(2.0, "not-a-file")])
+    with wave.open(str(out)) as handle:
+        samples = np.frombuffer(handle.readframes(handle.getnframes()), np.int16)
+    assert np.abs(samples[:sfx.RATE]).max() == 0 and np.abs(samples[sfx.RATE:sfx.RATE * 2]).max() > 15000
 
 
 def test_edit_never_drops_the_ending(monkeypatch):

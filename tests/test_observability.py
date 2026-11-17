@@ -24,6 +24,18 @@ def isolated_history(tmp_path, monkeypatch):
 
 
 # ------------------------------------------------------------- instrumentation
+def test_a_run_that_was_never_stopped_is_called_out_at_the_next_start(caplog):
+    logging_config.get_log_file_path().write_text("the old run's last line\n", encoding="utf-8")
+    with caplog.at_level(logging.WARNING, logger="app.logging_config"):
+        logging_config.note_previous_exit()
+    assert "without being stopped" in caplog.text
+    caplog.clear()
+    logging_config.mark_clean_exit()  # what every deliberate stop leaves behind
+    with caplog.at_level(logging.WARNING, logger="app.logging_config"):
+        logging_config.note_previous_exit()
+    assert caplog.text == "" and not (logging_config.LOG_DIR / "clean_exit").exists()
+
+
 def test_successful_job_is_recorded():
     wrapped = scheduler.instrumented("demo", lambda: {"created": 3})
     assert wrapped() == {"created": 3}

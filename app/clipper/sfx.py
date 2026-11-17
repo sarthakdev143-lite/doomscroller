@@ -3,7 +3,8 @@
 Effects are mixed well below the voice: they should be felt on the cuts rather than
 noticed as sounds. An owner-curated pack in ``content/sfx/`` (one shot per
 file, e.g. ``whoosh.wav``) overrides the synthesis per cue kind; without it the
-synth below plays, so clips never depend on downloaded files.
+synth below plays, so clips never depend on downloaded files. Meme sounds the AI
+may play after a punchline live in ``content/sfx/trending/``, named for what they mean.
 """
 from __future__ import annotations
 
@@ -27,6 +28,10 @@ _KIND_ALIASES = {WHOOSH: ("whoosh", "sweep", "riser"), IMPACT: ("impact", "boom"
 _AUDIO = {".wav", ".mp3", ".ogg", ".opus", ".flac"}
 # A downloaded one-shot never holds the mix longer than this.
 _PACK_SLICE_SEC = 1.2
+# A meme sound is the joke itself, so it plays at voice level, and is cut short before it drags.
+_STING_MAX_SEC = 2.5
+_STING_PEAK = 0.9
+_STING_FADE_SEC = 0.25
 
 
 @dataclass(frozen=True)
@@ -94,6 +99,33 @@ def pack_pick(kind: str, seed: str) -> Optional[Path]:
     return pool[index]
 
 
+def trending() -> dict[str, Path]:
+    """The owner's meme sounds in ``<pack>/trending``, by file name. The AI picks one by what its name says."""
+    root = pack_dir() / "trending"
+    try:
+        return {p.stem: p for p in sorted(root.iterdir()) if _usable_pack_file(p)}
+    except OSError:
+        return {}
+
+
+def sting(path: str) -> Optional[np.ndarray]:
+    """A meme sound ready to mix: leading silence trimmed, capped and faded, at a fixed peak. None if unreadable."""
+    try:
+        from .media import read_ffmpeg
+        raw = read_ffmpeg(["-i", str(path), "-map", "0:a:0", "-af", "silenceremove=start_periods=1:start_threshold=-50dB",
+                           "-ac", "1", "-ar", str(RATE), "-t", f"{_STING_MAX_SEC}", "-f", "f32le", "-"])
+        sound = np.frombuffer(raw, dtype=np.float32).astype(np.float64)
+    except Exception:
+        return None
+    peak = float(np.max(np.abs(sound))) if len(sound) else 0.0
+    if not math.isfinite(peak) or peak <= 0:
+        return None
+    sound = sound * (_STING_PEAK / peak)
+    fade = min(len(sound), int(RATE * _STING_FADE_SEC))
+    sound[len(sound) - fade:] *= np.linspace(1.0, 0.0, fade)
+    return sound
+
+
 def _decode_pack(path: Path) -> Optional[np.ndarray]:
     """Mono float64 samples at RATE for a pack file, else None. Never raises."""
     try:
@@ -126,17 +158,23 @@ def build_track(path: str, duration: float, cues: Sequence[Cue], seed: str = "")
     makers = {WHOOSH: lambda: _whoosh(rng), IMPACT: _impact, POP: _pop}
     pack = {kind: pack_pick(kind, seed) for kind in makers}
     for cue in cues:
-        if cue.sound not in makers or not math.isfinite(cue.at):
+        if not math.isfinite(cue.at):
             continue
         start = max(0, int(cue.at * RATE))
         if start >= len(track):
             continue
-        clip = _decode_pack(pack[cue.sound]) if pack[cue.sound] is not None else None
-        if clip is not None and len(clip):
-            peak = float(np.max(np.abs(clip)))
-            sound = clip[:int(RATE * _PACK_SLICE_SEC)] * (0.25 / peak if peak > 0 else 0.0)
+        if cue.sound not in makers:
+            # Anything else is a meme sound's file.
+            sound = sting(cue.sound) if Path(cue.sound).is_file() else None
+            if sound is None:
+                continue
         else:
-            sound = makers[cue.sound]() * _GAIN[cue.sound]
+            clip = _decode_pack(pack[cue.sound]) if pack[cue.sound] is not None else None
+            if clip is not None and len(clip):
+                peak = float(np.max(np.abs(clip)))
+                sound = clip[:int(RATE * _PACK_SLICE_SEC)] * (0.25 / peak if peak > 0 else 0.0)
+            else:
+                sound = makers[cue.sound]() * _GAIN[cue.sound]
         end = min(len(track), start + len(sound))
         if end > start:
             track[start:end] += sound[:end - start]

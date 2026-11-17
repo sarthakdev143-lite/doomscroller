@@ -26,13 +26,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-LOG_DIR = Path("logs")
+LOG_DIR = Path(os.environ.get("DOOMSCROLLER_LOG_DIR") or "logs")
 LOG_FILE = "doomscroller.log"
 HISTORY_FILE = "job_history.jsonl"
 MAX_BYTES = 5 * 1024 * 1024
-BACKUP_COUNT = 3
+BACKUP_COUNT = 10  # about two weeks of history at ~5 MB a day, for finding what went wrong and when
 # Keep the history file bounded; it is append-only and read whole.
 MAX_HISTORY_LINES = 4000
+# Left by a deliberate stop, so the next start can tell a stop from a crash.
+_CLEAN_EXIT = "clean_exit"
 
 _configured = False
 
@@ -200,6 +202,31 @@ def configure_logging(level: str | None = None, *, force: bool = False) -> None:
     logging.getLogger(__name__).info(
         "logging configured at %s -> %s", resolved, get_log_file_path().resolve()
     )
+
+
+def mark_clean_exit() -> None:
+    """Called on every deliberate stop. Never raises."""
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        (LOG_DIR / _CLEAN_EXIT).touch()
+    except OSError:
+        pass
+
+
+def note_previous_exit() -> None:
+    """At startup, warn if the last run ended without a deliberate stop: a crash, a kill or a power cut.
+    Without this an unexplained restart leaves no trace at all. Never raises."""
+    marker = LOG_DIR / _CLEAN_EXIT
+    try:
+        if marker.exists():
+            marker.unlink()
+            return
+    except OSError:
+        return
+    if get_log_file_path().exists():
+        logging.getLogger(__name__).warning(
+            "the previous run ended without being stopped (crash, killed, power cut, or a restart by the watchdog: "
+            "see logs/watchdog.log); its last lines are just above")
 
 
 def read_recent_logs(limit: int = 100) -> list[str]:

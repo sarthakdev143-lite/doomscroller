@@ -48,7 +48,6 @@ def clean(monkeypatch):
             Video,
         ):
             db.execute(delete(table))
-    monkeypatch.setattr(settings, "channels_file", "")
     monkeypatch.setattr(settings, "growth_enabled", True)
     monkeypatch.setattr(settings, "growth_require_approval", False)
     monkeypatch.setattr(settings, "growth_timezone", "UTC")

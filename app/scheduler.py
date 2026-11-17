@@ -776,6 +776,11 @@ def growth_watch_job() -> dict:
     return watch_job()
 
 
+def growth_scout_job() -> dict:
+    from .growth.scout import scout_job
+    return scout_job()
+
+
 # ---------- Job registry ----------
 # The single source of truth for job ids. Both _make_scheduler() and the
 # POST /scheduler/run/{job_id} endpoint read this, so the two can never drift.
@@ -795,6 +800,7 @@ JOB_FUNCTIONS: dict[str, "callable"] = {
     "growth_supply": growth_supply_job,
     "growth_notify": growth_notify_job,
     "growth_watch": growth_watch_job,
+    "growth_scout": growth_scout_job,
 }
 
 
@@ -861,7 +867,8 @@ def _make_scheduler() -> BackgroundScheduler:
                                      ("growth_collect", timedelta(hours=3), timedelta(minutes=6)),
                                      ("growth_learn", timedelta(hours=6), timedelta(minutes=8)),
                                      ("growth_supply", timedelta(hours=1), timedelta(minutes=1)),
-                                     ("growth_notify", timedelta(minutes=10), timedelta(minutes=3))):
+                                     ("growth_notify", timedelta(minutes=10), timedelta(minutes=3)),
+                                     ("growth_scout", timedelta(hours=24), timedelta(minutes=30))):
             sched.add_job(instrumented(job_id, JOB_FUNCTIONS[job_id]), IntervalTrigger(seconds=int(every.total_seconds())), id=job_id, next_run_time=now + first, max_instances=1, coalesce=True, replace_existing=True)
         if settings.growth_watch_minutes > 0:
             sched.add_job(instrumented("growth_watch", growth_watch_job), IntervalTrigger(minutes=settings.growth_watch_minutes), id="growth_watch", next_run_time=now + timedelta(minutes=2), max_instances=1, coalesce=True, replace_existing=True)
@@ -892,6 +899,7 @@ def _job_intervals() -> dict[str, timedelta]:
         "growth_supply": timedelta(hours=1),
         "growth_notify": timedelta(minutes=10),
         "growth_watch": timedelta(minutes=max(1, settings.growth_watch_minutes)),
+        "growth_scout": timedelta(hours=24),
     }
 
 

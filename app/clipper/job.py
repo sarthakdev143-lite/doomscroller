@@ -20,7 +20,7 @@ from app.models import ClipJob, Video, VideoStatus
 
 from app.growth import learn, recipes
 
-from . import audio_qa, music, subtitles
+from . import audio_qa, music, sfx, subtitles
 from .broll import StockSession, credit_line
 from .edit import attach_memes, attach_stock, build_edit, opening_line
 from .memes import MemeSession, credit_line as meme_credit_line
@@ -167,6 +167,7 @@ def _save_clip(src: SourceVideo, moment: Moment, path: str, duration: float, *, 
             "clip_score": moment.score,
             "clip_reason": moment.reason,
             "clip_hook": moment.hook,
+            "clip_sound": moment.sound,
             "clip_opening_line": spoken,
             "clip_parent": src.source_id,
             "clip_job": job_id,
@@ -315,7 +316,15 @@ def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
         earlier = _earlier_clips(src)
         used = ([moment for _, moment in earlier] if mine
                 else [Moment(c["start"], c["end"], kind=c["kind"]) for c in clips])
-        moments = pick_speech(words, signals, count=left, title=src.title, used=used) if speech else []
+        # Sarvam times Hindi by the phrase, not the word, so anything cut or drawn on a word (captions,
+        # jump cuts, B-roll, graphics) lands off the speech. A Hindi clip plays as filmed instead, with at
+        # most one meme sound after its payoff.
+        timed = language != "hi"
+        stings = {} if timed else sfx.trending()
+        if not timed:
+            log.info("clipper: %s is Hindi, so its clips play as filmed, with %d meme sounds on offer", label, len(stings))
+        moments = pick_speech(words, signals, count=left, title=src.title, used=used,
+                              sounds=tuple(stings)) if speech else []
         # Speech clips already cut means the speech ran out, not that there was too little to begin with.
         if speech and not moments and not any(m.kind == "speech" for m in used):
             warn("too little continuous speech for a speech clip, so cutting on motion and sound instead")
@@ -364,11 +373,11 @@ def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
 
             report(f"rendering clip {number} of {len(fresh)}")
             out_path = str(out_dir / f"{int(moment.start)}_{int(moment.end)}.mp4")
-            recipe = recipes.choose() if moment.kind == "speech" else {}
+            recipe = recipes.choose() if moment.kind == "speech" and timed else {}
             track = music.pick(_clip_id(src, moment))
             try:
                 with recipes.applied(recipe):
-                    edit = build_edit(moment, words, title=src.title) if moment.kind == "speech" else None
+                    edit = build_edit(moment, words, title=src.title) if moment.kind == "speech" and timed else None
                     if edit:
                         for message in attach_stock(edit, stock):
                             if message not in warnings:
@@ -377,9 +386,13 @@ def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
                             if message not in warnings:
                                 warn(message)
                     try:
-                        plan = render_moment(src.path, info, signals, moment, words, out_path, edit=edit,
-                                             creator=src.author_name or src.author, music=track,
-                                             source_captioned=burned_in, **branding)
+                        extras = dict(branding)
+                        if moment.sound in stings:
+                            extras["sting"] = str(stings[moment.sound])
+                            log.info("clipper: clip %d of %s ends on the sound %s", number, label, moment.sound)
+                        plan = render_moment(src.path, info, signals, moment, words if timed else [], out_path,
+                                             edit=edit, creator=src.author_name or src.author, music=track,
+                                             source_captioned=burned_in, **extras)
                     except MediaError as exc:
                         if not (edit and (edit.cutaways or edit.meme_overlays)):
                             raise
@@ -397,6 +410,8 @@ def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
                     # Record what the clip got: no key or no matches means no B-roll, whatever was asked for.
                     recipe["broll"] = "on" if edit and edit.cutaways else "off"
                     recipe["sfx"] = "on" if plan.has_sfx else "off"
+                if not plan.tail:
+                    moment.sound = ""  # the same goes for a meme sound that did not load
                 credit = ""
                 if edit and edit.cutaways:
                     credit = credit_line((c.clip.author for c in edit.cutaways), edit.cutaways[0].clip.provider)

@@ -44,7 +44,6 @@ def clean(monkeypatch):
             Video,
         ):
             db.execute(delete(table))
-    monkeypatch.setattr(settings, "channels_file", "")
     monkeypatch.setattr(settings, "growth_enabled", True)
     monkeypatch.setattr(settings, "growth_require_approval", False)
     monkeypatch.setattr(settings, "growth_timezone", "UTC")
@@ -62,6 +61,24 @@ def _atom(*entries: tuple[str, str]) -> str:
         '<feed xmlns="http://www.w3.org/2005/Atom" '
         f'xmlns:yt="http://www.youtube.com/xml/schemas/2015">{rows}</feed>'
     )
+
+
+def test_youtubes_random_feed_404s_and_5xx_are_asked_again_but_real_refusals_are_not():
+    def replies(*codes):
+        calls = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(request.url)
+            return httpx.Response(codes[min(len(calls) - 1, len(codes) - 1)], content=b"<feed/>")
+
+        return calls, httpx.Client(transport=httpx.MockTransport(handler))
+
+    calls, client = replies(404, 500, 200)
+    assert watch._fetch("https://www.youtube.com/feeds/videos.xml", client=client) == "<feed/>" and len(calls) == 3
+    calls, client = replies(404)
+    assert watch._fetch("https://www.youtube.com/feeds/videos.xml", client=client) is None and len(calls) == watch._ATTEMPTS
+    calls, client = replies(403)
+    assert watch._fetch("https://www.youtube.com/feeds/videos.xml", client=client) is None and len(calls) == 1
 
 
 # ---------- 1. watch.py: _fetch compat & size bound, XML/timestamp guards, dedup ----------
@@ -381,6 +398,19 @@ def test_titles_sanitizes_quotes_fences_hashtags_control_chars_length_and_refusa
     # Quote style ignores blank/quote-only opening lines instead of emitting '"" #Shorts'
     assert titles.styled_title("quote", "Safe Original", "   ") == ("Safe Original #Shorts", "plain")
     assert titles.styled_title("quote", "Safe Original", '""') == ("Safe Original #Shorts", "plain")
+
+
+def test_title_rewrite_matches_the_text_language(monkeypatch):
+    seen = {}
+
+    def fake_ask(prompt):
+        seen["prompt"] = prompt
+        return {"title": "Piyush Shocked by Vietnam Surprise"}
+
+    monkeypatch.setattr(titles.ai, "ask_json", fake_ask)
+    out_title, out_style = titles.styled_title("question", "My title", "Piyush ko Vietnam trip ka surprise mila")
+    assert out_style == "question" and out_title == "Piyush Shocked by Vietnam Surprise #Shorts"
+    assert "Hinglish" in seen["prompt"]
 
 
 # ---------- 4. channels.py: URL normalization, case-insensitive dedup, numeric bounds ----------

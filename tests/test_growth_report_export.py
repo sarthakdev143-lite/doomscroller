@@ -36,7 +36,6 @@ def clean(monkeypatch):
     with session_scope() as db:
         for table in (Feed, Channel, VideoSnapshot, MetadataDraft, GrowthEvent, GrowthState, ClipJob, QuotaUsage, Video):
             db.execute(delete(table))
-    monkeypatch.setattr(settings, "channels_file", "")
     monkeypatch.setattr(settings, "growth_enabled", True)
     monkeypatch.setattr(settings, "growth_require_approval", False)
     monkeypatch.setattr(settings, "growth_timezone", "UTC")

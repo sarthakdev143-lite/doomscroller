@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
+import statistics
 import time
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
@@ -18,8 +20,8 @@ from app.config import settings
 from app.db import session_scope
 from app.models import ClipJob, GrowthEvent
 
-from . import channels, learn, safety
-from .autopilot import ready_clips
+from . import channels, learn, safety, watch
+from .autopilot import policy, ready_clips
 from .approval import awaiting_review
 from .factors import aware
 
@@ -38,6 +40,8 @@ _RECENT_JOBS = 20
 _ERROR_LENGTH = 200
 ADD_SOURCES = "Add video files to the inbox or links to GROWTH_FEEDS."
 SUPPLY_GAP = "supply_gap"
+_HOT_PROBES = 8  # the hottest few uploads are looked at, a yt-dlp call each; stream replays use some up
+_HOT_MIN_HOURS = 6.0  # a view rate over less than this is too noisy to rank on
 
 
 def _author_names(entry: dict) -> set[str]:
@@ -194,15 +198,84 @@ def open_inbox_files() -> list[str]:
             if path not in blocked and _can_take_file(path, history.get(path, ()), now)]
 
 
-def _feeds_by_turn(history: dict[str, list], feeds: Optional[Sequence[str]] = None) -> list[str]:
-    """Fewest jobs first, so every source is in stock from the start and can be compared."""
+def _feeds_by_turn(history: dict[str, list], feeds: Optional[Sequence[str]] = None, channel=None) -> list[str]:
+    """Fewest jobs first, so every source is in stock from the start and can be compared. Then the lab has its say:
+    creators it has ruled out drop out (unless nothing else is left), and on an exploiting turn whoever its model
+    currently favours goes first. Exploring turns, and a channel with no results yet, keep the fair rotation."""
     feeds = settings.growth_feeds_list if feeds is None else list(feeds)
     taken = Counter((job.result or {}).get("feed") for jobs in history.values() for job in jobs)
-    return sorted(feeds, key=lambda feed: taken[feed])
+    turns = sorted(feeds, key=lambda feed: taken[feed])
+    with session_scope() as db:
+        out = learn.benched(db, channel)
+    if out:
+        log.info("growth: supply skips creators the lab has benched: %s", ", ".join(sorted(out)))
+    turns = [f for f in turns if channels.creator(f).casefold() not in out] or turns
+    current = policy(channel=channel)
+    arms = {arm.casefold(): arm for arm in current.tried.get("series", {})}
+    if not any(channels.creator(f).casefold() in arms for f in turns) or current.rng.random() < current.rate:
+        return turns
+
+    def favour(feed: str) -> float:
+        name = channels.creator(feed)
+        return current.draw.arm("series", arms.get(name.casefold(), name))
+
+    return sorted(turns, key=favour, reverse=True)
 
 
-def next_source(unread: Optional[dict[str, str]] = None) -> Optional[tuple[str, Optional[str]]]:
-    """The next source to cut, and the feed it came from. Your own files come ahead of feeds.
+def _hottest(channel, feeds: Sequence[str], history: dict[str, list], blocked: set[str],
+             now: datetime) -> Optional[tuple[str, str]]:
+    """The uncut recent upload viewers are rushing to right now, and its feed.
+
+    Ranked by views an hour, plus how far that runs above its creator's own normal (a breakout means the topic is
+    hot, whoever made it), plus the lab's current lift for the creator. An exploring turn returns None so the fair
+    rotation still tries every creator, and so does a channel whose feeds cannot be read.
+    """
+    current = policy(channel=channel)
+    label = channel.slug if channel is not None else channels.DEFAULT_SLUG
+    if current.rng.random() < current.rate:
+        log.info("growth: %s is exploring this turn, so supply takes creators in fair rotation", label)
+        return None
+    arms = {arm.casefold(): arm for arm in current.tried.get("series", {})}
+    with session_scope() as db:
+        out = learn.benched(db, channel)
+        barred = frozenset(safety.blocked_authors(db))
+    scored = []
+    with watch._http_client() as client:
+        for feed in feeds:
+            name = channels.creator(feed)
+            if not name.startswith("@") or name.casefold() in out:
+                continue
+            rates = {vid: views / max(_HOT_MIN_HOURS, (now - published).total_seconds() / 3600)
+                     for vid, published, views in watch.recent_uploads(feed, client=client) if views > 0}
+            if not rates:
+                continue
+            normal = statistics.median(rates.values())
+            lift = current.draw.arm("series", arms.get(name.casefold(), name))
+            scored += [(math.log(rate) + math.log(rate / normal) + lift, vid, feed, rate, rate / normal)
+                       for vid, rate in rates.items()]
+    probed = 0
+    for _score, vid, feed, rate, breakout in sorted(scored, reverse=True):
+        link = f"https://www.youtube.com/watch?v={vid}"
+        if link in blocked or not can_take(history.get(link, ()), now):
+            continue
+        with session_scope() as db:
+            if watch._already_queued(db, link, vid):
+                continue
+        if watch._verdict(watch._probe(link), barred) == "cut":  # not a Short, a stream or a block
+            log.info("growth: %s cuts the hottest upload %s from %s: %.0f views an hour, %.1fx that creator's normal",
+                     label, link, channels.creator(feed), rate, breakout)
+            return link, feed
+        probed += 1
+        if probed >= _HOT_PROBES:
+            break
+    log.info("growth: %s found nothing trending to cut (%d recent uploads ranked, %d looked at), so the rotation picks",
+             label, len(scored), probed)
+    return None
+
+
+def next_source(unread: Optional[dict[str, str]] = None, channel=None) -> Optional[tuple[str, Optional[str]]]:
+    """The next source to cut, and the feed it came from. Your own files come ahead of feeds, then whatever
+    is trending hardest, then the fair rotation.
 
     Feeds that could not be read go in `unread`, so a caller can tell that from having nothing new.
     """
@@ -213,7 +286,10 @@ def next_source(unread: Optional[dict[str, str]] = None) -> Optional[tuple[str, 
     with session_scope() as db:
         history = _job_history(db)
         blocked = safety.blocked_sources(db)
-    for feed in _feeds_by_turn(history):
+    hot = _hottest(channel, settings.growth_feeds_list, history, blocked, now)
+    if hot:
+        return hot
+    for feed in _feeds_by_turn(history, channel=channel):
         try:
             for link in _feed_links(feed):
                 if link not in blocked and can_take(history.get(link, ()), now):
@@ -237,7 +313,10 @@ def next_source_for(channel, unread: Optional[dict[str, str]] = None) -> Optiona
         history = _job_history(db, _clipjob_scope(channel_id))
         blocked = safety.blocked_sources(db)
         feeds = channels.feeds_for(db, channel)
-    for feed in _feeds_by_turn(history, feeds):
+    hot = _hottest(channel, feeds, history, blocked, now)
+    if hot:
+        return hot
+    for feed in _feeds_by_turn(history, feeds, channel):
         try:
             for link in _feed_links(feed):
                 if link not in blocked and can_take(history.get(link, ()), now):
@@ -299,7 +378,7 @@ def _supply_one(channel) -> dict:
     if mined:
         return {"stock": stock, "mined": mined}
     unread: dict[str, str] = {}
-    picked = next_source(unread) if channels.is_default(channel) else next_source_for(channel, unread)
+    picked = next_source(unread, channel) if channels.is_default(channel) else next_source_for(channel, unread)
     gap_key = channels.state_key(channel, SUPPLY_GAP)
     if picked is None:
         with session_scope() as db:

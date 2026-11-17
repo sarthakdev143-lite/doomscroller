@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import random
 import threading
 import time
@@ -203,8 +204,9 @@ def ready_clips(db, scope=None) -> list[Video]:
         conds.append(scope)
     rows = db.execute(select(Video).where(*conds).order_by(Video.transformed_at)).scalars().all()
     blocked = safety.blocked_parents(db)  # a job still running can finish a clip after the strike
+    # A row whose file is gone is no stock: counted, it starves supply and shows clips that cannot post.
     ready = [v for v in rows if (v.meta or {}).get("clip_rendered") and not (v.meta or {}).get("growth_quarantined")
-             and (v.meta or {}).get("clip_parent") not in blocked]
+             and (v.meta or {}).get("clip_parent") not in blocked and os.path.isfile(v.transformed_path)]
     pinned = sorted((v for v in ready if _pinned_at(v) is not None), key=_pinned_at, reverse=True)
     return pinned + [v for v in ready if _pinned_at(v) is None]
 

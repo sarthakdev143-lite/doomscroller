@@ -266,11 +266,7 @@ def queue() -> dict:
         active = channels.active_channels(db)
         cards = [_card(v, db) for v in awaiting_review(db)]
         scraped = [_card(v, db) for v in awaiting_scraped(db)]
-        queued = [
-            _card(v, db)
-            for v in ready_clips(db)
-            if v.transformed_path and os.path.exists(v.transformed_path)
-        ][:_QUEUE_LIMIT]
+        queued = [_card(v, db) for v in ready_clips(db)][:_QUEUE_LIMIT]
         per = [_channel_status(db, c) for c in active]
         posted = recent_posts(db)
     # A single legacy channel keeps the flat view; several add a per-channel status strip and filter chips.

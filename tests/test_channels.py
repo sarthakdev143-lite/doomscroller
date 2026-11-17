@@ -13,12 +13,12 @@ from app.models import Channel, ClipJob, Feed, GrowthEvent, GrowthState, QuotaUs
 
 
 @pytest.fixture(autouse=True)
-def clean(monkeypatch):
+def clean(monkeypatch, tmp_path):
     init_db()
     with session_scope() as db:
         for table in (Feed, Channel, ClipJob, GrowthEvent, GrowthState, QuotaUsage, Video):
             db.execute(delete(table))
-    monkeypatch.setattr(settings, "channels_file", "")
+    monkeypatch.setattr(settings, "channels_file", str(tmp_path / "no-channels.json"))
     monkeypatch.setattr(settings, "youtube_token_path", "./secrets/youtube_token.json")
     monkeypatch.setattr(settings, "youtube_client_secrets", "")
     monkeypatch.setattr(settings, "growth_uploads_per_day", 3)
@@ -712,10 +712,10 @@ def test_channel_status_flags_a_channel_that_needs_attention(tmp_path, monkeypat
     assert tech["attention"] == "No clips in stock"
 
 
-def test_a_single_legacy_channel_keeps_the_flat_review_view(monkeypatch):
+def test_a_single_legacy_channel_keeps_the_flat_review_view(tmp_path, monkeypatch):
     from app.growth import approval
 
-    monkeypatch.setattr(settings, "channels_file", "")  # legacy single default channel
+    monkeypatch.setattr(settings, "channels_file", str(tmp_path / "no-channels.json"))  # legacy single default channel
     q = approval.queue()
     assert q["channels"] == []  # no per-channel strip for one legacy channel
 

@@ -61,6 +61,9 @@ HOST = os.environ.get("DOOMSCROLLER_HOST", "127.0.0.1").strip() or "127.0.0.1"
 
 SLIM_CMD = [PYTHON, "scripts/serve_slim.py"]
 PORTS = (("API", API_PORT), ("Review", REVIEW_PORT))
+# The watchdog looks twice this far apart before it kills a daemon that stopped answering.
+_RECHECK_SEC = 30
+_PORTS_FREE_WAIT_SEC = 30
 _REVIEW_TOKEN_RE = re.compile(r"^\s*REVIEW_TOKEN\s*=\s*(.*?)\s*$")
 _DAEMON_CMD_MARKERS = ("serve_slim", "doomscroller", "app.main", "app.review")
 
@@ -330,12 +333,17 @@ def _status() -> int:
 
 
 def _stop() -> int:
+    from app.logging_config import mark_clean_exit
+
     pids = _read_pids()
     if not pids:
         print("No PID file; nothing to stop.")
         return 0
     stopped = [name for name, pid in pids.items() if _kill(pid)]
     PID_FILE.unlink(missing_ok=True)
+    if stopped:
+        _wait_ports_free()
+        mark_clean_exit()  # a kill skips the app's own shutdown, so say here that this one was meant
     print(f"Stopped: {', '.join(stopped) if stopped else 'nothing was running'}")
     return 0
 
@@ -427,14 +435,47 @@ def _start(daemon: bool, slim: bool = True) -> int:
         PID_FILE.unlink(missing_ok=True)
 
 
+def _health() -> str:
+    """'' when the daemon answers, else what is wrong. Answering is what counts: on a busy machine the process
+    list can time out, and that alone must never get a working daemon killed."""
+    closed = [f"{name} port {port}" for name, port in PORTS if not _port_in_use(port)]
+    if not closed:
+        return ""
+    return f"no answer on {' and '.join(closed)}" + ("" if _running() else "; its process is gone")
+
+
+def _wait_ports_free() -> None:
+    """A killed process holds its ports a moment longer, and a start before they free fails outright."""
+    deadline = time.monotonic() + _PORTS_FREE_WAIT_SEC
+    while any(_port_in_use(port) for _, port in PORTS) and time.monotonic() < deadline:
+        time.sleep(1)
+
+
+def _watchdog_note(message: str) -> None:
+    """The watchdog runs on its own, so it keeps its own log, beside the daemon's."""
+    try:
+        with open(LOG_DIR / "watchdog.log", "a", encoding="utf-8") as handle:
+            handle.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {message}\n")
+    except OSError:
+        pass
+
+
 def _ensure(slim: bool = True) -> int:
-    """Idempotent watchdog entry point: do nothing if healthy, otherwise clean up and start."""
-    alive = _running()
-    if alive and all(_port_in_use(port) for _, port in PORTS):
+    """Idempotent watchdog entry point: do nothing if healthy, otherwise clean up and start.
+
+    A busy machine can fail one look, so the failure has to hold on a second look before a daemon is killed.
+    """
+    why = _health()
+    if why:
+        time.sleep(_RECHECK_SEC)
+        why = _health()
+    if not why:
         return 0
+    _watchdog_note(f"restarting: {why}")
     for pid in _read_pids().values():
         _kill(pid)
     PID_FILE.unlink(missing_ok=True)
+    _wait_ports_free()
     return _start(daemon=True, slim=slim)
 
 

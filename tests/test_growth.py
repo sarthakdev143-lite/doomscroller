@@ -223,8 +223,8 @@ def test_scraped_videos_never_go_out_through_the_loop(tmp_path):
 
 
 def test_next_clip_avoids_the_source_just_posted(tmp_path):
-    make_clip(tmp_path / "a", 1, parent="same")
-    make_clip(tmp_path / "b", 2, parent="other")
+    ready_file_clip(tmp_path, 1, parent="same")
+    ready_file_clip(tmp_path, 2, parent="other")
     with session_scope() as db:
         assert autopilot.pick_clip(autopilot.ready_clips(db), policy(), "same").meta["clip_parent"] == "other"
 
@@ -639,6 +639,19 @@ def ready_file_clip(tmp_path, n=0, **kwargs):
     path = tmp_path / f"clip{n}.mp4"
     path.write_bytes(b"x")
     return make_clip(path, n, **kwargs)
+
+
+def test_a_ready_clip_whose_file_is_gone_is_not_stock(tmp_path):
+    from app.growth import approval
+    from app.growth.autopilot import ready_clips
+
+    kept = ready_file_clip(tmp_path, 0)
+    gone = ready_file_clip(tmp_path, 1)
+    (tmp_path / "clip1.mp4").unlink()
+    with session_scope() as db:
+        assert [v.id for v in ready_clips(db)] == [kept]
+    assert [card["id"] for card in approval.queue()["queued"]] == [kept]
+    assert gone != kept
 
 
 def http_error(status, reason=None, cls=None):
@@ -1368,6 +1381,23 @@ def test_a_failed_refresh_stays_retryable_and_leaves_the_token_alone(token_publi
     with pytest.raises(RuntimeError, match="token refresh failed"):
         token_publisher._credentials()
     assert open(token_publisher.token_path).read() == contents
+
+
+def test_a_dropped_connection_is_not_reported_as_a_dead_token(token_publisher, monkeypatch):
+    from google.oauth2.credentials import Credentials
+
+    from app.publishers.base import TokenProblem
+    from tasks.pipeline import classify_publish_error
+
+    def unreachable(self, request):
+        raise ConnectionError("[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol")
+
+    monkeypatch.setattr(Credentials, "refresh", unreachable)
+    open(token_publisher.token_path, "w").write(json.dumps(TOKEN))
+    with pytest.raises(RuntimeError, match="could not reach Google") as caught:
+        token_publisher._credentials()
+    assert not isinstance(caught.value, TokenProblem) and "Testing" not in str(caught.value)
+    assert classify_publish_error(caught.value)["account_level"] is False  # so no posting hold for a blip
 
 
 def renews(monkeypatch):
@@ -2994,8 +3024,8 @@ def winner_with_baseline(tmp_path, offset=0):
 def test_a_winner_is_not_mined_when_the_shelf_is_already_full(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "growth_min_inventory", 2)
     winner = winner_with_baseline(tmp_path)
-    make_clip(tmp_path / "s0.mp4", 500, parent="s0")
-    make_clip(tmp_path / "s1.mp4", 501, parent="s1")
+    ready_file_clip(tmp_path, 500, parent="s0")
+    ready_file_clip(tmp_path, 501, parent="s1")
     assert learn.learn_job(now=JUDGED_AT)["diagnosed"]["winner"] == 1
     assert diagnosis_of(winner) == "winner"
     with session_scope() as db:
@@ -3016,8 +3046,8 @@ def drain_stock():
 def full_shelf_winner(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "growth_min_inventory", 2)
     winner = winner_with_baseline(tmp_path)
-    make_clip(tmp_path / "s0.mp4", 500, parent="s0")
-    make_clip(tmp_path / "s1.mp4", 501, parent="s1")
+    ready_file_clip(tmp_path, 500, parent="s0")
+    ready_file_clip(tmp_path, 501, parent="s1")
     learn.learn_job(now=JUDGED_AT)
     assert mined_jobs() == []
     return winner
@@ -3092,7 +3122,7 @@ def test_one_run_does_not_queue_a_job_per_winning_source(tmp_path, monkeypatch):
         set_fields(published_clip(tmp_path / f"w{n}", 100 + n, 5000, parent=f"w{n}"),
                    source_url=f"https://example.com/w{n}")
     for n in range(8):
-        make_clip(tmp_path / f"s{n}.mp4", 500 + n, parent=f"s{n}")
+        ready_file_clip(tmp_path, 500 + n, parent=f"s{n}")
     assert learn.learn_job(now=JUDGED_AT)["diagnosed"]["winner"] == 5
     assert len(mined_jobs()) == 1  # one short of the minimum, and that job alone brings three
 
@@ -3944,7 +3974,7 @@ def test_autopilot_hands_titles_the_transcript_never_the_hook(monkeypatch, tmp_p
         return f"{title} #Shorts", "plain"
 
     monkeypatch.setattr(titles, "styled_title", styled)
-    make_clip(tmp_path / "a", **meta)  # its clip_hook is "Nobody told me this"
+    ready_file_clip(tmp_path, **meta)  # its clip_hook is "Nobody told me this"
     autopilot._publish_next(policy(), START, "post")
     assert seen == [handed_over]
 
@@ -5011,7 +5041,7 @@ def test_live_doctor_does_not_blame_google_when_saving_the_token_fails(monkeypat
 # ---------- owner approval and the review page ----------
 def test_in_approval_mode_supply_cuts_into_review_not_onto_the_shelf(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "growth_require_approval", True)
-    monkeypatch.setattr(supply, "next_source", lambda unread=None: ("https://example.com/v", "https://example.com/feed"))
+    monkeypatch.setattr(supply, "next_source", lambda unread=None, channel=None: ("https://example.com/v", "https://example.com/feed"))
     supply.supply_job()
     with session_scope() as db:
         job = db.execute(select(ClipJob)).scalars().all()[-1]

@@ -99,6 +99,29 @@ def test_scheduler_respects_configured_max_workers(monkeypatch):
     assert executor._pool._max_workers == 2
 
 
+def test_the_watchdog_never_kills_a_daemon_that_answers(tmp_path, monkeypatch):
+    from scripts import run
+
+    monkeypatch.setattr(run, "LOG_DIR", tmp_path)
+    monkeypatch.setattr(run, "PID_FILE", tmp_path / "doomscroller.pids")
+    monkeypatch.setattr(run.time, "sleep", lambda s: None)
+    killed, started = [], []
+    monkeypatch.setattr(run, "_kill", lambda pid: killed.append(pid) or True)
+    monkeypatch.setattr(run, "_start", lambda daemon, slim=True: started.append(True) or 0)
+    monkeypatch.setattr(run, "_read_pids", lambda: {"slim": 7777})
+    monkeypatch.setattr(run, "_running", lambda: {})  # the process list timed out on a busy machine
+    monkeypatch.setattr(run, "_port_in_use", lambda port: True)
+    assert run._ensure() == 0 and killed == [] and started == []
+
+    answers = iter([False, False, True, True])  # one slow look, then it answers
+    monkeypatch.setattr(run, "_port_in_use", lambda port: next(answers))
+    assert run._ensure() == 0 and killed == [] and started == []
+
+    monkeypatch.setattr(run, "_port_in_use", lambda port: False)
+    assert run._ensure() == 0 and killed == [7777] and started == [True]
+    assert "restarting: no answer on API port" in (tmp_path / "watchdog.log").read_text(encoding="utf-8")
+
+
 def test_run_slim_daemon_spawns_single_process_and_ensure_is_idempotent(tmp_path, monkeypatch):
     from scripts import run
 
