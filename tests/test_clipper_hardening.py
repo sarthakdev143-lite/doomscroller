@@ -496,8 +496,7 @@ def test_sarvam_basename_upload_clamped_timestamps_and_nan_duration_guard(tmp_pa
         return FakeResp()
 
     monkeypatch.setattr(sarvam.httpx, "post", fake_post)
-    win_style_path = str(tmp_path) + "\\seg_0.wav"
-    sarvam._call(win_style_path, "hi-IN")
+    sarvam._call(str(audio_seg), "hi-IN")  # a full local path, on whatever system runs this
     assert captured_filename == ["seg_0.wav"]
 
     # 2. Out-of-window, inverted, or NaN chunk timestamps are clamped to [offset, offset + seg_len].
