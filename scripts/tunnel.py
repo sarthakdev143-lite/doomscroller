@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+IS_WINDOWS = os.name == "nt"
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -62,7 +63,7 @@ def find_binary() -> str | None:
     if configured:
         return configured if Path(configured).is_file() else None
     tools_dir = Path.home() / "tools"
-    names = ("cloudflared.exe", "cloudflared") if os.name == "nt" else ("cloudflared",)
+    names = ("cloudflared.exe", "cloudflared") if IS_WINDOWS else ("cloudflared",)
     for name in names:
         candidate = tools_dir / name
         if candidate.is_file():
@@ -254,7 +255,7 @@ def main() -> int:
     ssh_bin = shutil.which("ssh")
     if not binary and not ssh_bin:
         expected = os.environ.get("CLOUDFLARED_BIN") or str(
-            Path.home() / "tools" / ("cloudflared.exe" if os.name == "nt" else "cloudflared")
+            Path.home() / "tools" / ("cloudflared.exe" if IS_WINDOWS else "cloudflared")
         )
         print(f"neither cloudflared ({expected}) nor ssh found on PATH", file=sys.stderr)
         return 1
