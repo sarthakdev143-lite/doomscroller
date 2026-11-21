@@ -14,15 +14,15 @@ log = logging.getLogger(__name__)
 SLOTS = ("00-04", "04-08", "08-12", "12-16", "16-20", "20-24")
 TITLE_STYLES = ("plain", "question", "curiosity", "quote")
 # name -> (speed, seconds of speech the edit aims for)
-PACES = {"tight": (1.15, 32), "normal": (1.1, 40), "relaxed": (1.0, 50)}
+PACES = {"tight": (1.15, 22), "normal": (1.1, 30), "relaxed": (1.0, 42)}
 SWITCHES = ("on", "off")
 
 # Decided when a clip is rendered. They only apply to speech clips, which are the ones with an edit.
-# Sound effects are always on: the owner wants them on every clip, so they are not a test.
-RECIPE_FACTORS = {"pace": tuple(PACES), "sfx": ("on",), "broll": SWITCHES}
+# Sound effects are always on, so they are excluded from factor allocation and kept in _VALID_RECIPE_ARMS for legacy rows.
+RECIPE_FACTORS = {"pace": tuple(PACES), "broll": SWITCHES}
 _VALID_RECIPE_ARMS = {"pace": frozenset(PACES), "sfx": frozenset(SWITCHES), "broll": frozenset(SWITCHES)}
 # Facts about a finished clip, chosen between when picking what to post next.
-CLIP_FACTORS = ("kind", "length", "series", "pace", "sfx", "broll")
+CLIP_FACTORS = ("kind", "length", "series", "pace", "broll")
 FACTORS = ("slot", "title_style", *CLIP_FACTORS)
 
 

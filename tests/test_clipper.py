@@ -1467,7 +1467,9 @@ def test_edit_plan_changes_the_graph(monkeypatch):
                     beats=[Beat(14.5, "", "punch")], speed=1.12)
     plan = render.plan_clip(Moment(10, 40), [], _signals(), INFO, has_graphics=True, edit=edit)
     graph = render.build_filtergraph(plan, INFO, 1.0)
-    assert plan.duration == pytest.approx((4.0 + render._END_HOLD) / 1.12, abs=0.05)  # plus the closing beat
+    assert plan.duration == pytest.approx(4.0 / 1.12, abs=0.05)  # loop-friendly ending skips end hold
+    held = render.plan_clip(Moment(10, 40), [], _signals(), INFO, has_graphics=True, edit=edit, hold_end=True)
+    assert held.duration == pytest.approx((4.0 + render._END_HOLD) / 1.12, abs=0.05)
     assert "setpts=PTS/1.12" in graph and "atempo=1.12" in graph
     assert "[sfxst]amix" in graph and "drawbox=x=0:y=0" in graph and "sin(t*75)" in graph
 
@@ -3445,7 +3447,11 @@ def test_music_is_picked_from_the_owners_folder_and_stays_the_same_per_clip(tmp_
     from app.clipper import music
 
     monkeypatch.setattr(settings, "clip_music_dir", str(tmp_path))
-    assert music.pick("clip-1") is None  # an empty folder means no music, not an error
+    monkeypatch.setattr(settings, "clip_music_synth_fallback", False)
+    assert music.pick("clip-1") is None  # without synth fallback, empty folder means no music
+    monkeypatch.setattr(settings, "clip_music_synth_fallback", True)
+    synth_pick = music.pick("clip-1")
+    assert synth_pick is not None and "_synth" in str(synth_pick)
     for name in ("a.mp3", "b.m4a", "notes.txt"):
         (tmp_path / name).write_bytes(b"x")
     assert {p.name for p in music.library()} == {"a.mp3", "b.m4a"}
@@ -3528,6 +3534,8 @@ class _HindiTranscript(Transcript):
 
 
 def test_hindi_clips_play_as_filmed_with_only_the_picked_sound(tmp_path, monkeypatch):
+    from app.clipper.edit import EditPlan
+
     _talking_pipeline(monkeypatch)
     words = _words(LINES)
     monkeypatch.setattr(job, "transcribe", lambda path, _: _HindiTranscript(words))
@@ -3546,14 +3554,23 @@ def test_hindi_clips_play_as_filmed_with_only_the_picked_sound(tmp_path, monkeyp
     real = job.render_moment
 
     def spy(*args, **kwargs):
-        seen.update(words=args[4], edit=kwargs.get("edit"), sting=kwargs.pop("sting", None))
+        seen.update(
+            words=args[4],
+            edit=kwargs.get("edit"),
+            captions=kwargs.get("captions"),
+            sting=kwargs.pop("sting", None),
+        )
         return real(*args, **kwargs)
 
     monkeypatch.setattr(job, "render_moment", spy)
     _, meta = _saved(job.clip_source(_source(tmp_path, "hindi")))
     assert asked["sounds"] == ("faaah-fail",)
-    assert seen == {"words": [], "edit": None, "sting": str(sound)}
-    assert meta["growth_recipe"] == {}  # nothing was tested, so nothing is learned from it
+    assert seen["words"] == []
+    assert seen["captions"] is False
+    assert seen["sting"] == str(sound)
+    assert isinstance(seen["edit"], EditPlan)
+    assert seen["edit"].words == [] and seen["edit"].beats == []
+    assert meta["growth_recipe"] == {}  # _talking_pipeline stubs recipes.choose -> {}
 
 
 def test_speech_prompt_asks_for_the_transcript_language():
@@ -3733,3 +3750,34 @@ def test_review_card_shows_a_one_line_audio_verdict():
     line = _audio_line({"verdict": "needs work", "score": 0.84,
                         "issues": [{"metric": "band_mid", "weight": "major", "action": "honky mids: cut 1-3 kHz"}]})
     assert line == "needs work 84%: honky mids"
+
+
+def test_clip_source_passes_managed_channel_to_recipes(tmp_path, monkeypatch):
+    from app.db import init_db, session_scope
+    from app.models import Channel
+
+    init_db()
+    with session_scope() as db:
+        ch = Channel(slug="indianvlogs", name="Indian Vlogs", enabled=True)
+        db.add(ch)
+        db.flush()
+        ch_id = ch.id
+
+    seen: list = []
+    monkeypatch.setattr(job.recipes, "choose", lambda channel=None: seen.append(getattr(channel, "id", None)) or {})
+    src = ingest.SourceVideo(path=str(tmp_path / "src.mp4"), source="youtube", source_id="vid_ch", title="Vlog")
+    Path(src.path).write_bytes(b"x")
+    monkeypatch.setattr(job, "require_tools", lambda: None)
+    monkeypatch.setattr(job, "probe", lambda p: media.MediaInfo(60.0, 1280, 720, 30.0, True))
+    words = [transcribe.Word(t, i * 0.5, i * 0.5 + 0.4) for i, t in enumerate(["hello", "world"] * 20)]
+    monkeypatch.setattr(job, "transcribe", lambda p, info: transcribe.Transcript(words=words, language="en", duration=60.0))
+    monkeypatch.setattr(job.subtitles, "already_captioned", lambda p, info: False)
+    monkeypatch.setattr(job, "analyse", lambda p, info: Signals(
+        60.0, np.zeros(60), np.zeros(60), np.zeros(60), np.full(60, 0.5), np.ones(60), []))
+    monkeypatch.setattr(job, "pick_speech", lambda *a, **k: [moments.Moment(1.0, 20.0, title="Clip", ai_title=True)])
+    monkeypatch.setattr(job, "build_edit", lambda *a, **k: None)
+    monkeypatch.setattr(job, "render_moment", lambda *a, **k: render.ClipPlan([], 19.0, True, 1080, "0", False, "1", False))
+
+    res = job.clip_source(src, count=1, auto_queue=False, channel_id=ch_id)
+    assert res["ok"] is True
+    assert seen == [ch_id]

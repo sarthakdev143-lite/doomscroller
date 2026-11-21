@@ -232,12 +232,12 @@ def test_next_clip_avoids_the_source_just_posted(tmp_path):
 # ---------- titles ----------
 def test_quote_title_uses_the_speakers_words_and_stays_within_limits():
     title, style = titles.styled_title("quote", "Boring", "Nobody told me this")
-    assert style == "quote" and title == '"Nobody told me this" #Shorts'
+    assert style == "quote" and title == '"Nobody told me this"'
 
 
 def test_title_falls_back_to_plain_and_records_that(monkeypatch):
     monkeypatch.setattr(titles.ai, "ask_json", lambda prompt: None)
-    assert titles.styled_title("question", "My title", "hook") == ("My title #Shorts", "plain")
+    assert titles.styled_title("question", "My title", "hook") == ("My title", "plain")
 
 
 @pytest.mark.parametrize("reply", [{"title": "x" * 200}, {"title": 5}, {}])
@@ -375,7 +375,8 @@ def test_scheduler_registers_loop_and_drops_scraping():
     sched = scheduler._make_scheduler()
     ids = {j.id for j in sched.get_jobs()}
     assert {"growth_autopilot", "growth_collect", "growth_learn", "growth_supply"} <= ids
-    assert "scrape" not in ids and "analytics_pull" not in ids
+    for classic in ("scrape", "discovery", "auto_approve", "transform", "publish", "recompute", "analytics_pull"):
+        assert classic not in ids
 
 
 def test_loop_jobs_are_absent_when_off(monkeypatch):
@@ -697,10 +698,10 @@ def failing_sql():
 def test_titles_lose_angle_brackets_and_keep_the_fallback():
     from app.metadata import finished_title, youtube_title
 
-    assert finished_title("I <3 this >>") == "I 3 this #Shorts"
-    assert finished_title("<<>>") == "Watch this #Shorts"
-    assert youtube_title("<<>>") == "Watch this #Shorts"
-    assert youtube_title(None) == "Watch this #Shorts"
+    assert finished_title("I <3 this >>") == "I 3 this"
+    assert finished_title("<<>>") == "Watch this"
+    assert youtube_title("<<>>") == "Watch this"
+    assert youtube_title(None) == "Watch this"
     assert youtube_title("a > b") == "a b"
     assert len(youtube_title("x" * 300)) == 100
 
@@ -758,7 +759,7 @@ def test_upload_boundary_sends_only_what_youtube_accepts(tmp_path, monkeypatch):
     assert len(sent["snippet"]["description"].encode()) <= 5000 and ">" not in sent["snippet"]["description"]
     sent.clear()
     client.upload(file_path=str(clip), title="<>", description="", tags=[], category=22, privacy="public")
-    assert sent["snippet"]["title"] == "Watch this #Shorts"
+    assert sent["snippet"]["title"] == "Watch this"
 
 
 # -- the claim
@@ -839,17 +840,11 @@ def test_manual_publish_during_title_writing_does_not_upload_twice(tmp_path, pub
         assert db.get(GrowthState, "plan").value["posts"][0]["state"] == "waiting"
 
 
-def test_manual_publish_through_the_api_still_works(tmp_path, publisher, monkeypatch):
+def test_manual_publish_through_the_api_still_works(tmp_path, publisher):
     from fastapi.testclient import TestClient
 
     from app.main import app
-    from tasks import pipeline
 
-    class NoBroker:
-        def delay(self, *args):
-            raise RuntimeError("no broker")
-
-    monkeypatch.setattr(pipeline, "publish_task_async", NoBroker())
     video_id = ready_file_clip(tmp_path)
     client = TestClient(app)
     assert client.post(f"/videos/{video_id}/publish", json={"title": "Mine"}).json()["result"]["ok"] is True
@@ -967,15 +962,6 @@ def test_a_reason_in_an_unreadable_body_does_not_mean_failed():
 
     for body in (b"<html>", b"[]", b'{"error": "x"}', b'{"error": {"errors": ["x"]}}', b"\xff"):
         assert classify_publish_error(HttpError(httplib2.Response({"status": 400}), body))["retryable"] is True
-
-
-def test_string_classifier_still_answers_for_old_callers():
-    from tasks.pipeline import _is_retryable_publish_error
-
-    assert _is_retryable_publish_error("YouTube token missing at x") is True
-    assert _is_retryable_publish_error("YouTube token refresh failed: invalid_grant") is True
-    assert _is_retryable_publish_error("quotaExceeded") is True
-    assert _is_retryable_publish_error("invalidTitle") is False
 
 
 @pytest.mark.parametrize("error", [
@@ -1358,14 +1344,13 @@ def token_publisher(tmp_path, monkeypatch):
     json.dumps({k: v for k, v in TOKEN.items() if k != "refresh_token"}),
 ])
 def test_bad_token_never_opens_a_browser_and_stays_retryable(token_publisher, contents):
-    from tasks.pipeline import _is_retryable_publish_error, classify_publish_error
+    from tasks.pipeline import classify_publish_error
 
     if contents is not None:
         open(token_publisher.token_path, "w").write(contents)
     with pytest.raises(RuntimeError, match=r"token missing or invalid.*youtube_oauth\.py --force") as caught:
         token_publisher._credentials()
     assert classify_publish_error(caught.value)["retryable"] is True
-    assert _is_retryable_publish_error(str(caught.value)) is True
 
 
 def test_a_failed_refresh_stays_retryable_and_leaves_the_token_alone(token_publisher, monkeypatch):
@@ -3082,8 +3067,8 @@ def test_a_winner_mined_on_the_spot_is_not_owed_another_job(tmp_path):
 def test_supply_takes_a_waiting_winner_before_a_new_source(tmp_path, monkeypatch):
     full_shelf_winner(tmp_path, monkeypatch)
     drain_stock()
-    monkeypatch.setattr(supply, "next_source", lambda: pytest.fail("took a new source over a waiting winner"))
-    out = supply.supply_job()
+    monkeypatch.setattr(supply, "next_source", lambda *a, **k: pytest.fail("took a new source over a waiting winner"))
+    out = supply.supply_job(now=JUDGED_AT + timedelta(hours=6))
     assert "mined" in out and "starved" not in out
     assert mined_jobs() == [("https://example.com/v", settings.growth_clips_per_source)]
 
@@ -3422,16 +3407,16 @@ def test_noise_estimate_is_near_the_truth_with_thirty_videos():
 
 
 # ---------- learning: findings ----------
-def finding_row(arm="on", p_best=0.97, n=10):
+def finding_row(arm="tight", p_best=0.97, n=10):
     return {"arm": arm, "n": n, "multiplier": 1.4, "low": 1.1, "high": 1.8, "p_best": p_best}
 
 
-def note_finding(p_best, matured, *, factor="sfx", n=10):
+def note_finding(p_best, matured, *, factor="pace", n=10):
     with session_scope() as db:
         return learn._note_findings(db, {factor: [finding_row(p_best=p_best, n=n)]}, matured)
 
 
-def run_findings(*p_bests, factor="sfx", n=10, start=100, step=learn._CONFIRM_VIDEOS):
+def run_findings(*p_bests, factor="pace", n=10, start=100, step=learn._CONFIRM_VIDEOS):
     """Each run brings `step` new videos, so a confirmation needs one run after the first strong one."""
     return sum(note_finding(p, start + i * step, factor=factor, n=n) for i, p in enumerate(p_bests))
 
@@ -3440,7 +3425,7 @@ def test_a_finding_must_hold_across_new_videos():
     assert note_finding(0.97, 100) == 0
     assert note_finding(0.97, 100 + learn._CONFIRM_VIDEOS - 1) == 0 and events("finding") == []
     assert note_finding(0.97, 100 + learn._CONFIRM_VIDEOS) == 1
-    assert "sfx = on" in events("finding")[0].summary
+    assert "pace = tight" in events("finding")[0].summary
 
 
 def test_runs_over_the_same_videos_are_one_look():
@@ -3450,7 +3435,7 @@ def test_runs_over_the_same_videos_are_one_look():
 def test_learn_runs_with_no_new_video_log_no_finding(tmp_path, monkeypatch):
     for n in range(9):
         published_clip(tmp_path / f"{n}", n, 100, parent=f"p{n}")
-    monkeypatch.setattr(learn, "summarise", lambda results: {"sfx": [finding_row(p_best=0.96)]})
+    monkeypatch.setattr(learn, "summarise", lambda results: {"pace": [finding_row(p_best=0.96)]})
     found = [learn.learn_job(now=JUDGED_AT + timedelta(hours=6 * run))["findings"] for run in range(4)]
     assert found == [0, 0, 0, 0]
 
@@ -3474,7 +3459,7 @@ def test_a_finding_is_retracted_when_the_evidence_fades_and_can_return():
     run_findings(0.97, 0.97)
     run_findings(0.69, start=200)
     retracted = events("finding_retracted")
-    assert len(retracted) == 1 and "sfx = on" in retracted[0].summary
+    assert len(retracted) == 1 and "pace = tight" in retracted[0].summary
     run_findings(0.69, start=300)
     assert len(events("finding_retracted")) == 1
     assert run_findings(0.97, 0.97, start=400) == 1
@@ -3486,13 +3471,13 @@ def test_day_type_is_never_a_finding():
 
 def test_a_saved_old_style_findings_state_does_not_break_the_job():
     with session_scope() as db:
-        db.add(GrowthState(key="findings", value={"sfx=on": 1.4}))
+        db.add(GrowthState(key="findings", value={"pace=tight": 1.4}))
     assert run_findings(0.97, 0.97) == 1
 
 
 def test_a_streak_saved_by_an_older_version_does_not_count_as_confirmation():
     with session_scope() as db:
-        db.add(GrowthState(key="findings", value={"live": {}, "streaks": {"sfx=on": 2}}))
+        db.add(GrowthState(key="findings", value={"live": {}, "streaks": {"pace=tight": 2}}))
     assert note_finding(0.97, 100) == 0
 
 
@@ -3960,8 +3945,8 @@ def test_doctor_stays_off_the_network(monkeypatch, tmp_path):
 
 # ---------- titles: never a made-up quotation ----------
 def test_quote_title_needs_a_real_line():
-    assert titles.styled_title("quote", "Boring", "") == ("Boring #Shorts", "plain")
-    assert titles.styled_title("quote", "Boring", "x" * 200) == ("Boring #Shorts", "plain")
+    assert titles.styled_title("quote", "Boring", "") == ("Boring", "plain")
+    assert titles.styled_title("quote", "Boring", "x" * 200) == ("Boring", "plain")
 
 
 @pytest.mark.parametrize("meta, handed_over", [({"clip_opening_line": "He really said this."}, "He really said this."),
@@ -3971,7 +3956,7 @@ def test_autopilot_hands_titles_the_transcript_never_the_hook(monkeypatch, tmp_p
 
     def styled(style, title, opening_line):
         seen.append(opening_line)
-        return f"{title} #Shorts", "plain"
+        return title, "plain"
 
     monkeypatch.setattr(titles, "styled_title", styled)
     ready_file_clip(tmp_path, **meta)  # its clip_hook is "Nobody told me this"
@@ -3982,7 +3967,7 @@ def test_autopilot_hands_titles_the_transcript_never_the_hook(monkeypatch, tmp_p
 def test_ai_titles_get_no_opening_line_to_lean_on_when_there_is_none(monkeypatch):
     prompts = []
     monkeypatch.setattr(titles.ai, "ask_json", lambda prompt: prompts.append(prompt) or {"title": "Why?"})
-    assert titles.styled_title("question", "My title", "")[0] == "Why? #Shorts"
+    assert titles.styled_title("question", "My title", "")[0] == "Why?"
     assert "Opening line" not in prompts[0]
     titles.styled_title("question", "My title", "Real words.")
     assert "Opening line: Real words." in prompts[1]
@@ -5225,3 +5210,59 @@ def test_telegram_failures_never_log_the_bot_token(monkeypatch, caplog):
     with caplog.at_level("WARNING"):
         assert notify.send("hi") is False
     assert "SECRET" not in caplog.text
+
+
+def test_approving_with_unchanged_title_keeps_edited_false_for_ab_titles(tmp_path):
+    from app.growth import approval
+
+    path = tmp_path / "c.mp4"
+    path.write_bytes(b"x")
+    vid = make_clip(path, 1, status=VideoStatus.PENDING)
+    with session_scope() as db:
+        v = db.get(Video, vid)
+        v.title = "Original AI Title"
+        db.add(MetadataDraft(video_id=vid, title="Original AI Title #Shorts", description="Desc", tags=["x"], edited=False))
+
+    approval.approve(vid, "Original AI Title #Shorts")
+    with session_scope() as db:
+        assert db.execute(select(MetadataDraft).where(MetadataDraft.video_id == vid)).scalar_one().edited is False
+
+    # Re-approving with an actually modified title marks edited=True
+    vid2 = make_clip(path, 2, status=VideoStatus.PENDING)
+    with session_scope() as db:
+        db.get(Video, vid2).title = "Original AI Title"
+        db.add(MetadataDraft(video_id=vid2, title="Original AI Title #Shorts", description="Desc", tags=["x"], edited=False))
+    approval.approve(vid2, "Owner Rewrote This Title")
+    with session_scope() as db:
+        draft2 = db.execute(select(MetadataDraft).where(MetadataDraft.video_id == vid2)).scalar_one()
+        assert draft2.edited is True and draft2.title.startswith("Owner Rewrote This Title")
+
+
+def test_auto_approve_score_normalizes_ai_0_to_100_scale(tmp_path):
+    from app.growth import approval, channels
+
+    clip = tmp_path / "c.mp4"
+    clip.write_bytes(b"x")
+    with session_scope() as db:
+        ch = Channel(slug="scoretest", name="Score Test", auto_approve_score=0.80, enabled=True)
+        db.add(ch)
+        db.flush()
+        ch_id = ch.id
+    low = make_clip(clip, 1, status=VideoStatus.PENDING, clip_score=40.0, clip_ai_titled=True)
+    high = make_clip(clip, 2, status=VideoStatus.PENDING, clip_score=85.0, clip_ai_titled=True)
+    legacy = make_clip(clip, 3, status=VideoStatus.PENDING, clip_score=0.85, clip_ai_titled=True)
+    with session_scope() as db:
+        for vid in (low, high, legacy):
+            db.get(Video, vid).channel_id = ch_id
+        ch = db.get(Channel, ch_id)
+    assert approval.auto_approve_sweep(ch) == 2
+    with session_scope() as db:
+        assert db.get(Video, low).status == VideoStatus.PENDING
+        assert db.get(Video, high).status == VideoStatus.TRANSFORMED
+        assert db.get(Video, legacy).status == VideoStatus.TRANSFORMED
+
+    # approve_clean(min_score=0.8) follows the exact same normalization
+    out = approval.approve_clean(channel_slug="scoretest", min_score=0.8)
+    assert out == {"approved": 0, "ids": []}
+    out2 = approval.approve_clean(channel_slug="scoretest", min_score=0.35)
+    assert out2 == {"approved": 1, "ids": [low]}

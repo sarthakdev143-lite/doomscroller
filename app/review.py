@@ -100,6 +100,8 @@ class ChannelSettings(BaseModel):
     niche: str | None = None
     brand_name: str | None = None
     uploads_per_day: int | None = None
+    long_uploads_per_day: int | None = None
+    long_auto_publish: bool | None = None
     timezone: str | None = None
     require_approval: bool | None = None
     auto_approve_score: float | None = None
@@ -120,6 +122,27 @@ class ClipRequest(BaseModel):
     count: int = 3
     auto_queue: bool | None = None
     channel_slug: str = ""
+
+
+class LongBuildRequest(BaseModel):
+    channel_slug: str = ""
+    format: str = "best_of"
+    target: str = ""
+    targets: list[str] = []
+    theme: str = ""
+    target_minutes: int = 8
+    auto_publish: bool | None = None
+
+
+class LongThumbSelect(BaseModel):
+    variant_id: str = ""
+
+
+class LongApproveRequest(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    tags: list[str] | None = None
+    variant_id: str | None = None
 
 
 @review_app.get("/", response_class=HTMLResponse)
@@ -355,8 +378,8 @@ def api_import_channels(body: ImportChannelsRequest, request: Request) -> dict:
         raise HTTPException(400, "paste a channels export or backup JSON with a 'channels' list")
     # Accept a /api/backup file as-is: its status extras are dropped, the legacy default row is skipped, and an
     # import never switches a channel on (credentials and sign-in belong to this machine, not the file).
-    keep = ("slug", "name", "niche", "brand_name", "uploads_per_day", "timezone",
-            "require_approval", "auto_approve_score", "cadence_backstop", "feeds")
+    keep = ("slug", "name", "niche", "brand_name", "uploads_per_day", "long_uploads_per_day", "long_auto_publish",
+            "timezone", "require_approval", "auto_approve_score", "cadence_backstop", "feeds")
     rows = []
     for raw in payload["channels"]:
         if not isinstance(raw, dict):
@@ -651,25 +674,12 @@ def api_clip_jobs(request: Request, limit: int = 15) -> JSONResponse:
     return JSONResponse({"jobs": clip_job.list_jobs(limit=max(1, min(50, int(limit))))})
 
 
-_TERMINAL_CLIP_STATUSES = frozenset({"done", "succeeded", "failed", "cancelled", "canceled"})
-
-
 @review_app.post("/api/clip/clear-finished")
 def api_clear_finished_clip_jobs(request: Request) -> dict:
     _guard(request)
     from app.clipper import job as clip_job
 
-    cleared: list[str] = []
-    for item in clip_job.list_jobs(limit=100):
-        status = str(item.get("status") or "").strip().lower()
-        jid = item.get("id")
-        if jid and status in _TERMINAL_CLIP_STATUSES:
-            try:
-                clip_job.dismiss_job(jid)
-                cleared.append(jid)
-            except (LookupError, ValueError):
-                continue
-    return {"cleared": len(cleared), "ids": cleared}
+    return clip_job.clear_finished_jobs()
 
 
 @review_app.post("/api/clip/jobs/{job_id}/retry")
@@ -694,6 +704,171 @@ def api_dismiss_clip_job(job_id: str, request: Request) -> dict:
 
     try:
         return clip_job.dismiss_job(job_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
+
+
+# ---------- Long-Form 16:9 ----------
+_LONG_THUMB_UPLOAD_LIMIT = 10 * 1024 * 1024
+
+
+@review_app.get("/api/long/videos")
+def api_long_videos(request: Request) -> JSONResponse:
+    _guard(request)
+    from app.longform import job as long_job
+
+    return JSONResponse(long_job.long_panel_data())
+
+
+@review_app.post("/api/long/build")
+def api_long_build(body: LongBuildRequest, request: Request) -> dict:
+    _guard(request)
+    from app.longform import job as long_job
+
+    try:
+        job_id = long_job.enqueue_long_job(
+            body.channel_slug,
+            format_kind=body.format,
+            target=body.target,
+            targets=body.targets,
+            theme=body.theme,
+            target_minutes=body.target_minutes,
+            auto_publish=body.auto_publish,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    long_job.start_long_worker()
+    return {"job_id": job_id, "status": "queued"}
+
+
+@review_app.get("/api/long/jobs")
+def api_long_jobs(request: Request, limit: int = 20) -> JSONResponse:
+    _guard(request)
+    from app.longform import job as long_job
+
+    return JSONResponse({"jobs": long_job.list_long_jobs(limit=max(1, min(50, int(limit))))})
+
+
+@review_app.post("/api/long/jobs/{job_id}/retry")
+def api_retry_long_job(job_id: str, request: Request) -> dict:
+    _guard(request)
+    from app.longform import job as long_job
+
+    try:
+        updated = long_job.retry_long_job(job_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
+    long_job.start_long_worker()
+    return updated
+
+
+@review_app.post("/api/long/jobs/{job_id}/dismiss")
+def api_dismiss_long_job(job_id: str, request: Request) -> dict:
+    _guard(request)
+    from app.longform import job as long_job
+
+    try:
+        return long_job.dismiss_long_job(job_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
+
+
+@review_app.get("/api/long/{video_id}/thumb/{variant_id}")
+def api_long_thumb(video_id: str, variant_id: str, request: Request):
+    _guard(request)
+    from app.longform import job as long_job
+
+    path = long_job.thumbnail_path(video_id, variant_id)
+    if path is None:
+        raise HTTPException(404, "no such thumbnail")
+    return FileResponse(path, media_type="image/jpeg", headers=_NO_STORE)
+
+
+@review_app.post("/api/long/{video_id}/thumbnail")
+def api_long_select_thumb(video_id: str, body: LongThumbSelect, request: Request) -> dict:
+    _guard(request)
+    from app.longform import job as long_job
+
+    try:
+        return long_job.select_thumbnail(video_id, body.variant_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@review_app.post("/api/long/{video_id}/thumbnail/upload")
+async def api_long_upload_thumb(video_id: str, request: Request) -> dict:
+    _guard(request)
+    from app.longform import job as long_job
+
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > _LONG_THUMB_UPLOAD_LIMIT:
+            raise HTTPException(413, "thumbnail exceeds 10 MB limit")
+        chunks.append(chunk)
+    try:
+        return long_job.upload_custom_thumbnail(video_id, b"".join(chunks))
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@review_app.post("/api/long/{video_id}/metadata")
+def api_long_metadata(video_id: str, body: MetadataUpdate, request: Request) -> dict:
+    _guard(request)
+    from app.longform import job as long_job
+
+    try:
+        return long_job.update_long_metadata(
+            video_id,
+            title=body.title,
+            description=body.description,
+            tags=body.tags,
+        )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@review_app.post("/api/long/{video_id}/approve")
+def api_long_approve(video_id: str, request: Request, body: LongApproveRequest | None = None) -> dict:
+    _guard(request)
+    from app.longform import job as long_job
+
+    try:
+        return long_job.approve_long(
+            video_id,
+            title=body.title if body else None,
+            description=body.description if body else None,
+            tags=body.tags if body else None,
+            variant_id=body.variant_id if body else None,
+        )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
+
+
+@review_app.post("/api/long/{video_id}/reject")
+def api_long_reject(video_id: str, request: Request) -> dict:
+    _guard(request)
+    from app.longform import job as long_job
+
+    try:
+        return long_job.reject_long(video_id)
     except LookupError as exc:
         raise HTTPException(404, str(exc))
     except ValueError as exc:

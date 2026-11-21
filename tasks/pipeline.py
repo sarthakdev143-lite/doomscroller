@@ -448,6 +448,7 @@ def generate_metadata_for_video(video_id: str, *, force: bool = False) -> dict:
             }
         meta = dict(video.meta or {})
         is_clip = bool(meta.get("clip_rendered"))
+        is_long = bool(meta.get("long_form"))
         has_link = (video.source_url or "").startswith(("http://", "https://"))
         params = {
             "source_title": video.title or "",
@@ -455,15 +456,16 @@ def generate_metadata_for_video(video_id: str, *, force: bool = False) -> dict:
             "author": video.author or "",
             "author_name": video.author_name or "",
             # "generic" is yt-dlp's name for a plain file link, not a platform to credit.
-            "platform": "" if is_clip and video.source in ("generic", "local") else (video.source or ""),
-            "source_url": video.source_url or "" if has_link or not is_clip else "",
+            "platform": "" if (is_clip or is_long) and video.source in ("generic", "local") else (video.source or ""),
+            "source_url": video.source_url or "" if has_link or not (is_clip or is_long) else "",
             "keywords": list(video.keywords or []),
             "language": video.language or "",
             "platform_title": meta.get("llm_title") or "",
             "platform_description": meta.get("llm_description") or "",
             # Cropping removes the on-screen credit, so the description one
             # stops being optional. A clip has none on screen to begin with.
-            "require_credit": has_link if is_clip else settings.source_crop_active,
+            "require_credit": has_link if (is_clip or is_long) else settings.source_crop_active,
+            "is_short": not is_long,
         }
 
     generated: GeneratedMetadata = generate_metadata(**params)
@@ -676,13 +678,6 @@ def transform_task(video_id: str, recipe_dict: dict | None = None) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
-def _is_already_9x16(path: str) -> bool:
-    """Back-compat shim: 9:16 *and* already at least Shorts resolution."""
-    probe = _probe_quality(path, source="snapchat")
-    plan = plan_transform(probe["width"], probe["height"])
-    return plan["action"] == "copy"
-
-
 def _ffmpeg_available() -> bool:
     import shutil
     return shutil.which("ffmpeg") is not None
@@ -806,33 +801,6 @@ def long_to_shorts_task(video_id: str) -> dict:
 
 
 # ---------- Publish ----------
-# Substrings that mark a failure as *our configuration*, not the video, for
-# callers holding only a message. publish_task has the exception itself and uses
-# classify_publish_error.
-_RETRYABLE_ERROR_MARKERS = (
-    "token missing",
-    "token refresh failed",
-    "oauth not configured",
-    "client libs not installed",
-    "quota",
-    "uploadlimitexceeded",
-    "insufficient",
-    "ratelimitexceeded",
-    "backenderror",
-    "internalservererror",
-    "service unavailable",
-    "timed out",
-    "timeout",
-    "connection",
-    "ssl",
-)
-
-
-def _is_retryable_publish_error(message: str) -> bool:
-    lowered = (message or "").lower()
-    return any(marker in lowered for marker in _RETRYABLE_ERROR_MARKERS)
-
-
 # YouTube's own words for "this account cannot upload", whatever the HTTP status says.
 _ACCOUNT_REASONS = frozenset({
     "accessnotconfigured", "youtubesignuprequired", "forbidden",
@@ -994,6 +962,23 @@ def _mark_missing_publish_file(video_pk: str, message: str = "publish: transform
     return {"ok": False, "retryable": False, "account_level": False, "error": message}
 
 
+def _upload_language(video_lang: Optional[str], draft_lang: Optional[str]) -> Optional[str]:
+    """Return a clean BCP-47 language tag (preferring the video's explicit language)."""
+    for candidate in (video_lang, draft_lang):
+        code = (candidate or "").strip()
+        if not code:
+            continue
+        low = code.lower()
+        if low in ("und", "unk", "unknown", "none", "zxx"):
+            continue
+        if low == "hinglish":
+            return "hi"
+        base = low.split("-")[0]
+        if len(base) == 2 and base.isalpha():
+            return base
+    return None
+
+
 def publish_task(video_id: str, meta: dict | None = None) -> dict:
     """Upload a transformed video to YouTube."""
     if not settings.enable_publish:
@@ -1039,24 +1024,33 @@ def publish_task(video_id: str, meta: dict | None = None) -> dict:
             description = meta.get("description") or draft.description
             tags = meta.get("tags") or list(draft.tags or [])
         else:
-            title = meta.get("title") or f"{video.title} #Shorts".strip()
+            title = meta.get("title") or video.title or ""
             description = meta.get("description") or video.description or ""
             tags = meta.get("tags") or settings.tags_list
         title, description = youtube_title(title), youtube_description(description)
         privacy = meta.get("privacy") or settings.youtube_default_privacy
-        video.meta = {**(video.meta or {}), "publish_claimed_at": datetime.now(timezone.utc).isoformat(),
+        vmeta = dict(video.meta or {})
+        is_long = bool(vmeta.get("long_form"))
+        thumb_path = vmeta.get("selected_thumbnail") if is_long else None
+        lang = _upload_language(video.language, draft.detected_language if draft else None)
+        video.meta = {**vmeta, "publish_claimed_at": datetime.now(timezone.utc).isoformat(),
                       "publish_title": title}
 
     if not file_path or not os.path.isfile(file_path):
         return _mark_missing_publish_file(video_pk)
 
     try:
-        result = _publisher_for(channel_id).upload(
-            file_path=file_path,
-            title=title, description=description, tags=tags,
-            category=settings.youtube_default_category,
-            privacy=privacy,
-        )
+        pub = _publisher_for(channel_id)
+        upload_kw: dict = {
+            "file_path": file_path,
+            "title": title, "description": description, "tags": tags,
+            "category": settings.youtube_default_category,
+            "privacy": privacy,
+        }
+        if lang:
+            upload_kw["default_language"] = lang
+            upload_kw["default_audio_language"] = lang
+        result = pub.upload(**upload_kw)
     except (FileNotFoundError, IsADirectoryError) as exc:
         return _mark_missing_publish_file(video_pk, f"publish: {exc}")
     except Exception as exc:
@@ -1064,6 +1058,15 @@ def publish_task(video_id: str, meta: dict | None = None) -> dict:
 
     # Past this point the video is live, so nothing below may be treated as an upload failure.
     log.info("publish: %s -> youtube %s", video_pk[:8], result.video_id)
+    if is_long and thumb_path and os.path.isfile(thumb_path):
+        try:
+            thumb_ok = bool(pub.set_thumbnail(result.video_id, thumb_path))
+            with session_scope() as db:
+                row = db.get(Video, video_pk)
+                if row is not None:
+                    row.meta = {**(row.meta or {}), "thumbnail_uploaded": thumb_ok}
+        except Exception as exc:
+            log.warning("publish: thumbnail upload failed for %s (%s): %s", video_pk[:8], type(exc).__name__, exc)
     if not _record_upload(video_pk, result.video_id):
         return {"ok": True, "video_id": video_pk, "youtube_id": result.video_id, "recorded": False}
     _settle_upload(video_pk)
@@ -1286,27 +1289,3 @@ def _ensure_mock_input(v: Video) -> str:
     else:
         open(path, "wb").close()
     return path
-
-
-# ---------- Sync task shims (.delay()/.apply() compatibility without Celery) ----------
-class _SyncDelay:
-    def __init__(self, fn):
-        self.fn = fn
-
-    def delay(self, *a, **kw):
-        return self.fn(*a, **kw)
-
-    def apply(self, *a, **kw):
-        class _R:
-            def __init__(self, v):
-                self.v = v
-
-            def get(self, **_):
-                return self.v
-
-        return _R(self.fn(*a, **kw))
-
-
-scrape_task_async = _SyncDelay(scrape_task)
-transform_task_async = _SyncDelay(transform_task)
-publish_task_async = _SyncDelay(publish_task)

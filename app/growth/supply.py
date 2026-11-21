@@ -358,12 +358,12 @@ def _why_starved(db, unread: dict[str, str], channel=None) -> tuple[str, str]:
     return "; ".join(causes) or default_cause, " ".join(steps) or default_step
 
 
-def _supply_one(channel) -> dict:
+def _supply_one(channel, now: Optional[datetime] = None) -> dict:
     """Keep one managed channel's shelf stocked from its own feeds (and, for the legacy channel, the inbox)."""
     scope = channels.video_scope(channel)
     channel_id = channels.event_channel(channel)
     approval = channels.require_approval(channel)
-    now = datetime.now(timezone.utc)
+    now = aware(now) if now is not None else datetime.now(timezone.utc)
     with session_scope() as db:
         # Clips waiting for the owner count as stock, or supply would keep cutting while they sit unreviewed.
         stock = len(ready_clips(db, scope)) + (len(awaiting_review(db, scope)) if approval else 0)
@@ -399,7 +399,7 @@ def _supply_one(channel) -> dict:
     return {"stock": stock, "queued": source, "job": job_id}
 
 
-def supply_job() -> dict:
+def supply_job(now: Optional[datetime] = None) -> dict:
     if not settings.growth_enabled:
         return {"skipped": "GROWTH_ENABLED is off"}
     with session_scope() as db:
@@ -408,5 +408,6 @@ def supply_job() -> dict:
         return {"skipped": "no enabled channels"}
     # A single legacy channel keeps the old flat result shape; several report per channel by slug.
     if len(active) == 1 and channels.is_default(active[0]):
-        return _supply_one(active[0])
-    return channels.for_each(active, _supply_one)
+        return _supply_one(active[0]) if now is None else _supply_one(active[0], now)
+    runner = _supply_one if now is None else (lambda ch: _supply_one(ch, now))
+    return channels.for_each(active, runner)

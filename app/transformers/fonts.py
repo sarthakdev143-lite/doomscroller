@@ -166,7 +166,3 @@ def ffmpeg_path(path: str) -> str:
     clean = "".join(ch for ch in (path or "") if ch >= " " and ch != "\x7f")
     escaped = clean.replace("\\", "/").replace(":", r"\:")
     return escaped.replace("'", r"'\''")
-
-
-# Historical name; the function escapes any path, not just a font.
-ffmpeg_font_path = ffmpeg_path

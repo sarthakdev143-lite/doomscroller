@@ -141,6 +141,30 @@ class ClipJob(Base):
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), default=None)
 
 
+class LongJob(Base):
+    """One 16:9 long-form compilation waiting to be, or having been, built."""
+
+    __tablename__ = "long_jobs"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    channel_id: Mapped[Optional[str]] = mapped_column(ForeignKey("channels.id"), default=None, index=True)
+    format: Mapped[str] = mapped_column(String(32), default="best_of")
+    targets: Mapped[list] = mapped_column(JSON, default=list)
+    theme: Mapped[str] = mapped_column(String(256), default="")
+    part_number: Mapped[Optional[int]] = mapped_column(Integer, default=None)
+    target_minutes: Mapped[int] = mapped_column(Integer, default=8)
+    auto_publish: Mapped[bool] = mapped_column(default=False)
+    status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
+    stage: Mapped[str] = mapped_column(String(160), default="")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    video_id: Mapped[Optional[str]] = mapped_column(String(32), default=None)
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[Optional[str]] = mapped_column(Text, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), default=None)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), default=None)
+
+
 class VideoSnapshot(Base):
     """A published video's counters at one moment, so videos can be compared at the same age."""
 
@@ -216,6 +240,9 @@ class Channel(Base):
     auto_approve_score: Mapped[float] = mapped_column(Float, default=0.0)
     # When a window would be missed with clips in review, auto-approve the best one rather than go dark.
     cadence_backstop: Mapped[bool] = mapped_column(default=False)
+    # 16:9 long-form compilation cadence (0 = disabled, manual builds still allowed).
+    long_uploads_per_day: Mapped[int] = mapped_column(Integer, default=0)
+    long_auto_publish: Mapped[bool] = mapped_column(default=False)
     enabled: Mapped[bool] = mapped_column(default=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     meta: Mapped[dict] = mapped_column(MutableDict.as_mutable(JSON), default=dict)

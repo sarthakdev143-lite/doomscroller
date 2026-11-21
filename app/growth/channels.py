@@ -58,7 +58,8 @@ class ChannelsConfigError(ValueError):
 # channels.json fields that map straight onto a Channel column.
 _CONFIG_FIELDS = ("name", "niche", "brand_name", "token_path", "client_secrets",
                   "uploads_per_day", "timezone", "require_approval", "enabled",
-                  "auto_approve_score", "cadence_backstop")
+                  "auto_approve_score", "cadence_backstop",
+                  "long_uploads_per_day", "long_auto_publish")
 
 
 def _load_config() -> Optional[list[dict]]:
@@ -201,6 +202,9 @@ def _entry_problem(entry: dict, seen: set[str]) -> Optional[str]:
     pace = entry.get("uploads_per_day")
     if pace is not None and (isinstance(pace, bool) or not isinstance(pace, int) or not 0 <= pace <= 50):
         return "uploads_per_day must be a whole number from 0 to 50"
+    long_pace = entry.get("long_uploads_per_day")
+    if long_pace is not None and (isinstance(long_pace, bool) or not isinstance(long_pace, int) or not 0 <= long_pace <= 5):
+        return "long_uploads_per_day must be a whole number from 0 to 5"
     score = entry.get("auto_approve_score")
     if score is not None and (
         isinstance(score, bool)
@@ -209,7 +213,7 @@ def _entry_problem(entry: dict, seen: set[str]) -> Optional[str]:
         or not 0.0 <= float(score) <= 1.0
     ):
         return "auto_approve_score must be a number from 0 to 1"
-    for flag in ("require_approval", "enabled", "cadence_backstop"):
+    for flag in ("require_approval", "enabled", "cadence_backstop", "long_auto_publish"):
         if entry.get(flag) is not None and not isinstance(entry[flag], bool):
             return f"{flag} must be true or false"
     zone = entry.get("timezone")
@@ -454,6 +458,8 @@ _EDITABLE = (
     "require_approval",
     "auto_approve_score",
     "cadence_backstop",
+    "long_uploads_per_day",
+    "long_auto_publish",
 )
 
 
@@ -534,6 +540,8 @@ def _channel_to_entry(db, channel: Channel) -> dict:
         "client_secrets": channel.client_secrets or f"secrets/{slug}_client_secret.json",
         "token_path": channel.token_path or f"secrets/{slug}_token.json",
         "uploads_per_day": uploads_per_day(channel),
+        "long_uploads_per_day": long_uploads_per_day(channel),
+        "long_auto_publish": long_auto_publish(channel),
         "timezone": (timezone_of(channel) or "UTC").strip(),
         "require_approval": bool(require_approval(channel)),
         "auto_approve_score": float(channel.auto_approve_score or 0.0),
@@ -599,6 +607,8 @@ def export_channels_snapshot(db=None) -> dict:
             "niche": channel.niche or "",
             "brand_name": channel.brand_name or "",
             "uploads_per_day": uploads_per_day(channel),
+            "long_uploads_per_day": long_uploads_per_day(channel),
+            "long_auto_publish": long_auto_publish(channel),
             "timezone": (timezone_of(channel) or "UTC").strip(),
             "require_approval": bool(require_approval(channel)),
             "auto_approve_score": float(channel.auto_approve_score or 0.0),
@@ -670,9 +680,11 @@ def import_channels_snapshot(db, payload: dict, *, dry_run: bool = False) -> dic
                     target[text_field] = _clean_str(raw[text_field])
             if raw.get("uploads_per_day") is not None:
                 target["uploads_per_day"] = int(raw["uploads_per_day"])
+            if raw.get("long_uploads_per_day") is not None:
+                target["long_uploads_per_day"] = int(raw["long_uploads_per_day"])
             if raw.get("timezone") is not None:
                 target["timezone"] = raw["timezone"].strip()
-            for flag in ("require_approval", "enabled", "cadence_backstop"):
+            for flag in ("require_approval", "enabled", "cadence_backstop", "long_auto_publish"):
                 if raw.get(flag) is not None:
                     target[flag] = bool(raw[flag])
             if raw.get("auto_approve_score") is not None:
@@ -694,6 +706,8 @@ def import_channels_snapshot(db, payload: dict, *, dry_run: bool = False) -> dic
                 "client_secrets": f"secrets/{slug}_client_secret.json",
                 "token_path": f"secrets/{slug}_token.json",
                 "uploads_per_day": int(raw["uploads_per_day"]) if raw.get("uploads_per_day") is not None else 3,
+                "long_uploads_per_day": int(raw["long_uploads_per_day"]) if raw.get("long_uploads_per_day") is not None else 0,
+                "long_auto_publish": bool(raw["long_auto_publish"]) if raw.get("long_auto_publish") is not None else False,
                 "timezone": raw["timezone"].strip() if raw.get("timezone") is not None else (settings.growth_timezone or "UTC"),
                 "require_approval": bool(raw["require_approval"]) if raw.get("require_approval") is not None else True,
                 "auto_approve_score": float(raw["auto_approve_score"]) if raw.get("auto_approve_score") is not None else 0.0,
@@ -770,6 +784,8 @@ def clone_channel(db, source_slug: str, new_slug: str, *, name: str = "") -> Cha
         "client_secrets": f"secrets/{dst_slug}_client_secret.json",
         "token_path": f"secrets/{dst_slug}_token.json",
         "uploads_per_day": uploads_per_day(src),
+        "long_uploads_per_day": long_uploads_per_day(src),
+        "long_auto_publish": long_auto_publish(src),
         "timezone": (timezone_of(src) or "UTC").strip(),
         "require_approval": bool(require_approval(src)),
         "auto_approve_score": float(src.auto_approve_score or 0.0),
@@ -860,6 +876,20 @@ def uploads_per_day(channel: Channel) -> int:
         return max(0, min(50, int(raw)))
     except (TypeError, ValueError):
         return 0
+
+
+def long_uploads_per_day(channel: Channel) -> int:
+    raw = getattr(channel, "long_uploads_per_day", 0)
+    if raw is None or isinstance(raw, bool):
+        return 0
+    try:
+        return max(0, min(5, int(raw)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def long_auto_publish(channel: Channel) -> bool:
+    return bool(getattr(channel, "long_auto_publish", False))
 
 
 def timezone_of(channel: Channel) -> str:

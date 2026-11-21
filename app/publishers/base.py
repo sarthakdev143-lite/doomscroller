@@ -28,5 +28,11 @@ class Publisher:
         return {}
 
     def upload(self, *, file_path: str, title: str, description: str,
-               tags: list[str], category: int, privacy: str) -> PublishResult:
+               tags: list[str], category: int, privacy: str,
+               default_language: str | None = None,
+               default_audio_language: str | None = None) -> PublishResult:
         raise NotImplementedError
+
+    def set_thumbnail(self, video_id: str, image_path: str) -> bool:
+        """Upload a custom thumbnail for a YouTube video (no-op unless overridden)."""
+        return False

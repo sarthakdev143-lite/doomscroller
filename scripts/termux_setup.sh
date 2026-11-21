@@ -7,7 +7,6 @@ pkg update -y
 pkg install -y python ffmpeg git termux-api termux-tools
 pip install --upgrade pip
 pip install -r requirements.txt
-python -m playwright install chromium
 # Optional deps
 pip install google-api-python-client google-auth google-auth-oauthlib 2>/dev/null || true
 

@@ -64,9 +64,6 @@ def parse_duration(value: object) -> int:
     return max(0, int(total)) if math.isfinite(total) else 0
 
 
-parse_iso8601_duration = parse_duration
-
-
 def scrub_secrets(text: str) -> str:
     """Remove API keys, OAuth bearer/refresh tokens, and configured secrets from text."""
     if not text:
@@ -77,9 +74,10 @@ def scrub_secrets(text: str) -> str:
     out = _KV_SECRET_RE.sub(r"\1[REDACTED]", out)
     out = _BOT_TOKEN_RE.sub("bot[REDACTED]", out)
     for secret in (
-        getattr(settings, "youtube_api_key", ""),
         settings.review_token,
         settings.telegram_bot_token,
+        settings.openai_api_key,
+        settings.gemini_api_key,
     ):
         clean = (secret or "").strip()
         if clean:

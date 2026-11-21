@@ -115,6 +115,12 @@ label{font-size:12px;color:var(--dim);display:block;margin:0 0 4px}
 .cc .attn{color:var(--warn);font-size:12px;font-weight:600;margin-top:3px}
 .cbtn{margin-top:8px;width:100%;padding:8px;font-size:12px;background:transparent;color:var(--dim);border:1px solid var(--line);border-radius:9px}
 video{width:100%;aspect-ratio:9/16;max-height:60vh;background:#000;display:block}
+video.wide{aspect-ratio:16/9}
+.thumbs{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.thumb-opt{border:2px solid var(--line);border-radius:8px;overflow:hidden;padding:0;background:#000;position:relative;cursor:pointer}
+.thumb-opt.sel{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent)}
+.thumb-opt img{width:100%;aspect-ratio:16/9;object-fit:cover;display:block}
+.thumb-opt span{position:absolute;bottom:3px;left:4px;background:rgba(0,0,0,.78);color:#fff;font-size:10px;padding:1px 5px;border-radius:4px}
 .body{padding:12px;display:grid;gap:8px}.meta{color:var(--dim);font-size:13px}
 .warnbox{background:#3a2a10;border:1px solid var(--warn);color:#f5d58a;border-radius:8px;padding:8px 10px;font-size:13px;font-weight:600}
 .actions{display:grid;gap:8px}
@@ -186,6 +192,7 @@ kbd{background:#111;border:1px solid var(--line);border-radius:5px;padding:1px 6
   header{top:52px}
   .kbd-btn{display:inline-block}
   #list{grid-template-columns:repeat(auto-fill,minmax(310px,1fr));align-items:start}
+  #long-list{grid-template-columns:repeat(auto-fill,minmax(380px,1fr));align-items:start}
   #ch-list,#posted,#ct-body{grid-template-columns:repeat(auto-fill,minmax(330px,1fr));align-items:start}
   #ct-body h2,#posted h2{grid-column:1/-1}
   .snack{bottom:24px}
@@ -220,6 +227,17 @@ kbd{background:#111;border:1px solid var(--line);border-radius:5px;padding:1px 6
       <button id="clip-clear-finished" class="ghost" style="padding:6px 10px;font-size:12px" hidden>Clear finished</button>
     </div>
     <div id="clip-jobs" style="display:grid;gap:10px"></div>
+  </section>
+
+  <section id="tab-long" class="tabpane" hidden>
+    <div class="card" style="padding:14px;display:grid;gap:10px">
+      <h2 style="margin:0">Build a 16:9 Compilation</h2>
+      <div id="long-build-form" style="display:grid;gap:10px"></div>
+    </div>
+    <h2 style="margin:0">Long-form jobs</h2>
+    <div id="long-jobs" style="display:grid;gap:10px"></div>
+    <h2 style="margin:0">Compilations</h2>
+    <div id="long-list" style="display:grid;gap:12px"></div>
   </section>
 
   <section id="tab-channels" class="tabpane" hidden>
@@ -263,7 +281,7 @@ kbd{background:#111;border:1px solid var(--line);border-radius:5px;padding:1px 6
     <div class="rowline"><span>Edit title (Enter saves)</span><span class="r"><kbd>E</kbd></span></div>
     <div class="rowline"><span>Search clips / posts</span><span class="r"><kbd>/</kbd></span></div>
     <div class="rowline"><span>Undo last decision</span><span class="r"><kbd>U</kbd></span></div>
-    <div class="rowline"><span>Switch tabs</span><span class="r"><kbd>1</kbd>–<kbd>6</kbd></span></div>
+    <div class="rowline"><span>Switch tabs</span><span class="r"><kbd>1</kbd>–<kbd>7</kbd></span></div>
     <div class="rowline"><span>Close help / clear search</span><span class="r"><kbd>Esc</kbd></span></div>
   </div>
 </div>
@@ -304,7 +322,7 @@ async function copyText(txt,msg){
 }
 
 /* ---------- tabs ---------- */
-const TABS=[['review','Review','▦'],['clip','Clip','✂'],['channels','Channels','≡'],['status','Status','◌'],['report','Report','▤'],['controls','Controls','⚙']];
+const TABS=[['review','Review','▦'],['clip','Clip','✂'],['long','Long','🎬'],['channels','Channels','≡'],['status','Status','◌'],['report','Report','▤'],['controls','Controls','⚙']];
 let active='review';
 function show(id){
   active=id;$('title').textContent=TABS.find(t=>t[0]===id)[1];
@@ -535,7 +553,7 @@ function clipCard(c,isQueued){
   mdDetails.append(mdWrap);
   b.append(mdDetails);
 
-  const approveBody=()=>metaDirty?{title:t.value,description:descInp.value,tags:parseTags()}:{title:t.value};
+  const approveBody=()=>{const body={},curTitle=t.value.trim(),origTitle=(c.title||'').trim();if((c.id in edits||metaDirty)&&curTitle&&curTitle!==origTitle)body.title=t.value;if(metaDirty){body.description=descInp.value;body.tags=parseTags()}return body};
   const errLine=el('div',{className:'err'});errLine.hidden=true;
   const actions=el('div',{className:'actions'});
   const yes=el('button',{className:isQueued?'ghost':'yes'},isQueued?'Move back to Review':'Approve');
@@ -649,7 +667,8 @@ function channelCard(c){
   else if(c.enabled){state='needs setup';cls='warn'}
   top.append(el('span',{className:'tag '+cls,style:'margin-left:auto'},state));
   w.append(top);
-  w.append(el('div',{className:'sub'},[c.niche,c.uploads_per_day+'/day',c.timezone].filter(Boolean).join(' · ')));
+  const longNote=(c.long_uploads_per_day>0)?(c.long_uploads_per_day+'/day long'):'';
+  w.append(el('div',{className:'sub'},[c.niche,c.uploads_per_day+'/day',longNote,c.timezone].filter(Boolean).join(' · ')));
   if(c.next_step)w.append(el('div',{className:'step'},'Next: '+c.next_step));
   if(c.default){
     w.append(el('div',{className:'sub muted'},'This is your original channel, managed in .env.'));
@@ -658,6 +677,17 @@ function channelCard(c){
       for(const u of c.feeds){const f=el('div',{className:'feed'});f.append(el('span',{title:u},u.replace(/^https?:\/\/(www\.)?/,'')));feeds.append(f)}
       w.append(feeds);
     }
+    const sx=el('details',{className:'sx'});sx.append(el('summary',{},'Long-form settings'));
+    const f=el('div',{style:'display:grid;gap:8px;margin-top:8px'});
+    const longUp=el('input',{type:'number',value:String(c.long_uploads_per_day||0),min:'0',max:'5'});
+    const longAuto=el('input',{type:'checkbox',checked:!!c.long_auto_publish,style:'width:auto;margin:0'});
+    const d1=el('div');d1.append(el('label',{},'Long compilations / day (0–5)'),longUp);
+    const l2=el('label',{style:'display:flex;align-items:center;gap:8px;cursor:pointer;color:var(--dim);font-size:13px;margin:2px 0'});
+    l2.append(longAuto,el('span',{},'Auto-publish ready 16:9 compilations'));
+    const saveLong=el('button',{className:'btn'},'Save long-form settings');
+    saveLong.onclick=async()=>{saveLong.disabled=true;try{await api.post('/api/channels/'+encodeURIComponent(c.slug)+'/settings',
+      {long_uploads_per_day:Number(longUp.value)||0,long_auto_publish:longAuto.checked});toast('Saved');loaders.channels()}catch(e){alert(e.message)}saveLong.disabled=false};
+    f.append(d1,l2,saveLong);sx.append(f);w.append(sx);
   }
 
   if(c.enabled||c.paused)w.append(pauseBtn(c));
@@ -676,23 +706,30 @@ function channelCard(c){
     const f=el('div',{style:'display:grid;gap:8px;margin-top:8px'});
     const name=el('input',{value:c.name||''}),niche=el('input',{value:c.niche||'',placeholder:'e.g. tech, comedy, podcasts'}),
           brand=el('input',{value:c.brand_name||'',placeholder:'@handle on the clips'}),
-          up=el('input',{type:'number',value:c.uploads_per_day,min:'0',max:'50'}),tz=el('input',{value:c.timezone||''}),
+          up=el('input',{type:'number',value:c.uploads_per_day,min:'0',max:'50'}),
+          longUp=el('input',{type:'number',value:String(c.long_uploads_per_day||0),min:'0',max:'5'}),
+          tz=el('input',{value:c.timezone||''}),
           autoScore=el('input',{type:'number',value:String(c.auto_approve_score||0),min:'0',max:'1',step:'0.05'});
     const reqApp=el('input',{type:'checkbox',checked:c.require_approval!==false,style:'width:auto;margin:0'});
     const backstop=el('input',{type:'checkbox',checked:!!c.cadence_backstop,style:'width:auto;margin:0'});
+    const longAuto=el('input',{type:'checkbox',checked:!!c.long_auto_publish,style:'width:auto;margin:0'});
     const mk=(lbl,node)=>{const d=el('div');d.append(el('label',{},lbl),node);return d};
     const mkChk=(node,txt)=>{const l=el('label',{style:'display:flex;align-items:center;gap:8px;cursor:pointer;color:var(--dim);font-size:13px;margin:2px 0'});l.append(node,el('span',{},txt));return l};
     const g=el('div',{className:'grid2'});g.append(mk('Posts a day',up),mk('Timezone',tz));
     f.append(
       mk('Name',name),mk('Niche',niche),mk('Handle on clips',brand),g,
+      mk('Long compilations / day (0–5)',longUp),
       mk('Auto-approve AI score (0 = off, 0–1)',autoScore),
       mkChk(reqApp,'Require human approval before posting'),
-      mkChk(backstop,'Cadence backstop (approve best clip if slot would miss)')
+      mkChk(backstop,'Cadence backstop (approve best clip if slot would miss)'),
+      mkChk(longAuto,'Auto-publish ready 16:9 compilations')
     );
     const save=el('button',{className:'btn'},'Save settings');
     save.onclick=async()=>{save.disabled=true;try{await api.post('/api/channels/'+encodeURIComponent(c.slug)+'/settings',
-      {name:name.value,niche:niche.value,brand_name:brand.value,uploads_per_day:Number(up.value),timezone:tz.value,
-       require_approval:reqApp.checked,auto_approve_score:Number(autoScore.value)||0,cadence_backstop:backstop.checked});toast('Saved');loaders.channels()}catch(e){alert(e.message)}save.disabled=false};
+      {name:name.value,niche:niche.value,brand_name:brand.value,uploads_per_day:Number(up.value),
+       long_uploads_per_day:Number(longUp.value)||0,long_auto_publish:longAuto.checked,
+       timezone:tz.value,require_approval:reqApp.checked,auto_approve_score:Number(autoScore.value)||0,
+       cadence_backstop:backstop.checked});toast('Saved');loaders.channels()}catch(e){alert(e.message)}save.disabled=false};
     f.append(save);
     const rb=el('div',{className:'rowbtns'});
     const toggle=el('button',{className:'ghost'},c.enabled?'Switch channel off':'Switch channel on');
@@ -1206,6 +1243,171 @@ async function loadClip(){
   await refreshClipJobs();
 }
 
+/* ===================== LONG FORM ===================== */
+let longPollTimer=null,longChanSel=null;
+function buildLongForm(){
+  const box=$('long-build-form');if(!box||box.dataset.built)return;box.dataset.built='1';
+  longChanSel=el('select');
+  const fmtSel=el('select');
+  for(const [val,lbl] of [['best_of','Best Of Creator (Part N)'],['vs','Creator vs Creator'],['theme','Cross-Creator Theme']]){
+    fmtSel.append(el('option',{value:val},lbl));
+  }
+  const targetInp=el('input',{placeholder:'@Creator, "@A vs @B", or theme topic'});
+  const minsInp=el('input',{type:'number',value:'8',min:'6',max:'10'});
+  const err=el('div',{className:'err'});err.hidden=true;
+  const btn=el('button',{className:'btn'},'Build 16:9 Compilation');
+  btn.onclick=async()=>{
+    err.hidden=true;btn.disabled=true;
+    try{
+      await api.post('/api/long/build',{
+        channel_slug:longChanSel.value||'',
+        format:fmtSel.value,
+        target:targetInp.value.trim(),
+        theme:fmtSel.value==='theme'?targetInp.value.trim():'',
+        target_minutes:Number(minsInp.value)||8,
+      });
+      targetInp.value='';toast('Queued 16:9 build');loadLong();
+    }catch(e){err.textContent=e.message;err.hidden=false}
+    btn.disabled=false;
+  };
+  const mk=(lbl,node)=>{const d=el('div');d.append(el('label',{},lbl),node);return d};
+  const g=el('div',{className:'grid2'});g.append(mk('Format',fmtSel),mk('Target length (6–10 min)',minsInp));
+  box.append(mk('Channel',longChanSel),g,mk('Creator(s) or theme (optional)',targetInp),btn,err);
+}
+function renderLongJobs(jobs){
+  clearTimeout(longPollTimer);
+  const box=$('long-jobs');box.replaceChildren();
+  if(!jobs.length){box.append(el('div',{className:'empty'},'No long-form build jobs yet.'));return}
+  let anyActive=false;
+  for(const j of jobs){
+    if(j.status==='queued'||j.status==='running')anyActive=true;
+    const card=el('div',{className:'act'});
+    const top=el('div',{className:'top'});
+    const desc=[j.channel_slug,j.format,(j.targets||[]).join(' vs ')||j.theme].filter(Boolean).join(' · ');
+    top.append(el('span',{className:'lb'},desc||j.format));
+    const cls=j.status==='done'?'done':(j.status==='failed'?'err':(j.status==='running'?'run':''));
+    top.append(el('span',{className:'st '+cls},j.status+(j.stage?(' · '+j.stage):'')));
+    card.append(top);
+    if(j.error)card.append(el('div',{className:'err'},j.error));
+    const btns=el('div',{className:'rowbtns',style:'margin-top:4px'});
+    if(j.status==='failed'){
+      const rt=el('button',{className:'ghost'},'Retry');
+      rt.onclick=async()=>{rt.disabled=true;try{await api.post('/api/long/jobs/'+encodeURIComponent(j.id)+'/retry');toast('Re-queued');loadLong()}catch(e){alert(e.message);rt.disabled=false}};
+      btns.append(rt);
+    }
+    if(j.status!=='running'){
+      const dm=el('button',{className:j.status==='failed'?'danger':'ghost'},j.status==='queued'?'Cancel':'Dismiss');
+      dm.onclick=async()=>{dm.disabled=true;try{await api.post('/api/long/jobs/'+encodeURIComponent(j.id)+'/dismiss');loadLong()}catch(e){alert(e.message);dm.disabled=false}};
+      btns.append(dm);
+    }
+    if(btns.childNodes.length)card.append(btns);
+    box.append(card);
+  }
+  if(anyActive&&active==='long')longPollTimer=setTimeout(()=>{if(active==='long')loadLong()},4500);
+}
+function longCard(item){
+  const card=el('div',{className:'card'});
+  if(item.video_url){
+    const vid=el('video',{className:'wide',controls:true,preload:'metadata',playsInline:true,src:item.video_url});
+    card.append(vid);
+  }
+  const body=el('div',{className:'body'});
+  const top=el('div',{className:'badges'});
+  top.append(el('span',{className:'pill'},item.channel_slug),el('span',{className:'tag'},item.format+(item.part_number?(' · Part '+item.part_number):'')),el('span',{className:'tag '+(item.status==='transformed'?'on':'warn')},item.status==='transformed'?'Ready':item.status));
+  body.append(top);
+  body.append(el('div',{className:'meta'},Math.floor((item.duration_sec||0)/60)+'m '+(item.duration_sec||0)%60+'s · '+item.width+'×'+item.height+(item.views?(' · '+item.views.toLocaleString()+' views'):'')));
+
+  if((item.thumbnails||[]).length){
+    body.append(el('label',{},'Thumbnail (pick 1 of 3 or upload custom 1280×720)'));
+    const grid=el('div',{className:'thumbs'});
+    for(const t of item.thumbnails){
+      const b=el('button',{className:'thumb-opt'+(t.id===item.selected_thumbnail_id?' sel':''),type:'button'});
+      b.append(el('img',{src:t.url,alt:t.label}),el('span',{},t.label));
+      b.onclick=async()=>{try{await api.post('/api/long/'+encodeURIComponent(item.id)+'/thumbnail',{variant_id:t.id});toast('Selected thumbnail '+t.id);loadLong()}catch(e){alert(e.message)}};
+      grid.append(b);
+    }
+    body.append(grid);
+  }
+  const upWrap=el('div',{className:'rowbtns'});
+  const upInp=el('input',{type:'file',accept:'image/*',style:'display:none'});
+  const upBtn=el('button',{className:'ghost',type:'button'},'Upload custom thumbnail');
+  upBtn.onclick=()=>upInp.click();
+  upInp.onchange=async()=>{
+    const file=upInp.files&&upInp.files[0];if(!file)return;
+    upBtn.disabled=true;
+    try{
+      const r=await fetch('/api/long/'+encodeURIComponent(item.id)+'/thumbnail/upload',{method:'POST',body:file,credentials:'same-origin'});
+      if(!r.ok)throw new Error((await r.json().catch(()=>({}))).detail||'Upload failed');
+      toast('Custom thumbnail saved');loadLong();
+    }catch(e){alert(e.message)}
+    upBtn.disabled=false;upInp.value='';
+  };
+  upWrap.append(upBtn,upInp);
+  if(item.thumbnail_prompt){
+    const cp=el('button',{className:'ghost',type:'button'},'Copy AI Prompt');
+    cp.onclick=()=>copyText(item.thumbnail_prompt,'AI thumbnail prompt copied — paste into ChatGPT/Gemini');
+    upWrap.append(cp);
+  }
+  if(item.video_url){
+    const dl=el('a',{href:item.video_url+'?download=1',className:'ghost',style:'text-align:center;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;padding:10px'},'Save MP4');
+    upWrap.append(dl);
+  }
+  body.append(upWrap);
+
+  const titleInp=el('input',{value:item.title||''});
+  const descInp=el('textarea',{rows:4,value:item.description||''});
+  const tagsInp=el('input',{value:(item.tags||[]).join(', ')});
+  const mk=(lbl,node)=>{const d=el('div');d.append(el('label',{},lbl),node);return d};
+  body.append(mk('Title (no #Shorts)',titleInp),mk('Description & Chapters',descInp),mk('Tags (comma-separated)',tagsInp));
+
+  if(item.status==='pending'||item.status==='transformed'){
+    const acts=el('div',{className:'actions'});
+    const saveMeta=el('button',{className:'ghost'},'Save metadata');
+    saveMeta.onclick=async()=>{
+      saveMeta.disabled=true;
+      try{await api.post('/api/long/'+encodeURIComponent(item.id)+'/metadata',{
+        title:titleInp.value,description:descInp.value,tags:tagsInp.value.split(',').map(s=>s.trim()).filter(Boolean)
+      });toast('Metadata saved')}catch(e){alert(e.message)}
+      saveMeta.disabled=false;
+    };
+    const appBtn=el('button',{className:'yes'},item.status==='transformed'?'Approved (on shelf)':'Approve for 16:9 queue');
+    appBtn.onclick=async()=>{
+      appBtn.disabled=true;
+      try{await api.post('/api/long/'+encodeURIComponent(item.id)+'/approve',{
+        title:titleInp.value,description:descInp.value,tags:tagsInp.value.split(',').map(s=>s.trim()).filter(Boolean)
+      });toast('Approved compilation');loadLong()}catch(e){alert(e.message);appBtn.disabled=false}
+    };
+    const rejBtn=el('button',{className:'nope'},'Reject');
+    rejBtn.onclick=async()=>{
+      rejBtn.disabled=true;
+      try{await api.post('/api/long/'+encodeURIComponent(item.id)+'/reject');toast('Rejected compilation');loadLong()}catch(e){alert(e.message);rejBtn.disabled=false}
+    };
+    acts.append(saveMeta,appBtn,rejBtn);
+    body.append(acts);
+  }else if(item.youtube_url){
+    body.append(el('a',{href:item.youtube_url,target:'_blank',className:'srclink'},'Watch on YouTube →'));
+  }
+  card.append(body);return card;
+}
+async function loadLong(){
+  buildLongForm();
+  try{
+    const d=await api.get('/api/long/videos');
+    if(longChanSel){
+      const cur=longChanSel.value;
+      longChanSel.replaceChildren();
+      for(const c of d.channels||[])longChanSel.append(el('option',{value:c.slug},c.name+' ('+c.slug+')'));
+      if(cur&&[...longChanSel.options].some(o=>o.value===cur))longChanSel.value=cur;
+    }
+    renderLongJobs(d.jobs||[]);
+    const list=$('long-list');list.replaceChildren();
+    const items=[...(d.pending||[]),...(d.ready||[]),...(d.posted||[])];
+    setAlert('long',(d.pending||[]).length>0||(d.jobs||[]).some(j=>j.status==='failed'));
+    if(!items.length){list.append(el('div',{className:'empty'},'No 16:9 compilations yet. Build one above or wait for the 6h supply job.'));return}
+    for(const item of items)list.append(longCard(item));
+  }catch(e){$('long-list').replaceChildren(el('div',{className:'err'},'Could not load long-form compilations.'))}
+}
+
 /* ---------- alerts on the tab bar ---------- */
 function setAlert(tab,on){const b=$('nav-'+tab);if(b)b.classList.toggle('alert',!!on)}
 
@@ -1231,7 +1433,7 @@ document.addEventListener('keydown',e=>{
   const tag=(document.activeElement&&document.activeElement.tagName)||'';
   if(tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT')return;
   if(e.key==='?'){e.preventDefault();kbdModal.hidden=!kbdModal.hidden;return}
-  if(e.key>='1'&&e.key<='6'){const t=TABS[Number(e.key)-1];if(t){e.preventDefault();show(t[0])}return}
+  if(e.key>='1'&&e.key<='7'){const t=TABS[Number(e.key)-1];if(t){e.preventDefault();show(t[0])}return}
   if(active!=='review')return;
   if(e.key==='Escape'&&(rvSearch.value||searchQuery)){e.preventDefault();rvSearch.value='';searchQuery='';kbIdx=-1;renderReview();return}
   if(e.key==='/'){e.preventDefault();rvTools.hidden=false;rvSearch.focus();rvSearch.select();return}
@@ -1254,7 +1456,7 @@ document.addEventListener('keydown',e=>{
 /* ---------- wiring ---------- */
 const loaders={
   review:async()=>{try{lastQ=await api.get('/api/queue');renderReview()}catch(e){if(e instanceof Response&&e.status===401)$('rv-stats').textContent='Session expired — reopen your link.'}},
-  clip:loadClip,channels:loadChannels,status:()=>loadDoctor(false),report:loadReport,controls:loadControls,
+  clip:loadClip,long:loadLong,channels:loadChannels,status:()=>loadDoctor(false),report:loadReport,controls:loadControls,
 };
 show('review');
 // Refresh the tab you are looking at. Review and the quick tabs poll; never while you are typing or a clip plays.

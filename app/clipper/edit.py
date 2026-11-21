@@ -18,7 +18,7 @@ from typing import Optional, Sequence
 
 from app.config import settings
 
-from . import ai, broll, memes, shots
+from . import ai, broll, memes, shots, timeline
 from .captions import COUNTABLE, beat_is_drawable
 from .media import Interrupted
 from .moments import Moment, Sentence, build_sentences, is_finished
@@ -435,6 +435,9 @@ def attach_memes(plan: EditPlan, session: Optional[memes.MemeSession] = None) ->
     """
     if not [b for b in plan.beats if b.style == PUNCH]:
         return []
+    if not settings.clip_memes_allow_stills and memes.provider() == memes.MEMEGEN:
+        plan.meme_overlays = []
+        return []
     if not memes.available():
         plan.meme_overlays = []
         return []
@@ -493,6 +496,24 @@ def opening_line(moment: Moment, words: Sequence[Word], plan: Optional[EditPlan]
             whole = moment.start <= sentence.start and sentence.end <= moment.end
             return sentence.text if whole and is_finished(sentence.text) else ""
     return ""
+
+
+def first_sentence_text(moment: Moment, words: Sequence[Word]) -> str:
+    """First clean spoken sentence inside `moment`, for non-word-timed clean-vlog clips."""
+    inside = [w for w in words if w.end > moment.start and w.start < moment.end]
+    for sentence in build_sentences(inside):
+        text = " ".join(sentence.text.split()).strip()
+        if text:
+            return text[:120]
+    return ""
+
+
+def build_clean_vlog_edit(moment: Moment, source_path: str, *, speed: float = 1.08) -> EditPlan:
+    """Clean vlog edit for Hindi/non-word-timed clips: trim true audio silences without chopping words."""
+    silences = timeline.detect_silences(source_path, moment.start, moment.end)
+    segments = timeline.audio_keep_segments(moment.start, moment.end, silences)
+    safe_speed = speed if math.isfinite(speed) and speed > 0 else 1.0
+    return EditPlan(words=[], segments=segments, beats=[], speed=safe_speed)
 
 
 def build_edit(moment: Moment, words: Sequence[Word], *, title: str = "") -> EditPlan:

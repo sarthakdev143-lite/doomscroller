@@ -268,6 +268,19 @@ def show_report(*, as_json: bool = False, channel: str | None = None, markdown: 
     """Plain text by default. `markdown` prints a shareable digest, and `out` writes a file instead of printing
     (Markdown, or JSON with `as_json`)."""
     try:
+        if markdown and not as_json and not out:
+            print(_report.export_markdown_report(channel_slug=channel or ""), end="")
+            return 0
+        if out and not as_json:
+            text = _report.export_markdown_report(channel_slug=channel or "").rstrip() + "\n"
+            target = Path(out)
+            try:
+                _write_atomic(target, text)
+            except OSError as exc:
+                print(f"Error: cannot write {target}: {exc}")
+                return 1
+            print(f"Wrote Markdown report to {target}.")
+            return 0
         rep = _report.build_report(channel_slug=channel) if channel else _report.build_report()
     except LookupError as exc:
         if as_json:
@@ -277,21 +290,17 @@ def show_report(*, as_json: bool = False, channel: str | None = None, markdown: 
         return 1
     if out:
         target = Path(out)
-        text = (json.dumps(rep, indent=2) if as_json else _report.render_markdown(rep)).rstrip() + "\n"
+        text = json.dumps(rep, indent=2).rstrip() + "\n"
         try:
             _write_atomic(target, text)
         except OSError as exc:
             msg = f"cannot write {target}: {exc}"
-            print(json.dumps({"ok": False, "error": msg}, indent=2) if as_json else f"Error: {msg}")
+            print(json.dumps({"ok": False, "error": msg}, indent=2))
             return 1
-        print(json.dumps({"ok": True, "out": str(target), "format": "json" if as_json else "markdown"}, indent=2)
-              if as_json else f"Wrote {'JSON' if as_json else 'Markdown'} report to {target}.")
+        print(json.dumps({"ok": True, "out": str(target), "format": "json"}, indent=2))
         return 0
     if as_json:
         print(json.dumps(rep, indent=2))
-        return 0
-    if markdown:
-        print(_report.render_markdown(rep), end="")
         return 0
     if rep["blocks"]:
         print("Takedown blocks, whose feeds are skipped. Lift with: scripts/growth.py unblock <name>")

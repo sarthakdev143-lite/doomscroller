@@ -141,7 +141,7 @@ def test_full_run_with_no_key_falls_back_to_visual(landscape, tmp_path, monkeypa
 
 def _still_frames(path, *, every=1):
     raw = read_ffmpeg(["-i", str(path), "-map", "0:v:0", "-vf", f"select='not(mod(n,{every}))',format=gray",
-                       "-vsync", "0", "-f", "rawvideo", "-"])
+                       "-fps_mode", "passthrough", "-f", "rawvideo", "-"])
     return np.frombuffer(raw, np.uint8).reshape(-1, 1920, 1080)
 
 

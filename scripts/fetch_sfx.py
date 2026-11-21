@@ -16,7 +16,6 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.clipper import trending_sfx  # noqa: E402
-from app.config import settings  # noqa: E402
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -37,7 +36,7 @@ def fetch_packs(limit: int, searches: list[str]) -> dict:
     skipped = 0
     session = trending_sfx.SfxSession()
     used: set[str] = set()
-    for candidate in trending_sfx.trending(limit=limit):
+    for _candidate in trending_sfx.trending(limit=limit):
         if session.stopped:
             break
         try:

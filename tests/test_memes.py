@@ -273,12 +273,17 @@ def test_attach_memes_needs_key(monkeypatch):
     plan = _speech_plan(monkeypatch)
     monkeypatch.setattr(settings, "tenor_api_key", "")
     monkeypatch.setattr(settings, "giphy_api_key", "")
-    # Keyless MemeGen still serves overlays behind the flag.
     monkeypatch.setattr(edit_mod.memes, "fetch",
                         lambda q, s, *, exclude=(), choose=None: memes_mod.MemeClip("m1", "/tmp/m1.jpg", "T", "MemeGen"))
+    # Default: static MemeGen overlays are skipped unless clip_memes_allow_stills=True.
     assert edit_mod.attach_memes(plan) == []
-    assert [o.at for o in plan.meme_overlays] == [5.0, 12.0, 20.0]
-    assert all(o.clip.provider == "MemeGen" for o in plan.meme_overlays)
+    assert plan.meme_overlays == []
+    # Explicit opt-in serves MemeGen overlays behind the flag.
+    monkeypatch.setattr(settings, "clip_memes_allow_stills", True)
+    plan_opt = _speech_plan(monkeypatch)
+    assert edit_mod.attach_memes(plan_opt) == []
+    assert [o.at for o in plan_opt.meme_overlays] == [5.0, 12.0, 20.0]
+    assert all(o.clip.provider == "MemeGen" for o in plan_opt.meme_overlays)
     # Flag off clears.
     plan2 = _speech_plan(monkeypatch)
     monkeypatch.setattr(settings, "clip_memes", False)

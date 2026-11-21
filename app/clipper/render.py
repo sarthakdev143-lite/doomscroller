@@ -115,8 +115,20 @@ class ClipPlan:
     focus_x_expr: str = ""  # where the speaker's face is in the picture, 0 to 1, when known
     focus_y_expr: str = ""
     tail: float = 0.0  # seconds the last frame is held at the end, under a meme sound
+    end_fade: float = _END_FADE
     ass_path: str = "clip.ass"
     fonts_dir: str = "fonts"
+
+
+_STILL_MEME_EXTS = frozenset({".jpg", ".jpeg", ".png", ".webp", ".bmp"})
+
+
+def _meme_input_args(seconds: float, path: str) -> list[str]:
+    abs_path = os.path.abspath(path)
+    dur = f"{seconds + 0.2:.3f}"
+    if os.path.splitext(abs_path)[1].lower() in _STILL_MEME_EXTS:
+        return ["-loop", "1", "-t", dur, "-i", abs_path]
+    return ["-stream_loop", "-1", "-t", dur, "-i", abs_path]
 
 
 _FILTER_QUOTE_CHARS = frozenset(":\\',;[] \t")
@@ -389,9 +401,11 @@ def speaker_pieces(source: str, info: MediaInfo, signals: Signals, moment: Momen
 def plan_clip(moment: Moment, words: Sequence[Word], signals: Signals, info: MediaInfo, *,
               has_graphics: bool, exact_cuts: Optional[dict[float, float]] = None,
               faces: Optional[dict[float, float]] = None, edit: Optional[EditPlan] = None,
-              focus: Sequence[tuple[float, float, float]] = (), crop_bottom: float = 0.0) -> ClipPlan:
+              focus: Sequence[tuple[float, float, float]] = (), crop_bottom: float = 0.0,
+              end_fade: float = _END_FADE, hold_end: Optional[bool] = None) -> ClipPlan:
     segments = edit.segments if edit else keep_segments(moment.start, moment.end, words, settings.clip_silence_gap_sec)
-    segments = with_end_hold(segments, info.duration)
+    if hold_end if hold_end is not None else (not settings.clip_loop_ending):
+        segments = with_end_hold(segments, info.duration)
     raw_speed = edit.speed if edit else 1.0
     speed = raw_speed if math.isfinite(raw_speed) and raw_speed > 0 else 1.0
     safe_crop_bottom = min(0.9, max(0.0, crop_bottom)) if math.isfinite(crop_bottom) else 0.0
@@ -434,6 +448,7 @@ def plan_clip(moment: Moment, words: Sequence[Word], signals: Signals, info: Med
         picture_crop_bottom=safe_crop_bottom if picture_height else 0.0,
         focus_x_expr=_piecewise([(t, round(x, 3)) for t, x, _y in focus]) if focus else "",
         focus_y_expr=_piecewise([(t, round(y, 3)) for t, _x, y in focus]) if focus else "",
+        end_fade=end_fade,
     )
 
 
@@ -558,12 +573,13 @@ def build_filtergraph(plan: ClipPlan, info: MediaInfo, seek: float) -> str:
             parts.append(f"{head}apad=pad_dur={plan.tail:.3f}[apadded]")
             head = "[apadded]"
         # loudnorm emits large irregular blocks, so renumber them or -t cuts one off.
-        fade_at = max(0.0, plan.duration - _END_FADE)
+        end_fade = plan.end_fade if math.isfinite(plan.end_fade) and plan.end_fade >= 0 else _END_FADE
+        fade_at = max(0.0, plan.duration - end_fade)
         # Gentle levelling first: vlog dialogue is far more dynamic than produced clips, so without
         # this soft speech stays soft after normalising. loudnorm after it still pins the final level.
         normalised = (f"acompressor=threshold=0.1:ratio=3:attack=20:release=200:makeup=2,"
                       f"loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,asetpts=N/SR/TB,"
-                      f"afade=t=out:st={fade_at:.3f}:d={_END_FADE}")
+                      f"afade=t=out:st={fade_at:.3f}:d={end_fade:g}")
         # The whole mix is stereo so a stereo music bed keeps its width instead of being folded to
         # mono (earshot: "the mix is mono ... use stereo music and ambience"). The voice is centred
         # dual-mono and the music carries the sides; without music a clip is honestly near-mono.
@@ -672,7 +688,10 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
         segments = keep_segments(moment.start, moment.end, cut_on, settings.clip_silence_gap_sec)
         clip_words = _shift_words(words, segments, moment.start, moment.end)
         beats = []
-    segments = with_end_hold(segments, info.duration)
+    sound = load_sting(sting) if sting and info.has_audio and settings.clip_sfx else None
+    loop_clean = bool(settings.clip_loop_ending) and sound is None
+    if not loop_clean:
+        segments = with_end_hold(segments, info.duration)
     crop_bottom = _CAPTION_BAND if source_captioned and _picture_height(info) else 0.0
     if not captions or (source_captioned and not crop_bottom):
         clip_words = []
@@ -699,10 +718,10 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
         # Face heights were measured on the whole frame; the picture may have lost its bottom band.
         focus = [(t, x, min(1.0, y / (1 - crop_bottom))) for t, x, y in focus]
     plan = plan_clip(moment, cut_on, signals, info, has_graphics=has_text, exact_cuts=exact_cuts, faces=faces,
-                     edit=edit, focus=focus, crop_bottom=crop_bottom)
+                     edit=edit, focus=focus, crop_bottom=crop_bottom,
+                     end_fade=0.02 if loop_clean else _END_FADE, hold_end=not loop_clean)
     if music and info.has_audio:
         plan.music = os.path.abspath(music)
-    sound = load_sting(sting) if sting and info.has_audio and settings.clip_sfx else None
     sting_at = plan.duration
     if sound is not None:
         # Hold the last frame under the sound, so it lands after the punchline and never over a word.
@@ -735,8 +754,8 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
                     *(["-i", "sfx.wav"] if plan.has_sfx else []),
                     *[item for start, seconds, path, offset in plan.broll
                       for item in ("-ss", f"{offset:.3f}", "-t", f"{seconds + 0.2:.3f}", "-i", os.path.abspath(path))],
-                    *[item for _start, _seconds, path in plan.memes
-                      for item in ("-i", os.path.abspath(path))],
+                    *[item for _start, seconds, path in plan.memes
+                      for item in _meme_input_args(seconds, path)],
                     *(["-stream_loop", "-1", "-i", plan.music] if plan.music else []),
                     "-filter_complex", build_filtergraph(plan, info, seek),
                     "-map", "[vout]"]

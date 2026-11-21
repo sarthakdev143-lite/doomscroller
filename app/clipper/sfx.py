@@ -41,26 +41,27 @@ class Cue:
 
 
 def _whoosh(rng: np.random.Generator) -> np.ndarray:
-    count = int(RATE * 0.28)
+    count = int(RATE * 0.24)
     noise = rng.normal(0, 1, count)
-    # A sweep of moving averages: long window (dull) to short (bright) and back.
     t = np.linspace(0, 1, count)
-    smooth = np.convolve(noise, np.ones(24) / 24, mode="same")
-    bright = t * noise * 0.3 + (1 - t) * smooth
-    return bright * np.sin(np.pi * t) ** 2
+    smooth = np.convolve(noise, np.ones(18) / 18, mode="same")
+    bright = (0.15 + 0.55 * t) * noise + (0.85 - 0.55 * t) * smooth
+    return bright * (np.sin(np.pi * t) ** 1.6)
 
 
 def _impact() -> np.ndarray:
-    count = int(RATE * 0.45)
+    count = int(RATE * 0.42)
     t = np.arange(count) / RATE
-    frequency = 40 + 70 * np.exp(-t * 28)
-    return np.sin(2 * np.pi * np.cumsum(frequency) / RATE) * np.exp(-t * 9)
+    frequency = 42 + 88 * np.exp(-t * 32)
+    sub = np.sin(2 * np.pi * np.cumsum(frequency) / RATE)
+    click = np.exp(-t * 140) * np.sin(2 * np.pi * 220 * t)
+    return (sub * 0.9 + click * 0.35) * np.exp(-t * 8.5)
 
 
 def _pop() -> np.ndarray:
-    count = int(RATE * 0.07)
+    count = int(RATE * 0.065)
     t = np.arange(count) / RATE
-    return np.sin(2 * np.pi * (700 - 3500 * t) * t) * np.exp(-t * 55)
+    return np.sin(2 * np.pi * (820 - 4200 * t) * t) * np.exp(-t * 60)
 
 
 def pack_dir() -> Path:
@@ -94,9 +95,10 @@ def pack_pick(kind: str, seed: str) -> Optional[Path]:
         return None
     aliases = _KIND_ALIASES.get(kind, ())
     named = [p for p in files if any(a in p.stem.lower() for a in aliases)]
-    pool = named or files
-    index = int(hashlib.sha1(f"{seed}|{kind}".encode()).hexdigest(), 16) % len(pool)
-    return pool[index]
+    if not named:
+        return None
+    index = int(hashlib.sha1(f"{seed}|{kind}".encode()).hexdigest(), 16) % len(named)
+    return named[index]
 
 
 def trending() -> dict[str, Path]:

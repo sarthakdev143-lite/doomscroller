@@ -22,7 +22,7 @@ from app.growth import learn, recipes
 
 from . import audio_qa, music, sfx, subtitles
 from .broll import StockSession, credit_line
-from .edit import attach_memes, attach_stock, build_edit, opening_line
+from .edit import attach_memes, attach_stock, build_clean_vlog_edit, build_edit, first_sentence_text, opening_line
 from .memes import MemeSession, credit_line as meme_credit_line
 from .ingest import IngestError, SourceVideo, fetch, file_fingerprint, is_url
 from .media import Interrupted, MediaError, probe, require_tools
@@ -38,6 +38,7 @@ Progress = Callable[[str], None]
 # Rendering is CPU-heavy, so one job at a time. Holding this also proves that any
 # row still marked running was orphaned by a crash or restart.
 _queue_lock = threading.Lock()
+RENDER_LOCK = _queue_lock
 _active_job_id: Optional[str] = None
 # A job stopped this many times is probably what is stopping things.
 _MAX_ATTEMPTS = 3
@@ -192,20 +193,34 @@ def _save_clip(src: SourceVideo, moment: Moment, path: str, duration: float, *, 
         return video.id, video.status
 
 
-def _channel_brand(channel_id: Optional[str]) -> Optional[str]:
-    """The handle a managed channel's clips show. None keeps BRAND_NAME, which is the legacy channel's.
-
-    A named channel with no handle shows none, rather than another channel's.
-    """
+def _channel_for(channel_id: Optional[str]):
+    """Load the managed Channel for `channel_id`, or None when unset/unknown."""
     if not channel_id:
         return None
     from app.growth import channels
 
     with session_scope() as db:
-        channel = channels.get_channel(db, channel_id)
-        if channel is None or channels.is_default(channel):
-            return None
-        return channel.brand_name or ""
+        return channels.get_channel(db, channel_id)
+
+
+def _choose_recipe(channel_id: Optional[str]) -> dict[str, str]:
+    channel = _channel_for(channel_id)
+    return recipes.choose(channel=channel) if channel is not None else recipes.choose()
+
+
+def _channel_brand(channel_id: Optional[str]) -> Optional[str]:
+    """The handle a managed channel's clips show. None keeps BRAND_NAME, which is the legacy channel's.
+
+    A named channel with no handle shows none, rather than another channel's.
+    """
+    channel = _channel_for(channel_id)
+    if channel is None:
+        return None
+    from app.growth import channels
+
+    if channels.is_default(channel):
+        return None
+    return channel.brand_name or ""
 
 
 def _store_audio_qa(video_id: str, path: str) -> None:
@@ -316,15 +331,17 @@ def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
         earlier = _earlier_clips(src)
         used = ([moment for _, moment in earlier] if mine
                 else [Moment(c["start"], c["end"], kind=c["kind"]) for c in clips])
-        # Sarvam times Hindi by the phrase, not the word, so anything cut or drawn on a word (captions,
-        # jump cuts, B-roll, graphics) lands off the speech. A Hindi clip plays as filmed instead, with at
-        # most one meme sound after its payoff.
+        # Sarvam times Hindi by the phrase, not the word, so Hindi uses Clean Vlog style:
+        # no word-timed captions or word jump cuts, but audio-based silence trimming, tighter 18-35s
+        # pacing, zoom rhythm, music bed, and optional meme stings. Trending stings also work for English!
         timed = language != "hi"
-        stings = {} if timed else sfx.trending()
-        if not timed:
-            log.info("clipper: %s is Hindi, so its clips play as filmed, with %d meme sounds on offer", label, len(stings))
+        clean_vlog = speech and not timed
+        stings = sfx.trending() if settings.clip_sfx else {}
+        if clean_vlog:
+            log.info("clipper: %s is Hindi, using clean-vlog edit with %d meme sounds on offer", label, len(stings))
+        pick_kw = {"min_sec": 18, "max_sec": 35, "target_sec": 26} if clean_vlog else {}
         moments = pick_speech(words, signals, count=left, title=src.title, used=used,
-                              sounds=tuple(stings)) if speech else []
+                              sounds=tuple(stings), **pick_kw) if speech else []
         # Speech clips already cut means the speech ran out, not that there was too little to begin with.
         if speech and not moments and not any(m.kind == "speech" for m in used):
             warn("too little continuous speech for a speech clip, so cutting on motion and sound instead")
@@ -373,12 +390,19 @@ def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
 
             report(f"rendering clip {number} of {len(fresh)}")
             out_path = str(out_dir / f"{int(moment.start)}_{int(moment.end)}.mp4")
-            recipe = recipes.choose() if moment.kind == "speech" and timed else {}
+            recipe = _choose_recipe(channel_id) if moment.kind == "speech" else {}
+            if clean_vlog and recipe:
+                recipe["broll"] = "off"
             track = music.pick(_clip_id(src, moment))
             try:
                 with recipes.applied(recipe):
-                    edit = build_edit(moment, words, title=src.title) if moment.kind == "speech" and timed else None
-                    if edit:
+                    if moment.kind == "speech" and timed:
+                        edit = build_edit(moment, words, title=src.title)
+                    elif moment.kind == "speech" and not timed:
+                        edit = build_clean_vlog_edit(moment, src.path, speed=min(1.12, settings.clip_speed))
+                    else:
+                        edit = None
+                    if edit and timed:
                         for message in attach_stock(edit, stock):
                             if message not in warnings:
                                 warn(message)
@@ -392,7 +416,7 @@ def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
                             log.info("clipper: clip %d of %s ends on the sound %s", number, label, moment.sound)
                         plan = render_moment(src.path, info, signals, moment, words if timed else [], out_path,
                                              edit=edit, creator=src.author_name or src.author, music=track,
-                                             source_captioned=burned_in, **extras)
+                                             captions=timed, source_captioned=burned_in, **extras)
                     except MediaError as exc:
                         if not (edit and (edit.cutaways or edit.meme_overlays)):
                             raise
@@ -403,9 +427,9 @@ def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
                         warn(f"clip {number} lost its {' and '.join(lost)}, which would not render: {exc}")
                         edit.cutaways = []
                         edit.meme_overlays = []
-                        plan = render_moment(src.path, info, signals, moment, words, out_path, edit=edit,
+                        plan = render_moment(src.path, info, signals, moment, words if timed else [], out_path, edit=edit,
                                              creator=src.author_name or src.author, music=track,
-                                             source_captioned=burned_in, **branding)
+                                             captions=timed, source_captioned=burned_in, **extras)
                 if recipe:
                     # Record what the clip got: no key or no matches means no B-roll, whatever was asked for.
                     recipe["broll"] = "on" if edit and edit.cutaways else "off"
@@ -421,9 +445,10 @@ def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
                         credit = f"{credit} {meme_credit_line([c.title for c in overlays], overlays[0].provider)}".strip()
                 if plan.music:
                     credit = f"{credit} {music.credit(track)}".strip()
+                spoken = opening_line(moment, words, edit) if timed else first_sentence_text(moment, words)
                 video_id, saved_status = _save_clip(src, moment, out_path, plan.duration, language=language,
                                                     auto_queue=auto_queue, credit=credit, recipe=recipe,
-                                                    job_id=job_id, spoken=opening_line(moment, words, edit),
+                                                    job_id=job_id, spoken=spoken,
                                                     channel_id=channel_id)
             except Interrupted:
                 raise

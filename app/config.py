@@ -61,7 +61,6 @@ class Settings(BaseSettings):
     )
 
     # App
-    app_env: str = "dev"
     use_mock: bool = True
     log_level: str = "INFO"
 
@@ -77,7 +76,6 @@ class Settings(BaseSettings):
     uploads_per_day: int = 8
     upload_interval_hours: int = 3
     upload_jitter_minutes: int = 45
-    min_approved_queue: int = 1
     auto_publish: bool = True
     enable_publish: bool = True
     auto_discovery: bool = True
@@ -92,8 +90,6 @@ class Settings(BaseSettings):
     enabled_platforms: str = '["snapchat"]'
     viral_min_engagement: float = 0.15
     viral_min_velocity: float = 0.12
-    viral_preferred_min_duration: int = 5
-    viral_preferred_max_duration: int = 35
     # Absolute reach floor for Spotlight, which is already algorithmically
     # filtered upstream -- engagement rate alone is a poor gate there.
     viral_min_views: int = 25_000
@@ -201,18 +197,23 @@ class Settings(BaseSettings):
     clip_edit_gap_sec: float = 0.12
     # Long enough for a setup and its outcome: shorter targets cut stories off before their payoff.
     clip_edit_target_sec: int = 40
+    # Loop-friendly endings skip the frozen tail and long fade unless a sting plays.
+    clip_loop_ending: bool = True
     clip_sfx: bool = True
     # Music under every clip, from tracks the owner puts in this folder. Empty means <CONTENT_DIR>/music.
     clip_music: bool = True
     clip_music_dir: str = ""
+    # Fall back to stereo synthesized ambient beds when content/music/ has no owner tracks yet.
+    clip_music_synth_fallback: bool = True
     # How far below the levelled voice the music sits; it dips further while someone talks.
     clip_music_db: float = -16.0
     # Stock cutaways over the voice. Needs either key; without one, clips simply have none.
     clip_broll: bool = True
     pixabay_api_key: str = ""
     pexels_api_key: str = ""
-    # Trending meme/GIF overlays on punch beats. Needs either key; without one, clips have none.
+    # Trending meme/GIF overlays on punch beats. Needs animated keys by default; static MemeGen JPEGs are opt-in.
     clip_memes: bool = True
+    clip_memes_allow_stills: bool = False
     tenor_api_key: str = ""
     giphy_api_key: str = ""
     # Owner-curated one-shot SFX pack (e.g. whoosh.wav). Empty means <CONTENT_DIR>/sfx.
@@ -238,6 +239,9 @@ class Settings(BaseSettings):
     opencode_model: str = "opencode-go/muse-spark-1.3-contributor"
     # Must accept images: it judges frames from no-speech footage.
     opencode_vision_model: str = "opencode-go/muse-spark-1.3-contributor"
+    # Optional AI image generators for 1280x720 long-form thumbnails (ChatGPT first, Gemini free-tier fallback).
+    openai_api_key: str = ""
+    gemini_api_key: str = ""
     # When OpenCode fails, the Claude CLI takes the call, on the account it is logged in to.
     claude_fallback: bool = True
     claude_bin: str = ""
@@ -253,7 +257,6 @@ class Settings(BaseSettings):
     youtube_client_secrets: str = ""
     youtube_token_path: str = "./secrets/youtube_token.json"
     max_uploads_per_day: int = 50
-    youtube_default_title: str = "Shorts"
     youtube_default_tags: str = '["shorts","viral"]'
     youtube_default_category: int = 22
     youtube_default_privacy: str = "private"
@@ -302,7 +305,6 @@ class Settings(BaseSettings):
 
     # LLM
     use_llm_metadata: bool = True
-    llm_model: str = "glm-4-plus"
     llm_timeout_sec: int = 60
 
     # ---- Derived helpers ----
@@ -408,9 +410,8 @@ class Settings(BaseSettings):
     @field_validator(
         "scheduler_max_workers", "scrape_interval_hours", "scrape_max_per_run",
         "scrape_target_pending", "discovery_interval_hours", "uploads_per_day",
-        "upload_interval_hours", "upload_jitter_minutes", "min_approved_queue",
-        "auto_approve_veto_hours", "viral_preferred_min_duration",
-        "viral_preferred_max_duration", "viral_min_views", "min_source_duration_sec",
+        "upload_interval_hours", "upload_jitter_minutes",
+        "auto_approve_veto_hours", "viral_min_views", "min_source_duration_sec",
         "max_source_duration_sec", "min_source_height", "min_file_size_bytes",
         "source_video_max_age_days", "ffmpeg_threads", "transform_width",
         "transform_height", "transform_blur_sigma", "caption_max_chars",
@@ -465,6 +466,7 @@ class Settings(BaseSettings):
         "auto_discovery", "auto_approve", "allow_unknown_language",
         "transform_variation", "caption_enabled", "end_card_enabled",
         "upscale_sharpen", "clip_auto_queue", "clip_sfx", "clip_broll", "clip_music", "clip_memes",
+        "clip_memes_allow_stills", "clip_music_synth_fallback", "clip_loop_ending",
         "clip_trending_sfx",
         "growth_enabled", "youtube_made_for_kids", "claude_fallback", "growth_require_approval", "earshot_qa", mode="before",
     )

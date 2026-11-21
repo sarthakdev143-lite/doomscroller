@@ -63,8 +63,10 @@ def show_list() -> int:
     for channel, feeds, step in rows:
         state = "running" if channel.enabled and not step else ("on" if channel.enabled else "off")
         sources = "from .env" if channels.is_default(channel) else f"{feeds} source{'s' if feeds != 1 else ''}"
+        long_pace = channels.long_uploads_per_day(channel)
+        long_note = f"  long:{long_pace}/day" if long_pace > 0 else ""
         print(f"{channel.slug:<14} {(channel.name or '')[:24]:<24} {state:<8} "
-              f"{channels.uploads_per_day(channel)}/day  {sources}")
+              f"{channels.uploads_per_day(channel)}/day  {sources}{long_note}")
         if step:
             todo += 1
             print(f"{'':<14} next: {step}")
@@ -180,6 +182,20 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="approve the best waiting clip rather than miss a posting slot",
     )
+    edit.add_argument(
+        "--long-uploads",
+        dest="long_uploads_per_day",
+        type=int,
+        default=None,
+        help="16:9 long-form compilations per day (0-5)",
+    )
+    edit.add_argument(
+        "--long-auto-publish",
+        dest="long_auto_publish",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="auto-publish ready 16:9 compilations up to long-uploads/day",
+    )
     for name, text in (("enable", "switch a channel on without checking it"), ("disable", "stop one channel")):
         toggle = commands.add_parser(name, help=text)
         toggle.add_argument("slug")
@@ -237,12 +253,15 @@ def main(argv: list[str] | None = None) -> int:
                 "require_approval",
                 "auto_approve_score",
                 "cadence_backstop",
+                "long_uploads_per_day",
+                "long_auto_publish",
             )
             fields = {key: getattr(args, key) for key in editable_keys}
             if all(value is None for value in fields.values()):
                 print(
                     "Nothing to change. Give at least one of --name --niche --brand --uploads --timezone "
-                    "--require-approval/--no-require-approval --auto-approve-score --cadence-backstop/--no-cadence-backstop."
+                    "--require-approval/--no-require-approval --auto-approve-score --cadence-backstop/--no-cadence-backstop "
+                    "--long-uploads --long-auto-publish/--no-long-auto-publish."
                 )
                 return 1
             return _applied(channels.update_channel(args.slug, **fields))

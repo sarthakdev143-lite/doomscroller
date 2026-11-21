@@ -13,31 +13,34 @@ from app.metadata import (
 
 # -------------------------------------------------------------------- title
 def test_title_gets_shorts_hashtag_once():
+    # Default Shorts titles stay clean (no forced #Shorts in title; #Shorts lives in description).
     md = compose(title="A clip", description="", keywords=[])
-    assert md.title == "A clip #Shorts"
-    # An existing hashtag is not duplicated.
-    again = compose(title="A clip #shorts", description="", keywords=[])
+    assert md.title == "A clip"
+    assert "#Shorts" in md.description
+    # Opting into title_shorts_tag preserves de-duplicated #Shorts suffix.
+    tagged = compose(title="A clip", description="", keywords=[], title_shorts_tag=True)
+    assert tagged.title == "A clip #Shorts"
+    again = compose(title="A clip #shorts", description="", keywords=[], title_shorts_tag=True)
     assert again.title.lower().count("#shorts") == 1
 
 
 def test_long_title_is_cut_at_a_separator():
     long_tail = "x" * 120
     md = compose(title=f"The Real Headline | {long_tail}", description="", keywords=[])
-    assert md.title == "The Real Headline #Shorts"
+    assert md.title == "The Real Headline"
 
 
 def test_very_long_title_is_cut_on_a_word_boundary():
     md = compose(title=" ".join(["word"] * 60), description="", keywords=[])
     assert len(md.title) <= _TITLE_MAX
-    assert md.title.endswith("#Shorts")
-    assert "wor#" not in md.title  # never cut mid-word
+    assert md.title.endswith("word")
 
 
 def test_empty_title_falls_back_to_description_then_placeholder():
     from_desc = compose(title="", description="A thing happened", keywords=[])
     assert from_desc.title.startswith("A thing happened")
     empty = compose(title="", description="", keywords=[])
-    assert empty.title == "Watch this #Shorts"
+    assert empty.title == "Watch this"
 
 
 # --------------------------------------------------------------------- tags
@@ -50,7 +53,7 @@ def test_tags_are_normalised_and_deduped():
 
 def test_single_character_tags_are_dropped():
     # A one-character YouTube tag matches nothing useful.
-    assert build_tags(["a", "b", "dancing"]) == ["dancing", "shorts", "viral", "trending", "reels"]
+    assert build_tags(["a", "b", "dancing"]) == ["dancing", "shorts", "viral", "trending"]
 
 
 def test_tags_drop_noise_words():

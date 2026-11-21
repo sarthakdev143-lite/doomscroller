@@ -205,7 +205,9 @@ def ready_clips(db, scope=None) -> list[Video]:
     rows = db.execute(select(Video).where(*conds).order_by(Video.transformed_at)).scalars().all()
     blocked = safety.blocked_parents(db)  # a job still running can finish a clip after the strike
     # A row whose file is gone is no stock: counted, it starves supply and shows clips that cannot post.
-    ready = [v for v in rows if (v.meta or {}).get("clip_rendered") and not (v.meta or {}).get("growth_quarantined")
+    ready = [v for v in rows if (v.meta or {}).get("clip_rendered")
+             and not (v.meta or {}).get("long_form")
+             and not (v.meta or {}).get("growth_quarantined")
              and (v.meta or {}).get("clip_parent") not in blocked and os.path.isfile(v.transformed_path)]
     pinned = sorted((v for v in ready if _pinned_at(v) is not None), key=_pinned_at, reverse=True)
     return pinned + [v for v in ready if _pinned_at(v) is None]
@@ -295,17 +297,19 @@ def _publish_next(current: Policy, now: datetime, post_id: str, channel=None) ->
                                  .order_by(Video.published_at.desc()).limit(1)).scalar_one_or_none()
         last_parent = (last_parent.meta or {}).get("clip_parent") if last_parent else None
         video = pick_clip(clips, current, last_parent)
-        video_id, title, spoken = video.id, video.title or "", (video.meta or {}).get("clip_opening_line", "")
+        vmeta = video.meta or {}
+        video_id, title, spoken = video.id, video.title or "", vmeta.get("clip_opening_line", "")
+        context = " ".join(p for p in (vmeta.get("clip_reason") or "", vmeta.get("llm_description") or "") if p).strip()
 
     try:
-        return _send_clip(current, video_id, title, spoken, post_id)
+        return _send_clip(current, video_id, title, spoken, post_id, context=context)
     except Exception as exc:
         log.exception("growth: the publish step failed for %s", video_id[:8])
         count_publish_failure(video_id)
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
-def _send_clip(current: Policy, video_id: str, title: str, spoken: str, post_id: str) -> dict:
+def _send_clip(current: Policy, video_id: str, title: str, spoken: str, post_id: str, *, context: str = "") -> dict:
     from tasks.pipeline import generate_metadata_for_video, publish_task
 
     style = pick_arm(current, "title_style", titles.available_styles())
@@ -314,7 +318,12 @@ def _send_clip(current: Policy, video_id: str, title: str, spoken: str, post_id:
         draft = db.execute(select(MetadataDraft).where(MetadataDraft.video_id == video_id)).scalar_one_or_none()
         edited = draft is not None and draft.edited
     # A title someone wrote by hand wins, and is not a test of anything.
-    final, actual = (None, "plain") if edited else titles.styled_title(style, title, spoken)
+    if edited:
+        final, actual = None, "plain"
+    elif context:
+        final, actual = titles.styled_title(style, title, spoken, context=context)
+    else:
+        final, actual = titles.styled_title(style, title, spoken)
     with session_scope() as db:
         video = db.get(Video, video_id)
         video.meta = {**(video.meta or {}), "growth_title_style": actual, "growth_title": final,

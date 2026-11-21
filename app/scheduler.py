@@ -481,7 +481,14 @@ def _content_files() -> list[str]:
 
     root = str(settings.content_path)
     return [
-        path for pattern in ("*.mp4", "transformed/*.mp4", "clips/*/*.mp4")
+        path for pattern in (
+            "*.mp4",
+            "transformed/*.mp4",
+            "clips/*/*.mp4",
+            "longform/*/*.mp4",
+            "longform/*/*_thumbs/*.jpg",
+            "longform/*/*_custom_thumb.jpg",
+        )
         for path in glob.glob(os.path.join(root, pattern))
         # Leading underscore marks internal scaffolding such as the mock
         # master clip, which has no database row by design.
@@ -496,12 +503,12 @@ _TRANSCRIPT_SUFFIX = ".transcript.json"
 
 
 def _source_cache_files() -> list[str]:
-    """Clipper downloads, stock footage and transcripts. No row references these, so orphan rules do not fit."""
+    """Clipper downloads, stock footage, memes and transcripts. No row references these, so orphan rules do not fit."""
     import glob
 
     root = str(settings.content_path)
     return [
-        path for pattern in ("long/*", "broll/*", f"*{_TRANSCRIPT_SUFFIX}", "transcripts/*.json")
+        path for pattern in ("long/*", "broll/*", "memes/*", f"*{_TRANSCRIPT_SUFFIX}", "transcripts/*.json")
         for path in glob.glob(os.path.join(root, pattern))
         if not _has_link_or_junction(path, stop_at=root)
         and not _is_inbox_path(path)
@@ -584,6 +591,12 @@ def cleanup_job(dry_run: bool = False) -> dict:
                     for path in (video.local_path, video.transformed_path):
                         if path:
                             protected_paths.add(_norm_path(path))
+                    vmeta = video.meta or {}
+                    if vmeta.get("selected_thumbnail"):
+                        protected_paths.add(_norm_path(vmeta["selected_thumbnail"]))
+                    for thumb in vmeta.get("thumbnails") or []:
+                        if isinstance(thumb, dict) and thumb.get("path"):
+                            protected_paths.add(_norm_path(thumb["path"]))
 
             referenced.update(protected_paths)
 
@@ -631,6 +644,23 @@ def cleanup_job(dry_run: bool = False) -> dict:
                             video.transformed_path = None
                     else:
                         referenced.add(trans_norm)
+
+                # Reclaim expired long-form thumbnail JPEGs alongside the expired video row.
+                for thumb in (video.meta or {}).get("thumbnails") or []:
+                    tpath = thumb.get("path") if isinstance(thumb, dict) else None
+                    if not tpath:
+                        continue
+                    tnorm = _norm_path(tpath)
+                    if (
+                        tnorm not in protected_paths
+                        and not _is_inbox_path(tpath)
+                        and not _has_link_or_junction(tpath, stop_at=content_root)
+                    ):
+                        if os.path.isfile(tpath):
+                            reclaimed += drop(tpath)
+                            removed_transforms += 1
+                    else:
+                        referenced.add(tnorm)
 
                 for path in (video.local_path, video.transformed_path):
                     if path:
@@ -781,6 +811,21 @@ def growth_scout_job() -> dict:
     return scout_job()
 
 
+def long_supply_job() -> dict:
+    from .longform.job import long_supply_job as run_supply
+    return run_supply()
+
+
+def long_queue_job() -> dict:
+    from .longform.job import run_next_long_job
+    return run_next_long_job() or {"idle": True}
+
+
+def long_autopilot_job() -> dict:
+    from .longform.job import long_autopilot_job as run_autopilot
+    return run_autopilot()
+
+
 # ---------- Job registry ----------
 # The single source of truth for job ids. Both _make_scheduler() and the
 # POST /scheduler/run/{job_id} endpoint read this, so the two can never drift.
@@ -801,6 +846,9 @@ JOB_FUNCTIONS: dict[str, "callable"] = {
     "growth_notify": growth_notify_job,
     "growth_watch": growth_watch_job,
     "growth_scout": growth_scout_job,
+    "long_supply": long_supply_job,
+    "long_queue": long_queue_job,
+    "long_autopilot": long_autopilot_job,
 }
 
 
@@ -849,31 +897,33 @@ def _make_scheduler() -> BackgroundScheduler:
 
     now = datetime.now(timezone.utc)
 
-    # The growth loop posts finished clips only, so scraped stock would just fill the disk.
+    # The growth loop posts finished clips only, so classic scraping/repurpose jobs stay unscheduled.
     if not settings.growth_enabled:
         sched.add_job(instrumented("scrape", scrape_job), IntervalTrigger(hours=settings.scrape_interval_hours), id="scrape", next_run_time=now + timedelta(seconds=10), max_instances=1, coalesce=True, replace_existing=True)
-    if settings.auto_discovery:
-        sched.add_job(instrumented("discovery", discovery_job), IntervalTrigger(hours=settings.discovery_interval_hours), id="discovery", next_run_time=now + timedelta(minutes=2), max_instances=1, coalesce=True, replace_existing=True)
-    sched.add_job(instrumented("auto_approve", auto_approve_job), IntervalTrigger(minutes=15), id="auto_approve", next_run_time=now + timedelta(minutes=1), max_instances=1, coalesce=True, replace_existing=True)
-    sched.add_job(instrumented("transform", transform_job), IntervalTrigger(hours=1), id="transform", next_run_time=now + timedelta(minutes=3), max_instances=1, coalesce=True, replace_existing=True)
-    if settings.enable_publish:
-        interval_h = max(1, 24 / max(1, settings.uploads_per_day))
-        sched.add_job(instrumented("publish", publish_job), IntervalTrigger(hours=interval_h), id="publish", next_run_time=now + timedelta(minutes=5), max_instances=1, coalesce=True, replace_existing=True)
+        if settings.auto_discovery:
+            sched.add_job(instrumented("discovery", discovery_job), IntervalTrigger(hours=settings.discovery_interval_hours), id="discovery", next_run_time=now + timedelta(minutes=2), max_instances=1, coalesce=True, replace_existing=True)
+        sched.add_job(instrumented("auto_approve", auto_approve_job), IntervalTrigger(minutes=15), id="auto_approve", next_run_time=now + timedelta(minutes=1), max_instances=1, coalesce=True, replace_existing=True)
+        sched.add_job(instrumented("transform", transform_job), IntervalTrigger(hours=1), id="transform", next_run_time=now + timedelta(minutes=3), max_instances=1, coalesce=True, replace_existing=True)
+        if settings.enable_publish:
+            interval_h = max(1, 24 / max(1, settings.uploads_per_day))
+            sched.add_job(instrumented("publish", publish_job), IntervalTrigger(hours=interval_h), id="publish", next_run_time=now + timedelta(minutes=5), max_instances=1, coalesce=True, replace_existing=True)
+        sched.add_job(instrumented("recompute", recompute_scores_job), IntervalTrigger(hours=1), id="recompute", next_run_time=now + timedelta(minutes=4), max_instances=1, coalesce=True, replace_existing=True)
+        sched.add_job(instrumented("analytics_pull", analytics_pull_job), IntervalTrigger(hours=6), id="analytics_pull", next_run_time=now + timedelta(minutes=10), max_instances=1, coalesce=True, replace_existing=True)
     sched.add_job(instrumented("cleanup", cleanup_job), IntervalTrigger(hours=24), id="cleanup", next_run_time=now + timedelta(hours=1), max_instances=1, coalesce=True, replace_existing=True)
     sched.add_job(instrumented("clip_queue", clip_queue_job), IntervalTrigger(minutes=5), id="clip_queue", next_run_time=now + timedelta(minutes=1), max_instances=1, coalesce=True, replace_existing=True)
-    sched.add_job(instrumented("recompute", recompute_scores_job), IntervalTrigger(hours=1), id="recompute", next_run_time=now + timedelta(minutes=4), max_instances=1, coalesce=True, replace_existing=True)
     if settings.growth_enabled:
         for job_id, every, first in (("growth_autopilot", timedelta(minutes=10), timedelta(minutes=2)),
                                      ("growth_collect", timedelta(hours=3), timedelta(minutes=6)),
                                      ("growth_learn", timedelta(hours=6), timedelta(minutes=8)),
                                      ("growth_supply", timedelta(hours=1), timedelta(minutes=1)),
                                      ("growth_notify", timedelta(minutes=10), timedelta(minutes=3)),
-                                     ("growth_scout", timedelta(hours=24), timedelta(minutes=30))):
+                                     ("growth_scout", timedelta(hours=24), timedelta(minutes=30)),
+                                     ("long_supply", timedelta(hours=6), timedelta(minutes=12)),
+                                     ("long_queue", timedelta(minutes=5), timedelta(minutes=4)),
+                                     ("long_autopilot", timedelta(minutes=15), timedelta(minutes=9))):
             sched.add_job(instrumented(job_id, JOB_FUNCTIONS[job_id]), IntervalTrigger(seconds=int(every.total_seconds())), id=job_id, next_run_time=now + first, max_instances=1, coalesce=True, replace_existing=True)
         if settings.growth_watch_minutes > 0:
             sched.add_job(instrumented("growth_watch", growth_watch_job), IntervalTrigger(minutes=settings.growth_watch_minutes), id="growth_watch", next_run_time=now + timedelta(minutes=2), max_instances=1, coalesce=True, replace_existing=True)
-    else:
-        sched.add_job(instrumented("analytics_pull", analytics_pull_job), IntervalTrigger(hours=6), id="analytics_pull", next_run_time=now + timedelta(minutes=10), max_instances=1, coalesce=True, replace_existing=True)
     return sched
 
 
@@ -900,6 +950,9 @@ def _job_intervals() -> dict[str, timedelta]:
         "growth_notify": timedelta(minutes=10),
         "growth_watch": timedelta(minutes=max(1, settings.growth_watch_minutes)),
         "growth_scout": timedelta(hours=24),
+        "long_supply": timedelta(hours=6),
+        "long_queue": timedelta(minutes=5),
+        "long_autopilot": timedelta(minutes=15),
     }
 
 
@@ -917,8 +970,9 @@ def overdue_jobs(now: datetime | None = None) -> list[str]:
         if job_id not in JOB_FUNCTIONS:
             continue
         # Only catch up on what this mode schedules.
-        if (job_id.startswith("growth_") and not settings.growth_enabled) or (
-                job_id in ("scrape", "analytics_pull") and settings.growth_enabled):
+        classic_jobs = ("scrape", "discovery", "auto_approve", "transform", "publish", "recompute", "analytics_pull")
+        if ((job_id.startswith("growth_") or job_id.startswith("long_")) and not settings.growth_enabled) or (
+                job_id in classic_jobs and settings.growth_enabled):
             continue
         last = history.get(job_id)
         if last is None:

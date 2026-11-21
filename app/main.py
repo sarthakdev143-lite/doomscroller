@@ -172,17 +172,10 @@ def queue_transform(video_id: str, body: TransformBody, db: Session = Depends(ge
     if v.status not in (VideoStatus.APPROVED, VideoStatus.PENDING, VideoStatus.FAILED):
         raise HTTPException(status_code=400, detail=f"cannot transform from status={v.status.value}")
     recipe = body.model_dump(exclude_none=True)
-    from tasks.pipeline import transform_task, transform_task_async
+    from tasks.pipeline import transform_task
 
-    # If Celery is wired up, .delay() enqueues; otherwise it runs sync.
-    try:
-        result = transform_task_async.delay(video_id, recipe)
-        if hasattr(result, "id"):
-            return {"task_id": result.id, "video_id": video_id, "queued": True}
-        return {"task_id": None, "video_id": video_id, "sync": True, "result": result}
-    except Exception:
-        out = transform_task(video_id, recipe)
-        return {"task_id": None, "video_id": video_id, "sync": True, "result": out}
+    out = transform_task(video_id, recipe)
+    return {"task_id": None, "video_id": video_id, "sync": True, "result": out}
 
 
 @app.get("/videos/{video_id}/download")
@@ -207,16 +200,10 @@ def queue_publish(video_id: str, body: PublishBody, db: Session = Depends(get_db
     if v.status != VideoStatus.TRANSFORMED:
         raise HTTPException(status_code=400, detail=f"cannot publish from status={v.status.value}")
     meta = body.model_dump(exclude_none=True)
-    from tasks.pipeline import publish_task, publish_task_async
+    from tasks.pipeline import publish_task
 
-    try:
-        result = publish_task_async.delay(video_id, meta)
-        if hasattr(result, "id"):
-            return {"task_id": result.id, "video_id": video_id, "queued": True}
-        return {"task_id": None, "video_id": video_id, "sync": True, "result": result}
-    except Exception:
-        out = publish_task(video_id, meta)
-        return {"task_id": None, "video_id": video_id, "sync": True, "result": out}
+    out = publish_task(video_id, meta)
+    return {"task_id": None, "video_id": video_id, "sync": True, "result": out}
 
 
 @app.post("/scrape", response_model=dict)
@@ -227,16 +214,10 @@ def trigger_scrape(body: ScrapeBody | None = None) -> dict:
         "hashtags": body.hashtags or settings.hashtags_list,
         "max_per_run": body.max_per_run if body.max_per_run is not None else settings.scrape_max_per_run,
     }
-    from tasks.pipeline import scrape_task, scrape_task_async
+    from tasks.pipeline import scrape_task
 
-    try:
-        result = scrape_task_async.delay(**payload)
-        if hasattr(result, "id"):
-            return {"task_id": result.id, "queued": True, "params": payload}
-        return {"task_id": None, "sync": True, "result": result, "params": payload}
-    except Exception:
-        out = scrape_task(**payload)
-        return {"task_id": None, "sync": True, "result": out, "params": payload}
+    out = scrape_task(**payload)
+    return {"task_id": None, "sync": True, "result": out, "params": payload}
 
 
 @app.post("/scores/recompute", response_model=dict)

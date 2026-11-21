@@ -48,7 +48,8 @@ def _strip_unsafe(value: Optional[str]) -> str:
     return _CONTROL_CHARS.sub("", _ANGLE_BRACKETS.sub("", normalized))
 
 _SHORTS_HASHTAG = "#Shorts"
-_BASE_TAGS = ("shorts", "viral", "trending", "reels")
+_BASE_TAGS = ("shorts", "viral", "trending")
+_LONG_BASE_TAGS = ("viral", "trending")
 # Tags that add nothing and dilute relevance.
 _TAG_STOPWORDS = frozenset({
     "video", "videos", "snap", "snapchat", "spotlight", "clip", "clips", "the",
@@ -82,12 +83,12 @@ def detect_language(text: str) -> str:
 # ---------------------------------------------------------------------------
 # Finishing pass
 # ---------------------------------------------------------------------------
-def _clean_title(title: str) -> str:
-    """Trim a title to YouTube's limit, leaving room for the Shorts hashtag."""
+def _clean_title(title: str, *, reserve_shorts: bool = False) -> str:
+    """Trim a title to YouTube's limit, optionally reserving room for the Shorts hashtag."""
     title = re.sub(r"\s+", " ", _strip_unsafe(title).strip())
     if not title:
         return ""
-    budget = _TITLE_MAX - len(_SHORTS_HASHTAG) - 1
+    budget = _TITLE_MAX - len(_SHORTS_HASHTAG) - 1 if reserve_shorts else _TITLE_MAX
     if len(title) <= budget:
         return title
     # Prefer cutting at a separator Snapchat likes to use ("A | B").
@@ -100,10 +101,10 @@ def _clean_title(title: str) -> str:
     return clipped or title[:budget].strip()
 
 
-def finished_title(title: str) -> str:
-    """A title as it goes out: within YouTube's limit and carrying the Shorts hashtag."""
-    clean = _clean_title(title or "") or "Watch this"
-    if _SHORTS_HASHTAG.lower() not in clean.lower():
+def finished_title(title: str, *, shorts_tag: bool = False) -> str:
+    """A title as it goes out: clean and within YouTube's limit (no forced #Shorts unless requested)."""
+    clean = _clean_title(title or "", reserve_shorts=shorts_tag) or "Watch this"
+    if shorts_tag and _SHORTS_HASHTAG.lower() not in clean.lower():
         clean = f"{clean} {_SHORTS_HASHTAG}"
     return clean[:_TITLE_MAX]
 
@@ -132,11 +133,12 @@ def _slug_tag(raw: str) -> str:
     return tag[:_TAG_MAX_CHARS].strip()
 
 
-def build_tags(keywords: Sequence[str] | str | None, author: str = "") -> list[str]:
+def build_tags(keywords: Sequence[str] | str | None, author: str = "", *, is_short: bool = True) -> list[str]:
     """Build a deduped, length-capped YouTube tag list."""
     kw_items: list[object] = [keywords] if isinstance(keywords, str) else list(keywords or [])
     candidates: list[str] = []
-    for keyword in kw_items + list(_BASE_TAGS):
+    base = _BASE_TAGS if is_short else _LONG_BASE_TAGS
+    for keyword in kw_items + list(base):
         if keyword is None:
             continue
         tag = _slug_tag(str(keyword))
@@ -188,6 +190,8 @@ def compose(
     language: str = "en",
     source: str = "fallback",
     require_credit: bool = False,
+    is_short: bool = True,
+    title_shorts_tag: bool = False,
 ) -> GeneratedMetadata:
     """Apply YouTube limits, tags, hashtags and creator credit to raw copy.
 
@@ -199,23 +203,24 @@ def compose(
     author_name = " ".join(_strip_unsafe(author_name).split())
     platform = " ".join(_strip_unsafe(platform).split())
     source_url = "".join(_strip_unsafe(source_url).split())
-    tags = build_tags(keywords, author=author)
+    tags = build_tags(keywords, author=author, is_short=is_short)
 
     description = _strip_unsafe(description)
-    clean_title = _clean_title(title or "")
+    use_title_tag = is_short and title_shorts_tag
+    clean_title = _clean_title(title or "", reserve_shorts=use_title_tag)
     if not clean_title:
-        clean_title = _clean_title(description) or "Watch this"
-    if _SHORTS_HASHTAG.lower() not in clean_title.lower():
+        clean_title = _clean_title(description, reserve_shorts=use_title_tag) or "Watch this"
+    if use_title_tag and _SHORTS_HASHTAG.lower() not in clean_title.lower():
         clean_title = f"{clean_title} {_SHORTS_HASHTAG}"
 
     body = re.sub(r"\s+", " ", description.strip())
     blocks: list[str] = []
 
     hashtags = _hashtags_from(tags)
-    if hashtags:
-        blocks.append(" ".join([_SHORTS_HASHTAG, *hashtags]))
-    else:
-        blocks.append(_SHORTS_HASHTAG)
+    if is_short:
+        blocks.append(" ".join([_SHORTS_HASHTAG, *hashtags]) if hashtags else _SHORTS_HASHTAG)
+    elif hashtags:
+        blocks.append(" ".join(hashtags))
 
     # Credit the original creator, with a link back where we have one.
     if author:
@@ -363,6 +368,7 @@ def generate_metadata(
     platform_title: str = "",
     platform_description: str = "",
     require_credit: bool = False,
+    is_short: bool = True,
 ) -> GeneratedMetadata:
     """Generate YouTube metadata for a video, preserving its source language.
 
@@ -386,6 +392,7 @@ def generate_metadata(
             source_url=source_url, platform=platform,
             language=language, source="platform",
             require_credit=require_credit,
+            is_short=is_short,
         )
 
     # 2. Ask the local LLM CLI, if there is one.
@@ -413,6 +420,7 @@ def generate_metadata(
                 source_url=source_url, platform=platform,
                 language=language, source="llm",
                 require_credit=require_credit,
+                is_short=is_short,
             )
 
     # 3. Rule-based composition over whatever we have.
@@ -424,6 +432,7 @@ def generate_metadata(
         source_url=source_url, platform=platform,
         language=language, source="fallback",
         require_credit=require_credit,
+        is_short=is_short,
     )
 
 

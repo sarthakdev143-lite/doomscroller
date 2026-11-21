@@ -32,7 +32,9 @@ def awaiting_review(db, scope=None) -> list[Video]:
         conds.append(scope)
     rows = db.execute(select(Video).where(*conds)
                       .order_by(Video.scraped_at.desc()).limit(_QUEUE_LIMIT * 3)).scalars().all()
-    return [v for v in rows if (v.meta or {}).get("clip_rendered") and v.transformed_path
+    return [v for v in rows if (v.meta or {}).get("clip_rendered")
+            and not (v.meta or {}).get("long_form")
+            and v.transformed_path
             and os.path.exists(v.transformed_path)][:_QUEUE_LIMIT]
 
 
@@ -46,7 +48,8 @@ def awaiting_scraped(db) -> list[Video]:
     ).scalars().all()
     out: list[Video] = []
     for v in rows:
-        if (v.meta or {}).get("clip_rendered"):
+        meta = v.meta or {}
+        if meta.get("clip_rendered") or meta.get("long_form"):
             continue
         path = v.transformed_path or v.local_path
         if path and os.path.isfile(path):
@@ -205,7 +208,8 @@ def recent_posts(db) -> list[dict]:
     """The latest real uploads with how they did, and the loop's reading of why."""
     rows = db.execute(select(Video).where(Video.status == VideoStatus.PUBLISHED, Video.youtube_video_id.isnot(None))
                       .order_by(Video.published_at.desc()).limit(_POSTED_LIMIT * 2)).scalars().all()
-    return [_result(v) for v in rows if not v.youtube_video_id.startswith("MOCK_")][:_POSTED_LIMIT]
+    return [_result(v) for v in rows if not v.youtube_video_id.startswith("MOCK_")
+            and not (v.meta or {}).get("long_form")][:_POSTED_LIMIT]
 
 
 def _attention(db, channel, waiting: int, approved: int, now: datetime) -> str:
@@ -299,6 +303,8 @@ def channels_overview() -> list[dict]:
                 "niche": channel.niche or "",
                 "brand_name": (settings.brand_name if default else channel.brand_name) or "",
                 "uploads_per_day": channels.uploads_per_day(channel),
+                "long_uploads_per_day": channels.long_uploads_per_day(channel),
+                "long_auto_publish": channels.long_auto_publish(channel),
                 "timezone": channels.timezone_of(channel),
                 "require_approval": channels.require_approval(channel),
                 "auto_approve_score": float(channel.auto_approve_score or 0.0),
@@ -359,6 +365,20 @@ def _trustable(db, channel) -> list[Video]:
             and not (v.meta or {}).get("growth_flagged") and not clip_gate_reason(v)]
 
 
+def _normalize_clip_score(raw: object) -> Optional[float]:
+    """Normalize AI clip_score (0..100 or legacy 0..1) into [0.0, 1.0]."""
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    val = float(raw)
+    if not math.isfinite(val):
+        return None
+    if val < 0.0:
+        return val
+    if val > 1.0:
+        val /= 100.0
+    return min(1.0, val)
+
+
 def auto_approve_sweep(channel) -> int:
     """Auto-approve a channel's rendered clips scoring at or above its trust threshold. 0 = off (a human reviews all)."""
     from . import channels
@@ -370,8 +390,8 @@ def auto_approve_sweep(channel) -> int:
     approved = 0
     with session_scope() as db:
         for video in _trustable(db, channel):
-            score = (video.meta or {}).get("clip_score", 0.0)
-            if score >= threshold:
+            score = _normalize_clip_score((video.meta or {}).get("clip_score"))
+            if score is not None and score >= threshold:
                 _grant(db, video, now, f"score {round(score, 2)}")
                 db.add(GrowthEvent(kind="auto_approved", video_id=video.id, channel_id=channels.event_channel(channel),
                                    summary=f"Auto-approved (score {score:.2f} >= {threshold:.2f}): {(video.title or '')[:60]}"))
@@ -399,7 +419,8 @@ def backstop_approve(channel) -> Optional[str]:
 
 def _pending_clip(db, video_id: str) -> Video:
     video = db.get(Video, video_id)
-    if video is None or not (video.meta or {}).get("clip_rendered"):
+    meta = video.meta or {} if video is not None else {}
+    if video is None or not meta.get("clip_rendered") or meta.get("long_form"):
         raise ReviewError("no such clip")
     if video.status != VideoStatus.PENDING:
         raise ReviewError(f"already {video.status.value}")
@@ -447,6 +468,56 @@ def _save_draft_edits(
     return draft
 
 
+_SHORTS_SUFFIX_RE = re.compile(r"\s*#shorts\b", re.IGNORECASE)
+
+
+def _norm_title_cmp(text: Optional[str]) -> str:
+    collapsed = " ".join(str(text or "").split())
+    return _SHORTS_SUFFIX_RE.sub("", collapsed).strip()
+
+
+def _apply_changed_draft_edits(
+    db,
+    video: Video,
+    *,
+    title: Optional[str] = None,
+    description: Optional[str] = None,
+    tags: Optional[Sequence[str]] = None,
+) -> None:
+    """Persist MetadataDraft edits only when the caller actually changed title, description, or tags."""
+    draft = db.execute(select(MetadataDraft).where(MetadataDraft.video_id == video.id)).scalar_one_or_none()
+    has_title = bool(" ".join((title or "").split()))
+    has_desc = bool(youtube_description(description)) if description is not None else False
+
+    title_changed = False
+    if has_title:
+        current_title = (draft.title if draft and draft.title else video.title) or ""
+        title_changed = _norm_title_cmp(title) != _norm_title_cmp(current_title)
+
+    desc_changed = False
+    if has_desc:
+        incoming_desc = youtube_description(description)
+        current_desc = (draft.description if draft and draft.description else _compose_for_video(video).description) or ""
+        desc_changed = incoming_desc != current_desc
+
+    tags_changed = False
+    if tags is not None:
+        incoming_tags = _clean_tags(tags)
+        current_tags = _clean_tags(
+            draft.tags if draft and draft.tags is not None else _compose_for_video(video).tags
+        )
+        tags_changed = incoming_tags != current_tags
+
+    if title_changed or desc_changed or tags_changed:
+        _save_draft_edits(
+            db,
+            video,
+            title=title if title_changed else None,
+            description=description if desc_changed else None,
+            tags=tags if tags_changed else None,
+        )
+
+
 def approve(
     video_id: str,
     title: Optional[str] = None,
@@ -463,16 +534,7 @@ def approve(
         video.transformed_at = now
         video.curated_at = now
         video.meta = {**(video.meta or {}), "owner_approved": now.isoformat()}
-        has_title = bool(" ".join((title or "").split()))
-        has_desc = bool(youtube_description(description)) if description is not None else False
-        if has_title or has_desc or tags is not None:
-            _save_draft_edits(
-                db,
-                video,
-                title=title if has_title else None,
-                description=description if has_desc else None,
-                tags=tags,
-            )
+        _apply_changed_draft_edits(db, video, title=title, description=description, tags=tags)
         return {"id": video_id, "status": video.status.value}
 
 
@@ -503,7 +565,7 @@ def reject_flagged(channel_slug: str = "") -> dict:
         rejected_ids: list[str] = []
         for video in rows:
             meta = video.meta or {}
-            if not meta.get("clip_rendered") or not meta.get("growth_flagged"):
+            if not meta.get("clip_rendered") or meta.get("long_form") or not meta.get("growth_flagged"):
                 continue
             video.status = VideoStatus.REJECTED
             video.curated_at = now
@@ -546,17 +608,17 @@ def _approve_clean_in_session(
     approved_ids: list[str] = []
     for video in rows:
         meta = video.meta or {}
-        if not meta.get("clip_rendered") or meta.get("growth_flagged"):
+        if not meta.get("clip_rendered") or meta.get("long_form") or meta.get("growth_flagged"):
             continue
         if not video.transformed_path or not os.path.exists(video.transformed_path):
             continue
         if threshold is not None and threshold > 0.0:
-            raw_score = meta.get("clip_score")
-            if isinstance(raw_score, bool) or not isinstance(raw_score, (int, float)) or float(raw_score) < threshold:
+            score = _normalize_clip_score(meta.get("clip_score"))
+            if score is None or score < threshold:
                 continue
         elif threshold == 0.0:
-            raw_score = meta.get("clip_score")
-            if isinstance(raw_score, (int, float)) and not isinstance(raw_score, bool) and float(raw_score) < 0.0:
+            score = _normalize_clip_score(meta.get("clip_score"))
+            if score is not None and score < 0.0:
                 continue
         video.status = VideoStatus.TRANSFORMED
         video.transformed_at = now
@@ -611,16 +673,7 @@ def curate_scraped(
             video.status = VideoStatus.APPROVED
             video.curated_at = now
             video.meta = {**(video.meta or {}), "owner_scraped_approved": now.isoformat()}
-            has_title = bool(" ".join((title or "").split()))
-            has_desc = bool(youtube_description(description)) if description is not None else False
-            if has_title or has_desc or tags is not None:
-                _save_draft_edits(
-                    db,
-                    video,
-                    title=title if has_title else None,
-                    description=description if has_desc else None,
-                    tags=tags,
-                )
+            _apply_changed_draft_edits(db, video, title=title, description=description, tags=tags)
         else:
             video.status = VideoStatus.REJECTED
             video.curated_at = now

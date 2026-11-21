@@ -26,7 +26,7 @@ def choose(channel=None) -> dict[str, str]:
         current = policy(channel=channel)
         return {
             "pace": pick_arm(current, "pace", RECIPE_FACTORS["pace"]),
-            "sfx": pick_arm(current, "sfx", RECIPE_FACTORS["sfx"]) if settings.clip_sfx else "off",
+            "sfx": "on" if settings.clip_sfx else "off",
             "broll": pick_arm(current, "broll", RECIPE_FACTORS["broll"]) if settings.clip_broll else "off",
         }
     except Exception as exc:

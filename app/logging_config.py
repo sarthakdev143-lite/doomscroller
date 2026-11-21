@@ -377,10 +377,3 @@ def job_health(limit: int = 400) -> dict[str, dict]:
         entry.update(counts.get(job_id, {}))
         latest[job_id] = entry
     return latest
-
-
-# Backwards-compatible aliases for the previous names.
-log_job_execution = record_job_run
-get_recent_job_history = read_job_history
-get_recent_logs = read_recent_logs
-get_job_health = job_health

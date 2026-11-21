@@ -1680,3 +1680,30 @@ def test_system_doctor_routes_are_guarded_no_store_and_secret_free(monkeypatch):
     assert fixed.json()["fixes_applied"] == ["created logs/"]
     assert "no-store" in (fixed.headers.get("cache-control") or "").lower()
     assert calls == [False, True]
+
+
+def test_panel_approve_without_edits_keeps_ab_title_testing_enabled(tmp_path):
+    from app.models import MetadataDraft, Video, VideoStatus
+    from app.review_ui import PAGE
+
+    assert "c.id in edits" in PAGE
+    assert "if((c.id in edits" in PAGE
+
+    mp4 = tmp_path / "c.mp4"
+    mp4.write_bytes(b"x")
+    with session_scope() as db:
+        v = Video(
+            source="youtube", source_id="panel_ab_1", source_url="https://youtu.be/p1",
+            title="AI Picked Title", transformed_path=str(mp4), status=VideoStatus.PENDING,
+            meta={"clip_rendered": True, "clip_kind": "speech", "clip_score": 88.0},
+        )
+        db.add(v)
+        db.flush()
+        vid = v.id
+        db.add(MetadataDraft(video_id=vid, title="AI Picked Title", description="Desc", tags=["a"], edited=False))
+
+    c = _client()
+    r = c.post(f"/api/clips/{vid}/approve", json={"title": "AI Picked Title"})
+    assert r.status_code == 200
+    with session_scope() as db:
+        assert db.query(MetadataDraft).filter_by(video_id=vid).one().edited is False

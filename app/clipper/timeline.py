@@ -6,8 +6,18 @@ Boundaries sit on a frame grid so video and audio cut at the same instant.
 """
 from __future__ import annotations
 
+import logging
 import math
+import os
+import re
+import subprocess
 from typing import Optional, Sequence
+
+from app.winproc import background_subprocess_kwargs
+
+log = logging.getLogger(__name__)
+_SILENCE_START_RE = re.compile(r"silence_start:\s*([0-9]+(?:\.[0-9]+)?)")
+_SILENCE_END_RE = re.compile(r"silence_end:\s*([0-9]+(?:\.[0-9]+)?)")
 
 FPS = 30
 Segment = tuple[float, float]
@@ -128,3 +138,109 @@ def edit_segments(words: Sequence, kept: Sequence[int], max_gap: float, *,
         segments[-1][1] = min(segments[-1][1], end)
     rounded = [(on_grid(a), on_grid(b)) for a, b in segments]
     return [(a, b) for a, b in rounded if b > a]
+
+
+def detect_silences(
+    source: str,
+    start: float,
+    end: float,
+    *,
+    noise_db: float = -34.0,
+    min_duration: float = 0.55,
+) -> list[Segment]:
+    """Find silent intervals [s, e] in source time inside [start, end] via ffmpeg silencedetect."""
+    if not source or not math.isfinite(start) or not math.isfinite(end):
+        return []
+    safe_start = max(0.0, float(start))
+    span = float(end) - safe_start
+    if span <= 0.5:
+        return []
+    cmd = ["ffmpeg", "-hide_banner", "-nostdin"]
+    if safe_start > 0:
+        cmd.extend(["-ss", f"{safe_start:.3f}"])
+    cmd.extend([
+        "-t", f"{span:.3f}", "-i", source, "-vn",
+        "-af", f"silencedetect=noise={noise_db:g}dB:d={min_duration:g}",
+        "-f", "null", os.devnull,
+    ])
+    try:
+        proc = subprocess.run(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+            **background_subprocess_kwargs(low_priority=True),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.debug("timeline: silencedetect failed for %s: %s", source, exc)
+        return []
+    stderr = getattr(proc, "stderr", "") or ""
+    silences: list[Segment] = []
+    open_start: Optional[float] = None
+    for line in stderr.splitlines():
+        m_start = _SILENCE_START_RE.search(line)
+        if m_start:
+            open_start = safe_start + float(m_start.group(1))
+            continue
+        m_end = _SILENCE_END_RE.search(line)
+        if m_end and open_start is not None:
+            s_end = min(safe_start + span, safe_start + float(m_end.group(1)))
+            if s_end > open_start:
+                silences.append((open_start, s_end))
+            open_start = None
+    if open_start is not None and safe_start + span > open_start:
+        silences.append((open_start, safe_start + span))
+    return silences
+
+
+def audio_keep_segments(
+    start: float,
+    end: float,
+    silences: Sequence[Segment],
+    *,
+    pad_sec: float = 0.14,
+    min_cut_sec: float = 0.45,
+    min_keep_sec: float = 0.35,
+) -> list[Segment]:
+    """Invert detected silences into grid-aligned kept segments without chopping speech edges."""
+    if not math.isfinite(start) or not math.isfinite(end):
+        return []
+    safe_start = max(0.0, float(start))
+    safe_end = float(end)
+    if on_grid(safe_end) <= on_grid(safe_start):
+        return []
+
+    cuts: list[list[float]] = []
+    for raw_a, raw_b in sorted(silences or ()):
+        if not (math.isfinite(raw_a) and math.isfinite(raw_b)):
+            continue
+        a = max(safe_start, raw_a) + max(0.0, pad_sec)
+        b = min(safe_end, raw_b) - max(0.0, pad_sec)
+        if b - a < min_cut_sec:
+            continue
+        if cuts and a <= cuts[-1][1]:
+            cuts[-1][1] = max(cuts[-1][1], b)
+        else:
+            cuts.append([a, b])
+
+    if not cuts:
+        return [(on_grid(safe_start), on_grid(safe_end))]
+
+    kept: list[list[float]] = []
+    cursor = safe_start
+    for cut_a, cut_b in cuts:
+        if cut_a - cursor >= min_keep_sec:
+            kept.append([cursor, cut_a])
+        elif kept:
+            kept[-1][1] = max(kept[-1][1], cut_a)
+        cursor = max(cursor, cut_b)
+    if safe_end - cursor >= min_keep_sec:
+        kept.append([cursor, safe_end])
+    elif kept:
+        kept[-1][1] = max(kept[-1][1], safe_end)
+
+    rounded = [(on_grid(a), on_grid(b)) for a, b in kept]
+    cleaned = [(a, b) for a, b in rounded if b > a]
+    return cleaned or [(on_grid(safe_start), on_grid(safe_end))]

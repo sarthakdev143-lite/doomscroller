@@ -52,6 +52,7 @@ def benched(db, channel) -> set[str]:
             if row.get("n", 0) >= _BENCH_AFTER and (row.get("score") or row).get("high", 1.0) < 1.0}
 
 _RETENTION_WEIGHT = 2.0
+_ENGAGED_WEIGHT = 1.5
 _SUBSCRIBER_WEIGHT = 0.3
 _MIN_BASELINE = 8
 _BASELINE_WINDOW = 30
@@ -87,6 +88,8 @@ class Result:
     diagnosed: bool
     authors: tuple[str, ...] = ()
     published_at: Optional[datetime] = None
+    engaged_rate: Optional[float] = None
+    shorts_feed_share: Optional[float] = None
 
 
 def views_at(snapshots: Sequence[tuple[float, int]], hours: float) -> Optional[float]:
@@ -129,7 +132,9 @@ def matured_results(db, *, include_diagnosed: bool = True, scope=None, zone=None
     if scope is not None:
         conds.append(scope)
     rows = db.execute(select(Video).where(*conds)).scalars().all()
-    rows = [v for v in rows if (v.meta or {}).get("clip_rendered") and (v.meta or {}).get("yt_privacy") == "public"
+    rows = [v for v in rows if (v.meta or {}).get("clip_rendered")
+            and not (v.meta or {}).get("long_form")
+            and (v.meta or {}).get("yt_privacy") == "public"
             and not (v.meta or {}).get("yt_missing")
             and not upload_turned_down((v.meta or {}).get("yt_upload_status"))]
     if not rows:
@@ -148,6 +153,25 @@ def matured_results(db, *, include_diagnosed: bool = True, scope=None, zone=None
             continue
         analytics = (video.meta or {}).get("yt_analytics") or {}
         percent = analytics.get("averageViewPercentage")
+        raw_ev = analytics.get("engagedViews")
+        raw_av = analytics.get("views") or views
+        engaged_rate: Optional[float] = None
+        if raw_ev is not None and raw_av and raw_av > 0:
+            try:
+                ev_f = float(raw_ev)
+                if math.isfinite(ev_f) and ev_f >= 0:
+                    engaged_rate = min(1.0, ev_f / float(raw_av))
+            except (TypeError, ValueError):
+                engaged_rate = None
+        raw_share = analytics.get("shorts_feed_share")
+        feed_share: Optional[float] = None
+        if raw_share is not None:
+            try:
+                sh_f = float(raw_share)
+                if math.isfinite(sh_f) and sh_f >= 0:
+                    feed_share = min(1.0, sh_f)
+            except (TypeError, ValueError):
+                feed_share = None
         results.append(Result(
             video_id=video.id, title=video.title or "", views=max(0, int(views)), arms=published_arms(video, zone),
             day=(aware(video.published_at) - first).total_seconds() / 86400,
@@ -156,18 +180,30 @@ def matured_results(db, *, include_diagnosed: bool = True, scope=None, zone=None
             subscribers=_subscriber_rate(analytics),
             source_url=video.source_url or "", diagnosed=diagnosed, authors=author_names(video),
             published_at=aware(video.published_at),
+            engaged_rate=engaged_rate,
+            shorts_feed_share=feed_share,
         ))
     return results
 
 
-def reward(result: Result, typical_retention: float, typical_subscribers: float = 0.0) -> float:
-    """Views on a log scale, nudged by whether people stayed and subscribed. Missing numbers count as typical."""
+def reward(
+    result: Result,
+    typical_retention: float,
+    typical_subscribers: float = 0.0,
+    typical_engaged: Optional[float] = None,
+) -> float:
+    """Views on a log scale, nudged by retention, swipe-stay rate (engagedViews), and subscribers."""
     safe_views = max(0, result.views)
     retention = (typical_retention if result.retention is None or not math.isfinite(result.retention)
                  else max(0.0, result.retention))
     subscribers = (typical_subscribers if result.subscribers is None or not math.isfinite(result.subscribers)
                    else result.subscribers)
+    engaged_delta = 0.0
+    if (typical_engaged is not None and math.isfinite(typical_engaged)
+            and result.engaged_rate is not None and math.isfinite(result.engaged_rate)):
+        engaged_delta = _ENGAGED_WEIGHT * (max(0.0, result.engaged_rate) - typical_engaged)
     return (math.log1p(safe_views) + _RETENTION_WEIGHT * (retention - typical_retention)
+            + engaged_delta
             + _SUBSCRIBER_WEIGHT * math.log1p(max(subscribers, 0.0)))
 
 
@@ -179,6 +215,11 @@ def _typical_hold(length: Optional[str], others: Sequence[Result]) -> Optional[f
     return statistics.median(pool) if pool else None
 
 
+def _typical_engaged(others: Sequence[Result]) -> Optional[float]:
+    rates = [o.engaged_rate for o in others if o.engaged_rate is not None]
+    return statistics.median(rates) if rates else None
+
+
 def build_model(results: Sequence[Result]) -> Model:
     """The blended score, which is what choices are made on."""
     from .model import Model, Observation
@@ -186,7 +227,11 @@ def build_model(results: Sequence[Result]) -> Model:
     holds = {length: _typical_hold(length, results) or 0.0 for length in {r.arms.get("length") for r in results}}
     known = [r.subscribers for r in results if r.subscribers is not None]
     subscribers = statistics.median(known) if known else 0.0
-    return Model([Observation(r.arms, reward(r, holds[r.arms.get("length")], subscribers), r.day) for r in results])
+    engaged = _typical_engaged(results)
+    return Model([
+        Observation(r.arms, reward(r, holds[r.arms.get("length")], subscribers, typical_engaged=engaged), r.day)
+        for r in results
+    ])
 
 
 def summarise(results: Sequence[Result]) -> dict:
@@ -224,12 +269,14 @@ def diagnose(result: Result, others: Sequence[Result]) -> Diagnosis:
     numbers = f"{res_views} views at {settings.growth_horizon_hours}h against a typical {views:.0f}"
     if hold is not None and typical_hold is not None:
         numbers += f", {hold:.0%} watched against a typical {typical_hold:.0%}"
+    if result.engaged_rate is not None:
+        numbers += f", {result.engaged_rate:.0%} stayed past swipe"
 
     if res_views >= max(views * 2, 10):
         return Diagnosis("winner", f"Well above normal: {numbers}.")
     if weak_hold:
         return Diagnosis("weak_hold", f"Viewers left early: {numbers}. Testing length, pace and format harder.",
-                         ("length", "pace", "kind", "sfx", "broll"))
+                         ("length", "pace", "kind", "broll"))
     if low_views and hold is not None and typical_hold is not None:
         return Diagnosis("no_reach", f"People who saw it stayed, but few saw it: {numbers}. "
                          "Testing timing, title and source harder.", ("slot", "title_style", "series"))

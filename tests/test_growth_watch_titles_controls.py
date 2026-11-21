@@ -365,7 +365,7 @@ def test_titles_sanitizes_quotes_fences_hashtags_control_chars_length_and_refusa
     )
     out_title, out_style = titles.styled_title("question", "Original Title", "The engine blew up")
     assert out_style == "question"
-    assert out_title == "Why did the engine fail? #Shorts"
+    assert out_title == "Why did the engine fail?"
     assert len(out_title) <= 100
 
     # Leading "Title:" label + inline hashtag stripped cleanly
@@ -376,7 +376,7 @@ def test_titles_sanitizes_quotes_fences_hashtags_control_chars_length_and_refusa
     )
     out_title2, out_style2 = titles.styled_title("curiosity", "Original Title", "")
     assert out_style2 == "curiosity"
-    assert out_title2 == "Hidden detail nobody noticed #Shorts"
+    assert out_title2 == "Hidden detail nobody noticed"
 
     # Refusals, hashtag-only, non-dict JSON, and raised exceptions fall back to ("...", "plain")
     for bad_reply in (
@@ -387,17 +387,17 @@ def test_titles_sanitizes_quotes_fences_hashtags_control_chars_length_and_refusa
     ):
         monkeypatch.setattr(titles.ai, "ask_json", lambda prompt, r=bad_reply: r)
         fallback_t, fallback_s = titles.styled_title("question", "Safe Original", "line")
-        assert fallback_s == "plain" and fallback_t == "Safe Original #Shorts"
+        assert fallback_s == "plain" and fallback_t == "Safe Original"
 
     def raise_ai(prompt):
         raise RuntimeError("AI CLI crashed")
 
     monkeypatch.setattr(titles.ai, "ask_json", raise_ai)
-    assert titles.styled_title("curiosity", "Safe Original", "line") == ("Safe Original #Shorts", "plain")
+    assert titles.styled_title("curiosity", "Safe Original", "line") == ("Safe Original", "plain")
 
-    # Quote style ignores blank/quote-only opening lines instead of emitting '"" #Shorts'
-    assert titles.styled_title("quote", "Safe Original", "   ") == ("Safe Original #Shorts", "plain")
-    assert titles.styled_title("quote", "Safe Original", '""') == ("Safe Original #Shorts", "plain")
+    # Quote style ignores blank/quote-only opening lines instead of emitting '""'
+    assert titles.styled_title("quote", "Safe Original", "   ") == ("Safe Original", "plain")
+    assert titles.styled_title("quote", "Safe Original", '""') == ("Safe Original", "plain")
 
 
 def test_title_rewrite_matches_the_text_language(monkeypatch):
@@ -409,7 +409,7 @@ def test_title_rewrite_matches_the_text_language(monkeypatch):
 
     monkeypatch.setattr(titles.ai, "ask_json", fake_ask)
     out_title, out_style = titles.styled_title("question", "My title", "Piyush ko Vietnam trip ka surprise mila")
-    assert out_style == "question" and out_title == "Piyush Shocked by Vietnam Surprise #Shorts"
+    assert out_style == "question" and out_title == "Piyush Shocked by Vietnam Surprise"
     assert "Hinglish" in seen["prompt"]
 
 

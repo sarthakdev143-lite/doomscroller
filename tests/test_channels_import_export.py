@@ -110,6 +110,8 @@ def test_export_snapshot_strips_oauth_tokens_and_secret_paths(tmp_path):
         "niche": "technology",
         "brand_name": "@techclips",
         "uploads_per_day": 4,
+        "long_uploads_per_day": 0,
+        "long_auto_publish": False,
         "timezone": "Asia/Kolkata",
         "require_approval": False,
         "auto_approve_score": 0.75,

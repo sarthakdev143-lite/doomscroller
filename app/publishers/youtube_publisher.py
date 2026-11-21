@@ -316,7 +316,9 @@ class YouTubePublisher(Publisher):
         return out
 
     def upload(self, *, file_path: str, title: str, description: str,
-               tags: list[str], category: int, privacy: str) -> PublishResult:
+               tags: list[str], category: int, privacy: str,
+               default_language: Optional[str] = None,
+               default_audio_language: Optional[str] = None) -> PublishResult:
         import googleapiclient.http
 
         from ..config import settings
@@ -330,13 +332,20 @@ class YouTubePublisher(Publisher):
             clean_privacy = "private"
 
         yt = self._client()
+        snippet: dict[str, Any] = {
+            "title": youtube_title(title),
+            "description": youtube_description(description),
+            "tags": _sanitize_youtube_tags(tags),
+            "categoryId": str(category),
+        }
+        clean_lang = (default_language or "").strip().lower()
+        clean_audio_lang = (default_audio_language or "").strip().lower()
+        if clean_lang and len(clean_lang) <= 8 and clean_lang.replace("-", "").isalpha():
+            snippet["defaultLanguage"] = clean_lang
+        if clean_audio_lang and len(clean_audio_lang) <= 8 and clean_audio_lang.replace("-", "").isalpha():
+            snippet["defaultAudioLanguage"] = clean_audio_lang
         body = {
-            "snippet": {
-                "title": youtube_title(title),
-                "description": youtube_description(description),
-                "tags": _sanitize_youtube_tags(tags),
-                "categoryId": str(category),
-            },
+            "snippet": snippet,
             "status": {
                 "privacyStatus": clean_privacy,
                 "selfDeclaredMadeForKids": settings.youtube_made_for_kids,
@@ -356,3 +365,15 @@ class YouTubePublisher(Publisher):
             status="uploaded" if vid else "failed",
             raw=response,
         )
+
+    def set_thumbnail(self, video_id: str, image_path: str) -> bool:
+        import googleapiclient.http
+
+        if not video_id or not image_path or not os.path.isfile(image_path):
+            return False
+        ext = os.path.splitext(image_path)[1].lower()
+        mime = "image/png" if ext == ".png" else "image/jpeg"
+        yt = self._client()
+        media = googleapiclient.http.MediaFileUpload(image_path, mimetype=mime, resumable=False)
+        yt.thumbnails().set(videoId=video_id, media_body=media).execute()
+        return True
