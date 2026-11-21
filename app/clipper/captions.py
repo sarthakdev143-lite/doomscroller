@@ -24,7 +24,7 @@ from .transcribe import Word
 log = logging.getLogger(__name__)
 
 _WIDTH, _HEIGHT = 1080, 1920
-_HOOK_SECONDS = 2.8
+_HOOK_SECONDS = 2.5
 _MAX_WORDS_PER_GROUP = 3
 _MAX_CHARS_PER_LINE = 16
 _MAX_GROUP_GAP_SEC = 0.5

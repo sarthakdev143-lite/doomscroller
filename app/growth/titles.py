@@ -97,3 +97,37 @@ def styled_title(style: str, title: str, opening_line: str, *, context: str = ""
     if written:
         return finished_title(written)[:_YOUTUBE_TITLE_MAX], style
     return finished_title(title)[:_YOUTUBE_TITLE_MAX], "plain"
+
+
+def engagement_comment(title: str, *, context: str = "", language: str = "en", is_long: bool = False) -> str:
+    """Write one short, scroll-worthy question comment to spark comments under a fresh upload."""
+    hi = str(language or "en").strip().lower().startswith("hi")
+    fallback = (
+        ("Sabse crazy moment kaunsa tha? Apna fav comment me batao!" if is_long
+         else "Sach batao, is par aapka kya reaction hota?")
+        if hi else
+        ("Which moment was #1 for you? Drop it below!" if is_long
+         else "Be honest — what would you have done here?")
+    )
+    if not ai.available():
+        return fallback
+    lang_note = "Hinglish (casual Hindi in Latin script)" if hi else "natural conversational English"
+    clean_ctx = " ".join(_CTRL_RE.sub("", context or "").split())[:200]
+    ctx_part = f"\nContext: {clean_ctx}" if clean_ctx else ""
+    prompt = (
+        f"Write ONE short YouTube creator question comment in {lang_note} (under 110 characters, NO hashtags) "
+        f"to spark replies on a video titled {title!r}.{ctx_part}\n"
+        'Reply with JSON only: {"comment": "..."}'
+    )
+    try:
+        reply = ai.ask_json(prompt)
+    except Exception:
+        return fallback
+    if not isinstance(reply, dict):
+        return fallback
+    raw = str(reply.get("comment") or "")
+    cleaned = _HASHTAG_RE.sub("", _CTRL_RE.sub("", raw))
+    cleaned = _strip_wrapping_quotes(" ".join(cleaned.split())).strip()[:120]
+    if not cleaned or _REFUSAL_RE.search(cleaned) or not any(ch.isalnum() for ch in cleaned):
+        return fallback
+    return cleaned

@@ -26,6 +26,7 @@ def test_idle_server_modules_do_not_eagerly_import_numpy_or_cv2():
         "import app.main, app.review, app.scheduler; "
         "assert 'numpy' not in sys.modules, 'numpy eagerly imported'; "
         "assert 'cv2' not in sys.modules, 'cv2 eagerly imported'; "
+        "assert 'edge_tts' not in sys.modules, 'edge_tts eagerly imported'; "
         "assert not hasattr(app.review, 'ClipJob'); "
         "assert not hasattr(app.review, 'LongJob'); "
         "print('OK')"

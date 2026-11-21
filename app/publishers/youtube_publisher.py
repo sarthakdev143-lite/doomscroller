@@ -15,7 +15,8 @@ from .base import PublishResult, Publisher, TokenProblem, UploadOutcomeUnknown
 UPLOAD_SCOPE = "https://www.googleapis.com/auth/youtube.upload"
 READ_SCOPE = "https://www.googleapis.com/auth/youtube.readonly"
 ANALYTICS_SCOPE = "https://www.googleapis.com/auth/yt-analytics.readonly"
-SCOPES = [UPLOAD_SCOPE, READ_SCOPE, ANALYTICS_SCOPE]
+COMMENT_SCOPE = "https://www.googleapis.com/auth/youtube.force-ssl"
+SCOPES = [UPLOAD_SCOPE, READ_SCOPE, ANALYTICS_SCOPE, COMMENT_SCOPE]
 _LOCAL_ERRNOS = {
     errno.ENOSPC, errno.EDQUOT, errno.EROFS, errno.EACCES, errno.EPERM,
     errno.ENOENT, errno.EISDIR, errno.ENOTDIR, errno.EIO,
@@ -377,3 +378,34 @@ class YouTubePublisher(Publisher):
         media = googleapiclient.http.MediaFileUpload(image_path, mimetype=mime, resumable=False)
         yt.thumbnails().set(videoId=video_id, media_body=media).execute()
         return True
+
+    def post_comment(self, video_id: str, text: str) -> Optional[str]:
+        """Post one top-level engagement question comment if token has youtube.force-ssl scope."""
+        clean_vid = str(video_id or "").strip()
+        clean_text = re.sub(r"[\x00-\x1f\x7f-\x9f]+", " ", str(text or ""))
+        clean_text = " ".join(clean_text.split()).strip()[:280]
+        if not clean_vid or not clean_text:
+            return None
+        creds = self._credentials()
+        granted = {str(s).strip() for s in (getattr(creds, "scopes", None) or ()) if s}
+        if granted and COMMENT_SCOPE not in granted and "https://www.googleapis.com/auth/youtube" not in granted:
+            if not getattr(self, "_logged_missing_comment_scope", False):
+                self._logged_missing_comment_scope = True
+                import logging
+
+                logging.getLogger(__name__).info(
+                    "youtube: skipping auto-comment on %s (token lacks %s; re-auth with scripts/youtube_oauth.py --force to enable)",
+                    clean_vid, COMMENT_SCOPE,
+                )
+            return None
+        yt = self._client()
+        resp = yt.commentThreads().insert(
+            part="snippet",
+            body={
+                "snippet": {
+                    "videoId": clean_vid,
+                    "topLevelComment": {"snippet": {"textOriginal": clean_text}},
+                }
+            },
+        ).execute()
+        return str((resp or {}).get("id") or "") or None

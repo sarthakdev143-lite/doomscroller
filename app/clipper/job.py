@@ -26,7 +26,7 @@ from .edit import attach_memes, attach_stock, build_clean_vlog_edit, build_edit,
 from .memes import MemeSession, credit_line as meme_credit_line
 from .ingest import IngestError, SourceVideo, fetch, file_fingerprint, is_url
 from .media import Interrupted, MediaError, probe, require_tools
-from .moments import Moment, clashes, pick_speech, pick_visual
+from .moments import Moment, clashes, fallback_hook, pick_speech, pick_visual
 from .render import HEIGHT, WIDTH, render_moment
 from .signals import analyse
 from .transcribe import TranscribeError, transcribe
@@ -339,7 +339,8 @@ def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
         stings = sfx.trending() if settings.clip_sfx else {}
         if clean_vlog:
             log.info("clipper: %s is Hindi, using clean-vlog edit with %d meme sounds on offer", label, len(stings))
-        pick_kw = {"min_sec": 18, "max_sec": 35, "target_sec": 26} if clean_vlog else {}
+        pick_kw = ({"min_sec": 15, "max_sec": 32, "target_sec": 22}
+                   if clean_vlog else {"target_sec": settings.clip_edit_target_sec})
         moments = pick_speech(words, signals, count=left, title=src.title, used=used,
                               sounds=tuple(stings), **pick_kw) if speech else []
         # Speech clips already cut means the speech ran out, not that there was too little to begin with.
@@ -410,6 +411,10 @@ def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
                             if message not in warnings:
                                 warn(message)
                     try:
+                        from app.transformers.ffmpeg_transformer import is_renderable
+
+                        if (not moment.hook or not is_renderable(moment.hook)) and moment.title:
+                            moment.hook = fallback_hook(moment.title)
                         extras = dict(branding)
                         if moment.sound in stings:
                             extras["sting"] = str(stings[moment.sound])

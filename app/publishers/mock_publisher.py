@@ -33,3 +33,6 @@ class MockPublisher(Publisher):
 
     def set_thumbnail(self, video_id: str, image_path: str) -> bool:
         return bool(video_id and image_path and os.path.isfile(image_path))
+
+    def post_comment(self, video_id: str, text: str) -> str | None:
+        return "MOCK_COMMENT" if (video_id and str(text or "").strip()) else None

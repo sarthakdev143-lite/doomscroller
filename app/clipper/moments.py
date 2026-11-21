@@ -16,6 +16,7 @@ import math
 import os
 import re
 import tempfile
+import unicodedata
 from dataclasses import dataclass, replace
 from typing import Sequence
 
@@ -134,7 +135,20 @@ def clean_title(raw: object) -> str:
 
 
 def clean_hook(raw: object) -> str:
-    return " ".join(str(raw or "").split()[:_MAX_HOOK_WORDS]).strip().strip('"')
+    words: list[str] = []
+    for tok in str(raw or "").split():
+        # Strip emojis/symbols that render as empty boxes in libass while keeping Latin, Devanagari marks, and digits.
+        kept = "".join(ch for ch in tok if unicodedata.category(ch)[0] in ("L", "N", "M") or ch in "?!'\".,-%$")
+        if kept and any(ch.isalnum() for ch in kept):
+            words.append(kept)
+    return " ".join(words[:_MAX_HOOK_WORDS]).strip().strip('"')
+
+
+def fallback_hook(title: str) -> str:
+    """Distill a punchy 3-5 word on-screen opening hook from a clip title."""
+    raw = clean_title(title)
+    words = [w for w in raw.split() if any(ch.isalnum() for ch in w)]
+    return clean_hook(" ".join(words[:5]))
 
 
 def clean_description(raw: object) -> str:
@@ -271,7 +285,7 @@ A good clip opens on a line that makes people stop scrolling, makes sense withou
 Each clip should run {lo_sec}-{hi_sec} seconds; {pace_note} People speak about 2.5 words per second. Give up to {count * 2} clips ranked best first. Clips must not overlap.
 
 Reply with JSON only:
-{{"clips": [{{"first": <first sentence number>, "last": <last sentence number>, "title": "<plain YouTube title, under 70 characters, no hashtags>", "hook": "<on-screen hook, at most 6 words, that makes sense on its own and makes people want the answer>", "description": "<one or two sentences telling a viewer what this clip is about, no hashtags>", "tags": ["<3-6 lowercase topic keywords>"], "score": <0-100>, "why": "<one short sentence>"{sound_field}}}]}}
+{{"clips": [{{"first": <first sentence number>, "last": <last sentence number>, "title": "<plain YouTube title, under 70 characters, no hashtags>", "hook": "<3-5 scroll-stopping words, plain text with no emojis, that creates curiosity>", "description": "<one or two sentences telling a viewer what this clip is about, no hashtags>", "tags": ["<3-6 lowercase topic keywords>"], "score": <0-100>, "why": "<one short sentence>"{sound_field}}}]}}
 
 Write the title, hook and description in the same language as the transcript: Hinglish (Hindi in Latin script, the way Indian YouTubers title their Shorts) when the speech is Hindi, otherwise English. Tags stay lowercase English.
 

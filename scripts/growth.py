@@ -368,15 +368,33 @@ def show_repair_drafts(*, dry_run: bool = False, as_json: bool = False) -> int:
     return 0
 
 
+def show_prune_shelf(*, dry_run: bool = False, max_sec: int = 42, min_keep: int = 5, as_json: bool = False) -> int:
+    from app.growth import approval
+
+    res = approval.prune_stale_shelf(max_sec=max_sec, min_keep_per_channel=min_keep, dry_run=dry_run)
+    if as_json:
+        print(json.dumps(res, indent=2))
+        return 0
+    mode = "Dry run" if dry_run else "Pruned"
+    print(f"{mode}: checked {res['checked']} shelf Shorts, pruned {res['pruned']} "
+          f"(off_feed={res['off_feed']}, too_long={res['too_long']}).")
+    for slug, stats in sorted(res["by_channel"].items()):
+        authors = ", ".join(f"{k} x{v}" for k, v in sorted(stats["pruned_authors"].items())) or "none"
+        print(f"  {slug}: {stats['before']} -> {stats['kept']} kept ({stats['pruned']} pruned: {authors})")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("command", nargs="?", default="status",
                         choices=("status", "doctor", "report", "pause", "resume", "unblock",
-                                 "reload", "notify-test", "repair-drafts"))
+                                 "reload", "notify-test", "repair-drafts", "prune-shelf"))
     parser.add_argument("name", nargs="?",
                         help="pause/resume: a channel slug; unblock: the author/source/parent to lift")
     parser.add_argument("--offline", action="store_true", help="doctor: skip asking Google and reading feeds")
-    parser.add_argument("--dry-run", action="store_true", help="repair-drafts: preview changes without writing DB")
+    parser.add_argument("--dry-run", action="store_true", help="repair-drafts/prune-shelf: preview changes without writing DB")
+    parser.add_argument("--max-sec", type=int, default=42, help="prune-shelf: max duration (s) to keep on shelf")
+    parser.add_argument("--min-keep", type=int, default=5, help="prune-shelf: minimum clips preserved per channel")
     parser.add_argument("--json", dest="as_json", action="store_true", help="emit machine-readable JSON output")
     parser.add_argument("--channel", "-c", default=None, help="filter status, report, or doctor to one channel slug")
     parser.add_argument("--markdown", "--md", dest="markdown", action="store_true",
@@ -386,8 +404,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if (args.out or args.markdown) and args.command != "report":
         parser.error("--out and --markdown only apply to the report command")
-    if args.dry_run and args.command != "repair-drafts":
-        parser.error("--dry-run only applies to the repair-drafts command")
+    if args.dry_run and args.command not in ("repair-drafts", "prune-shelf"):
+        parser.error("--dry-run only applies to repair-drafts or prune-shelf")
     init_db()
     target_slug = args.name or args.channel
     if args.command == "status":
@@ -406,6 +424,8 @@ def main(argv: list[str] | None = None) -> int:
         return show_notify_test(as_json=args.as_json)
     if args.command == "repair-drafts":
         return show_repair_drafts(dry_run=args.dry_run, as_json=args.as_json)
+    if args.command == "prune-shelf":
+        return show_prune_shelf(dry_run=args.dry_run, max_sec=args.max_sec, min_keep=args.min_keep, as_json=args.as_json)
     return show_report(as_json=args.as_json, channel=target_slug, markdown=args.markdown, out=args.out)
 
 

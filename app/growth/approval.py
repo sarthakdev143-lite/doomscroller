@@ -873,6 +873,116 @@ def repair_waiting_drafts(*, dry_run: bool = False) -> dict:
     }
 
 
+_ALNUM_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _norm_creator_keys(raw: Optional[str]) -> set[str]:
+    clean = str(raw or "").strip().lstrip("@").casefold()
+    if not clean:
+        return set()
+    alnum = _ALNUM_RE.sub("", clean)
+    return {k for k in (clean, alnum) if k}
+
+
+def _is_off_feed(video: Video, feed_keys: set[str]) -> bool:
+    """True when ``feed_keys`` is known and this video's creator does not match any active feed."""
+    if not feed_keys:
+        return False
+    video_keys: set[str] = set()
+    for field in (video.author, video.author_name):
+        video_keys.update(_norm_creator_keys(field))
+    if not video_keys:
+        return False
+    return video_keys.isdisjoint(feed_keys)
+
+
+def prune_stale_shelf(
+    *,
+    max_sec: int = 42,
+    min_keep_per_channel: int = 5,
+    drop_off_feed: bool = True,
+    dry_run: bool = False,
+) -> dict:
+    """Prune stale long/off-feed shelf Shorts while preserving >= ``min_keep_per_channel`` per channel."""
+    from . import channels
+
+    now = datetime.now(timezone.utc)
+    max_s = max(15, int(max_sec))
+    keep_floor = max(0, int(min_keep_per_channel))
+    checked = pruned = off_feed_count = too_long_count = 0
+    by_channel: dict[str, dict] = {}
+    seen_ids: set[str] = set()
+
+    with session_scope() as db:
+        channels._ensure_seeded(db)
+        for ch in channels.all_channels(db):
+            feed_keys: set[str] = set()
+            for f in channels.feeds_for(db, ch):
+                feed_keys.update(_norm_creator_keys(channels.creator(f)))
+            rows = (
+                db.execute(
+                    select(Video).where(channels.video_scope(ch), Video.status == VideoStatus.TRANSFORMED)
+                )
+                .scalars()
+                .all()
+            )
+            shelf = [
+                v for v in rows
+                if v.id not in seen_ids and not (v.meta or {}).get("long_form")
+            ]
+            for v in shelf:
+                seen_ids.add(v.id)
+            checked += len(shelf)
+
+            eligible: list[tuple[tuple[int, int, float], Video, str]] = []
+            for v in shelf:
+                meta = v.meta or {}
+                if meta.get("pinned_at"):
+                    continue
+                is_off = drop_off_feed and _is_off_feed(v, feed_keys)
+                dur = int(v.duration_sec or 0)
+                is_long_clip = dur > max_s
+                if not is_off and not is_long_clip:
+                    continue
+                reason = "off_feed" if is_off else f"over_{max_s}s ({dur}s)"
+                score = float(meta.get("clip_score") or 0.0)
+                eligible.append(((0 if is_off else 1, -dur, score), v, reason))
+
+            eligible.sort(key=lambda item: item[0])
+            max_drop = max(0, len(shelf) - keep_floor)
+            ch_pruned = 0
+            pruned_authors: dict[str, int] = {}
+            for _, v, reason in eligible[:max_drop]:
+                ch_pruned += 1
+                pruned += 1
+                if reason == "off_feed":
+                    off_feed_count += 1
+                else:
+                    too_long_count += 1
+                who = (v.author_name or v.author or "unknown").strip()
+                pruned_authors[who] = pruned_authors.get(who, 0) + 1
+                if not dry_run:
+                    v.status = VideoStatus.REJECTED
+                    v.curated_at = now
+                    v.meta = {**(v.meta or {}), "pruned_reason": reason}
+
+            by_channel[ch.slug] = {
+                "before": len(shelf),
+                "pruned": ch_pruned,
+                "kept": len(shelf) - ch_pruned,
+                "pruned_authors": pruned_authors,
+            }
+
+    return {
+        "checked": checked,
+        "pruned": pruned,
+        "off_feed": off_feed_count,
+        "too_long": too_long_count,
+        "by_channel": by_channel,
+        "dry_run": dry_run,
+    }
+
+
 def media_path(video_id: str) -> Optional[str]:
     with session_scope() as db:
         video = db.get(Video, video_id)

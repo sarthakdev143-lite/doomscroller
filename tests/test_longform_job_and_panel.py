@@ -347,7 +347,7 @@ def test_countdown_lower_thirds_and_chapters_in_render_compilation(tmp_path, mon
         ass_captured.append(ass_path.read_text(encoding="utf-8"))
 
     monkeypatch.setattr(lf_render, "_write_ass_overlay", cap_ass)
-    res = lf_render.render_compilation(plan, str(tmp_path / "out.mp4"), brand_name="@Brand", include_end_screen=False)
+    res = lf_render.render_compilation(plan, str(tmp_path / "out.mp4"), brand_name="@Brand", include_end_screen=False, include_voiceover=False)
     assert [lbl.split()[0] for _, lbl in res.chapters] == ["Intro", "#2", "#1"]
     assert "COMING UP · #1" in ass_captured[0]
     assert "#2 · @One — Funny Entrance" in ass_captured[1] and "#Shorts" not in ass_captured[1]
@@ -403,3 +403,70 @@ def test_repair_waiting_drafts_strips_shorts_and_unlocks_ab_safely(tmp_path):
         assert vh.title == "Auto Title" and dh.title == "My Handcrafted Title" and dh.edited is True
         assert vp.title == "Published Already #Shorts"
         assert vl.title == "Long #Shorts"
+
+
+def test_voiceover_script_and_render_compilation_with_narrator_cards_and_fallback(tmp_path, monkeypatch):
+    from app.clipper.media import MediaInfo
+    from app.longform import voiceover
+
+    src = tmp_path / "src.mp4"
+    src.write_bytes(b"MP4")
+    s1 = planner.SegmentPlan(str(src), "https://youtu.be/1", "1", "@One", "One", "Vid", 0.0, 20.0, 80.0, "Funny Opening", "hi")
+    s2 = planner.SegmentPlan(str(src), "https://youtu.be/2", "2", "@One", "One", "Vid", 25.0, 45.0, 99.0, "Wild Finale", "hi")
+    co = planner.pick_cold_open([s1, s2], climax=s2)
+    plan = planner.CompilationPlan(
+        format_kind="best_of", channel_slug="indianvlogs", part_number=1, targets=("@One",), theme="",
+        title="Best of One", description="Desc", tags=("vlog",), language="hi", target_seconds=120.0,
+        cold_open=co, segments=(s1, s2),
+    )
+
+    monkeypatch.setattr(voiceover.ai, "available", lambda: True)
+    monkeypatch.setattr(
+        voiceover.ai,
+        "ask_json",
+        lambda p: {"intro": "Aaj ke top 2 moments dekho!", "bridges": ["Number 2 dekho.", "Number 1 finale!"], "outro": "Comment karo!"},
+    )
+    script = voiceover.generate_commentary_script(plan)
+    assert "top 2 moments" in script["intro"]
+    assert len(script["bridges"]) == 2
+
+    def fake_probe(path):
+        name = Path(path).name
+        return MediaInfo(100.0 if name == "src.mp4" else 15.0, 1920, 1080, 30.0, False)
+
+    def fake_ffmpeg(args, **kwargs):
+        out_file = Path(args[-1])
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+        out_file.write_bytes(b"X" * 2000)
+
+    synthesized: list[str] = []
+
+    def fake_synth(text, out_wav, **kw):
+        synthesized.append(text)
+        Path(out_wav).write_bytes(b"RIFF" + b"0" * 500)
+        return 2.4
+
+    monkeypatch.setattr(lf_render, "probe", fake_probe)
+    monkeypatch.setattr(lf_render, "_probe_duration", lambda p, f: f)
+    monkeypatch.setattr(lf_render, "run_ffmpeg", fake_ffmpeg)
+    monkeypatch.setattr(voiceover, "run_ffmpeg", fake_ffmpeg)
+    monkeypatch.setattr(voiceover, "synthesize_wav", fake_synth)
+
+    cards_rendered: list[str] = []
+    monkeypatch.setattr(
+        voiceover,
+        "render_narrator_card",
+        lambda wav, bg, out, td, *, badge_text, **kw: cards_rendered.append(badge_text) or 2.5,
+    )
+
+    res = lf_render.render_compilation(plan, str(tmp_path / "vo_out.mp4"), brand_name="@Brand", include_end_screen=True, include_voiceover=True)
+    assert cards_rendered == ["COUNTDOWN", "#2", "#1"]
+    assert len(synthesized) == 4  # intro + 2 bridges + outro
+    assert [lbl.split()[0] for _, lbl in res.chapters] == ["Intro", "#2", "#1"]
+
+    # Graceful fallback when synthesize_wav returns None
+    monkeypatch.setattr(voiceover, "synthesize_wav", lambda *a, **k: None)
+    cards_rendered.clear()
+    res_fb = lf_render.render_compilation(plan, str(tmp_path / "fb_out.mp4"), brand_name="@Brand", include_end_screen=False, include_voiceover=True)
+    assert cards_rendered == []
+    assert [lbl.split()[0] for _, lbl in res_fb.chapters] == ["Intro", "#2", "#1"]

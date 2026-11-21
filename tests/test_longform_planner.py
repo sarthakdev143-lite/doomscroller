@@ -190,3 +190,58 @@ def test_plan_compilation_best_of_vs_and_theme_without_shorts_tag(tmp_path, monk
     assert "#Shorts" not in plan.description and "shorts" not in plan.tags
     assert len(plan.segments) >= 2
     assert 4.0 <= plan.cold_open.duration <= 6.0
+
+
+def test_plan_compilation_prioritizes_cached_videos_and_transcripts_and_balances_vs(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "content_dir", str(tmp_path / "content"))
+    long_dir = tmp_path / "content" / "long"
+    long_dir.mkdir(parents=True)
+
+    cached_a = long_dir / "Youtube_a2.mp4"
+    cached_a.write_bytes(b"A" * 60_000)
+    Path(f"{cached_a}.transcript.json").write_text('{"words": []}', encoding="utf-8")
+
+    cached_b = long_dir / "Youtube_b2.mp4"
+    cached_b.write_bytes(b"B" * 60_000)
+    Path(f"{cached_b}.transcript.json").write_text('{"words": []}', encoding="utf-8")
+
+    entries = [
+        {"id": "a1", "url": "https://youtube.com/watch?v=a1", "creator": "@Alpha", "duration": 600},
+        {"id": "b1", "url": "https://youtube.com/watch?v=b1", "creator": "@Beta", "duration": 600},
+        {"id": "a2", "url": "https://youtube.com/watch?v=a2", "creator": "@Alpha", "duration": 600},
+        {"id": "b2", "url": "https://youtube.com/watch?v=b2", "creator": "@Beta", "duration": 600},
+    ]
+    prioritized = planner._prioritize_cached_entries(entries, {}, format_kind="vs")
+    assert [e["id"] for e in prioritized] == ["a2", "b2", "a1", "b1"]
+
+    fetched: list[str] = []
+    monkeypatch.setattr(
+        planner,
+        "_pick_source_candidates",
+        lambda **k: (["@Alpha", "@Beta"], entries),
+    )
+    monkeypatch.setattr(planner.ingest, "fetch", lambda u: fetched.append(u) or (_ for _ in ()).throw(AssertionError(f"should not download {u}")))
+    monkeypatch.setattr(planner, "probe", lambda p: MediaInfo(600.0, 1920, 1080, 30.0, True))
+    monkeypatch.setattr(planner.signals, "analyse", lambda p, i: Signals(600.0, np.zeros(600), np.zeros(600), np.zeros(600), np.ones(600), np.ones(600), []))
+    words = [transcribe.Word(f"word{i}", i * 0.5, i * 0.5 + 0.4) for i in range(400)]
+    monkeypatch.setattr(planner.transcribe, "transcribe", lambda p, i: transcribe.Transcript(words=words, language="en", duration=600.0))
+    monkeypatch.setattr(
+        planner.moments,
+        "pick_speech",
+        lambda *a, **k: [
+            moments.Moment(10.0, 75.0, title="M1", score=90.0, kind="speech"),
+            moments.Moment(90.0, 155.0, title="M2", score=88.0, kind="speech"),
+            moments.Moment(170.0, 235.0, title="M3", score=86.0, kind="speech"),
+        ],
+    )
+    monkeypatch.setattr(planner.ai, "available", lambda: False)
+
+    plan = planner.plan_compilation(
+        format_kind="vs",
+        channel_slug="default",
+        targets=["@Alpha", "@Beta"],
+        target_minutes=6,
+        min_total_sec=100.0,
+    )
+    assert fetched == []
+    assert len(plan.segments) >= 2

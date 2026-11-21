@@ -195,8 +195,8 @@ class Settings(BaseSettings):
     # Speech clips: how far to tighten. Speed is pitch-preserved.
     clip_speed: float = 1.12
     clip_edit_gap_sec: float = 0.12
-    # Long enough for a setup and its outcome: shorter targets cut stories off before their payoff.
-    clip_edit_target_sec: int = 40
+    # Fast, high-retention pacing (~26s punchy Clips instead of rambling 40s edits).
+    clip_edit_target_sec: int = 26
     # Loop-friendly endings skip the frozen tail and long fade unless a sting plays.
     clip_loop_ending: bool = True
     clip_sfx: bool = True
@@ -263,6 +263,10 @@ class Settings(BaseSettings):
     channel_niche: str = "general_viral"
 
     youtube_made_for_kids: bool = False
+    # Post one short AI engagement question comment right after uploading (requires youtube.force-ssl scope).
+    youtube_auto_comment: bool = True
+    # Add free neural countdown voiceover bridges on 16:9 compilations for YPP transformative originality.
+    longform_voiceover: bool = True
 
     # ---- Growth loop (app/growth) ----
     # Posts, measures and adapts on its own. It takes over publishing from AUTO_PUBLISH.
@@ -468,7 +472,8 @@ class Settings(BaseSettings):
         "upscale_sharpen", "clip_auto_queue", "clip_sfx", "clip_broll", "clip_music", "clip_memes",
         "clip_memes_allow_stills", "clip_music_synth_fallback", "clip_loop_ending",
         "clip_trending_sfx",
-        "growth_enabled", "youtube_made_for_kids", "claude_fallback", "growth_require_approval", "earshot_qa", mode="before",
+        "growth_enabled", "youtube_made_for_kids", "youtube_auto_comment", "longform_voiceover",
+        "claude_fallback", "growth_require_approval", "earshot_qa", mode="before",
     )
     @classmethod
     def _coerce_bool(cls, v):

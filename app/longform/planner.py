@@ -529,6 +529,92 @@ def _ai_long_metadata(
     return title, desc, tags or fallback_tags
 
 
+def _cached_media_path(video_id: str) -> Optional[Path]:
+    """Return an already-downloaded full video in content/long matching ``video_id`` if usable."""
+    vid = re.sub(r"[^A-Za-z0-9._-]+", "", str(video_id or "").strip())
+    if not vid:
+        return None
+    long_dir = settings.content_path / "long"
+    if not long_dir.is_dir():
+        return None
+    direct = long_dir / f"Youtube_{vid}.mp4"
+    candidates = [direct] if direct.is_file() else []
+    if not candidates:
+        candidates = sorted(
+            p for p in long_dir.glob(f"*{vid}.mp4")
+            if p.is_file() and not p.name.endswith((".tmp.mp4", ".part.mp4"))
+        )
+    for path in candidates:
+        try:
+            if path.stat().st_size > 50_000:
+                return path
+        except OSError:
+            continue
+    return None
+
+
+def _cached_source_for_entry(entry: dict) -> Optional[ingest.SourceVideo]:
+    """Build a local SourceVideo directly from cached content/long/ without invoking yt-dlp."""
+    vid = str(entry.get("id") or "").strip()
+    path = _cached_media_path(vid)
+    if path is None:
+        return None
+    try:
+        os.utime(path, None)
+    except OSError:
+        pass
+    creator = str(entry.get("creator") or "").strip()
+    return ingest.SourceVideo(
+        path=str(path),
+        title=str(entry.get("title") or "").strip() or path.stem,
+        author=creator,
+        author_name=creator or path.stem,
+        url=str(entry.get("url") or f"https://www.youtube.com/watch?v={vid}"),
+        source="youtube",
+        source_id=vid,
+    )
+
+
+def _entry_cache_tier(entry: dict, used_map: dict[str, list[moments.Moment]]) -> int:
+    vid = str(entry.get("id") or "").strip()
+    if not vid or len(used_map.get(vid, ())) >= 3:
+        return 2
+    media = _cached_media_path(vid)
+    if media is None:
+        return 2
+    transcript_sidecar = Path(f"{media}.transcript.json")
+    return 0 if transcript_sidecar.is_file() else 1
+
+
+def _prioritize_cached_entries(
+    entries: Sequence[dict],
+    used_map: dict[str, list[moments.Moment]],
+    *,
+    format_kind: str = "best_of",
+) -> list[dict]:
+    """Prefer already-cached videos & transcripts to cut compilation build time on low-spec CPUs."""
+    items = list(entries)
+    if len(items) <= 1:
+        return items
+    if format_kind == "vs":
+        buckets: dict[str, list[dict]] = {}
+        for item in items:
+            key = str(item.get("creator") or "").casefold()
+            buckets.setdefault(key, []).append(item)
+        sorted_buckets = [
+            sorted(group, key=lambda e: _entry_cache_tier(e, used_map))
+            for group in buckets.values()
+        ]
+        out: list[dict] = []
+        max_len = max((len(b) for b in sorted_buckets), default=0)
+        for i in range(max_len):
+            for b in sorted_buckets:
+                if i < len(b):
+                    out.append(b[i])
+        return out
+    return sorted(items, key=lambda e: _entry_cache_tier(e, used_map))
+
+
 def plan_compilation(
     *,
     format_kind: str = "best_of",
@@ -575,12 +661,13 @@ def plan_compilation(
     fetched_ids: set[str] = set()
     # Keep track of spans picked within this run so no moment repeats.
     session_used: dict[str, list[moments.Moment]] = {k: list(v) for k, v in used_map.items()}
+    ordered_entries = _prioritize_cached_entries(entries, used_map, format_kind=fmt)
 
-    for entry in entries:
+    for entry in ordered_entries:
         if total_sec >= target_sec:
             break
         try:
-            src = ingest.fetch(entry["url"])
+            src = _cached_source_for_entry(entry) or ingest.fetch(entry["url"])
         except Exception as exc:
             warnings.append(f"skipped {entry.get('url', '')}: {exc}")
             continue

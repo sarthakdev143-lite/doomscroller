@@ -275,19 +275,34 @@ def _render_segment(
     return max(0.1, probe(str(out_path)).duration)
 
 
-def _render_end_tail(tail_frame_src: Path, out_path: Path, tmp_dir: Path, *, seconds: float = _END_SCREEN_SEC) -> float:
-    """Clean 8s dimmed backdrop tail with gentle silent/ambient stereo track for YouTube end-screen elements."""
+def _render_end_tail(
+    tail_frame_src: Path,
+    out_path: Path,
+    tmp_dir: Path,
+    *,
+    seconds: float = _END_SCREEN_SEC,
+    outro_wav: Optional[Path] = None,
+) -> float:
+    """Clean 8s dimmed backdrop tail with outro voiceover (when present) or stereo silence for end-screen elements."""
     frame_jpg = tmp_dir / "end_still.jpg"
     run_ffmpeg(["-sseof", "-0.4", "-i", str(tail_frame_src), "-frames:v", "1", "-q:v", "2", str(frame_jpg)], cwd=str(tmp_dir))
+    has_vo = outro_wav is not None and Path(outro_wav).is_file()
+    audio_in = ["-i", str(outro_wav)] if has_vo else ["-f", "lavfi", "-t", f"{seconds:.3f}", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"]
+    audio_filter = (
+        f"[1:a]loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,aformat=channel_layouts=stereo,"
+        f"apad=whole_dur={seconds:.3f},atrim=0:{seconds:.3f},asetpts=N/SR/TB[a]"
+        if has_vo else
+        "[1:a]aresample=48000,aformat=channel_layouts=stereo,asetpts=N/SR/TB[a]"
+    )
     run_ffmpeg(
         [
             "-loop", "1", "-t", f"{seconds:.3f}", "-i", str(frame_jpg),
-            "-f", "lavfi", "-t", f"{seconds:.3f}", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
+            *audio_in,
             "-filter_complex",
             f"[0:v]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,crop={WIDTH}:{HEIGHT},setsar=1,"
             f"gblur=sigma=18,eq=brightness=-0.18:saturation=0.85,fps={FPS},"
             f"fade=t=in:st=0:d=0.4,fade=t=out:st={max(0.0, seconds - 0.6):.3f}:d=0.6[v];"
-            "[1:a]aresample=48000,aformat=channel_layouts=stereo,asetpts=N/SR/TB[a]",
+            f"{audio_filter}",
             "-map", "[v]", "-map", "[a]",
             "-t", f"{seconds:.3f}",
             *_common_encode_args(),
@@ -304,18 +319,32 @@ def render_compilation(
     *,
     brand_name: str = "",
     include_end_screen: bool = True,
+    include_voiceover: Optional[bool] = None,
 ) -> RenderResult:
-    """Render cold-open, transition stingers, segments, and end screen into a native 1920x1080 MP4."""
+    """Render cold-open, transition stingers, optional narrator cards, segments & end screen into 1080p MP4."""
     out = Path(out_path).resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
     partial = out.with_name(out.name + ".tmp.mp4")
     warnings = list(plan.warnings)
+    use_vo = settings.longform_voiceover if include_voiceover is None else bool(include_voiceover)
 
     with tempfile.TemporaryDirectory(prefix="longform-render-", ignore_cleanup_errors=True) as td:
         tmp_dir = Path(td)
         stinger = tmp_dir / "trans.mp4"
         _render_stinger(stinger, tmp_dir)
         stinger_dur = _probe_duration(stinger, _TRANSITION_SEC)
+
+        voiceover = None
+        script: dict = {}
+        if use_vo:
+            try:
+                from . import voiceover as vo_mod
+
+                voiceover = vo_mod
+                script = voiceover.generate_commentary_script(plan)
+            except Exception as exc:
+                warnings.append(f"voiceover skipped: {exc}")
+                voiceover = None
 
         parts_to_concat: list[Path] = []
         chapters: list[tuple[float, str]] = [(0.0, "Intro / Preview")]
@@ -330,28 +359,81 @@ def render_compilation(
         parts_to_concat.append(cold_file)
         cursor += co_dur
 
+        if voiceover is not None and script.get("intro"):
+            try:
+                intro_wav = tmp_dir / "intro.wav"
+                vo_dur = voiceover.synthesize_wav(script["intro"], intro_wav, language=plan.language)
+                if vo_dur:
+                    intro_card = tmp_dir / "part_00b_intro.mp4"
+                    card_dur = voiceover.render_narrator_card(
+                        intro_wav,
+                        cold_file,
+                        intro_card,
+                        tmp_dir,
+                        badge_text="SHOWDOWN" if plan.format_kind == "vs" else "COUNTDOWN",
+                        headline=_short_caption(plan.title, max_words=6, max_chars=48),
+                        brand_name=brand_name,
+                        duration=vo_dur,
+                    )
+                    parts_to_concat.append(intro_card)
+                    cursor += card_dur
+            except Exception as exc:
+                warnings.append(f"intro voiceover skipped: {exc}")
+
         total_segs = len(plan.segments)
+        bridges = list(script.get("bridges") or [])
         for idx, seg in enumerate(plan.segments, start=1):
             parts_to_concat.append(stinger)
             cursor += stinger_dur
-            seg_file = tmp_dir / f"part_{idx:02d}.mp4"
             rank = (total_segs - idx + 1) if plan.format_kind != "vs" else idx
+            prefix = f"Round {idx}" if plan.format_kind == "vs" else f"#{rank}"
+            label = f"{prefix} {seg.creator} — {seg.moment_title}".strip(" —")
+            chapters.append((cursor, label))
+
+            if voiceover is not None and idx - 1 < len(bridges) and bridges[idx - 1]:
+                try:
+                    b_wav = tmp_dir / f"bridge_{idx:02d}.wav"
+                    vo_dur = voiceover.synthesize_wav(bridges[idx - 1], b_wav, language=plan.language)
+                    if vo_dur:
+                        b_card = tmp_dir / f"part_{idx:02d}_vo.mp4"
+                        card_dur = voiceover.render_narrator_card(
+                            b_wav,
+                            Path(seg.source_path),
+                            b_card,
+                            tmp_dir,
+                            badge_text=f"ROUND {idx}" if plan.format_kind == "vs" else f"#{rank}",
+                            headline=_short_caption(seg.moment_title),
+                            brand_name=brand_name,
+                            duration=vo_dur,
+                            seek_sec=float(seg.start) + 0.5,
+                        )
+                        parts_to_concat.append(b_card)
+                        cursor += card_dur
+                except Exception as exc:
+                    warnings.append(f"bridge {idx} voiceover skipped: {exc}")
+
+            seg_file = tmp_dir / f"part_{idx:02d}.mp4"
             dur = _render_segment(
                 seg, seg_file, tmp_dir,
                 index=idx, display_rank=rank, is_cold_open=False,
                 format_kind=plan.format_kind, brand_name=brand_name,
             )
             parts_to_concat.append(seg_file)
-            prefix = f"Round {idx}" if plan.format_kind == "vs" else f"#{rank}"
-            label = f"{prefix} {seg.creator} — {seg.moment_title}".strip(" —")
-            chapters.append((cursor, label))
             thumb_stamps.append(cursor + min(max(1.0, dur * 0.45), max(1.0, dur - 0.5)))
             cursor += dur
             reclaim_memory()
 
         if include_end_screen and parts_to_concat:
+            outro_wav_path: Optional[Path] = None
+            if voiceover is not None and script.get("outro"):
+                try:
+                    cand_wav = tmp_dir / "outro.wav"
+                    if voiceover.synthesize_wav(script["outro"], cand_wav, language=plan.language):
+                        outro_wav_path = cand_wav
+                except Exception as exc:
+                    warnings.append(f"outro voiceover skipped: {exc}")
             tail_file = tmp_dir / "part_tail.mp4"
-            _render_end_tail(parts_to_concat[-1], tail_file, tmp_dir, seconds=_END_SCREEN_SEC)
+            _render_end_tail(parts_to_concat[-1], tail_file, tmp_dir, seconds=_END_SCREEN_SEC, outro_wav=outro_wav_path)
             parts_to_concat.append(tail_file)
 
         concat_txt = tmp_dir / "concat.txt"

@@ -36,3 +36,7 @@ class Publisher:
     def set_thumbnail(self, video_id: str, image_path: str) -> bool:
         """Upload a custom thumbnail for a YouTube video (no-op unless overridden)."""
         return False
+
+    def post_comment(self, video_id: str, text: str) -> str | None:
+        """Post one top-level comment on an uploaded video (no-op unless overridden)."""
+        return None

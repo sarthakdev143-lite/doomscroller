@@ -18,12 +18,12 @@ from app.clipper.ingest import file_fingerprint, network_options
 from app.clipper.job import enqueue
 from app.config import settings
 from app.db import session_scope
-from app.models import ClipJob, GrowthEvent
+from app.models import ClipJob, GrowthEvent, Video, VideoStatus
 
 from . import channels, learn, safety, watch
 from .autopilot import policy, ready_clips
 from .approval import awaiting_review
-from .factors import aware
+from .factors import author_names, aware
 
 log = logging.getLogger(__name__)
 
@@ -198,28 +198,74 @@ def open_inbox_files() -> list[str]:
             if path not in blocked and _can_take_file(path, history.get(path, ()), now)]
 
 
+def _creator_view_stats(db, channel=None) -> tuple[dict[str, tuple[int, float]], float]:
+    """Return ``({casefolded_creator: (count, avg_views)}, channel_median_views)`` from real Shorts."""
+    conds = [
+        Video.status == VideoStatus.PUBLISHED,
+        Video.youtube_video_id.isnot(None),
+        ~Video.youtube_video_id.startswith("MOCK_", autoescape=True),
+        Video.views.isnot(None),
+    ]
+    if channel is not None:
+        conds.append(channels.video_scope(channel))
+    rows = db.execute(select(Video).where(*conds)).scalars().all()
+    by_author: dict[str, list[int]] = defaultdict(list)
+    all_views: list[int] = []
+    for video in rows:
+        if (video.meta or {}).get("long_form"):
+            continue
+        views = max(0, int(video.views or 0))
+        all_views.append(views)
+        for name in author_names(video):
+            by_author[name].append(views)
+    stats = {name: (len(vs), sum(vs) / len(vs)) for name, vs in by_author.items() if vs}
+    median = float(statistics.median(all_views)) if all_views else 0.0
+    return stats, median
+
+
 def _feeds_by_turn(history: dict[str, list], feeds: Optional[Sequence[str]] = None, channel=None) -> list[str]:
-    """Fewest jobs first, so every source is in stock from the start and can be compared. Then the lab has its say:
-    creators it has ruled out drop out (unless nothing else is left), and on an exploiting turn whoever its model
-    currently favours goes first. Exploring turns, and a channel with no results yet, keep the fair rotation."""
+    """Fewest jobs first, demoting benched/dead feeds, and favoring top creators when exploiting."""
     feeds = settings.growth_feeds_list if feeds is None else list(feeds)
     taken = Counter((job.result or {}).get("feed") for jobs in history.values() for job in jobs)
     turns = sorted(feeds, key=lambda feed: taken[feed])
     with session_scope() as db:
         out = learn.benched(db, channel)
+        stats, median = _creator_view_stats(db, channel)
     if out:
         log.info("growth: supply skips creators the lab has benched: %s", ", ".join(sorted(out)))
     turns = [f for f in turns if channels.creator(f).casefold() not in out] or turns
+
+    def avg_for(feed: str) -> Optional[tuple[int, float]]:
+        return stats.get(channels.creator(feed).lstrip("@").casefold()) or stats.get(channels.creator(feed).casefold())
+
+    good, weak = [], []
+    for feed in turns:
+        rec = avg_for(feed)
+        if median > 0 and rec is not None and rec[0] >= 2 and rec[1] < 0.15 * median:
+            weak.append(feed)
+        else:
+            good.append(feed)
+    ordered = (good + weak) if good else turns
+
     current = policy(channel=channel)
     arms = {arm.casefold(): arm for arm in current.tried.get("series", {})}
-    if not any(channels.creator(f).casefold() in arms for f in turns) or current.rng.random() < current.rate:
-        return turns
+    exploring = current.rng.random() < current.rate
+    if exploring:
+        return ordered
 
-    def favour(feed: str) -> float:
-        name = channels.creator(feed)
-        return current.draw.arm("series", arms.get(name.casefold(), name))
+    if any(channels.creator(f).casefold() in arms for f in ordered):
+        def favour(feed: str) -> float:
+            name = channels.creator(feed)
+            return current.draw.arm("series", arms.get(name.casefold(), name))
 
-    return sorted(turns, key=favour, reverse=True)
+        return sorted(ordered, key=favour, reverse=True)
+
+    if stats and median > 0:
+        pool = good or ordered
+        ranked_pool = sorted(pool, key=lambda f: (avg_for(f) or (0, median))[1], reverse=True)
+        return ranked_pool + (weak if good else [])
+
+    return ordered
 
 
 def _hottest(channel, feeds: Sequence[str], history: dict[str, list], blocked: set[str],

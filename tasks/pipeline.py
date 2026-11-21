@@ -1070,6 +1070,24 @@ def publish_task(video_id: str, meta: dict | None = None) -> dict:
     if not _record_upload(video_pk, result.video_id):
         return {"ok": True, "video_id": video_pk, "youtube_id": result.video_id, "recorded": False}
     _settle_upload(video_pk)
+    if settings.youtube_auto_comment and result.video_id and not result.video_id.startswith("MOCK_"):
+        try:
+            from app.growth import titles as growth_titles
+
+            comment_text = growth_titles.engagement_comment(
+                title,
+                context=str(vmeta.get("clip_reason") or ""),
+                language=lang or "en",
+                is_long=is_long,
+            )
+            cid = pub.post_comment(result.video_id, comment_text)
+            if cid:
+                with session_scope() as db:
+                    row = db.get(Video, video_pk)
+                    if row is not None:
+                        row.meta = {**(row.meta or {}), "auto_comment_id": cid, "auto_comment": comment_text}
+        except Exception as exc:
+            log.info("publish: auto-comment skipped for %s (%s): %s", video_pk[:8], type(exc).__name__, exc)
     return {"ok": True, "video_id": video_pk, "youtube_id": result.video_id}
 
 

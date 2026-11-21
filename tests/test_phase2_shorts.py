@@ -304,3 +304,178 @@ def test_hindi_clean_vlog_saves_opening_line_to_video_meta(tmp_path, monkeypatch
         assert row is not None
         assert row.meta.get("clip_opening_line") == "Aaj crazy trip."
         assert row.meta.get("growth_recipe", {}).get("broll") == "off"
+
+
+# ---------- 4. Shelf hygiene, creator weighting, hooks & auto-engagement comments ----------
+
+def test_prune_stale_shelf_drops_off_feed_and_long_while_keeping_min_floor(tmp_path, monkeypatch):
+    import json as _json
+    from sqlalchemy import delete
+    from app.db import init_db, session_scope
+    from app.growth import approval, channels
+    from app.models import Channel, Video, VideoStatus
+
+    init_db()
+    with session_scope() as db:
+        for tbl in (Video, Channel):
+            db.execute(delete(tbl))
+
+    cfg = tmp_path / "channels.json"
+    cfg.write_text(_json.dumps({
+        "channels": [
+            {"slug": "default", "niche": "challenge", "feeds": ["https://www.youtube.com/@MrBeast"]},
+        ]
+    }), encoding="utf-8")
+    monkeypatch.setattr(settings, "channels_file", str(cfg))
+    p = tmp_path / "v.mp4"
+    p.write_bytes(b"MP4")
+
+    with session_scope() as db:
+        channels.sync_channels(db)
+        rows = [
+            Video(source="youtube", source_id="off1", source_url="https://youtu.be/off1", author="@Mrwhosetheboss",
+                  author_name="Mrwhosetheboss", title="Old Tech", duration_sec=35, transformed_path=str(p),
+                  status=VideoStatus.TRANSFORMED, meta={"clip_rendered": True, "clip_score": 90}),
+            Video(source="youtube", source_id="long1", source_url="https://youtu.be/long1", author="@MrBeast",
+                  author_name="MrBeast", title="Long Clip 1", duration_sec=56, transformed_path=str(p),
+                  status=VideoStatus.TRANSFORMED, meta={"clip_rendered": True, "clip_score": 80}),
+            Video(source="youtube", source_id="long2", source_url="https://youtu.be/long2", author="@MrBeast",
+                  author_name="MrBeast", title="Long Clip 2", duration_sec=49, transformed_path=str(p),
+                  status=VideoStatus.TRANSFORMED, meta={"clip_rendered": True, "clip_score": 70}),
+            Video(source="youtube", source_id="pinned1", source_url="https://youtu.be/pinned1", author="@Mrwhosetheboss",
+                  author_name="Mrwhosetheboss", title="Pinned", duration_sec=55, transformed_path=str(p),
+                  status=VideoStatus.TRANSFORMED, meta={"clip_rendered": True, "pinned_at": "2026-11-21T00:00:00Z"}),
+            Video(source="youtube", source_id="short1", source_url="https://youtu.be/short1", author="@MrBeast",
+                  author_name="MrBeast", title="Good 1", duration_sec=24, transformed_path=str(p),
+                  status=VideoStatus.TRANSFORMED, meta={"clip_rendered": True}),
+            Video(source="youtube", source_id="short2", source_url="https://youtu.be/short2", author="@MrBeast",
+                  author_name="MrBeast", title="Good 2", duration_sec=26, transformed_path=str(p),
+                  status=VideoStatus.TRANSFORMED, meta={"clip_rendered": True}),
+            Video(source="longform", source_id="lf1", source_url="https://youtu.be/lf1", author="@MrBeast",
+                  title="Long Comp", duration_sec=480, transformed_path=str(p),
+                  status=VideoStatus.TRANSFORMED, meta={"long_form": True}),
+        ]
+        db.add_all(rows)
+
+    dry = approval.prune_stale_shelf(max_sec=42, min_keep_per_channel=5, dry_run=True)
+    assert dry["pruned"] == 1 and dry["by_channel"]["default"]["before"] == 6
+
+    res = approval.prune_stale_shelf(max_sec=42, min_keep_per_channel=5, dry_run=False)
+    assert res["pruned"] == 1 and res["off_feed"] == 1
+    assert res["by_channel"]["default"]["kept"] == 5
+
+    res2 = approval.prune_stale_shelf(max_sec=42, min_keep_per_channel=4, dry_run=False)
+    assert res2["pruned"] == 1 and res2["too_long"] == 1
+
+
+def test_feeds_by_turn_ranks_by_real_creator_views_and_demotes_weak(tmp_path, monkeypatch):
+    from sqlalchemy import delete
+    from app.db import init_db, session_scope
+    from app.growth import supply
+    from app.models import Video, VideoStatus
+
+    init_db()
+    with session_scope() as db:
+        db.execute(delete(Video))
+        now = datetime.now(timezone.utc)
+        for i in range(2):
+            db.add(Video(source="youtube", source_id=f"win_{i}", source_url=f"https://youtu.be/w{i}",
+                         author="@winner", views=2500, status=VideoStatus.PUBLISHED,
+                         youtube_video_id=f"YT_w_{i}", published_at=now, meta={"clip_rendered": True}))
+            db.add(Video(source="youtube", source_id=f"mid_{i}", source_url=f"https://youtu.be/m{i}",
+                         author="@mid", views=900, status=VideoStatus.PUBLISHED,
+                         youtube_video_id=f"YT_m_{i}", published_at=now, meta={"clip_rendered": True}))
+            db.add(Video(source="youtube", source_id=f"dead_{i}", source_url=f"https://youtu.be/d{i}",
+                         author="@dead", views=1, status=VideoStatus.PUBLISHED,
+                         youtube_video_id=f"YT_d_{i}", published_at=now, meta={"clip_rendered": True}))
+
+    monkeypatch.setattr(supply, "policy", lambda **k: type("P", (), {
+        "tried": {}, "rate": 0.0, "rng": __import__("random").Random(0),
+        "draw": type("D", (), {"arm": staticmethod(lambda *a: 0.0)})(),
+    })())
+    feeds = ["https://www.youtube.com/@dead", "https://www.youtube.com/@mid", "https://www.youtube.com/@winner"]
+    ordered = supply._feeds_by_turn({}, feeds=feeds, channel=None)
+    assert ordered == ["https://www.youtube.com/@winner", "https://www.youtube.com/@mid", "https://www.youtube.com/@dead"]
+
+
+def test_clean_hook_fallback_hook_and_shorter_hook_window():
+    from app.clipper import captions
+
+    assert captions._HOOK_SECONDS <= 2.5
+    assert moments.clean_hook("Aaj ka 😱 scene! 🔥") == "Aaj ka scene!"
+    assert moments.clean_hook("पैसे 💰 गए हाथ से!") == "पैसे गए हाथ से!"
+    assert moments.fallback_hook("Shocking Secret Behind This Challenge") == "Shocking Secret Behind This Challenge"
+
+
+def test_youtube_post_comment_scope_guard_and_publish_task_auto_comment(tmp_path, monkeypatch):
+    from sqlalchemy import delete
+    from app.db import init_db, session_scope
+    from app.models import Video, VideoStatus
+    from tasks import pipeline as pl
+
+    clip = tmp_path / "c.mp4"
+    clip.write_bytes(b"MP4")
+    called: list[dict] = []
+
+    class FakeCreds:
+        def __init__(self, scopes):
+            self.scopes = scopes
+
+    class FakeComments:
+        def insert(self, part, body):
+            called.append(body)
+            return type("E", (), {"execute": staticmethod(lambda: {"id": "CMT_123"})})()
+
+    class FakeClient:
+        def commentThreads(self):
+            return FakeComments()
+
+    pub = YouTubePublisher()
+    monkeypatch.setattr(pub, "_client", lambda: FakeClient())
+
+    # Without youtube.force-ssl scope -> skips cleanly with zero API calls
+    monkeypatch.setattr(pub, "_credentials", lambda: FakeCreds(["https://www.googleapis.com/auth/youtube.upload"]))
+    assert pub.post_comment("YT_1", "Which part won?") is None
+    assert called == []
+
+    # With youtube.force-ssl scope -> posts clean comment
+    monkeypatch.setattr(pub, "_credentials", lambda: FakeCreds(["https://www.googleapis.com/auth/youtube.force-ssl"]))
+    assert pub.post_comment("YT_1", "Which part won?\n") == "CMT_123"
+    assert called[0]["snippet"]["topLevelComment"]["snippet"]["textOriginal"] == "Which part won?"
+
+    # publish_task auto-comments on real upload & never fails if comment raises
+    init_db()
+    with session_scope() as db:
+        db.execute(delete(Video))
+        v = Video(source="youtube", source_id="ac1", source_url="https://youtu.be/ac1",
+                  title="Wild Challenge", language="en", transformed_path=str(clip),
+                  status=VideoStatus.TRANSFORMED, meta={"clip_rendered": True})
+        db.add(v)
+        db.flush()
+        vid = v.id
+
+    monkeypatch.setattr(settings, "enable_publish", True)
+    monkeypatch.setattr(settings, "youtube_auto_comment", True)
+    monkeypatch.setattr(titles.ai, "available", lambda: False)
+
+    commented: list[tuple[str, str]] = []
+
+    class FakeRealPub:
+        def upload(self, **kw):
+            return type("R", (), {"video_id": "REAL_YT_99", "status": "uploaded", "raw": {}})()
+
+        def set_thumbnail(self, *a):
+            return True
+
+        def post_comment(self, yt_id, text):
+            commented.append((yt_id, text))
+            return "CMT_999"
+
+    monkeypatch.setattr(pl, "_publisher_for", lambda cid: FakeRealPub())
+    monkeypatch.setattr(pl, "_settle_upload", lambda *a, **k: None)
+    out = pl.publish_task(vid)
+    assert out["ok"] is True and out["youtube_id"] == "REAL_YT_99"
+    assert len(commented) == 1 and commented[0][0] == "REAL_YT_99"
+    with session_scope() as db:
+        row = db.get(Video, vid)
+        assert row.meta.get("auto_comment_id") == "CMT_999"
