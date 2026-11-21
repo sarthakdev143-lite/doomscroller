@@ -235,10 +235,10 @@ class Settings(BaseSettings):
     sarvam_api_key: str = ""
     # Empty means PATH, then ~/.opencode/bin/opencode.
     opencode_bin: str = ""
-    # Chosen by the owner for every call. It reads images too.
-    opencode_model: str = "opencode-go/muse-spark-1.3-contributor"
+    # Chosen by the owner for every call. Comma-separated fallback chain; first working model wins.
+    opencode_model: str = "anthropic/claude-haiku-4-5,opencode/deepseek-v4.1-flash-free"
     # Must accept images: it judges frames from no-speech footage.
-    opencode_vision_model: str = "opencode-go/muse-spark-1.3-contributor"
+    opencode_vision_model: str = "anthropic/claude-haiku-4-5,opencode/nemotron-3.5-super-vl-free"
     # Optional AI image generators for 1280x720 long-form thumbnails (ChatGPT first, Gemini free-tier fallback).
     openai_api_key: str = ""
     gemini_api_key: str = ""

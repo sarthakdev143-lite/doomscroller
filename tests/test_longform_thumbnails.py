@@ -60,6 +60,10 @@ def test_generate_thumbnails_produces_3_distinct_1280x720_jpegs_under_2mb(tmp_pa
         creator_labels=("@Alpha", "@Beta"),
     )
     assert [v["id"] for v in variants] == ["v1", "v2", "v3"]
+    raw_hero = out_dir / "hero_raw.jpg"
+    assert raw_hero.is_file() and 0 < raw_hero.stat().st_size < 2_000_000
+    with Image.open(raw_hero) as raw_im:
+        assert raw_im.format == "JPEG" and raw_im.size == (1280, 720)
     sizes = []
     byte_blobs = []
     for v in variants:

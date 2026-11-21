@@ -224,41 +224,62 @@ def _ask_claude(prompt: str, *, files: Sequence[str] = ()) -> Optional[str]:
     return _result_from_stream(proc.stdout)
 
 
+def _model_candidates(model: str) -> list[str]:
+    """Split comma-separated OpenCode models into a deduplicated preference chain."""
+    raw = str(model or settings.opencode_model or "")
+    seen: list[str] = []
+    for part in raw.split(","):
+        cand = part.strip()
+        if cand and cand not in seen:
+            seen.append(cand)
+    return seen or [""]
+
+
 def _ask_opencode(prompt: str, *, files: Sequence[str] = (), model: str = "") -> Optional[str]:
     binary = opencode_path()
     if binary is None:
         return None
     timeout = _timeout()
     clean_prompt = _safe_utf8(prompt)
-    command = [*_command_prefix(binary), "run", "--standalone", "--format", "json",
-               "--model", model or settings.opencode_model]
-    for path in files:
-        command += ["--file", str(path)]
-    # With attachments the CLI takes its message as an argument. Prompts that
-    # carry attachments are short, so the argument limit does not apply.
-    kwargs: dict = {"stdin": subprocess.DEVNULL} if files else {"input": clean_prompt}
-    if files:
-        command.append(clean_prompt)
-    with tempfile.TemporaryDirectory(prefix="clipper-ai-", ignore_cleanup_errors=True) as empty_dir:
-        try:
-            proc = subprocess.run(
-                command, capture_output=True, encoding="utf-8", errors="replace", cwd=empty_dir,
-                timeout=timeout,
-                env={**os.environ, "PWD": empty_dir, "OPENCODE_DISABLE_PROJECT_CONFIG": "1",
-                     "OPENCODE_CONFIG_CONTENT": LOCKDOWN_CONFIG},
-                **background_subprocess_kwargs(low_priority=True),
-                **kwargs,
-            )
-        except subprocess.TimeoutExpired:
-            log.warning("opencode timed out after %ss", timeout)
-            return None
-        except OSError as exc:
-            log.warning("opencode could not start: %s", exc)
-            return None
-    if proc.returncode != 0:
-        log.warning("opencode failed: %s", _safe_utf8(proc.stderr)[-400:])
-        return None
-    return _text_from_events(proc.stdout) or None
+    prefix = _command_prefix(binary)
+    candidates = _model_candidates(model)
+
+    for cand in candidates:
+        command = [*prefix, "run", "--standalone", "--format", "json"]
+        if cand:
+            command += ["--model", cand]
+        for path in files:
+            command += ["--file", str(path)]
+        # With attachments the CLI takes its message as an argument. Prompts that
+        # carry attachments are short, so the argument limit does not apply.
+        kwargs: dict = {"stdin": subprocess.DEVNULL} if files else {"input": clean_prompt}
+        if files:
+            command.append(clean_prompt)
+        with tempfile.TemporaryDirectory(prefix="clipper-ai-", ignore_cleanup_errors=True) as empty_dir:
+            try:
+                proc = subprocess.run(
+                    command, capture_output=True, encoding="utf-8", errors="replace", cwd=empty_dir,
+                    timeout=timeout,
+                    env={**os.environ, "PWD": empty_dir, "OPENCODE_DISABLE_PROJECT_CONFIG": "1",
+                         "OPENCODE_CONFIG_CONTENT": LOCKDOWN_CONFIG},
+                    **background_subprocess_kwargs(low_priority=True),
+                    **kwargs,
+                )
+            except subprocess.TimeoutExpired:
+                log.warning("opencode timed out after %ss (%s)", timeout, cand or "default")
+                return None
+            except OSError as exc:
+                log.warning("opencode could not start: %s", exc)
+                return None
+        if proc.returncode != 0:
+            # --format json writes structured errors to stdout while stderr is often empty.
+            err_text = (_safe_utf8(proc.stderr) or _safe_utf8(proc.stdout)).strip()
+            log.warning("opencode failed (%s): %s", cand or "default", err_text[-400:])
+            continue
+        reply = _text_from_events(proc.stdout) or None
+        if reply:
+            return reply
+    return None
 
 
 def ask_json(prompt: str, *, files: Sequence[str] = (), model: str = "") -> Optional[dict]:

@@ -1329,8 +1329,17 @@ function longCard(item){
     body.append(grid);
   }
   const upWrap=el('div',{className:'rowbtns'});
+  if(item.hero_url){
+    const hl=el('a',{href:item.hero_url,download:'',className:'ghost',style:'text-align:center;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;padding:10px'},'1. Save Raw Frame');
+    upWrap.append(hl);
+  }
+  if(item.thumbnail_prompt){
+    const cp=el('button',{className:'ghost',type:'button'},'2. Copy ChatGPT Prompt');
+    cp.onclick=()=>copyText(item.thumbnail_prompt,'Prompt copied — paste into ChatGPT with raw frame');
+    upWrap.append(cp);
+  }
   const upInp=el('input',{type:'file',accept:'image/*',style:'display:none'});
-  const upBtn=el('button',{className:'ghost',type:'button'},'Upload custom thumbnail');
+  const upBtn=el('button',{className:'ghost',type:'button'},'3. Upload Thumbnail');
   upBtn.onclick=()=>upInp.click();
   upInp.onchange=async()=>{
     const file=upInp.files&&upInp.files[0];if(!file)return;
@@ -1343,16 +1352,18 @@ function longCard(item){
     upBtn.disabled=false;upInp.value='';
   };
   upWrap.append(upBtn,upInp);
-  if(item.thumbnail_prompt){
-    const cp=el('button',{className:'ghost',type:'button'},'Copy AI Prompt');
-    cp.onclick=()=>copyText(item.thumbnail_prompt,'AI thumbnail prompt copied — paste into ChatGPT/Gemini');
-    upWrap.append(cp);
-  }
   if(item.video_url){
     const dl=el('a',{href:item.video_url+'?download=1',className:'ghost',style:'text-align:center;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;padding:10px'},'Save MP4');
     upWrap.append(dl);
   }
   body.append(upWrap);
+  if(item.thumbnail_prompt){
+    const pDet=el('details',{className:'sx'});
+    pDet.append(el('summary',{},'Show ChatGPT prompt'));
+    const pBox=el('textarea',{rows:3,readOnly:true,style:'margin-top:6px;font-size:12px',value:item.thumbnail_prompt});
+    pDet.append(pBox);
+    body.append(pDet);
+  }
 
   const titleInp=el('input',{value:item.title||''});
   const descInp=el('textarea',{rows:4,value:item.description||''});

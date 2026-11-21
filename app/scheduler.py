@@ -592,8 +592,9 @@ def cleanup_job(dry_run: bool = False) -> dict:
                         if path:
                             protected_paths.add(_norm_path(path))
                     vmeta = video.meta or {}
-                    if vmeta.get("selected_thumbnail"):
-                        protected_paths.add(_norm_path(vmeta["selected_thumbnail"]))
+                    for extra in (vmeta.get("selected_thumbnail"), vmeta.get("hero_frame")):
+                        if extra:
+                            protected_paths.add(_norm_path(extra))
                     for thumb in vmeta.get("thumbnails") or []:
                         if isinstance(thumb, dict) and thumb.get("path"):
                             protected_paths.add(_norm_path(thumb["path"]))
@@ -645,11 +646,15 @@ def cleanup_job(dry_run: bool = False) -> dict:
                     else:
                         referenced.add(trans_norm)
 
-                # Reclaim expired long-form thumbnail JPEGs alongside the expired video row.
-                for thumb in (video.meta or {}).get("thumbnails") or []:
-                    tpath = thumb.get("path") if isinstance(thumb, dict) else None
-                    if not tpath:
-                        continue
+                # Reclaim expired long-form thumbnail & raw hero JPEGs alongside the expired video row.
+                exp_meta = video.meta or {}
+                exp_thumbs = [
+                    thumb.get("path") for thumb in (exp_meta.get("thumbnails") or []) if isinstance(thumb, dict)
+                ]
+                for extra in (exp_meta.get("selected_thumbnail"), exp_meta.get("hero_frame")):
+                    if extra:
+                        exp_thumbs.append(extra)
+                for tpath in dict.fromkeys(p for p in exp_thumbs if p):
                     tnorm = _norm_path(tpath)
                     if (
                         tnorm not in protected_paths

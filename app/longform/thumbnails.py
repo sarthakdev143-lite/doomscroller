@@ -386,6 +386,9 @@ def generate_thumbnails_with_prompt(
     else:
         badge = f"TOP {max(2, len(chapters) - 1)}" if len(chapters) > 2 else "BEST OF"
 
+    with Image.open(hero) as raw_im:
+        _save_under_2mb(raw_im.convert("RGB"), out_dir / "hero_raw.jpg")
+
     v1 = _render_variant_hero(hero, out_dir / "thumb_v1.jpg", title=title, badge=badge)
     v2 = _render_variant_split(
         hero, second, out_dir / "thumb_v2.jpg",

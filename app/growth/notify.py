@@ -144,6 +144,37 @@ def send(text: str, *, title: str = "", link: str = "") -> bool:
     return sent
 
 
+def send_long_ready(
+    title: str,
+    *,
+    channel_name: str,
+    duration_sec: int,
+    format_kind: str,
+    prompt: str,
+) -> bool:
+    """Alert the owner on ntfy/Telegram when a 16:9 compilation is ready with its ChatGPT prompt."""
+    if not configured():
+        return False
+    clean_channel = " ".join(str(channel_name or "Doomscroller").split()).strip()[:60] or "Doomscroller"
+    mins, secs = divmod(max(0, int(duration_sec or 0)), 60)
+    fmt = {"best_of": "Best Of", "vs": "VS", "theme": "Theme"}.get(
+        str(format_kind or "").strip().lower(), str(format_kind or "16:9").upper()
+    )
+    clean_title = " ".join(str(title or "Untitled").split()).strip()[:120] or "Untitled"
+    head = (
+        f"[{clean_channel}] {fmt} compilation ready ({mins}m {secs:02d}s)\n"
+        f"Title: {clean_title}\n"
+        "Steps: Open Long tab -> 1. Save Raw Frame -> 2. Paste prompt into ChatGPT -> 3. Upload thumbnail\n"
+    )
+    clean_prompt = " ".join(str(prompt or "").split()).strip()
+    if clean_prompt:
+        max_p = max(120, _MAX_BODY_CHARS - len(head) - 24)
+        body = f"{head}\nChatGPT prompt:\n{clean_prompt[:max_p]}"
+    else:
+        body = head.rstrip()
+    return send(body, title=f"16:9 Ready — {clean_channel}", link=review_link())
+
+
 def send_test_notification(text: str = "", *, title: str = "") -> dict:
     """Send a one-shot verification alert and report per-channel delivery status safely."""
     if not configured():

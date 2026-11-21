@@ -822,6 +822,57 @@ def undo(video_id: str) -> dict:
         return {"id": video_id, "status": video.status.value}
 
 
+def repair_waiting_drafts(*, dry_run: bool = False) -> dict:
+    """Strip stale '#Shorts' tags from waiting Shorts and unlock untouched edited drafts for A/B testing."""
+    checked = tags_stripped = unlocked_ab = 0
+    with session_scope() as db:
+        rows = (
+            db.execute(select(Video).where(Video.status.in_((VideoStatus.PENDING, VideoStatus.TRANSFORMED))))
+            .scalars()
+            .all()
+        )
+        for video in rows:
+            meta = video.meta or {}
+            if meta.get("long_form"):
+                continue
+            checked += 1
+            draft = db.execute(select(MetadataDraft).where(MetadataDraft.video_id == video.id)).scalar_one_or_none()
+            orig_video_title = video.title or ""
+            orig_draft_title = (draft.title or "") if draft is not None else ""
+
+            changed_tag = False
+            if "#shorts" in orig_video_title.lower():
+                clean_v = _norm_title_cmp(orig_video_title)
+                if clean_v and clean_v != orig_video_title:
+                    changed_tag = True
+                    if not dry_run:
+                        video.title = clean_v
+            if draft is not None and "#shorts" in orig_draft_title.lower():
+                clean_d = _norm_title_cmp(orig_draft_title)
+                if clean_d and clean_d != orig_draft_title:
+                    changed_tag = True
+                    if not dry_run:
+                        draft.title = clean_d
+            if changed_tag:
+                tags_stripped += 1
+
+            if draft is not None and draft.edited:
+                draft_cmp = _norm_title_cmp(orig_draft_title)
+                orig_cmp = _norm_title_cmp(orig_video_title)
+                llm_cmp = _norm_title_cmp(meta.get("llm_title"))
+                if draft_cmp and (draft_cmp == orig_cmp or (llm_cmp and draft_cmp == llm_cmp)):
+                    unlocked_ab += 1
+                    if not dry_run:
+                        draft.edited = False
+
+    return {
+        "checked": checked,
+        "tags_stripped": tags_stripped,
+        "unlocked_ab": unlocked_ab,
+        "dry_run": dry_run,
+    }
+
+
 def media_path(video_id: str) -> Optional[str]:
     with session_scope() as db:
         video = db.get(Video, video_id)

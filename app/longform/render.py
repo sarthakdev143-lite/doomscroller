@@ -157,12 +157,25 @@ def _render_stinger(out_path: Path, tmp_dir: Path) -> None:
     run_ffmpeg(args, cwd=str(tmp_dir))
 
 
+def _short_caption(text: str, max_words: int = 6, max_chars: int = 44) -> str:
+    """Distill a moment title into a crisp lower-third caption without #Shorts clutter."""
+    clean = " ".join(str(text or "").replace("#Shorts", "").replace("#shorts", "").split()).strip(" -|:,—")
+    if not clean:
+        return ""
+    words = clean.split()[:max_words]
+    out = " ".join(words).strip()
+    if len(out) > max_chars:
+        out = out[:max_chars].rsplit(" ", 1)[0].rstrip(" -|:,—") or out[:max_chars]
+    return out
+
+
 def _render_segment(
     seg: SegmentPlan,
     out_path: Path,
     tmp_dir: Path,
     *,
     index: int,
+    display_rank: Optional[int] = None,
     is_cold_open: bool,
     format_kind: str,
     brand_name: str,
@@ -183,15 +196,21 @@ def _render_segment(
         keeps = [(src_start, src_end)]
 
     ass_file = tmp_dir / f"overlay_{index}_{'co' if is_cold_open else 'main'}.ass"
-    badge = "COMING UP" if is_cold_open else ""
+    badge = ("COMING UP · FINALE" if format_kind == "vs" else "COMING UP · #1") if is_cold_open else ""
+    cap = _short_caption(seg.moment_title)
     if is_cold_open:
         lower = ""
         hold = max(1.5, min(3.8, (src_end - src_start) - 0.3))
     elif format_kind == "vs":
         lower = f"ROUND {index} · {seg.creator}".strip()
+        if cap:
+            lower = f"{lower} — {cap}"
         hold = 3.2
     else:
-        lower = f"#{index} · {seg.creator}".strip()
+        rank = display_rank if display_rank is not None else index
+        lower = f"#{rank} · {seg.creator}".strip()
+        if cap:
+            lower = f"{lower} — {cap}"
         hold = 3.2
 
     font_ref = resolve_font(settings.clip_font, f"{badge} {lower} {brand_name}")
@@ -311,16 +330,19 @@ def render_compilation(
         parts_to_concat.append(cold_file)
         cursor += co_dur
 
+        total_segs = len(plan.segments)
         for idx, seg in enumerate(plan.segments, start=1):
             parts_to_concat.append(stinger)
             cursor += stinger_dur
             seg_file = tmp_dir / f"part_{idx:02d}.mp4"
+            rank = (total_segs - idx + 1) if plan.format_kind != "vs" else idx
             dur = _render_segment(
                 seg, seg_file, tmp_dir,
-                index=idx, is_cold_open=False, format_kind=plan.format_kind, brand_name=brand_name,
+                index=idx, display_rank=rank, is_cold_open=False,
+                format_kind=plan.format_kind, brand_name=brand_name,
             )
             parts_to_concat.append(seg_file)
-            prefix = f"Round {idx}" if plan.format_kind == "vs" else f"#{idx}"
+            prefix = f"Round {idx}" if plan.format_kind == "vs" else f"#{rank}"
             label = f"{prefix} {seg.creator} — {seg.moment_title}".strip(" —")
             chapters.append((cursor, label))
             thumb_stamps.append(cursor + min(max(1.0, dur * 0.45), max(1.0, dur - 0.5)))

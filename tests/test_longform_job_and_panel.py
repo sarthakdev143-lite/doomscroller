@@ -92,6 +92,7 @@ def test_enqueue_run_worker_isolation_and_render_lock(tmp_path, monkeypatch):
 
     def fake_thumbs(vp, *, out_dir, **k):
         Path(out_dir).mkdir(parents=True, exist_ok=True)
+        (Path(out_dir) / "hero_raw.jpg").write_bytes(b"\xff\xd8\xff\xe0" + b"H" * 100)
         res = []
         for i in (1, 2, 3):
             tp = Path(out_dir) / f"thumb_v{i}.jpg"
@@ -101,9 +102,12 @@ def test_enqueue_run_worker_isolation_and_render_lock(tmp_path, monkeypatch):
 
     monkeypatch.setattr(lf_render, "render_compilation", fake_render)
     monkeypatch.setattr(lf_thumbs, "generate_thumbnails_with_prompt", fake_thumbs)
+    alerts: list[dict] = []
+    monkeypatch.setattr(long_job.notify, "send_long_ready", lambda t, **kw: alerts.append({"title": t, **kw}) or True)
 
     out = long_job.run_next_long_job()
     assert out["ok"] is True
+    assert len(alerts) == 1 and alerts[0]["channel_name"] == "Mr Indian Vlogs" and alerts[0]["prompt"] == "Test AI prompt"
     video_id = out["video_id"]
 
     with session_scope() as db:
@@ -111,6 +115,7 @@ def test_enqueue_run_worker_isolation_and_render_lock(tmp_path, monkeypatch):
         assert v is not None and v.status == VideoStatus.PENDING
         assert v.width == 1920 and v.height == 1080
         assert v.meta["long_form"] is True and v.meta["clip_rendered"] is False
+        assert Path(v.meta["hero_frame"]).is_file()
         assert "#Shorts" not in v.title
 
         # Strict isolation: Shorts approval/autopilot/learn ignore long_form rows!
@@ -178,6 +183,7 @@ def test_long_panel_endpoints_guarded_and_full_lifecycle(tmp_path, monkeypatch):
         ("GET", "/api/long/videos"),
         ("POST", "/api/long/build"),
         ("GET", "/api/long/jobs"),
+        ("GET", "/api/long/x/hero"),
         ("POST", "/api/long/x/approve"),
         ("POST", "/api/long/x/reject"),
         ("POST", "/api/long/x/metadata"),
@@ -202,11 +208,14 @@ def test_long_panel_endpoints_guarded_and_full_lifecycle(tmp_path, monkeypatch):
             from PIL import Image
             Image.new("RGB", (1280, 720), (100, 100, 200)).save(tp, format="JPEG")
             tpaths[vid_key] = str(tp)
+        hero_raw = thumbs_dir / "hero_raw.jpg"
+        Image.new("RGB", (1280, 720), (20, 180, 90)).save(hero_raw, format="JPEG")
         v = Video(
             source="longform", source_id="panel1", source_url="https://youtu.be/panel1", title="Old Title", description="0:00 Intro",
             transformed_path=str(mp4), status=VideoStatus.PENDING, channel_id=ch.id, width=1920, height=1080,
             meta={
                 "long_form": True,
+                "hero_frame": str(hero_raw),
                 "thumbnails": [
                     {"id": "v1", "label": "Hero", "path": tpaths["v1"]},
                     {"id": "v2", "label": "Split", "path": tpaths["v2"]},
@@ -222,6 +231,10 @@ def test_long_panel_endpoints_guarded_and_full_lifecycle(tmp_path, monkeypatch):
     assert client.post("/api/long/build", json={"channel_slug": "indianvlogs", "format": "vs", "target": "@A vs @B"}).status_code == 200
     data = client.get("/api/long/videos").json()
     assert len(data["pending"]) == 1 and len(data["jobs"]) == 1
+    assert data["pending"][0]["hero_url"].startswith(f"/api/long/{vid}/hero")
+    hero_resp = client.get(f"/api/long/{vid}/hero")
+    assert hero_resp.status_code == 200 and hero_resp.headers["content-type"] == "image/jpeg"
+    assert "attachment" in hero_resp.headers["content-disposition"]
     assert client.get(f"/api/long/{vid}/thumb/v2").status_code == 200
     assert client.post(f"/api/long/{vid}/thumbnail", json={"variant_id": "v2"}).json()["selected_thumbnail_id"] == "v2"
 
@@ -255,31 +268,35 @@ def test_cleanup_protects_live_longform_and_reclaims_expired(tmp_path):
         live_thumb = root / "live_thumbs" / "thumb_v1.jpg"
         live_thumb.parent.mkdir(parents=True, exist_ok=True)
         live_thumb.write_bytes(b"B" * 2000)
+        live_hero = root / "live_thumbs" / "hero_raw.jpg"
+        live_hero.write_bytes(b"H" * 1500)
 
         dead_mp4 = root / "old.mp4"
         dead_mp4.write_bytes(b"C" * 5000)
         dead_thumb = root / "old_thumbs" / "thumb_v1.jpg"
         dead_thumb.parent.mkdir(parents=True, exist_ok=True)
         dead_thumb.write_bytes(b"D" * 2000)
+        dead_hero = root / "old_thumbs" / "hero_raw.jpg"
+        dead_hero.write_bytes(b"H" * 1500)
 
         old_ts = datetime.now(timezone.utc) - timedelta(days=30)
         db.add(Video(
             source="longform", source_id="live1", source_url="https://youtu.be/live1", title="Live",
             local_path=str(live_mp4), transformed_path=str(live_mp4),
             status=VideoStatus.PENDING, channel_id=ch.id,
-            meta={"long_form": True, "selected_thumbnail": str(live_thumb), "thumbnails": [{"id": "v1", "path": str(live_thumb)}]},
+            meta={"long_form": True, "hero_frame": str(live_hero), "selected_thumbnail": str(live_thumb), "thumbnails": [{"id": "v1", "path": str(live_thumb)}]},
         ))
         db.add(Video(
             source="longform", source_id="dead1", source_url="https://youtu.be/dead1", title="Dead",
             local_path=str(dead_mp4), transformed_path=str(dead_mp4),
             status=VideoStatus.PUBLISHED, published_at=old_ts, channel_id=ch.id,
-            meta={"long_form": True, "selected_thumbnail": str(dead_thumb), "thumbnails": [{"id": "v1", "path": str(dead_thumb)}]},
+            meta={"long_form": True, "hero_frame": str(dead_hero), "selected_thumbnail": str(dead_thumb), "thumbnails": [{"id": "v1", "path": str(dead_thumb)}]},
         ))
 
     res = scheduler.cleanup_job()
     assert res["transforms_deleted"] >= 1
-    assert live_mp4.exists() and live_thumb.exists()
-    assert not dead_mp4.exists() and not dead_thumb.exists()
+    assert live_mp4.exists() and live_thumb.exists() and live_hero.exists()
+    assert not dead_mp4.exists() and not dead_thumb.exists() and not dead_hero.exists()
 
 
 def test_compile_cli_enqueue_and_jobs_json(capsys):
@@ -295,3 +312,94 @@ def test_compile_cli_enqueue_and_jobs_json(capsys):
     assert rc2 == 0
     jobs_out = json.loads(capsys.readouterr().out)
     assert len(jobs_out["jobs"]) == 1 and jobs_out["jobs"][0]["id"] == out["job_id"]
+
+
+def test_countdown_lower_thirds_and_chapters_in_render_compilation(tmp_path, monkeypatch):
+    from app.clipper.media import MediaInfo
+
+    src = tmp_path / "src.mp4"
+    src.write_bytes(b"MP4")
+    s1 = planner.SegmentPlan(str(src), "https://youtu.be/1", "1", "@One", "One", "Vid", 0.0, 20.0, 80.0, "Funny Entrance #Shorts", "en")
+    s2 = planner.SegmentPlan(str(src), "https://youtu.be/2", "2", "@One", "One", "Vid", 25.0, 45.0, 99.0, "Crazy Insane Ending Payoff", "en")
+    co = planner.pick_cold_open([s1, s2], climax=s2)
+    plan = planner.CompilationPlan(
+        format_kind="best_of", channel_slug="default", part_number=1, targets=("@One",), theme="",
+        title="Best of One", description="Desc", tags=("vlog",), language="en", target_seconds=120.0,
+        cold_open=co, segments=(s1, s2),
+    )
+    ass_captured: list[str] = []
+
+    def fake_probe(path):
+        return MediaInfo(20.0 if "part_" in str(path) else 100.0, 1920, 1080, 30.0, False)
+
+    def fake_ffmpeg(args, **kwargs):
+        out_file = Path(args[-1])
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+        out_file.write_bytes(b"X" * 2000)
+
+    monkeypatch.setattr(lf_render, "probe", fake_probe)
+    monkeypatch.setattr(lf_render, "_probe_duration", lambda p, f: f)
+    monkeypatch.setattr(lf_render, "run_ffmpeg", fake_ffmpeg)
+    orig_write = lf_render._write_ass_overlay
+
+    def cap_ass(ass_path, **kw):
+        orig_write(ass_path, **kw)
+        ass_captured.append(ass_path.read_text(encoding="utf-8"))
+
+    monkeypatch.setattr(lf_render, "_write_ass_overlay", cap_ass)
+    res = lf_render.render_compilation(plan, str(tmp_path / "out.mp4"), brand_name="@Brand", include_end_screen=False)
+    assert [lbl.split()[0] for _, lbl in res.chapters] == ["Intro", "#2", "#1"]
+    assert "COMING UP · #1" in ass_captured[0]
+    assert "#2 · @One — Funny Entrance" in ass_captured[1] and "#Shorts" not in ass_captured[1]
+    assert "#1 · @One — Crazy Insane Ending Payoff" in ass_captured[2]
+
+
+def test_repair_waiting_drafts_strips_shorts_and_unlocks_ab_safely(tmp_path):
+    p = tmp_path / "clip.mp4"
+    p.write_bytes(b"MP4")
+    with session_scope() as db:
+        v_auto = Video(
+            source="youtube", source_id="s1", source_url="https://youtu.be/1",
+            title="Shocking Prank Gone Wild #Shorts", transformed_path=str(p),
+            status=VideoStatus.TRANSFORMED, meta={"clip_rendered": True, "llm_title": "Shocking Prank Gone Wild"},
+        )
+        v_human = Video(
+            source="youtube", source_id="s2", source_url="https://youtu.be/2",
+            title="Auto Title #Shorts", transformed_path=str(p),
+            status=VideoStatus.TRANSFORMED, meta={"clip_rendered": True, "llm_title": "Auto Title"},
+        )
+        v_pub = Video(
+            source="youtube", source_id="s3", source_url="https://youtu.be/3",
+            title="Published Already #Shorts", transformed_path=str(p),
+            status=VideoStatus.PUBLISHED, meta={"clip_rendered": True},
+        )
+        v_long = Video(
+            source="longform", source_id="l1", source_url="https://youtu.be/l1",
+            title="Long #Shorts", transformed_path=str(p),
+            status=VideoStatus.PENDING, meta={"long_form": True},
+        )
+        db.add_all([v_auto, v_human, v_pub, v_long])
+        db.flush()
+        db.add(MetadataDraft(video_id=v_auto.id, title="Shocking Prank Gone Wild #Shorts", edited=True))
+        db.add(MetadataDraft(video_id=v_human.id, title="My Handcrafted Title #Shorts", edited=True))
+        db.add(MetadataDraft(video_id=v_pub.id, title="Published Already #Shorts", edited=True))
+        db.flush()
+        ids = (v_auto.id, v_human.id, v_pub.id, v_long.id)
+
+    dry = approval.repair_waiting_drafts(dry_run=True)
+    assert dry == {"checked": 2, "tags_stripped": 2, "unlocked_ab": 1, "dry_run": True}
+
+    res = approval.repair_waiting_drafts(dry_run=False)
+    assert res == {"checked": 2, "tags_stripped": 2, "unlocked_ab": 1, "dry_run": False}
+
+    with session_scope() as db:
+        va = db.get(Video, ids[0])
+        da = db.execute(select(MetadataDraft).where(MetadataDraft.video_id == ids[0])).scalar_one()
+        vh = db.get(Video, ids[1])
+        dh = db.execute(select(MetadataDraft).where(MetadataDraft.video_id == ids[1])).scalar_one()
+        vp = db.get(Video, ids[2])
+        vl = db.get(Video, ids[3])
+        assert va.title == "Shocking Prank Gone Wild" and da.title == "Shocking Prank Gone Wild" and da.edited is False
+        assert vh.title == "Auto Title" and dh.title == "My Handcrafted Title" and dh.edited is True
+        assert vp.title == "Published Already #Shorts"
+        assert vl.title == "Long #Shorts"

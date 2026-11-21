@@ -652,3 +652,38 @@ def test_music_tilde_whitespace_folder_zero_byte_dotfiles_and_credit_sanitizatio
     alt_track.write_bytes(b"OggS")
     (music_dir / "second.ogg.txt").write_text("Music: Second Track (CC BY)\n", encoding="utf-8")
     assert music.credit(alt_track) == "Music: Second Track (CC BY)"
+
+
+def test_ai_ask_opencode_comma_fallback_and_stdout_error_logging(monkeypatch, caplog):
+    monkeypatch.setattr(ai, "opencode_path", lambda: "opencode")
+    monkeypatch.setattr(settings, "opencode_model", "broken/first-model, working/second-model, broken/first-model")
+    monkeypatch.setattr(ai, "_command_prefix", lambda b: [b])
+
+    seen_models: list[str] = []
+
+    def fake_run(command, **kwargs):
+        if "--model" in command:
+            seen_models.append(command[command.index("--model") + 1])
+        import subprocess
+
+        if seen_models[-1] == "broken/first-model":
+            # Simulate OpenCode --format json writing error to stdout with empty stderr.
+            return subprocess.CompletedProcess(
+                command,
+                1,
+                stdout='{"type":"error","error":{"type":"provider.no-route","message":"Model unavailable"}}',
+                stderr="",
+            )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout='{"type":"text","part":{"text":"{\\"ok\\": true}"}}',
+            stderr="",
+        )
+
+    monkeypatch.setattr(ai.subprocess, "run", fake_run)
+    with caplog.at_level("WARNING"):
+        reply = ai.ask("test prompt")
+    assert reply == '{"ok": true}'
+    assert seen_models == ["broken/first-model", "working/second-model"]
+    assert "Model unavailable" in caplog.text

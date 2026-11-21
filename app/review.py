@@ -779,6 +779,22 @@ def api_dismiss_long_job(job_id: str, request: Request) -> dict:
         raise HTTPException(409, str(exc))
 
 
+@review_app.get("/api/long/{video_id}/hero")
+def api_long_hero(video_id: str, request: Request):
+    _guard(request)
+    from app.longform import job as long_job
+
+    path = long_job.hero_frame_path(video_id)
+    if path is None:
+        raise HTTPException(404, "no hero frame")
+    safe_id = re.sub(r"[^A-Za-z0-9_-]+", "-", str(video_id or "")).strip("-")[:64] or "long"
+    return FileResponse(
+        path,
+        media_type="image/jpeg",
+        headers={**_NO_STORE, "Content-Disposition": f'attachment; filename="hero-{safe_id}.jpg"'},
+    )
+
+
 @review_app.get("/api/long/{video_id}/thumb/{variant_id}")
 def api_long_thumb(video_id: str, variant_id: str, request: Request):
     _guard(request)

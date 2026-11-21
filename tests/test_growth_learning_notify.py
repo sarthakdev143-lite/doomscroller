@@ -513,3 +513,40 @@ def test_send_test_notification_returns_per_channel_status_without_leaking_secre
     dumped = json.dumps(res)
     assert bot_secret not in dumped and "BOT_SECRET_XYZ" not in dumped
     assert bot_secret not in caplog.text and "BOT_SECRET_XYZ" not in caplog.text
+
+
+def test_send_long_ready_delivers_chatgpt_prompt_and_redacts_secrets(monkeypatch):
+    bot_secret = "555666:LONG_BOT_SECRET"
+    review_secret = "MY_REVIEW_KEY_99"
+    monkeypatch.setattr(settings, "ntfy_topic", "ops-alerts")
+    monkeypatch.setattr(settings, "telegram_bot_token", bot_secret)
+    monkeypatch.setattr(settings, "telegram_chat_id", "888")
+    monkeypatch.setattr(settings, "review_token", review_secret)
+
+    posts: list[dict] = []
+
+    class OkResp:
+        def raise_for_status(self):
+            return None
+
+    def fake_post(url, **kwargs):
+        posts.append({"url": url, "headers": dict(kwargs.get("headers") or {}), "content": kwargs.get("content"), "data": kwargs.get("data")})
+        return OkResp()
+
+    monkeypatch.setattr(notify.httpx, "post", fake_post)
+    sent = notify.send_long_ready(
+        f"Best Moments {review_secret}",
+        channel_name="Mr Indian Vlogs",
+        duration_sec=505,
+        format_kind="best_of",
+        prompt="Create a bold 16:9 thumbnail with expressive face",
+    )
+    assert sent is True
+    assert len(posts) == 2
+    ntfy_body = posts[0]["content"].decode("utf-8")
+    assert "8m 25s" in ntfy_body
+    assert "Create a bold 16:9 thumbnail" in ntfy_body
+    assert review_secret not in ntfy_body and bot_secret not in ntfy_body
+    tg_text = posts[1]["data"]["text"]
+    assert "ChatGPT" in tg_text and "Create a bold 16:9 thumbnail" in tg_text
+    assert review_secret not in tg_text and bot_secret not in tg_text

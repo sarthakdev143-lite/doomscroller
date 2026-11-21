@@ -355,13 +355,28 @@ def show_notify_test(*, as_json: bool = False) -> int:
     return 0
 
 
+def show_repair_drafts(*, dry_run: bool = False, as_json: bool = False) -> int:
+    from app.growth import approval
+
+    res = approval.repair_waiting_drafts(dry_run=dry_run)
+    if as_json:
+        print(json.dumps(res, indent=2))
+        return 0
+    mode = "Dry run" if dry_run else "Repaired"
+    print(f"{mode}: checked {res['checked']} waiting Shorts, stripped #Shorts from {res['tags_stripped']}, "
+          f"unlocked A/B testing on {res['unlocked_ab']}.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("command", nargs="?", default="status",
-                        choices=("status", "doctor", "report", "pause", "resume", "unblock", "reload", "notify-test"))
+                        choices=("status", "doctor", "report", "pause", "resume", "unblock",
+                                 "reload", "notify-test", "repair-drafts"))
     parser.add_argument("name", nargs="?",
                         help="pause/resume: a channel slug; unblock: the author/source/parent to lift")
     parser.add_argument("--offline", action="store_true", help="doctor: skip asking Google and reading feeds")
+    parser.add_argument("--dry-run", action="store_true", help="repair-drafts: preview changes without writing DB")
     parser.add_argument("--json", dest="as_json", action="store_true", help="emit machine-readable JSON output")
     parser.add_argument("--channel", "-c", default=None, help="filter status, report, or doctor to one channel slug")
     parser.add_argument("--markdown", "--md", dest="markdown", action="store_true",
@@ -371,6 +386,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if (args.out or args.markdown) and args.command != "report":
         parser.error("--out and --markdown only apply to the report command")
+    if args.dry_run and args.command != "repair-drafts":
+        parser.error("--dry-run only applies to the repair-drafts command")
     init_db()
     target_slug = args.name or args.channel
     if args.command == "status":
@@ -387,6 +404,8 @@ def main(argv: list[str] | None = None) -> int:
         return show_doctor(live=not args.offline, as_json=args.as_json, channel=target_slug)
     if args.command == "notify-test":
         return show_notify_test(as_json=args.as_json)
+    if args.command == "repair-drafts":
+        return show_repair_drafts(dry_run=args.dry_run, as_json=args.as_json)
     return show_report(as_json=args.as_json, channel=target_slug, markdown=args.markdown, out=args.out)
 
 

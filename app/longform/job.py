@@ -15,7 +15,7 @@ from app import quota
 from app.clipper import job as clip_job
 from app.config import settings
 from app.db import session_scope
-from app.growth import channels, safety
+from app.growth import channels, notify, safety
 from app.growth.factors import channel_zone
 from app.metadata import compose, finished_title, youtube_description
 from app.models import Channel, GrowthEvent, LongJob, MetadataDraft, Video, VideoStatus
@@ -179,6 +179,7 @@ def run_next_long_job(*, now: Optional[datetime] = None) -> Optional[dict]:
                 raise ValueError("no managed channel found")
             ch_id = channel.id
             ch_slug = channel.slug
+            ch_name = channel.name or ch_slug
             ch_niche = channel.niche or ""
             ch_brand = (settings.brand_name if channels.is_default(channel) else channel.brand_name) or ""
             feeds = channels.feeds_for(db, channel)
@@ -239,6 +240,8 @@ def run_next_long_job(*, now: Optional[datetime] = None) -> Optional[dict]:
             for s in plan.segments
         ]
         selected = next((t for t in thumbs if t["id"] == "v4"), thumbs[0] if thumbs else None)
+        hero_raw = thumbs_dir / "hero_raw.jpg"
+        hero_frame = str(hero_raw) if hero_raw.is_file() else ""
         status = VideoStatus.TRANSFORMED if auto_pub else VideoStatus.PENDING
         done_at = datetime.now(timezone.utc)
 
@@ -273,6 +276,7 @@ def run_next_long_job(*, now: Optional[datetime] = None) -> Optional[dict]:
                     "long_segments": stored_segments,
                     "chapters": [{"sec": round(sec, 2), "title": lbl} for sec, lbl in rendered.chapters],
                     "thumbnails": thumbs,
+                    "hero_frame": hero_frame,
                     "thumbnail_prompt": thumb_prompt,
                     "selected_thumbnail": selected["path"] if selected else None,
                     "selected_thumbnail_id": selected["id"] if selected else None,
@@ -297,7 +301,19 @@ def run_next_long_job(*, now: Optional[datetime] = None) -> Optional[dict]:
                 job_row.video_id = video.id
                 job_row.finished_at = done_at
                 job_row.result = {"ok": True, "duration": rendered.duration, "segments": len(plan.segments)}
-            return {"ok": True, "job_id": job_id, "video_id": video.id, "duration": rendered.duration}
+            result_payload = {"ok": True, "job_id": job_id, "video_id": video.id, "duration": rendered.duration}
+
+        try:
+            notify.send_long_ready(
+                plan.title,
+                channel_name=ch_name,
+                duration_sec=int(round(rendered.duration)),
+                format_kind=plan.format_kind,
+                prompt=thumb_prompt,
+            )
+        except Exception as exc:
+            log.warning("longform.job: phone alert failed: %s", exc)
+        return result_payload
     except Exception as exc:
         log.exception("longform.job: failed job %s", job_id)
         if job_id is not None:
@@ -463,6 +479,30 @@ def _long_video(db, video_id: str) -> Video:
     return video
 
 
+def _resolve_hero_frame(video: Video) -> Optional[str]:
+    meta = video.meta or {}
+    if not meta.get("long_form"):
+        return None
+    raw = str(meta.get("hero_frame") or "").strip()
+    if raw and os.path.isfile(raw):
+        return raw
+    for t in meta.get("thumbnails") or []:
+        tpath = t.get("path") if isinstance(t, dict) else None
+        if tpath:
+            candidate = Path(tpath).parent / "hero_raw.jpg"
+            if candidate.is_file():
+                return str(candidate)
+    return None
+
+
+def hero_frame_path(video_id: str) -> Optional[str]:
+    with session_scope() as db:
+        video = db.get(Video, video_id)
+        if video is None:
+            return None
+        return _resolve_hero_frame(video)
+
+
 def thumbnail_path(video_id: str, variant_id: str) -> Optional[str]:
     with session_scope() as db:
         video = db.get(Video, video_id)
@@ -621,6 +661,7 @@ def _long_card(db, video: Video, slug_names: dict[str, tuple[str, str]]) -> dict
         "height": int(video.height or 1080),
         "status": video.status.value,
         "thumbnails": thumbs,
+        "hero_url": f"/api/long/{video.id}/hero?v={ver}" if _resolve_hero_frame(video) else "",
         "thumbnail_prompt": meta.get("thumbnail_prompt") or "",
         "selected_thumbnail_id": meta.get("selected_thumbnail_id") or (thumbs[0]["id"] if thumbs else ""),
         "chapters": list(meta.get("chapters") or []),
