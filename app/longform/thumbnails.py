@@ -190,6 +190,27 @@ def _draw_outlined_text(draw: ImageDraw.ImageDraw, xy: tuple[int, int], text: st
     draw.text(xy, text, font=font, fill=fill, stroke_width=stroke, stroke_fill=(0, 0, 0))
 
 
+def _fit_text_font(draw: ImageDraw.ImageDraw, text: str, max_width: int, *, start_size: int = 96, min_size: int = 44):
+    size = start_size
+    while size >= min_size:
+        font = _load_pil_font(size, text)
+        left, _, right, _ = draw.textbbox((0, 0), text, font=font, stroke_width=7)
+        if right - left <= max_width or size == min_size:
+            return font
+        size -= 6
+    return _load_pil_font(min_size, text)
+
+
+def _draw_pill_badge(draw: ImageDraw.ImageDraw, x: int, y: int, text: str, font, *, fill, outline=None, text_fill=(255, 255, 255), right_align: bool = False) -> None:
+    label = text.upper()
+    l, t, r, b = draw.textbbox((0, 0), label, font=font)
+    pw = (r - l) + 44
+    ph = (b - t) + 26
+    x0 = (x - pw) if right_align else x
+    draw.rounded_rectangle([x0, y, x0 + pw, y + ph], radius=14, fill=fill, outline=outline, width=3 if outline else 0)
+    draw.text((x0 + 22 - l, y + 13 - t), label, font=font, fill=text_fill)
+
+
 def _render_variant_hero(hero_path: str, dest: Path, *, title: str, badge: str) -> str:
     img = ImageOps.fit(Image.open(hero_path).convert("RGB"), (THUMB_W, THUMB_H), method=Image.Resampling.LANCZOS)
     # Subtle 1.08x center punch zoom for tighter facial impact.
@@ -200,12 +221,10 @@ def _render_variant_hero(hero_path: str, dest: Path, *, title: str, badge: str) 
     img = _add_gradient(img)
     draw = ImageDraw.Draw(img)
     headline = _headline_words(title, max_words=3)
-    font = _load_pil_font(96, headline)
+    font = _fit_text_font(draw, headline, THUMB_W - 112, start_size=96)
     _draw_outlined_text(draw, (56, THUMB_H - 165), headline, font, fill=(255, 232, 36), stroke=7)
     if badge:
-        bfont = _load_pil_font(34, badge)
-        draw.rounded_rectangle([54, 44, 54 + max(180, len(badge) * 24 + 40), 104], radius=14, fill=(220, 38, 38))
-        draw.text((74, 56), badge.upper(), font=bfont, fill=(255, 255, 255))
+        _draw_pill_badge(draw, 54, 44, badge, _load_pil_font(34, badge), fill=(220, 38, 38))
     return _save_under_2mb(img, dest)
 
 
@@ -235,10 +254,10 @@ def _render_variant_clean(hero_path: str, dest: Path, *, badge: str) -> str:
     img = ImageEnhance.Contrast(ImageEnhance.Color(img).enhance(1.22)).enhance(1.18)
     if badge:
         draw = ImageDraw.Draw(img)
-        bfont = _load_pil_font(36, badge)
-        box_w = max(180, len(badge) * 24 + 44)
-        draw.rounded_rectangle([THUMB_W - box_w - 42, 38, THUMB_W - 42, 102], radius=16, fill=(18, 18, 24), outline=(255, 229, 0), width=3)
-        draw.text((THUMB_W - box_w - 20, 50), badge.upper(), font=bfont, fill=(255, 229, 0))
+        _draw_pill_badge(
+            draw, THUMB_W - 42, 86, badge, _load_pil_font(34, badge),
+            fill=(18, 18, 24), outline=(255, 229, 0), text_fill=(255, 229, 0), right_align=True,
+        )
     return _save_under_2mb(img, dest)
 
 
