@@ -23,11 +23,11 @@ Description=Doomscroller: API, scheduler and control panel
 After=network-online.target
 
 [Service]
-WorkingDirectory=$ROOT
-Environment=PATH=$PATH
+WorkingDirectory="$ROOT"
+Environment="PATH=$PATH"
 Environment=PYTHONUNBUFFERED=1
-ExecStartPre=/bin/rm -f $ROOT/doomscroller.pids
-ExecStart=$ROOT/venv/bin/python scripts/run.py
+ExecStartPre=/bin/rm -f "$ROOT/doomscroller.pids"
+ExecStart="$ROOT/venv/bin/python" scripts/run.py
 Restart=always
 RestartSec=15
 
@@ -40,27 +40,31 @@ Description=Doomscroller: Cloudflare tunnel to the phone review page
 After=network-online.target doomscroller.service
 
 [Service]
-WorkingDirectory=$ROOT
-Environment=PATH=$PATH
+WorkingDirectory="$ROOT"
+Environment="PATH=$PATH"
 Environment=PYTHONUNBUFFERED=1
-ExecStart=$ROOT/venv/bin/python scripts/tunnel.py
+ExecStart="$ROOT/venv/bin/python" scripts/tunnel.py
 Restart=always
 RestartSec=20
 
 [Install]
 WantedBy=default.target
 UNIT
-# Auto-deploy: once a minute, fast-forward master and restart the app if a merge landed, so shipping is
-# just clicking Merge on GitHub (scripts/autodeploy.sh explains its own safety guards).
+# Auto-deploy: once a minute, fast-forward master, install changed requirements, restart the app,
+# and verify /health (scripts/autodeploy.sh explains its safety guards and bad-SHA circuit breaker).
 cat > "$UNITS/doomscroller-deploy.service" <<UNIT
 [Unit]
 Description=Doomscroller: pull master and restart when a merge lands
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=oneshot
-WorkingDirectory=$ROOT
-Environment=PATH=$PATH
-ExecStart=/bin/bash $ROOT/scripts/autodeploy.sh
+WorkingDirectory="$ROOT"
+Environment="PATH=$PATH"
+Environment=PYTHONUNBUFFERED=1
+TimeoutStartSec=15min
+ExecStart=/bin/bash "$ROOT/scripts/autodeploy.sh"
 UNIT
 cat > "$UNITS/doomscroller-deploy.timer" <<UNIT
 [Unit]
@@ -69,6 +73,7 @@ Description=Doomscroller: check for a new master every minute
 [Timer]
 OnBootSec=2min
 OnUnitActiveSec=1min
+OnUnitInactiveSec=1min
 Unit=doomscroller-deploy.service
 
 [Install]
@@ -77,6 +82,8 @@ UNIT
 systemctl --user daemon-reload
 systemctl --user enable --now doomscroller.service doomscroller-tunnel.service
 systemctl --user enable --now doomscroller-deploy.timer
-loginctl show-user "$USER" -p Linger | grep -q yes || echo "Note: lingering is off, so services stop when you log out."
+if command -v loginctl >/dev/null 2>&1 && ! loginctl show-user "${USER:-$(id -un)}" -p Linger 2>/dev/null | grep -q yes; then
+  echo "Note: lingering is off, so services stop when you log out."
+fi
 echo "Installed. Status: systemctl --user status doomscroller doomscroller-tunnel"
 echo "Auto-deploy: systemctl --user list-timers doomscroller-deploy; logs: journalctl --user -u doomscroller-deploy"
