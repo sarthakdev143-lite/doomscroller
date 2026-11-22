@@ -800,3 +800,90 @@ def test_long_panel_api_exposes_ambient_presets_and_extended_minutes(tmp_path, m
     ch_rows = c.get("/api/channels").json()["channels"]
     amb_ch = next(x for x in ch_rows if x["slug"] == "ambient")
     assert amb_ch["procedural"] is True and amb_ch["mode"] == "procedural_ambient"
+
+
+def test_channel3_portrait_and_track_upload_endpoints_require_guard_and_validate(tmp_path, monkeypatch):
+    import io
+    import wave
+    from PIL import Image
+    from app.longform import ambient
+
+    Path(settings.channels_file).write_text(
+        json.dumps({
+            "channels": [
+                {
+                    "slug": "ambient",
+                    "name": "After Midnight POV",
+                    "uploads_per_day": 0,
+                    "long_uploads_per_day": 3,
+                    "long_auto_publish": False,
+                    "enabled": False,
+                    "feeds": [],
+                    "meta": {"mode": "procedural_ambient", "presets": ["lofi_chill"], "target_minutes": 30},
+                }
+            ]
+        }),
+        encoding="utf-8",
+    )
+    with session_scope() as db:
+        channels.sync_channels(db)
+        amb = channels.channel_by_slug(db, "ambient")
+        mp4 = tmp_path / "content" / "longform" / "ambient" / "p1.mp4"
+        mp4.parent.mkdir(parents=True, exist_ok=True)
+        mp4.write_bytes(b"MP4")
+        vid = Video(
+            source="longform", source_id="amb_port1", source_url="", title="i wish i could meet you one last time",
+            description="100% original", transformed_path=str(mp4), status=VideoStatus.PENDING,
+            channel_id=amb.id, width=1920, height=1080, duration_sec=60,
+            meta={"long_form": True, "procedural_ambient": True, "ambient_preset": "lofi_chill", "long_format": "lofi_chill"},
+        )
+        db.add(vid)
+        db.flush()
+        video_id = vid.id
+
+    anon = TestClient(review_app)
+    assert anon.post(f"/api/long/{video_id}/portrait", content=b"123").status_code == 401
+    assert anon.post("/api/long/ambient/tracks?filename=a.wav", content=b"123").status_code == 401
+
+    c = _signed_client()
+
+    tiny_buf = io.BytesIO()
+    Image.new("RGB", (200, 100), (10, 10, 10)).save(tiny_buf, format="JPEG")
+    assert c.post(f"/api/long/{video_id}/portrait", content=tiny_buf.getvalue()).status_code == 400
+
+    def fake_gen_amb(preset="lofi_chill", output_path="", *, portrait_path=None, thumbs_dir=None, **kw):
+        Path(output_path).write_bytes(b"ANIMATED_MP4")
+        td = Path(thumbs_dir)
+        td.mkdir(parents=True, exist_ok=True)
+        t1 = td / "thumb_v1.jpg"
+        t1.write_bytes(b"JPG")
+        return ambient.AmbientResult(
+            output_path=str(output_path), preset=preset, duration=60.0, width=1920, height=1080, fps=30,
+            title="i wish i could meet you one last time", description="100% original", tags=("late night pov",),
+            chapters=((0.0, "Fairy Light Glow"),), chapter_text="0:00 Fairy Light Glow",
+            thumbnails=({"id": "v1", "label": "Intimate POV", "path": str(t1)},),
+            hero_frame=str(portrait_path or t1), thumbnail_prompt="Cinematic 16:9 night",
+            portrait_path=str(portrait_path or ""),
+        )
+
+    monkeypatch.setattr(ambient, "generate_ambient_video", fake_gen_amb)
+    ok_buf = io.BytesIO()
+    Image.new("RGB", (1280, 720), (40, 20, 25)).save(ok_buf, format="JPEG")
+    rp = c.post(f"/api/long/{video_id}/portrait", content=ok_buf.getvalue())
+    assert rp.status_code == 200 and rp.json()["ok"] is True
+    assert Path(rp.json()["portrait_path"]).is_file()
+
+    assert c.post("/api/long/ambient/tracks?filename=bad.exe", content=b"MZ").status_code == 400
+
+    wav_buf = io.BytesIO()
+    with wave.open(wav_buf, "wb") as wf:
+        wf.setnchannels(2)
+        wf.setsampwidth(2)
+        wf.setframerate(48000)
+        wf.writeframes(b"\x01\x00" * 48000 * 2)  # 1.0s stereo 48kHz
+    rt = c.post("/api/long/ambient/tracks?filename=Midnight%20Echo.wav&preset=lofi_chill", content=wav_buf.getvalue())
+    assert rt.status_code == 200 and rt.json()["tracks_count"] == 1
+
+    panel = c.get("/api/long/videos").json()
+    assert panel["ambient_stats"]["tracks_count"] == 1
+    assert panel["ambient_stats"]["portraits_count"] >= 1

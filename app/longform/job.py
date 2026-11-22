@@ -254,7 +254,7 @@ def run_next_long_job(*, now: Optional[datetime] = None) -> Optional[dict]:
                 if amb.chapter_text and "Chapters:" not in amb.description else amb.description
             )
             thumbs = list(amb.thumbnails or ())
-            selected = next((t for t in thumbs if t.get("id") == "v4"), thumbs[0] if thumbs else None)
+            selected = _default_ambient_thumbnail(thumbs)
             hero_raw = thumbs_dir / "hero_raw.jpg"
             hero_frame = amb.hero_frame or (str(hero_raw) if hero_raw.is_file() else "")
             status = VideoStatus.TRANSFORMED if (auto_pub and ch_enabled and ch_long_auto) else VideoStatus.PENDING
@@ -296,6 +296,7 @@ def run_next_long_job(*, now: Optional[datetime] = None) -> Optional[dict]:
                         "chapters": [{"sec": round(sec, 2), "title": lbl} for sec, lbl in amb.chapters],
                         "thumbnails": thumbs,
                         "hero_frame": hero_frame,
+                        "portrait_path": getattr(amb, "portrait_path", "") or "",
                         "thumbnail_prompt": amb.thumbnail_prompt,
                         "selected_thumbnail": selected["path"] if selected else None,
                         "selected_thumbnail_id": selected["id"] if selected else None,
@@ -740,6 +741,123 @@ def upload_custom_thumbnail(video_id: str, raw_bytes: bytes) -> dict:
         return {"id": video_id, "selected_thumbnail_id": "custom", "thumb_version": ver}
 
 
+def _default_ambient_thumbnail(thumbs: Sequence[dict]) -> Optional[dict]:
+    for tid in ("v4", "v2", "v1"):
+        match = next((t for t in thumbs if isinstance(t, dict) and t.get("id") == tid), None)
+        if match is not None:
+            return match
+    return thumbs[0] if thumbs else None
+
+
+def re_render_ambient_with_portrait(video_id: str, raw_bytes: bytes) -> dict:
+    """Validate an uploaded portrait, save it for Channel #3, and re-animate the MP4 + thumbnails."""
+    import io
+    from PIL import Image, ImageOps
+
+    from . import ambient
+
+    if not raw_bytes:
+        raise ValueError("empty portrait upload")
+    try:
+        with Image.open(io.BytesIO(raw_bytes)) as im:
+            im.load()
+            if im.width < 640 or im.height < 360:
+                raise ValueError("portrait must be at least 640x360 pixels")
+            portrait_img = ImageOps.exif_transpose(im).convert("RGB")
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError(f"invalid portrait image: {exc}") from exc
+
+    with session_scope() as db:
+        video = _long_video(db, video_id)
+        if video.status in (VideoStatus.PUBLISHING, VideoStatus.PUBLISHED):
+            raise ValueError("cannot re-render a publishing or published video")
+        meta = dict(video.meta or {})
+        if not meta.get("procedural_ambient") and meta.get("long_format") not in _AMBIENT_FORMATS:
+            raise ValueError("portrait animation is only supported on Channel #3 ambient videos")
+        preset = str(meta.get("ambient_preset") or meta.get("long_format") or "lofi_chill")
+        ch = channels.get_channel(db, video.channel_id)
+        slug = ch.slug if ch else "ambient"
+        brand_name = ch.brand_name if ch else ""
+        target_sec = max(10.0, float(video.duration_sec or 1800.0))
+        theme = str(meta.get("long_theme") or "")
+        part_num = int(meta.get("part_number") or 1)
+        out_path = Path(video.transformed_path or (settings.content_path / "longform" / slug / f"{video.id}.mp4"))
+        thumbs_dir = settings.content_path / "longform" / slug / f"{video.id}_thumbs"
+        custom_portrait = ambient.ambient_portraits_dir() / f"{video.id}_custom.jpg"
+        custom_portrait.parent.mkdir(parents=True, exist_ok=True)
+        portrait_img.save(custom_portrait, format="JPEG", quality=95)
+        cur_title = video.title or ""
+
+    amb = ambient.generate_ambient_video(
+        preset=preset,
+        output_path=str(out_path),
+        duration_sec=target_sec,
+        brand_name=brand_name,
+        theme=theme,
+        part_number=part_num,
+        title=cur_title,
+        thumbs_dir=thumbs_dir,
+        language="en",
+        portrait_path=custom_portrait,
+    )
+
+    with session_scope() as db:
+        video = _long_video(db, video_id)
+        meta = dict(video.meta or {})
+        thumbs = list(amb.thumbnails or ())
+        custom_thumb = next((t for t in (meta.get("thumbnails") or []) if isinstance(t, dict) and t.get("id") == "custom"), None)
+        if custom_thumb and custom_thumb.get("path") and os.path.isfile(str(custom_thumb["path"])):
+            thumbs.append(custom_thumb)
+        selected = _default_ambient_thumbnail(thumbs)
+        ver = int(meta.get("thumb_version") or 1) + 1
+        meta["thumbnails"] = thumbs
+        meta["hero_frame"] = amb.hero_frame or str(thumbs_dir / "hero_raw.jpg")
+        meta["portrait_path"] = str(custom_portrait)
+        meta["thumbnail_prompt"] = amb.thumbnail_prompt
+        meta["selected_thumbnail"] = selected["path"] if selected else meta.get("selected_thumbnail")
+        meta["selected_thumbnail_id"] = selected["id"] if selected else meta.get("selected_thumbnail_id")
+        meta["thumb_version"] = ver
+        if amb.chapters:
+            meta["chapters"] = [{"sec": round(sec, 2), "title": lbl} for sec, lbl in amb.chapters]
+        video.transformed_path = amb.output_path
+        video.duration_sec = int(round(amb.duration))
+        video.meta = meta
+        return {"id": video_id, "ok": True, "portrait_path": str(custom_portrait), "thumb_version": ver}
+
+
+def upload_ambient_track(filename: str, raw_bytes: bytes, *, preset: str = "") -> dict:
+    """Validate and save a royalty-free MP3/WAV/M4A/FLAC/OGG track for Channel #3 playlists."""
+    from . import ambient
+
+    if not raw_bytes:
+        raise ValueError("empty audio upload")
+    base_name = Path(str(filename or "").strip()).name
+    ext = Path(base_name).suffix.lower()
+    if ext not in (".mp3", ".wav", ".m4a", ".flac", ".ogg"):
+        raise ValueError("track must be .mp3, .wav, .m4a, .flac, or .ogg")
+    clean_stem = re.sub(r"[^A-Za-z0-9 _.-]+", "_", Path(base_name).stem).strip(" ._") or "track"
+    clean_preset = str(preset or "").strip().lower()
+    target_dir = ambient.ambient_music_dir() / clean_preset if clean_preset in _AMBIENT_FORMATS else ambient.ambient_music_dir()
+    target_dir.mkdir(parents=True, exist_ok=True)
+    dest = target_dir / f"{clean_stem}{ext}"
+    tmp_dest = dest.with_name(f"{dest.stem}.tmp{ext}")
+    try:
+        tmp_dest.write_bytes(raw_bytes)
+        dur = ambient._probe_audio_duration(tmp_dest)
+        os.replace(tmp_dest, dest)
+    finally:
+        tmp_dest.unlink(missing_ok=True)
+    return {
+        "ok": True,
+        "filename": dest.name,
+        "preset": clean_preset if clean_preset in _AMBIENT_FORMATS else "",
+        "duration": round(float(dur), 2),
+        "tracks_count": len(ambient.list_ambient_tracks()),
+    }
+
+
 def update_long_metadata(
     video_id: str,
     *,
@@ -899,10 +1017,18 @@ def long_panel_data() -> dict:
             }
             for c in ch_rows
         ]
+    from . import ambient
+    tracks = ambient.list_ambient_tracks()
+    portraits = ambient.list_ambient_portraits()
     return {
         "pending": pending,
         "ready": ready,
         "posted": posted,
         "jobs": list_long_jobs(),
         "channels": channel_list,
+        "ambient_stats": {
+            "tracks_count": len(tracks),
+            "portraits_count": len(portraits),
+            "tracks": [{"name": t["name"], "filename": t["filename"], "preset": t["preset"]} for t in tracks],
+        },
     }

@@ -531,3 +531,82 @@ def test_channels_entry_problem_validates_meta_target_languages():
         err = channels._entry_problem({"slug": "bad", "meta": {"target_languages": bad}}, set())
         assert err is not None and "meta.target_languages" in err
 
+
+def test_portrait_mode_renders_16_9_thumbnails_and_passes_portrait_result(tmp_path, monkeypatch):
+    import shutil
+    from app.clipper.media import MediaInfo
+    from app.longform import ambient
+
+    monkeypatch.setattr(settings, "content_dir", str(tmp_path / "content"))
+    pdir = ambient.ambient_portraits_dir()
+    pdir.mkdir(parents=True, exist_ok=True)
+    portrait_file = pdir / "lofi_chill.jpg"
+    im = Image.new("RGB", (1400, 800), (34, 24, 22))
+    im.save(portrait_file, "JPEG", quality=92)
+
+    listed = ambient.list_ambient_portraits()
+    assert len(listed) == 1 and listed[0]["preset"] == "lofi_chill"
+
+    variants, prompt, hero = ambient.generate_ambient_thumbnails(
+        "lofi_chill",
+        out_dir=tmp_path / "pthumbs",
+        title="i wish i could meet you one last time [30 Min]",
+        duration_sec=1800.0,
+        brand_name="@AfterMidnightPOV",
+        portrait_path=portrait_file,
+    )
+    assert Path(hero).is_file() and len(variants) >= 3
+    assert "night" in prompt.lower()
+    blobs = {Path(v["path"]).read_bytes() for v in variants[:3]}
+    assert len(blobs) == 3
+
+    calls: list[list[str]] = []
+
+    def fake_ffmpeg(args, **kwargs):
+        calls.append(list(args))
+        out = Path(args[-1])
+        out.parent.mkdir(parents=True, exist_ok=True)
+        if out.suffix == ".wav" and "-i" in args:
+            shutil.copyfile(args[args.index("-i") + 1], out)
+        else:
+            out.write_bytes(b"PORTRAIT_MP4_" * 100)
+
+    monkeypatch.setattr(ambient, "run_ffmpeg", fake_ffmpeg)
+    monkeypatch.setattr(ambient, "probe", lambda p: MediaInfo(65.0, 1920, 1080, 30.0, True))
+    res = ambient.generate_ambient_video(
+        "lofi_chill",
+        str(tmp_path / "portrait_65.mp4"),
+        duration_sec=65.0,
+        thumbs_dir=tmp_path / "p65_thumbs",
+    )
+    assert res.portrait_path == str(portrait_file)
+    assert len(calls) == 3
+
+
+def test_curated_music_track_stitcher_builds_crossfaded_mix_and_real_chapters(tmp_path, monkeypatch):
+    from app.longform import ambient
+
+    monkeypatch.setattr(settings, "content_dir", str(tmp_path / "content"))
+    tdir = ambient.ambient_music_dir() / "lofi_chill"
+    tdir.mkdir(parents=True, exist_ok=True)
+    t1 = tdir / "01_stay_a_little_longer.mp3"
+    t2 = tdir / "02_rain_on_glass.mp3"
+    t1.write_bytes(b"ID3" * 20)
+    t2.write_bytes(b"ID3" * 20)
+
+    tracks = ambient.list_ambient_tracks("lofi_chill")
+    assert len(tracks) == 2
+
+    ff_calls: list[list[str]] = []
+    monkeypatch.setattr(ambient, "_probe_audio_duration", lambda p: 120.0)
+    monkeypatch.setattr(ambient, "run_ffmpeg", lambda args, **kw: ff_calls.append(list(args)))
+
+    chapters = ambient._build_curated_mix_wav(tracks, tmp_path / "mix.wav", 300.0, seed="mix-seed")
+    assert len(ff_calls) == 1
+    cmd = " ".join(ff_calls[0])
+    assert "acrossfade" in cmd and "loudnorm" in cmd and "alimiter" in cmd
+    titles = [lbl for _, lbl in chapters]
+    assert any("stay a little longer" in t for t in titles)
+    assert any("rain on glass" in t for t in titles)
+    assert chapters[0][0] == 0.0
+

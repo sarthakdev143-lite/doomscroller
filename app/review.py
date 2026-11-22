@@ -720,6 +720,20 @@ def api_dismiss_clip_job(job_id: str, request: Request) -> dict:
 
 # ---------- Long-Form 16:9 ----------
 _LONG_THUMB_UPLOAD_LIMIT = 10 * 1024 * 1024
+_LONG_TRACK_UPLOAD_LIMIT = 30 * 1024 * 1024
+
+
+async def _read_limited_body(request: Request, limit_bytes: int, label: str) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > limit_bytes:
+            raise HTTPException(413, f"{label} exceeds {limit_bytes // (1024 * 1024)} MB limit")
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 @review_app.get("/api/long/videos")
@@ -832,19 +846,37 @@ async def api_long_upload_thumb(video_id: str, request: Request) -> dict:
     _guard(request)
     from app.longform import job as long_job
 
-    chunks: list[bytes] = []
-    total = 0
-    async for chunk in request.stream():
-        if not chunk:
-            continue
-        total += len(chunk)
-        if total > _LONG_THUMB_UPLOAD_LIMIT:
-            raise HTTPException(413, "thumbnail exceeds 10 MB limit")
-        chunks.append(chunk)
+    raw = await _read_limited_body(request, _LONG_THUMB_UPLOAD_LIMIT, "thumbnail")
     try:
-        return long_job.upload_custom_thumbnail(video_id, b"".join(chunks))
+        return long_job.upload_custom_thumbnail(video_id, raw)
     except LookupError as exc:
         raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@review_app.post("/api/long/{video_id}/portrait")
+async def api_long_upload_portrait(video_id: str, request: Request) -> dict:
+    _guard(request)
+    from app.longform import job as long_job
+
+    raw = await _read_limited_body(request, _LONG_THUMB_UPLOAD_LIMIT, "portrait")
+    try:
+        return long_job.re_render_ambient_with_portrait(video_id, raw)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@review_app.post("/api/long/ambient/tracks")
+async def api_long_upload_ambient_track(request: Request, filename: str = "", preset: str = "") -> dict:
+    _guard(request)
+    from app.longform import job as long_job
+
+    raw = await _read_limited_body(request, _LONG_TRACK_UPLOAD_LIMIT, "audio track")
+    try:
+        return long_job.upload_ambient_track(filename, raw, preset=preset)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 

@@ -1250,8 +1250,8 @@ async function loadClip(){
 }
 
 /* ===================== LONG FORM ===================== */
-let longPollTimer=null,longChanSel=null,longChannels=[],syncLongBuildMode=null;
-const AMBIENT_LABELS={lofi_chill:'Lofi Chill Beats',rain_focus:'Rain & Focus',night_ambient:'Midnight Starfield Ambient',deep_study:'Deep Study Flow'};
+let longPollTimer=null,longChanSel=null,longChannels=[],syncLongBuildMode=null,ambientStats={tracks_count:0,portraits_count:0,tracks:[]},ambientStatsEl=null,ambientTrackWrap=null;
+const AMBIENT_LABELS={lofi_chill:'Bedroom Glow · One Last Time',rain_focus:'Midnight Rain · Get Some Sleep',night_ambient:'Candlelight · You Are Mine',deep_study:'Desk Lamp · Stay Longer'};
 function buildLongForm(){
   const box=$('long-build-form');if(!box||box.dataset.built)return;box.dataset.built='1';
   longChanSel=el('select');
@@ -1260,6 +1260,23 @@ function buildLongForm(){
   const minsInp=el('input',{type:'number',value:'8',min:'6',max:'10'});
   const minsLbl=el('label',{},'Target length (6–10 min)');
   const targetLbl=el('label',{},'Creator(s) or theme (optional)');
+  ambientStatsEl=el('div',{className:'meta',style:'margin:6px 0 8px'});ambientStatsEl.hidden=true;
+  ambientTrackWrap=el('div',{className:'rowbtns',style:'margin-bottom:8px'});ambientTrackWrap.hidden=true;
+  const trackInp=el('input',{type:'file',accept:'audio/*,.mp3,.wav,.m4a,.flac,.ogg',style:'display:none'});
+  const trackBtn=el('button',{className:'ghost',type:'button'},'+ Upload Music Track (MP3/WAV)');
+  trackBtn.onclick=()=>trackInp.click();
+  trackInp.onchange=async()=>{
+    const file=trackInp.files&&trackInp.files[0];if(!file)return;
+    trackBtn.disabled=true;
+    try{
+      const qs='?filename='+encodeURIComponent(file.name)+'&preset='+encodeURIComponent(fmtSel.value||'');
+      const r=await fetch('/api/long/ambient/tracks'+qs,{method:'POST',body:file,credentials:'same-origin'});
+      if(!r.ok)throw new Error((await r.json().catch(()=>({}))).detail||'Track upload failed');
+      toast('Saved track '+file.name+' for playlist mix');loadLong();
+    }catch(e){alert(e.message)}
+    trackBtn.disabled=false;trackInp.value='';
+  };
+  ambientTrackWrap.append(trackBtn,trackInp);
   const err=el('div',{className:'err'});err.hidden=true;
   const btn=el('button',{className:'btn'},'Build 16:9 Compilation');
   syncLongBuildMode=()=>{
@@ -1273,9 +1290,11 @@ function buildLongForm(){
       if(curFmt&&presets.includes(curFmt))fmtSel.value=curFmt;
       minsLbl.textContent='Target length (15–120 min)';
       minsInp.min='1';minsInp.max='120';minsInp.value=String(ch.default_target_minutes||30);
-      targetLbl.textContent='Scene / mood note (optional)';
-      targetInp.placeholder='e.g. Midnight Tokyo Rain Study';
-      btn.textContent='Build 16:9 Ambient Video';
+      targetLbl.textContent='Scene / POV title or mood note (optional)';
+      targetInp.placeholder='e.g. i wish i could meet you one last time';
+      btn.textContent='Build 16:9 POV Mix';
+      ambientStatsEl.textContent='Loaded: '+(ambientStats.portraits_count||0)+' portraits · '+(ambientStats.tracks_count||0)+' real music tracks'+(ambientStats.tracks_count?' (crossfaded)':' (felt piano synth fallback)');
+      ambientStatsEl.hidden=false;ambientTrackWrap.hidden=false;
     }else{
       for(const [val,lbl] of [['best_of','Best Of Creator (Part N)'],['vs','Creator vs Creator'],['theme','Cross-Creator Theme']]){
         fmtSel.append(el('option',{value:val},lbl));
@@ -1286,6 +1305,7 @@ function buildLongForm(){
       targetLbl.textContent='Creator(s) or theme (optional)';
       targetInp.placeholder='@Creator, "@A vs @B", or theme topic';
       btn.textContent='Build 16:9 Compilation';
+      ambientStatsEl.hidden=true;ambientTrackWrap.hidden=true;
     }
   };
   syncLongBuildMode();
@@ -1311,7 +1331,7 @@ function buildLongForm(){
   const g=el('div',{className:'grid2'});g.append(dFmt,dMin);
   const dChan=el('div');dChan.append(el('label',{},'Channel'),longChanSel);
   const dTgt=el('div');dTgt.append(targetLbl,targetInp);
-  box.append(dChan,g,dTgt,btn,err);
+  box.append(dChan,g,dTgt,ambientStatsEl,ambientTrackWrap,btn,err);
 }
 function renderLongJobs(jobs){
   clearTimeout(longPollTimer);
@@ -1392,6 +1412,22 @@ function longCard(item){
     upBtn.disabled=false;upInp.value='';
   };
   upWrap.append(upBtn,upInp);
+  if(item.procedural&&(item.status==='pending'||item.status==='transformed')){
+    const portInp=el('input',{type:'file',accept:'image/*',style:'display:none'});
+    const portBtn=el('button',{className:'ghost',type:'button'},'4. Upload Portrait & Re-Animate');
+    portBtn.onclick=()=>portInp.click();
+    portInp.onchange=async()=>{
+      const file=portInp.files&&portInp.files[0];if(!file)return;
+      portBtn.disabled=true;
+      try{
+        const r=await fetch('/api/long/'+encodeURIComponent(item.id)+'/portrait',{method:'POST',body:file,credentials:'same-origin'});
+        if(!r.ok)throw new Error((await r.json().catch(()=>({}))).detail||'Portrait re-render failed');
+        toast('Portrait animated into video & 3 thumbnails');loadLong();
+      }catch(e){alert(e.message)}
+      portBtn.disabled=false;portInp.value='';
+    };
+    upWrap.append(portBtn,portInp);
+  }
   if(item.video_url){
     const dl=el('a',{href:item.video_url+'?download=1',className:'ghost',style:'text-align:center;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;padding:10px'},'Save MP4');
     upWrap.append(dl);
@@ -1445,6 +1481,7 @@ async function loadLong(){
   try{
     const d=await api.get('/api/long/videos');
     longChannels=d.channels||[];
+    ambientStats=d.ambient_stats||{tracks_count:0,portraits_count:0,tracks:[]};
     if(longChanSel){
       const cur=longChanSel.value;
       longChanSel.replaceChildren();
