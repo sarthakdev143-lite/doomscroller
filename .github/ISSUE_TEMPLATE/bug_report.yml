@@ -1,0 +1,58 @@
+name: Bug Report
+description: Report a reproducible bug in the clipper, growth loop, control panel, or CLI
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting an issue! **Never paste `.env` contents, `REVIEW_TOKEN`, API keys, OAuth JSONs, cookies, or live tunnel URLs.**
+  - type: dropdown
+    id: area
+    attributes:
+      label: Component
+      options:
+        - Clipper (app/clipper, scripts/clip.py)
+        - Growth Loop & Multi-Channel (app/growth, scripts/growth.py, scripts/channels.py)
+        - Control Panel PWA (:8600, app/review.py, app/review_ui.py)
+        - Scrapers & Discovery (Snapchat / yt-dlp)
+        - FFmpeg Transformer & Fonts (app/transformers)
+        - YouTube OAuth & Publishing (scripts/youtube_oauth.py, app/publishers)
+        - Daemon, Tunnel & Auto-Deploy (scripts/run.py, serve_slim.py, tunnel.py, autodeploy.sh)
+        - Docs / Configuration / CI
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Platform
+      options:
+        - Windows 10/11
+        - Linux (systemd / server)
+        - macOS
+        - Android / Termux
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to Reproduce
+      description: Exact command(s) or Control Panel actions that trigger the issue.
+      placeholder: |
+        1. Run `python scripts/clip.py ...`
+        2. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs Actual Behavior
+      description: What should have happened, and what happened instead (include scrubbed traceback/log lines if available)?
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Preflight Output (`python scripts/doctor.py`)
+      description: Optional output of `python scripts/doctor.py` (booleans/status only — verify no secrets are included).
+      render: shell

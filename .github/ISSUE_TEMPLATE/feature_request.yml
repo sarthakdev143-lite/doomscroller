@@ -1,0 +1,33 @@
+name: Feature Request
+description: Propose a focused improvement to Doomscroller
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Clipper & Rendering
+        - Growth Loop & A/B Learning
+        - Multi-Channel Management
+        - Web & Phone Control Panel (:8600)
+        - Scrapers & Sources
+        - CLI, Diagnostics & Deployment
+        - Documentation
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or Operator Pain Point
+      description: What workflow is currently slow, fragile, or impossible when running channels?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Solution
+      description: Describe the smallest complete change that solves it without adding heavy background dependencies (Docker/Redis) or breaking unattended safety gates.
+    validations:
+      required: true
