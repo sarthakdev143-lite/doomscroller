@@ -97,6 +97,7 @@ class EditPlan:
     speed: float = 1.0
     cutaways: list[Cutaway] = field(default_factory=list)
     meme_overlays: list[MemeOverlay] = field(default_factory=list)
+    opening_words: list[Word] = field(default_factory=list)
 
     @property
     def _effective_speed(self) -> float:
@@ -499,20 +500,52 @@ def opening_line(moment: Moment, words: Sequence[Word], plan: Optional[EditPlan]
 
 
 def first_sentence_text(moment: Moment, words: Sequence[Word]) -> str:
-    """First clean spoken sentence inside `moment`, for non-word-timed clean-vlog clips."""
+    """First clean spoken sentence inside `moment`, joining tiny leading exclamations under 10 chars."""
     inside = [w for w in words if w.end > moment.start and w.start < moment.end]
+    parts: list[str] = []
     for sentence in build_sentences(inside):
         text = " ".join(sentence.text.split()).strip()
-        if text:
-            return text[:120]
-    return ""
+        if not text:
+            continue
+        if not parts:
+            parts.append(text)
+            if len(parts[0]) >= 10:
+                break
+        else:
+            joined = f"{parts[0]} {text}".strip()
+            if len(joined) <= 120:
+                parts[0] = joined
+            break
+    return parts[0][:120] if parts else ""
 
 
-def build_clean_vlog_edit(moment: Moment, source_path: str, *, speed: float = 1.08) -> EditPlan:
+def build_clean_vlog_edit(
+    moment: Moment,
+    source_path: str,
+    *,
+    speed: float = 1.08,
+    max_sec: Optional[float] = None,
+) -> EditPlan:
     """Clean vlog edit for Hindi/non-word-timed clips: trim true audio silences without chopping words."""
     silences = timeline.detect_silences(source_path, moment.start, moment.end)
     segments = timeline.audio_keep_segments(moment.start, moment.end, silences)
     safe_speed = speed if math.isfinite(speed) and speed > 0 else 1.0
+    if max_sec is not None and max_sec > 0 and segments:
+        budget_src = max_sec * safe_speed
+        capped: list[Segment] = []
+        used_src = 0.0
+        for begin, finish in segments:
+            seg_len = finish - begin
+            if used_src + seg_len <= budget_src:
+                capped.append((begin, finish))
+                used_src += seg_len
+            else:
+                rem = budget_src - used_src
+                if rem > 0.2:
+                    capped.append((begin, on_grid(begin + rem)))
+                break
+        if capped:
+            segments = capped
     return EditPlan(words=[], segments=segments, beats=[], speed=safe_speed)
 
 

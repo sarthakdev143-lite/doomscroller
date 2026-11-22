@@ -31,6 +31,7 @@ log = logging.getLogger(__name__)
 
 # YouTube hard limits.
 _TITLE_MAX = 100
+_SHORTS_TITLE_MAX = 70
 _DESCRIPTION_MAX = 5000
 _TAG_MAX_CHARS = 30
 _TAGS_MAX_COUNT = 15
@@ -38,6 +39,40 @@ _TAGS_MAX_TOTAL_CHARS = 480  # the real cap is 500; leave headroom
 
 _ANGLE_BRACKETS = re.compile(r"[<>]")  # YouTube refuses these in a title or description
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
+_DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]")
+_WORD_RE = re.compile(r"[a-zA-Z]+")
+_HINGLISH_WORDS = frozenset({
+    "hai", "hain", "ho", "tha", "thi", "kya", "kyu", "kyun", "kyon", "kaise", "kaun",
+    "aur", "nahi", "nahin", "yaar", "bhai", "dost", "ghar", "dekho", "gaya", "gayi",
+    "gaye", "raha", "rahi", "rahe", "hua", "hui", "hue", "mein", "se", "ko", "ka", "ki",
+    "ke", "pe", "bahut", "bohot", "kuch", "sab", "sach", "jhooth", "pyaar", "shaadi",
+    "diwali", "patakha", "patakhe", "dhamaka", "aaj", "abhi", "yahan", "wahan", "mera",
+    "meri", "mere", "tera", "teri", "apna", "apni", "hum", "aap", "karke", "liya",
+    "diya", "mila", "mili", "nikla", "nikli", "karo", "baat", "batao", "chalo", "zyada",
+    "itna", "itni", "wala", "wali", "wale", "khana", "paani", "laddu", "didi", "bhaiya",
+    "aage", "kutta", "khilaya", "chhoti", "gaiyon", "khapli", "atta", "bina", "lekin",
+    "kyunki", "fir", "phir", "kahan", "kab", "kitna", "kitni", "jab", "tab", "kaafi",
+    "bilkul", "sirf", "waise", "samajh", "paisa", "paise", "zindagi", "duniya", "sapna",
+    "mazaa", "maza", "dar", "raaz", "sachchi", "bawal", "dhoka", "natak", "kaam", "waqt",
+    "subah", "shaam", "raat", "saal", "mahina", "hadh", "kaunsa", "sabse", "aapko",
+    "ne", "yeh", "bol", "end",
+})
+# Keep "end" and English homographs ("ho", "hum", "hue", "mere", "tab") out of Hinglish triggers.
+_HINGLISH_WORDS = _HINGLISH_WORDS - {"end", "ho", "hum", "hue", "mere", "tab"}
+_HINGLISH_PARTICLES = frozenset({
+    "ka", "ki", "ke", "ko", "se", "pe", "mein", "hai", "nahi",
+    "kya", "kyun", "kaise", "aur", "yaar", "bhai", "wala", "wali",
+})
+_RISKY_TITLE_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\b(?:kachche|kachcha|underwears?|lingeries?|bikinis?)\b", re.IGNORECASE), "kapde"),
+    (re.compile(r"\baccidents?\b", re.IGNORECASE), "scene"),
+    (re.compile(r"\b(?:bhoot(?:on)?|ghosts?|haunted)\b", re.IGNORECASE), "raaz"),
+    (re.compile(r"\b(?:khoon|bloods?|bloody)\b", re.IGNORECASE), "shock"),
+    (re.compile(r"\b(?:murders?|murdered|murdering|kills?|killed|killing|deaths?|dead)\b", re.IGNORECASE), "drama"),
+    (re.compile(r"\b(?:horrors?|darawna|darawni|darawne)\b", re.IGNORECASE), "suspense"),
+    (re.compile(r"\b(?:gandi|ganda|gande)\b", re.IGNORECASE), "ajeeb"),
+    (re.compile(r"भूत(?:ों)?"), "राज़"),
+)
 
 
 def _strip_unsafe(value: Optional[str]) -> str:
@@ -68,14 +103,56 @@ class GeneratedMetadata:
 # ---------------------------------------------------------------------------
 # Language
 # ---------------------------------------------------------------------------
+def has_devanagari(text: Optional[str]) -> bool:
+    return bool(text and _DEVANAGARI_RE.search(text))
+
+
+def is_hinglish_text(text: Optional[str]) -> bool:
+    if not text:
+        return False
+    tokens = [t.lower() for t in _WORD_RE.findall(text)]
+    if not tokens:
+        return False
+    unique_tokens = set(tokens)
+    if len(tokens) <= 6 and (unique_tokens & _HINGLISH_PARTICLES):
+        return True
+    hits = len(unique_tokens & _HINGLISH_WORDS)
+    return hits >= 2 or (hits >= 1 and "₹" in text)
+
+
+def has_risky_title_words(text: Optional[str]) -> bool:
+    if not text:
+        return False
+    return any(pattern.search(text) for pattern, _rep in _RISKY_TITLE_REPLACEMENTS)
+
+
+def sanitize_shorts_title(title: Optional[str]) -> str:
+    cleaned = str(title or "")
+    for pattern, replacement in _RISKY_TITLE_REPLACEMENTS:
+        cleaned = pattern.sub(replacement, cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
 def detect_language(text: str) -> str:
     """Detect the dominant language of a text. Returns an ISO 639-1 code."""
     if not text or not text.strip():
         return "en"
+    if has_devanagari(text) or is_hinglish_text(text):
+        return "hi"
     try:
-        from langdetect import detect
+        from langdetect import DetectorFactory, detect_langs
 
-        return detect(text) or "en"
+        DetectorFactory.seed = 0
+        probs = detect_langs(text)
+        code = probs[0].lang if probs else "en"
+        # langdetect frequently misclassifies short Romanized Hinglish or English titles as Malay/Tagalog/Indonesian/Vietnamese,
+        # or assigns partial probability to another Latin language when English is a plausible candidate.
+        if text.isascii():
+            if code in ("id", "tl", "ms", "so", "sw", "vi"):
+                return "en"
+            if any(p.lang == "en" and p.prob >= 0.20 for p in probs):
+                return "en"
+        return code
     except Exception:
         return "en"
 
@@ -83,12 +160,12 @@ def detect_language(text: str) -> str:
 # ---------------------------------------------------------------------------
 # Finishing pass
 # ---------------------------------------------------------------------------
-def _clean_title(title: str, *, reserve_shorts: bool = False) -> str:
+def _clean_title(title: str, *, reserve_shorts: bool = False, max_chars: int = _TITLE_MAX) -> str:
     """Trim a title to YouTube's limit, optionally reserving room for the Shorts hashtag."""
     title = re.sub(r"\s+", " ", _strip_unsafe(title).strip())
     if not title:
         return ""
-    budget = _TITLE_MAX - len(_SHORTS_HASHTAG) - 1 if reserve_shorts else _TITLE_MAX
+    budget = max_chars - len(_SHORTS_HASHTAG) - 1 if reserve_shorts else max_chars
     if len(title) <= budget:
         return title
     # Prefer cutting at a separator Snapchat likes to use ("A | B").
@@ -101,18 +178,18 @@ def _clean_title(title: str, *, reserve_shorts: bool = False) -> str:
     return clipped or title[:budget].strip()
 
 
-def finished_title(title: str, *, shorts_tag: bool = False) -> str:
+def finished_title(title: str, *, shorts_tag: bool = False, max_chars: int = _TITLE_MAX) -> str:
     """A title as it goes out: clean and within YouTube's limit (no forced #Shorts unless requested)."""
-    clean = _clean_title(title or "", reserve_shorts=shorts_tag) or "Watch this"
+    clean = _clean_title(title or "", reserve_shorts=shorts_tag, max_chars=max_chars) or "Watch this"
     if shorts_tag and _SHORTS_HASHTAG.lower() not in clean.lower():
         clean = f"{clean} {_SHORTS_HASHTAG}"
-    return clean[:_TITLE_MAX]
+    return clean[:max_chars]
 
 
-def youtube_title(title: Optional[str]) -> str:
+def youtube_title(title: Optional[str], *, max_chars: int = _TITLE_MAX) -> str:
     """The last word on a title: whatever it says, YouTube will accept it."""
-    clean = " ".join(_strip_unsafe(title).split())[:_TITLE_MAX].strip()
-    return clean or finished_title("")
+    clean = " ".join(_strip_unsafe(title).split())[:max_chars].strip()
+    return clean or finished_title("", max_chars=max_chars)
 
 
 def youtube_description(description: Optional[str], limit: int = _DESCRIPTION_MAX) -> str:
@@ -206,10 +283,13 @@ def compose(
     tags = build_tags(keywords, author=author, is_short=is_short)
 
     description = _strip_unsafe(description)
+    max_chars = _SHORTS_TITLE_MAX if is_short else _TITLE_MAX
     use_title_tag = is_short and title_shorts_tag
-    clean_title = _clean_title(title or "", reserve_shorts=use_title_tag)
+    raw_title = sanitize_shorts_title(title or "") if is_short else (title or "")
+    clean_title = _clean_title(raw_title, reserve_shorts=use_title_tag, max_chars=max_chars)
     if not clean_title:
-        clean_title = _clean_title(description, reserve_shorts=use_title_tag) or "Watch this"
+        fallback_src = sanitize_shorts_title(description) if is_short else description
+        clean_title = _clean_title(fallback_src, reserve_shorts=use_title_tag, max_chars=max_chars) or "Watch this"
     if use_title_tag and _SHORTS_HASHTAG.lower() not in clean_title.lower():
         clean_title = f"{clean_title} {_SHORTS_HASHTAG}"
 
@@ -248,7 +328,7 @@ def compose(
     body = youtube_description(body, max(0, room))
 
     return GeneratedMetadata(
-        title=youtube_title(clean_title),
+        title=youtube_title(clean_title, max_chars=max_chars),
         description=youtube_description(f"{body}\n\n{tail}" if body else tail),
         tags=tags,
         detected_language=language or "en",

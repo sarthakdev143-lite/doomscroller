@@ -17,11 +17,16 @@ from app.longform import job as long_job  # noqa: E402
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--channel", default="", help="Managed channel slug (default when omitted)")
-    parser.add_argument("--format", dest="format_kind", default="best_of", choices=("best_of", "vs", "theme"))
+    parser.add_argument(
+        "--format",
+        dest="format_kind",
+        default="best_of",
+        choices=("best_of", "vs", "theme", *long_job._AMBIENT_FORMATS),
+    )
     parser.add_argument("--creator", action="append", default=[], help="Creator @handle or feed link (repeatable)")
     parser.add_argument("--vs", default="", help="Two creators separated by 'vs' (e.g. '@A vs @B')")
     parser.add_argument("--theme", default="", help="Topic theme for theme compilations")
-    parser.add_argument("--minutes", type=int, default=8, help="Target length in minutes (6-10)")
+    parser.add_argument("--minutes", type=int, default=None, help="Target length in minutes (6-10 standard, 1-120 ambient)")
     parser.add_argument("--enqueue", action="store_true", help="Enqueue job and exit without waiting for render")
     parser.add_argument("--run-now", action="store_true", help="Enqueue (or retry) and build synchronously")
     parser.add_argument("--jobs", action="store_true", help="List recent long-form jobs")

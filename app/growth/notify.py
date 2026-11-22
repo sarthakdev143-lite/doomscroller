@@ -157,9 +157,15 @@ def send_long_ready(
         return False
     clean_channel = " ".join(str(channel_name or "Doomscroller").split()).strip()[:60] or "Doomscroller"
     mins, secs = divmod(max(0, int(duration_sec or 0)), 60)
-    fmt = {"best_of": "Best Of", "vs": "VS", "theme": "Theme"}.get(
-        str(format_kind or "").strip().lower(), str(format_kind or "16:9").upper()
-    )
+    fmt = {
+        "best_of": "Best Of",
+        "vs": "VS",
+        "theme": "Theme",
+        "lofi_chill": "Lofi Chill",
+        "rain_focus": "Rain Focus",
+        "night_ambient": "Night Ambient",
+        "deep_study": "Deep Study",
+    }.get(str(format_kind or "").strip().lower(), str(format_kind or "16:9").upper())
     clean_title = " ".join(str(title or "Untitled").split()).strip()[:120] or "Untitled"
     head = (
         f"[{clean_channel}] {fmt} compilation ready ({mins}m {secs:02d}s)\n"

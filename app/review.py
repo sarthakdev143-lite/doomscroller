@@ -130,7 +130,7 @@ class LongBuildRequest(BaseModel):
     target: str = ""
     targets: list[str] = []
     theme: str = ""
-    target_minutes: int = 8
+    target_minutes: int | None = None
     auto_publish: bool | None = None
 
 
@@ -341,7 +341,15 @@ def api_media(video_id: str, request: Request, download: str = ""):
 @review_app.get("/api/channels")
 def api_channels(request: Request) -> JSONResponse:
     _guard(request)
-    return JSONResponse({"channels": approval.channels_overview()})
+    from app.growth import channels
+
+    rows = approval.channels_overview()
+    modes = channels.channel_modes()
+    for r in rows:
+        mode = modes.get(r.get("slug", ""), "")
+        r.setdefault("mode", mode)
+        r.setdefault("procedural", mode == "procedural_ambient")
+    return JSONResponse({"channels": rows})
 
 
 def _channel_write(run) -> dict:
@@ -379,7 +387,7 @@ def api_import_channels(body: ImportChannelsRequest, request: Request) -> dict:
     # Accept a /api/backup file as-is: its status extras are dropped, the legacy default row is skipped, and an
     # import never switches a channel on (credentials and sign-in belong to this machine, not the file).
     keep = ("slug", "name", "niche", "brand_name", "uploads_per_day", "long_uploads_per_day", "long_auto_publish",
-            "timezone", "require_approval", "auto_approve_score", "cadence_backstop", "feeds")
+            "timezone", "require_approval", "auto_approve_score", "cadence_backstop", "feeds", "meta")
     rows = []
     for raw in payload["channels"]:
         if not isinstance(raw, dict):

@@ -59,7 +59,7 @@ class ChannelsConfigError(ValueError):
 _CONFIG_FIELDS = ("name", "niche", "brand_name", "token_path", "client_secrets",
                   "uploads_per_day", "timezone", "require_approval", "enabled",
                   "auto_approve_score", "cadence_backstop",
-                  "long_uploads_per_day", "long_auto_publish")
+                  "long_uploads_per_day", "long_auto_publish", "meta")
 
 
 def _load_config() -> Optional[list[dict]]:
@@ -235,6 +235,31 @@ def _entry_problem(entry: dict, seen: set[str]) -> Optional[str]:
     if cloned_from is not None:
         if not isinstance(cloned_from, str) or not _SLUG.match(cloned_from.strip()):
             return f"invalid cloned_from slug {cloned_from!r}"
+    meta = entry.get("meta")
+    if meta is not None:
+        if not isinstance(meta, dict):
+            return "meta must be a JSON object"
+        mode = meta.get("mode")
+        if mode is not None and (not isinstance(mode, str) or not mode.strip()):
+            return "meta.mode must be a non-empty string"
+        presets = meta.get("presets")
+        if presets is not None and (
+            not isinstance(presets, list) or not all(isinstance(p, str) and p.strip() for p in presets)
+        ):
+            return "meta.presets must be a list of strings"
+        tmins = meta.get("target_minutes")
+        if tmins is not None and (isinstance(tmins, bool) or not isinstance(tmins, int) or not 1 <= tmins <= 180):
+            return "meta.target_minutes must be a whole number from 1 to 180"
+        gwp = meta.get("generate_while_paused")
+        if gwp is not None and not isinstance(gwp, bool):
+            return "meta.generate_while_paused must be true or false"
+        tlangs = meta.get("target_languages")
+        if tlangs is not None and (
+            not isinstance(tlangs, list)
+            or not tlangs
+            or not all(isinstance(lang, str) and lang.strip() for lang in tlangs)
+        ):
+            return "meta.target_languages must be a non-empty list of language codes"
     return None
 
 
@@ -293,7 +318,11 @@ def _apply(channel: Channel, entry: dict) -> None:
                 val = float(val)
             elif field == "timezone":
                 val = str(val).strip()
+            elif field == "meta":
+                val = dict(val)
             setattr(channel, field, val)
+    if "meta" not in entry and getattr(channel, "meta", None):
+        channel.meta = {}
 
 
 def _sync_feeds(db, channel: Channel, urls: list[str]) -> None:
@@ -487,7 +516,7 @@ def next_step(db, channel: Channel) -> str:
         return f"save its Google OAuth client file as {channel.client_secrets or f'secrets/{slug}_client_secret.json'}"
     if not channel.token_path or not os.path.exists(channel.token_path):
         return f"connect it to YouTube: scripts/channels.py connect {slug}"
-    if not feeds_for(db, channel):
+    if not is_procedural(channel) and not feeds_for(db, channel):
         return f"give it a creator to clip: scripts/channels.py feed {slug} --add <link>"
     if not channel.enabled:
         return f"switch it on: scripts/channels.py connect {slug}"
@@ -532,7 +561,7 @@ def _clean_str(val: object) -> str:
 
 def _channel_to_entry(db, channel: Channel) -> dict:
     slug = channel.slug
-    return {
+    entry = {
         "slug": slug,
         "name": channel.name or slug,
         "niche": channel.niche or "",
@@ -549,6 +578,9 @@ def _channel_to_entry(db, channel: Channel) -> dict:
         "enabled": bool(channel.enabled),
         "feeds": _dedupe_feeds(feeds_for(db, channel)),
     }
+    if getattr(channel, "meta", None):
+        entry["meta"] = dict(channel.meta)
+    return entry
 
 
 def _base_entries(db) -> list[dict]:
@@ -618,6 +650,8 @@ def export_channels_snapshot(db=None) -> dict:
         }
         if channel.slug in cloned_map:
             item["cloned_from"] = cloned_map[channel.slug]
+        if getattr(channel, "meta", None):
+            item["meta"] = dict(channel.meta)
         items.append(item)
 
     return {
@@ -693,6 +727,11 @@ def import_channels_snapshot(db, payload: dict, *, dry_run: bool = False) -> dic
                 target["feeds"] = norm_feeds
             if isinstance(raw.get("cloned_from"), str) and raw["cloned_from"].strip():
                 target["cloned_from"] = raw["cloned_from"].strip()
+            if isinstance(raw.get("meta"), dict):
+                if raw["meta"]:
+                    target["meta"] = dict(raw["meta"])
+                else:
+                    target.pop("meta", None)
             # Never accept token_path, client_secrets, or youtube_channel_id from untrusted snapshots.
             target.setdefault("client_secrets", f"secrets/{slug}_client_secret.json")
             target.setdefault("token_path", f"secrets/{slug}_token.json")
@@ -717,6 +756,8 @@ def import_channels_snapshot(db, payload: dict, *, dry_run: bool = False) -> dic
             }
             if isinstance(raw.get("cloned_from"), str) and raw["cloned_from"].strip():
                 new_entry["cloned_from"] = raw["cloned_from"].strip()
+            if isinstance(raw.get("meta"), dict) and raw["meta"]:
+                new_entry["meta"] = dict(raw["meta"])
             merged.append(new_entry)
             by_slug[slug] = new_entry
 
@@ -794,6 +835,8 @@ def clone_channel(db, source_slug: str, new_slug: str, *, name: str = "") -> Cha
         "cloned_from": src_slug,
         "feeds": _dedupe_feeds(feeds_for(db, src)),
     }
+    if getattr(src, "meta", None):
+        cloned_entry["meta"] = dict(src.meta)
     merged.append(cloned_entry)
     problem = _config_problem(merged)
     if problem:
@@ -840,6 +883,38 @@ def default_channel(db) -> Optional[Channel]:
 
 def is_default(channel: Channel) -> bool:
     return channel.slug == DEFAULT_SLUG
+
+
+def is_procedural(channel: Optional[Channel]) -> bool:
+    """True for self-generating channels (e.g. procedural ambient) that do not clip creator feeds."""
+    if channel is None:
+        return False
+    meta = getattr(channel, "meta", None) or {}
+    return str(meta.get("mode") or "").strip().lower() == "procedural_ambient"
+
+
+def long_supply_channels(db) -> list[Channel]:
+    """Channels eligible to queue 16:9 stock: enabled channels or procedural channels with generate_while_paused."""
+    out: list[Channel] = []
+    for c in all_channels(db):
+        if long_uploads_per_day(c) <= 0:
+            continue
+        if c.enabled or (is_procedural(c) and bool((c.meta or {}).get("generate_while_paused", True))):
+            out.append(c)
+    return out
+
+
+def channel_modes(db=None) -> dict[str, str]:
+    """Map channel slug -> meta.mode for lightweight UI enrichment."""
+    if db is None:
+        from app.db import session_scope
+
+        with session_scope() as s:
+            return channel_modes(s)
+    return {
+        c.slug: str((getattr(c, "meta", None) or {}).get("mode") or "")
+        for c in all_channels(db)
+    }
 
 
 def for_each(active: list[Channel], run: Callable[[Channel], dict]) -> dict:

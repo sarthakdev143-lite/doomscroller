@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import tempfile
 import time
 import unicodedata
@@ -15,13 +16,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Sequence
 
 from sqlalchemy import select, update
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from app import analytics
 from app.analytics import recompute_scores
 from app.config import settings
 from app.db import session_scope
-from app.models import Creator, GrowthEvent, MetadataDraft, TransformJob, Video, VideoStatus
+from app.models import Channel, Creator, GrowthEvent, MetadataDraft, TransformJob, Video, VideoStatus
 from app.publishers import get_publisher
 from app.publishers.base import TokenProblem, UploadOutcomeUnknown
 from app.scrapers import get_scraper
@@ -30,7 +31,15 @@ from app.transformers import get_transformer
 from app.transformers.ffmpeg_transformer import recipe_from_dict
 from app.transformers.variation import plan_variation
 from app import discovery, quota
-from app.metadata import generate_metadata, GeneratedMetadata, youtube_description, youtube_title
+from app.metadata import (
+    detect_language,
+    generate_metadata,
+    GeneratedMetadata,
+    has_devanagari,
+    is_hinglish_text,
+    youtube_description,
+    youtube_title,
+)
 
 log = logging.getLogger(__name__)
 
@@ -83,21 +92,78 @@ def _topic_haystack(item: ScrapedItem) -> str:
     return " ".join(parts).lower()
 
 
-def channel_focus_reason(item: ScrapedItem) -> str | None:
+_ASCII_WORD_RE = re.compile(r"[A-Za-z]+")
+
+
+def _channel_languages(video: Video) -> list[str]:
+    """Target languages for the video's channel, falling back to global TARGET_LANGUAGES."""
+    channel: Optional[Channel] = None
+    session = object_session(video)
+
+    def _lookup(db) -> Optional[Channel]:
+        if video.channel_id:
+            return db.get(Channel, video.channel_id)
+        return db.execute(select(Channel).where(Channel.slug == "default")).scalar_one_or_none()
+
+    if session is not None:
+        channel = _lookup(session)
+    else:
+        with session_scope() as db:
+            channel = _lookup(db)
+    if channel is not None:
+        meta_langs = (channel.meta or {}).get("target_languages")
+        if isinstance(meta_langs, (list, tuple)):
+            cleaned = [str(x).strip().lower() for x in meta_langs if str(x).strip()]
+            if cleaned:
+                return cleaned
+        niche = (channel.niche or "").lower()
+        if "hindi" in niche or "hinglish" in niche:
+            return ["hi"]
+    return settings.languages_list
+
+
+def channel_focus_reason(
+    item: ScrapedItem,
+    *,
+    target_languages: Optional[Sequence[str]] = None,
+    strict_rendered: bool = False,
+) -> str | None:
     """Return why an item is off-channel, or ``None`` if it fits.
 
     A channel that posts six languages and no consistent subject gives YouTube
     nothing to recommend against. This is the filter that keeps one identity.
     """
-    languages = settings.languages_list
+    languages = (
+        [str(lang).strip().lower() for lang in target_languages if str(lang).strip()]
+        if target_languages is not None
+        else settings.languages_list
+    )
     if languages:
-        language = (item.language or "").lower()
+        language = (item.language or "").strip().lower()
+        is_rendered = bool((item.meta or {}).get("clip_rendered"))
         if not language:
-            # A rendered clip has no language when it has no speech to judge, which is not the missing data this guards.
-            if not settings.allow_unknown_language and not (item.meta or {}).get("clip_rendered"):
-                return "language: unknown"
-        elif language not in languages:
+            probe_text = f"{item.title} {item.description}".strip()
+            if has_devanagari(probe_text) or is_hinglish_text(probe_text):
+                language = "hi"
+            elif is_rendered and any(ch.isalpha() for ch in probe_text):
+                detected = (detect_language(probe_text) or "").strip().lower()
+                if strict_rendered or detected == "en" or not probe_text.isascii():
+                    language = detected
+                else:
+                    # Short ASCII/filename labels ("Talk - part 1", "VID 20260101 final2 - part 1")
+                    # are statistically noisy in langdetect; require 4+ distinct words before rejecting.
+                    unique_words = {w.lower() for w in _ASCII_WORD_RE.findall(probe_text) if len(w) >= 2}
+                    if len(unique_words) >= 4 and sum(len(w) for w in unique_words) >= 18:
+                        language = detected
+            if not language:
+                if strict_rendered and is_rendered:
+                    return "language: unknown"
+                if not settings.allow_unknown_language and not is_rendered:
+                    return "language: unknown"
+        if language and language not in languages:
             return f"language: {language}"
+        if strict_rendered and "en" not in languages and not language:
+            return "language: unknown"
 
     haystack = _topic_haystack(item)
 
@@ -280,8 +346,14 @@ def clip_gate_reason(video: Video) -> str | None:
     """
     item = _item_view(video)
     meta = video.meta or {}
-    item.title = f"{meta.get('clip_source_text', '')} {meta.get('clip_opening_line', '')} {item.title}"
-    return content_safety_reason(item) or channel_focus_reason(item)
+    langs = _channel_languages(video)
+    item.title = (
+        f"{meta.get('clip_source_text', '')} {meta.get('clip_hook', '')} "
+        f"{meta.get('clip_opening_line', '')} {item.title}"
+    ).strip()
+    return content_safety_reason(item) or channel_focus_reason(
+        item, target_languages=langs, strict_rendered=("en" not in langs)
+    )
 
 
 def apply_queue_filters(dry_run: bool = False) -> dict:
@@ -302,7 +374,11 @@ def apply_queue_filters(dry_run: bool = False) -> dict:
         ).scalars().all()
 
         for video in rows:
-            if (video.meta or {}).get("clip_rendered"):
+            meta = video.meta or {}
+            if meta.get("long_form") or video.source == "longform":
+                kept += 1
+                continue
+            if meta.get("clip_rendered"):
                 reason = clip_gate_reason(video)
             else:
                 item = _item_view(video)
@@ -450,6 +526,8 @@ def generate_metadata_for_video(video_id: str, *, force: bool = False) -> dict:
         is_clip = bool(meta.get("clip_rendered"))
         is_long = bool(meta.get("long_form"))
         has_link = (video.source_url or "").startswith(("http://", "https://"))
+        channel_langs = _channel_languages(video)
+        lang_hint = video.language or (channel_langs[0] if len(channel_langs) == 1 else "")
         params = {
             "source_title": video.title or "",
             "source_desc": video.description or "",
@@ -459,7 +537,7 @@ def generate_metadata_for_video(video_id: str, *, force: bool = False) -> dict:
             "platform": "" if (is_clip or is_long) and video.source in ("generic", "local") else (video.source or ""),
             "source_url": video.source_url or "" if has_link or not (is_clip or is_long) else "",
             "keywords": list(video.keywords or []),
-            "language": video.language or "",
+            "language": lang_hint,
             "platform_title": meta.get("llm_title") or "",
             "platform_description": meta.get("llm_description") or "",
             # Cropping removes the on-screen credit, so the description one
@@ -979,6 +1057,35 @@ def _upload_language(video_lang: Optional[str], draft_lang: Optional[str]) -> Op
     return None
 
 
+def _upload_languages(
+    video: Video,
+    draft: Optional[MetadataDraft],
+    title: str,
+    channel_langs: Sequence[str],
+) -> tuple[Optional[str], Optional[str]]:
+    """Resolve (default_language, default_audio_language) independently without guessing audio on silent clips."""
+    clean_video = _upload_language(video.language, None)
+    clean_draft = _upload_language(None, draft.detected_language if draft else None)
+    clip_kind = str((video.meta or {}).get("clip_kind") or "").lower()
+
+    audio_lang = clean_video
+    if not audio_lang:
+        if clip_kind == "speech" and len(channel_langs) == 1:
+            audio_lang = _upload_language(channel_langs[0], None)
+        elif not clip_kind:
+            audio_lang = clean_draft
+
+    if has_devanagari(title) or is_hinglish_text(title):
+        title_lang = "hi"
+    elif list(channel_langs) == ["hi"]:
+        title_lang = "hi"
+    elif clean_draft:
+        title_lang = clean_draft
+    else:
+        title_lang = audio_lang
+    return title_lang, audio_lang
+
+
 def publish_task(video_id: str, meta: dict | None = None) -> dict:
     """Upload a transformed video to YouTube."""
     if not settings.enable_publish:
@@ -1032,7 +1139,8 @@ def publish_task(video_id: str, meta: dict | None = None) -> dict:
         vmeta = dict(video.meta or {})
         is_long = bool(vmeta.get("long_form"))
         thumb_path = vmeta.get("selected_thumbnail") if is_long else None
-        lang = _upload_language(video.language, draft.detected_language if draft else None)
+        channel_langs = _channel_languages(video)
+        title_lang, audio_lang = _upload_languages(video, draft, title, channel_langs)
         video.meta = {**vmeta, "publish_claimed_at": datetime.now(timezone.utc).isoformat(),
                       "publish_title": title}
 
@@ -1047,9 +1155,10 @@ def publish_task(video_id: str, meta: dict | None = None) -> dict:
             "category": settings.youtube_default_category,
             "privacy": privacy,
         }
-        if lang:
-            upload_kw["default_language"] = lang
-            upload_kw["default_audio_language"] = lang
+        if title_lang:
+            upload_kw["default_language"] = title_lang
+        if audio_lang:
+            upload_kw["default_audio_language"] = audio_lang
         result = pub.upload(**upload_kw)
     except (FileNotFoundError, IsADirectoryError) as exc:
         return _mark_missing_publish_file(video_pk, f"publish: {exc}")
@@ -1077,7 +1186,7 @@ def publish_task(video_id: str, meta: dict | None = None) -> dict:
             comment_text = growth_titles.engagement_comment(
                 title,
                 context=str(vmeta.get("clip_reason") or ""),
-                language=lang or "en",
+                language=title_lang or audio_lang or "en",
                 is_long=is_long,
             )
             cid = pub.post_comment(result.video_id, comment_text)

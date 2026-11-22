@@ -186,18 +186,29 @@ def _channel_rows(live: bool, only: Optional[str] = None) -> list[dict]:
         if not channel.enabled:
             rows.append(_disabled_row(channel, has_creds and os.path.exists(channel.token_path)))
             continue
+        is_proc = channels.is_procedural(channel)
+        shorts_paused = channels.uploads_per_day(channel) <= 0
         checks = [
             _check(has_creds, "client_secrets", secret_detail),
             *_token_checks(channel.token_path, slug=channel.slug),
-            _check(bool(feeds), "feeds", f"{len(feeds)} feeds" if feeds else "none set for this channel"),
-            _check(not gap_cause, "stock",
-                   f"{stock} clips ready" + (f"; supply gap: {gap_cause[:80]}" if gap_cause else ""), required=False),
+            (
+                _check(True, "feeds", "procedural (no creator feeds required)", required=False)
+                if is_proc
+                else _check(bool(feeds), "feeds", f"{len(feeds)} feeds" if feeds else "none set for this channel")
+            ),
+        ]
+        if not is_proc and not shorts_paused:
+            checks.append(
+                _check(not gap_cause, "stock",
+                       f"{stock} clips ready" + (f"; supply gap: {gap_cause[:80]}" if gap_cause else ""), required=False)
+            )
+        checks.append(
             _check(channel.uploads_per_day <= _PROJECT_UPLOADS, "pace",
                    f"{channel.uploads_per_day} a day" + (
                        "" if channel.uploads_per_day <= _PROJECT_UPLOADS else
                        f": a Cloud project's default quota covers about {_PROJECT_UPLOADS} uploads a day, so the "
-                       "rest will be refused unless this project has a raised quota"), required=False),
-        ]
+                       "rest will be refused unless this project has a raised quota"), required=False)
+        )
         if live:
             checks += _youtube_checks(insights) if insights else [
                 _check(False, "live", "no connection: USE_MOCK or no client_secrets", required=False)]
@@ -305,6 +316,8 @@ def doctor(*, live: bool = False) -> dict:
 def _stock_warning(db, stock: int, channel=None) -> Optional[str]:
     """Why nothing can post, and the step that fits. With a channel, judged on that channel's own shelf."""
     if stock or not settings.growth_enabled:
+        return None
+    if channel is not None and (channels.is_procedural(channel) or channels.uploads_per_day(channel) <= 0):
         return None
     scope = None if channel is None else channels.video_scope(channel)
     jobs = [ClipJob.status.in_(("queued", "running"))]

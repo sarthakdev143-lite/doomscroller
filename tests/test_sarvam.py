@@ -132,3 +132,62 @@ def test_deepgram_english_stays_on_deepgram(monkeypatch, tmp_path):
     info = SimpleNamespace(has_audio=True, duration=60.0)
     out = transcribe.transcribe(str(video), info)
     assert out.engine == "deepgram" and not called  # English never touches Sarvam
+
+
+def test_voiceover_uses_only_sarvam_bulbul_v3_and_raises_on_missing_key(monkeypatch, tmp_path):
+    from pathlib import Path
+    from app.longform import voiceover
+
+    src_text = Path(voiceover.__file__).read_text(encoding="utf-8").lower()
+    for forbidden in ("edge_tts", "pyttsx3", "gtts", "speechsynthesizer", "win32com"):
+        assert forbidden not in src_text
+    assert voiceover._SARVAM_MODEL == "bulbul:v3"
+
+    alerts: list[str] = []
+    monkeypatch.setattr(settings, "sarvam_api_key", "")
+    monkeypatch.setattr(voiceover, "_last_quota_alert_at", 0.0)
+    monkeypatch.setattr(voiceover.notify, "send", lambda msg, **kw: alerts.append(msg) or True)
+    with pytest.raises(voiceover.SarvamTTSQuotaError):
+        voiceover.synthesize_wav("Hello world", tmp_path / "missing.wav", language="en")
+    assert len(alerts) == 1
+
+
+def test_voiceover_quota_errors_scrub_secret_and_propagate_in_render(monkeypatch, tmp_path):
+    from app.clipper.media import MediaInfo
+    from app.longform import planner, render as lf_render, voiceover
+
+    class FakeResp:
+        def __init__(self, code, text):
+            self.status_code = code
+            self.text = text
+
+    alerts: list[str] = []
+    monkeypatch.setattr(settings, "sarvam_api_key", "sk_live_secret_999")
+    monkeypatch.setattr(voiceover, "_last_quota_alert_at", 0.0)
+    monkeypatch.setattr(voiceover.notify, "send", lambda msg, **kw: alerts.append(msg) or True)
+    monkeypatch.setattr(voiceover.httpx, "post", lambda *a, **kw: FakeResp(429, "quota exceeded for sk_live_secret_999"))
+    with pytest.raises(voiceover.SarvamTTSQuotaError) as exc_info:
+        voiceover.synthesize_wav("Test quota", tmp_path / "q.wav", language="en")
+    assert "sk_live_secret_999" not in str(exc_info.value)
+    assert len(alerts) == 1 and "sk_live_secret_999" not in alerts[0]
+
+    # Cooldown prevents duplicate ntfy alerts within 30 minutes.
+    with pytest.raises(voiceover.SarvamTTSQuotaError):
+        voiceover.synthesize_wav("Test quota 2", tmp_path / "q2.wav", language="en")
+    assert len(alerts) == 1
+
+    # render_compilation never swallows SarvamTTSQuotaError when voiceover is enabled.
+    src = tmp_path / "src.mp4"
+    src.write_bytes(b"MP4")
+    s1 = planner.SegmentPlan(str(src), "https://youtu.be/1", "1", "@One", "One", "Vid", 0.0, 20.0, 80.0, "Open", "en")
+    s2 = planner.SegmentPlan(str(src), "https://youtu.be/2", "2", "@One", "One", "Vid", 25.0, 45.0, 99.0, "Finale", "en")
+    plan = planner.CompilationPlan(
+        format_kind="best_of", channel_slug="default", part_number=1, targets=("@One",), theme="",
+        title="Best of One", description="Desc", tags=("vlog",), language="en", target_seconds=120.0,
+        cold_open=planner.pick_cold_open([s1, s2], climax=s2), segments=(s1, s2),
+    )
+    monkeypatch.setattr(lf_render, "probe", lambda p: MediaInfo(100.0, 1920, 1080, 30.0, False))
+    monkeypatch.setattr(lf_render, "_probe_duration", lambda p, f: f)
+    monkeypatch.setattr(lf_render, "run_ffmpeg", lambda *a, **kw: None)
+    with pytest.raises(voiceover.SarvamTTSQuotaError):
+        lf_render.render_compilation(plan, str(tmp_path / "out.mp4"), include_voiceover=True)

@@ -661,6 +661,7 @@ function feedChip(slug,url){
 function channelCard(c){
   const card=el('div',{className:'card'});const w=el('div',{className:'chan'});
   const top=el('div',{className:'top'});top.append(el('span',{className:'nm'},c.name||c.slug),el('span',{className:'sl'},c.slug));
+  if(c.procedural)top.append(el('span',{className:'pill'},'Procedural · Claim-Free'));
   let state='off',cls='off';
   if(c.paused){state=c.owner_paused?'paused by you':'paused';cls='warn'}
   else if(c.enabled&&!c.next_step){state='running';cls='on'}
@@ -668,7 +669,8 @@ function channelCard(c){
   top.append(el('span',{className:'tag '+cls,style:'margin-left:auto'},state));
   w.append(top);
   const longNote=(c.long_uploads_per_day>0)?(c.long_uploads_per_day+'/day long'):'';
-  w.append(el('div',{className:'sub'},[c.niche,c.uploads_per_day+'/day',longNote,c.timezone].filter(Boolean).join(' · ')));
+  const shortsNote=(c.procedural&&!c.uploads_per_day)?'':(c.uploads_per_day+'/day');
+  w.append(el('div',{className:'sub'},[c.niche,shortsNote,longNote,c.timezone].filter(Boolean).join(' · ')));
   if(c.next_step)w.append(el('div',{className:'step'},'Next: '+c.next_step));
   if(c.default){
     w.append(el('div',{className:'sub muted'},'This is your original channel, managed in .env.'));
@@ -693,14 +695,18 @@ function channelCard(c){
   if(c.enabled||c.paused)w.append(pauseBtn(c));
 
   if(!c.default){
-    const feeds=el('div',{className:'feeds'});
-    if(!c.feeds.length)feeds.append(el('span',{className:'sub muted'},'No creators yet.'));
-    for(const u of c.feeds)feeds.append(feedChip(c.slug,u));
-    w.append(feeds);
-    const addRow=el('div',{className:'field'});const inp=el('input',{placeholder:'Add creator link(s), e.g. youtube.com/@mkbhd'});
-    const add=el('button',{className:'ghost',style:'margin-top:8px'},'Add creator');
-    add.onclick=async()=>{const urls=inp.value.split(/[\s,]+/).map(s=>s.trim()).filter(Boolean);if(!urls.length)return;add.disabled=true;try{await api.post('/api/channels/'+encodeURIComponent(c.slug)+'/feeds',{add:urls});inp.value='';loaders.channels()}catch(e){alert(e.message)}add.disabled=false};
-    addRow.append(inp,add);w.append(addRow);
+    if(c.procedural){
+      w.append(el('div',{className:'sub muted'},'Self-generating procedural audio & 16:9 visuals — no creator feeds needed.'));
+    }else{
+      const feeds=el('div',{className:'feeds'});
+      if(!c.feeds.length)feeds.append(el('span',{className:'sub muted'},'No creators yet.'));
+      for(const u of c.feeds)feeds.append(feedChip(c.slug,u));
+      w.append(feeds);
+      const addRow=el('div',{className:'field'});const inp=el('input',{placeholder:'Add creator link(s), e.g. youtube.com/@mkbhd'});
+      const add=el('button',{className:'ghost',style:'margin-top:8px'},'Add creator');
+      add.onclick=async()=>{const urls=inp.value.split(/[\s,]+/).map(s=>s.trim()).filter(Boolean);if(!urls.length)return;add.disabled=true;try{await api.post('/api/channels/'+encodeURIComponent(c.slug)+'/feeds',{add:urls});inp.value='';loaders.channels()}catch(e){alert(e.message)}add.disabled=false};
+      addRow.append(inp,add);w.append(addRow);
+    }
 
     const sx=el('details',{className:'sx'});sx.append(el('summary',{},'Settings'));
     const f=el('div',{style:'display:grid;gap:8px;margin-top:8px'});
@@ -1244,35 +1250,68 @@ async function loadClip(){
 }
 
 /* ===================== LONG FORM ===================== */
-let longPollTimer=null,longChanSel=null;
+let longPollTimer=null,longChanSel=null,longChannels=[],syncLongBuildMode=null;
+const AMBIENT_LABELS={lofi_chill:'Lofi Chill Beats',rain_focus:'Rain & Focus',night_ambient:'Midnight Starfield Ambient',deep_study:'Deep Study Flow'};
 function buildLongForm(){
   const box=$('long-build-form');if(!box||box.dataset.built)return;box.dataset.built='1';
   longChanSel=el('select');
   const fmtSel=el('select');
-  for(const [val,lbl] of [['best_of','Best Of Creator (Part N)'],['vs','Creator vs Creator'],['theme','Cross-Creator Theme']]){
-    fmtSel.append(el('option',{value:val},lbl));
-  }
   const targetInp=el('input',{placeholder:'@Creator, "@A vs @B", or theme topic'});
   const minsInp=el('input',{type:'number',value:'8',min:'6',max:'10'});
+  const minsLbl=el('label',{},'Target length (6–10 min)');
+  const targetLbl=el('label',{},'Creator(s) or theme (optional)');
   const err=el('div',{className:'err'});err.hidden=true;
   const btn=el('button',{className:'btn'},'Build 16:9 Compilation');
+  syncLongBuildMode=()=>{
+    const ch=longChannels.find(x=>x.slug===longChanSel.value);
+    const isProc=!!(ch&&ch.procedural);
+    const curFmt=fmtSel.value;
+    fmtSel.replaceChildren();
+    if(isProc){
+      const presets=(ch.presets&&ch.presets.length)?ch.presets:['lofi_chill','rain_focus','night_ambient','deep_study'];
+      for(const p of presets)fmtSel.append(el('option',{value:p},AMBIENT_LABELS[p]||p));
+      if(curFmt&&presets.includes(curFmt))fmtSel.value=curFmt;
+      minsLbl.textContent='Target length (15–120 min)';
+      minsInp.min='1';minsInp.max='120';minsInp.value=String(ch.default_target_minutes||30);
+      targetLbl.textContent='Scene / mood note (optional)';
+      targetInp.placeholder='e.g. Midnight Tokyo Rain Study';
+      btn.textContent='Build 16:9 Ambient Video';
+    }else{
+      for(const [val,lbl] of [['best_of','Best Of Creator (Part N)'],['vs','Creator vs Creator'],['theme','Cross-Creator Theme']]){
+        fmtSel.append(el('option',{value:val},lbl));
+      }
+      if(curFmt&&['best_of','vs','theme'].includes(curFmt))fmtSel.value=curFmt;
+      minsLbl.textContent='Target length (6–10 min)';
+      minsInp.min='6';minsInp.max='10';minsInp.value='8';
+      targetLbl.textContent='Creator(s) or theme (optional)';
+      targetInp.placeholder='@Creator, "@A vs @B", or theme topic';
+      btn.textContent='Build 16:9 Compilation';
+    }
+  };
+  syncLongBuildMode();
+  longChanSel.onchange=syncLongBuildMode;
   btn.onclick=async()=>{
     err.hidden=true;btn.disabled=true;
+    const ch=longChannels.find(x=>x.slug===longChanSel.value);
+    const isProc=!!(ch&&ch.procedural);
     try{
       await api.post('/api/long/build',{
         channel_slug:longChanSel.value||'',
         format:fmtSel.value,
-        target:targetInp.value.trim(),
-        theme:fmtSel.value==='theme'?targetInp.value.trim():'',
-        target_minutes:Number(minsInp.value)||8,
+        target:isProc?'':targetInp.value.trim(),
+        theme:(isProc||fmtSel.value==='theme')?targetInp.value.trim():'',
+        target_minutes:Number(minsInp.value)||(isProc?30:8),
       });
       targetInp.value='';toast('Queued 16:9 build');loadLong();
     }catch(e){err.textContent=e.message;err.hidden=false}
     btn.disabled=false;
   };
-  const mk=(lbl,node)=>{const d=el('div');d.append(el('label',{},lbl),node);return d};
-  const g=el('div',{className:'grid2'});g.append(mk('Format',fmtSel),mk('Target length (6–10 min)',minsInp));
-  box.append(mk('Channel',longChanSel),g,mk('Creator(s) or theme (optional)',targetInp),btn,err);
+  const dFmt=el('div');dFmt.append(el('label',{},'Format'),fmtSel);
+  const dMin=el('div');dMin.append(minsLbl,minsInp);
+  const g=el('div',{className:'grid2'});g.append(dFmt,dMin);
+  const dChan=el('div');dChan.append(el('label',{},'Channel'),longChanSel);
+  const dTgt=el('div');dTgt.append(targetLbl,targetInp);
+  box.append(dChan,g,dTgt,btn,err);
 }
 function renderLongJobs(jobs){
   clearTimeout(longPollTimer);
@@ -1313,7 +1352,8 @@ function longCard(item){
   }
   const body=el('div',{className:'body'});
   const top=el('div',{className:'badges'});
-  top.append(el('span',{className:'pill'},item.channel_slug),el('span',{className:'tag'},item.format+(item.part_number?(' · Part '+item.part_number):'')),el('span',{className:'tag '+(item.status==='transformed'?'on':'warn')},item.status==='transformed'?'Ready':item.status));
+  if(item.procedural)top.append(el('span',{className:'pill'},'Procedural · Claim-Free'));
+  top.append(el('span',{className:'pill'},item.channel_slug),el('span',{className:'tag'},String(item.format||'').replace(/_/g,' ')+(item.part_number?(' · Part '+item.part_number):'')),el('span',{className:'tag '+(item.status==='transformed'?'on':'warn')},item.status==='transformed'?'Ready':item.status));
   body.append(top);
   body.append(el('div',{className:'meta'},Math.floor((item.duration_sec||0)/60)+'m '+(item.duration_sec||0)%60+'s · '+item.width+'×'+item.height+(item.views?(' · '+item.views.toLocaleString()+' views'):'')));
 
@@ -1404,17 +1444,19 @@ async function loadLong(){
   buildLongForm();
   try{
     const d=await api.get('/api/long/videos');
+    longChannels=d.channels||[];
     if(longChanSel){
       const cur=longChanSel.value;
       longChanSel.replaceChildren();
-      for(const c of d.channels||[])longChanSel.append(el('option',{value:c.slug},c.name+' ('+c.slug+')'));
+      for(const c of longChannels)longChanSel.append(el('option',{value:c.slug},c.name+' ('+c.slug+')'));
       if(cur&&[...longChanSel.options].some(o=>o.value===cur))longChanSel.value=cur;
+      if(syncLongBuildMode)syncLongBuildMode();
     }
     renderLongJobs(d.jobs||[]);
     const list=$('long-list');list.replaceChildren();
     const items=[...(d.pending||[]),...(d.ready||[]),...(d.posted||[])];
     setAlert('long',(d.pending||[]).length>0||(d.jobs||[]).some(j=>j.status==='failed'));
-    if(!items.length){list.append(el('div',{className:'empty'},'No 16:9 compilations yet. Build one above or wait for the 6h supply job.'));return}
+    if(!items.length){list.append(el('div',{className:'empty'},'No 16:9 videos yet. Build one above or wait for the supply job.'));return}
     for(const item of items)list.append(longCard(item));
   }catch(e){$('long-list').replaceChildren(el('div',{className:'err'},'Could not load long-form compilations.'))}
 }

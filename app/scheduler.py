@@ -213,6 +213,9 @@ def auto_approve_job() -> dict:
                 if (video.meta or {}).get("clip_rendered"):
                     note("clip awaits review")
                     continue
+                if (video.meta or {}).get("long_form") or video.source == "longform":
+                    note("long-form awaits review")
+                    continue
 
                 scraped_at = video.scraped_at
                 if scraped_at is not None and scraped_at.tzinfo is None:
@@ -923,7 +926,7 @@ def _make_scheduler() -> BackgroundScheduler:
                                      ("growth_supply", timedelta(hours=1), timedelta(minutes=1)),
                                      ("growth_notify", timedelta(minutes=10), timedelta(minutes=3)),
                                      ("growth_scout", timedelta(hours=24), timedelta(minutes=30)),
-                                     ("long_supply", timedelta(hours=6), timedelta(minutes=12)),
+                                     ("long_supply", timedelta(hours=4), timedelta(minutes=12)),
                                      ("long_queue", timedelta(minutes=5), timedelta(minutes=4)),
                                      ("long_autopilot", timedelta(minutes=15), timedelta(minutes=9))):
             sched.add_job(instrumented(job_id, JOB_FUNCTIONS[job_id]), IntervalTrigger(seconds=int(every.total_seconds())), id=job_id, next_run_time=now + first, max_instances=1, coalesce=True, replace_existing=True)
@@ -955,7 +958,7 @@ def _job_intervals() -> dict[str, timedelta]:
         "growth_notify": timedelta(minutes=10),
         "growth_watch": timedelta(minutes=max(1, settings.growth_watch_minutes)),
         "growth_scout": timedelta(hours=24),
-        "long_supply": timedelta(hours=6),
+        "long_supply": timedelta(hours=4),
         "long_queue": timedelta(minutes=5),
         "long_autopilot": timedelta(minutes=15),
     }

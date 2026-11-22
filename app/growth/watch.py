@@ -366,6 +366,8 @@ def watch_job(now: Optional[datetime] = None) -> dict:
         active = channels.active_channels(db)
         feeds = []
         for c in active:
+            if channels.is_procedural(c) or (not channels.is_default(c) and channels.uploads_per_day(c) <= 0):
+                continue
             out = learn.benched(db, c)  # a creator the lab has ruled out is not worth cutting even fresh
             feeds += [(c, url) for url in channels.feeds_for(db, c) if channels.creator(url).casefold() not in out]
     queued = 0

@@ -474,6 +474,9 @@ def _recover_stuck(now: datetime) -> None:
 def _autopilot_one(channel, now: datetime, rng: Optional[random.Random]) -> dict:
     """Plan and post for one managed channel, to its own token at its own pace."""
     now = aware(now)
+    if channel is not None and (channels.is_procedural(channel) or channels.uploads_per_day(channel) <= 0):
+        reason = "procedural channel" if channels.is_procedural(channel) else "Shorts uploads_per_day=0"
+        return {"skipped": reason}
     if not settings.use_mock and isinstance(_publisher(channel), MockPublisher):
         missing = ("YOUTUBE_CLIENT_SECRETS is not set" if channel is None or channels.is_default(channel)
                    else f"channel {channel.slug} has no client_secrets in channels.json")

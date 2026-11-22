@@ -8,7 +8,7 @@ import os
 import re
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -26,9 +26,39 @@ log = logging.getLogger(__name__)
 
 VALID_FORMATS = ("best_of", "vs", "theme")
 _MIN_SOURCE_DURATION_SEC = 180
-_SEGMENT_MIN_SEC = 22
-_SEGMENT_MAX_SEC = 65
-_SEGMENT_TARGET_SEC = 42
+_SEGMENT_MIN_SEC = 38
+_SEGMENT_MAX_SEC = 78
+_SEGMENT_TARGET_SEC = 58
+_MONETIZATION_UNSAFE_RE = re.compile(
+    r"\b(?:sperm|semen|porn|nsfw|nude|nudity|sex|sexual|suicide|self[- ]harm|kill yourself|gore|cocaine|meth|heroin)\b",
+    re.IGNORECASE,
+)
+_LOW_VALUE_FILLER_RE = re.compile(
+    r"(?:वॉशरूम|बाथरूम|टॉयलेट|कपड़े\s*(?:सुख|डाल)|सामान\s*पैक|पैकिंग|चेक\s*इन|"
+    r"washroom|bathroom|toilet|laundry|drying\s+clothes|unpacking|packing\s+(?:bags|luggage))",
+    re.IGNORECASE,
+)
+_HINGLISH_CUE_RE = re.compile(
+    r"[\u0900-\u097F]|\b(?:ka|ki|ke|ko|se|me|mein|par|pe|aur|ya|hai|hain|tha|thi|the|hua|hui|gaya|gayi|"
+    r"aaya|aayi|kya|kyun|kaise|sab|bahut|bada|badi|chota|darr|maza|mazedaar|raat|subah|din|bhai|dost|"
+    r"safar|pahad|pahadon|paani|khana|ghar|gaadi|log|dekho|dekha|mil|wala|wali|wale|tak|bhi|nahi|mat|ab|phir|"
+    r"pehle|aakhri|khatarnak|dhamaka|masti|kahani|khaas|pal|toh|ne|yaar|khel|bhasad|jugaad|asli|ulta|"
+    r"naya|nayi|naye|mera|meri|mere|hamara|hamari|apna|apni|apne|aaj|ek|kuch|koi|chalo|karo|kiya|saath|sath|"
+    r"wapas|ekdum|bilkul|pakka|jaldi|tez|ghoom|ghum|shadi|piyush|sourav)\b",
+    re.IGNORECASE,
+)
+_CREATOR_DISPLAY_MAP = {
+    "souravjvlogs": "Sourav Joshi",
+    "mrbeast": "MrBeast",
+    "ksi": "KSI",
+    "fukrainsaan": "Fukra Insaan",
+    "triggeredinsaan": "Triggered Insaan",
+    "flyingbeast320": "Flying Beast",
+    "elvishyadavvlogs": "Elvish Yadav",
+    "mrindianhacker": "MR. INDIAN HACKER",
+    "crazyxyz": "Crazy XYZ",
+    "rug": "FaZe Rug",
+}
 
 
 @dataclass(frozen=True)
@@ -47,10 +77,20 @@ class SegmentPlan:
     keep_segments: tuple[tuple[float, float], ...] = ()
     cold_open_start: float = 0.0
     cold_open_end: float = 0.0
+    transcript_excerpt: str = ""
+    reason: str = ""
 
     @property
     def duration(self) -> float:
         return max(0.0, self.end - self.start)
+
+
+def display_creator_name(creator: str) -> str:
+    """Clean display name for on-screen chapter badges (without ugly raw handles)."""
+    raw = str(creator or "").strip().lstrip("@")
+    if not raw:
+        return "Creator"
+    return _CREATOR_DISPLAY_MAP.get(raw.casefold(), raw)
 
 
 @dataclass(frozen=True)
@@ -94,8 +134,10 @@ def _is_rehearsed(video: Video) -> bool:
 
 
 def used_spans_for_channel(db, channel_id: Optional[str] = None) -> dict[str, list[moments.Moment]]:
-    """Source video spans already compiled into prior non-failed long-form rows for cross-part dedup."""
-    rows = db.execute(select(Video).where(Video.status != VideoStatus.FAILED)).scalars().all()
+    """Source video spans already compiled into prior active/published long-form rows for cross-part dedup."""
+    rows = db.execute(
+        select(Video).where(Video.status.notin_((VideoStatus.FAILED, VideoStatus.REJECTED)))
+    ).scalars().all()
     used: dict[str, list[moments.Moment]] = {}
     for row in rows:
         meta = row.meta or {}
@@ -121,7 +163,9 @@ def next_part_number(db, channel_id: Optional[str], targets: Sequence[str]) -> i
     key = _targets_key(targets)
     if not key:
         return 1
-    rows = db.execute(select(Video).where(Video.status != VideoStatus.FAILED)).scalars().all()
+    rows = db.execute(
+        select(Video).where(Video.status.notin_((VideoStatus.FAILED, VideoStatus.REJECTED)))
+    ).scalars().all()
     highest = 0
     for row in rows:
         meta = row.meta or {}
@@ -298,14 +342,15 @@ def order_energy_curve(segments: Sequence[SegmentPlan], *, format_kind: str = "b
 
 
 def pick_cold_open(segments: Sequence[SegmentPlan], *, climax: Optional[SegmentPlan] = None) -> SegmentPlan:
-    """Pick a crisp 4-6s preview teaser cut from the climax segment's setup just before its payoff."""
+    """Pick a crisp 4.5-5.8s live-action teaser cut from the climax segment just before its payoff."""
     seg = climax or segments[-1]
     span = max(0.5, seg.end - seg.start)
-    teaser_len = min(5.5, max(4.0, span * 0.22)) if span >= 8.0 else span
-    # Cut right before the final payoff beat so viewers stay to see what happens.
-    payoff_margin = min(2.0, max(0.5, span * 0.15)) if span > teaser_len + 1.5 else 0.0
-    end = max(seg.start + min(teaser_len, span), seg.end - payoff_margin)
-    end = min(seg.end, end)
+    teaser_len = min(5.8, max(4.5, span * 0.16)) if span >= 8.0 else span
+    # Never start at a 0:00 dark fade-in when enough room exists later in the climax act.
+    floor_start = max(seg.start, 4.0) if (seg.end - max(seg.start, 4.0)) >= teaser_len + 2.0 else seg.start
+    ideal_end = max(floor_start + teaser_len, seg.start + span * 0.65)
+    max_end = (seg.end - min(3.0, span * 0.15)) if span > teaser_len + 2.5 else seg.end
+    end = min(seg.end, max(floor_start + teaser_len, min(ideal_end, max_end)))
     start = max(seg.start, end - teaser_len)
     return SegmentPlan(
         source_path=seg.source_path,
@@ -322,6 +367,8 @@ def pick_cold_open(segments: Sequence[SegmentPlan], *, climax: Optional[SegmentP
         keep_segments=((round(start, 2), round(end, 2)),),
         cold_open_start=round(start, 2),
         cold_open_end=round(end, 2),
+        transcript_excerpt=seg.transcript_excerpt,
+        reason=seg.reason,
     )
 
 
@@ -404,13 +451,32 @@ def _pick_source_candidates(
     return [creator_handle(matched) or matched], list_creator_videos(matched, limit=25)
 
 
+def _is_monetization_safe(seg: SegmentPlan) -> bool:
+    """Reject demonetizable/explicit or owner-blocked topics before entering any compilation."""
+    text = f"{seg.moment_title} {seg.reason} {seg.transcript_excerpt}".casefold()
+    if _MONETIZATION_UNSAFE_RE.search(text):
+        return False
+    for blocked in (*settings.excluded_topics_list, *settings.blocked_title_words_list):
+        if blocked and blocked in text:
+            return False
+    return True
+
+
+def _is_low_value_filler(seg: SegmentPlan) -> bool:
+    """Reject mundane hotel-washroom/laundry/packing filler (>=2 transcript cues or direct title match)."""
+    if _LOW_VALUE_FILLER_RE.search(seg.moment_title or ""):
+        return True
+    text = f"{seg.moment_title} {seg.reason} {seg.transcript_excerpt}"
+    return len(_LOW_VALUE_FILLER_RE.findall(text)) >= 2
+
+
 def _moments_from_source(
     src: ingest.SourceVideo,
     creator: str,
     existing_used: Sequence[moments.Moment],
     max_needed: int = 4,
 ) -> list[SegmentPlan]:
-    """Probe, analyse, transcribe (reusing cache), and extract distinct non-overlapping highlights."""
+    """Probe, analyse, transcribe (reusing cache), ban vlog intros/outros & extract clean story acts."""
     info: MediaInfo = probe(src.path)
     if not info.duration or info.duration <= 60:
         return []
@@ -424,17 +490,34 @@ def _moments_from_source(
     words = [w for w in transcript.words if w.end <= info.duration] if speech else []
     lang = ("hi" if transcript.is_hindi_speech else "en") if speech else detect_language(f"{src.title} {src.description}")
 
+    exclusions = list(existing_used)
+    if info.duration >= 240.0:
+        # Ban opening vlog greetings / fade-in black frames and closing sponsor/subscribe outros.
+        exclusions.append(moments.Moment(0.0, 45.0, kind="intro"))
+        exclusions.append(moments.Moment(max(45.0, info.duration - 25.0), info.duration, kind="outro"))
+
     if speech and words:
         picked = moments.pick_speech(
             words,
             sig,
             count=max_needed,
             title=src.title,
-            used=list(existing_used),
+            used=exclusions,
             min_sec=_SEGMENT_MIN_SEC,
             max_sec=_SEGMENT_MAX_SEC,
             target_sec=_SEGMENT_TARGET_SEC,
         )
+        if not picked:
+            picked = moments.pick_speech(
+                words,
+                sig,
+                count=max_needed,
+                title=src.title,
+                used=exclusions,
+                min_sec=22,
+                max_sec=65,
+                target_sec=42,
+            )
     else:
         picked = moments.pick_visual(
             src.path,
@@ -442,13 +525,19 @@ def _moments_from_source(
             sig,
             count=max_needed,
             title=src.title,
-            used=list(existing_used),
+            used=exclusions,
         )
+
     plans: list[SegmentPlan] = []
     for m in picked:
         if any(moments.clashes(m, u) for u in existing_used):
             continue
-        plans.append(SegmentPlan(
+        if words:
+            full_text = " ".join(w.text for w in words if m.start <= w.start <= m.end).strip()
+            excerpt = full_text if len(full_text) <= 600 else f"{full_text[:340].rstrip()} ... {full_text[-240:].lstrip()}"
+        else:
+            excerpt = ""
+        seg = SegmentPlan(
             source_path=src.path,
             source_url=src.url,
             source_id=src.source_id,
@@ -460,7 +549,11 @@ def _moments_from_source(
             score=float(m.score or 0.0),
             moment_title=m.title or src.title or "Highlight",
             language=lang or "en",
-        ))
+            transcript_excerpt=excerpt,
+            reason=str(getattr(m, "reason", "") or ""),
+        )
+        if _is_monetization_safe(seg) and not _is_low_value_filler(seg):
+            plans.append(seg)
     return plans
 
 
@@ -486,8 +579,13 @@ def _fallback_title_and_desc(
     else:
         who = clean_targets[0] if clean_targets else (niche or "Creator")
         part_txt = f" Part {part_number}" if part_number and part_number > 1 else ""
-        title = f"Best of {who}{part_txt}"
-        desc = f"The funniest and biggest moments from {who}{part_txt}."
+        if language == "hi":
+            cname = display_creator_name(who)
+            title = f"{cname} Ke Best Moments{part_txt}"
+            desc = f"{cname} ke sabse mazedaar aur khatarnak moments{part_txt}."
+        else:
+            title = f"Best of {who}{part_txt}"
+            desc = f"The funniest and biggest moments from {who}{part_txt}."
         tags = ["compilation", who.lstrip("@"), "best moments"]
     if language == "hi":
         tags.append("hindi vlog")
@@ -577,11 +675,13 @@ def _cached_source_for_entry(entry: dict) -> Optional[ingest.SourceVideo]:
 
 def _entry_cache_tier(entry: dict, used_map: dict[str, list[moments.Moment]]) -> int:
     vid = str(entry.get("id") or "").strip()
-    if not vid or len(used_map.get(vid, ())) >= 3:
+    if not vid:
         return 2
     media = _cached_media_path(vid)
     if media is None:
         return 2
+    if len(used_map.get(vid, ())) >= 3:
+        return 1
     transcript_sidecar = Path(f"{media}.transcript.json")
     return 0 if transcript_sidecar.is_file() else 1
 
@@ -615,6 +715,136 @@ def _prioritize_cached_entries(
     return sorted(items, key=lambda e: _entry_cache_tier(e, used_map))
 
 
+def _clean_chapter_title(raw: str, fallback: str) -> str:
+    clean = " ".join(str(raw or "").replace("#Shorts", "").replace("#shorts", "").replace("...", "").split())
+    clean = clean.strip(" -|:,—\"'")
+    if not clean or len(clean) < 3:
+        return fallback
+    if len(clean) <= 36:
+        return clean
+    clipped = clean[:36].rsplit(" ", 1)[0].rstrip(" -|:,—")
+    return clipped or clean[:36]
+
+
+def _ensure_hinglish_title(title: str, language: str) -> str:
+    if not str(language or "").strip().lower().startswith("hi"):
+        return title
+    clean = _clean_chapter_title(title, "Khaas Pal")
+    if _HINGLISH_CUE_RE.search(clean):
+        return clean
+    suffix = " Ka Scene"
+    max_base = 36 - len(suffix)
+    base = clean if len(clean) <= max_base else (clean[:max_base].rsplit(" ", 1)[0].rstrip(" -|:,—") or clean[:max_base])
+    return f"{base}{suffix}".strip()
+
+
+def _enforce_source_chronology(ordered: Sequence[SegmentPlan]) -> list[SegmentPlan]:
+    """Keep acts originating from the same source video in chronological start order."""
+    out = list(ordered)
+    by_src_positions: dict[str, list[int]] = {}
+    for pos, seg in enumerate(out):
+        by_src_positions.setdefault(seg.source_id, []).append(pos)
+    for positions in by_src_positions.values():
+        if len(positions) <= 1:
+            continue
+        sorted_segs = sorted((out[p] for p in positions), key=lambda s: (s.start, s.end))
+        for pos, seg in zip(positions, sorted_segs):
+            out[pos] = seg
+    return out
+
+
+def _curate_story_arc(
+    candidates: Sequence[SegmentPlan],
+    *,
+    format_kind: str,
+    targets: Sequence[str],
+    theme: str,
+    language: str,
+    target_sec: float,
+    min_total_sec: float,
+) -> list[SegmentPlan]:
+    """Use AI Story Director to curate a cohesive narrative arc sized to target_sec (or ordered fallback)."""
+    safe = (
+        [s for s in candidates if _is_monetization_safe(s) and not _is_low_value_filler(s)]
+        or [s for s in candidates if _is_monetization_safe(s)]
+        or list(candidates)
+    )
+    if len(safe) < 3 or not ai.available():
+        ordered = _enforce_source_chronology(order_energy_curve(safe, format_kind=format_kind))
+        return [replace(s, moment_title=_ensure_hinglish_title(s.moment_title, language)) for s in ordered]
+
+    max_acts = max(6, min(10, int(round(target_sec / 52.0))))
+    min_acts = max(4, max_acts - 3)
+    rows = []
+    for idx, s in enumerate(safe):
+        speech = " ".join(str(s.transcript_excerpt or "").split())[:320]
+        rows.append(
+            f"[{idx}] src={s.source_id} | {s.start:.0f}..{s.end:.0f}s ({s.duration:.0f}s) | score={s.score:.0f} | "
+            f"{s.creator} | {s.moment_title}" + (f" | said={speech}" if speech else "")
+        )
+    hi = str(language or "").strip().lower().startswith("hi")
+    lang_hint = (
+        "natural conversational Hinglish (Hindi words in Roman script, e.g. 'Pahadon Mein Train Cafe', 'Glass Bridge Par Darr')"
+        if hi else "crisp English"
+    )
+    hi_rule = (
+        "- EVERY chapter title MUST be natural Hinglish (NEVER pure English like 'Mountain Magic' or 'Cafe Hopping').\n"
+        if hi else ""
+    )
+    prompt = (
+        f"You are directing a high-retention YouTube 16:9 {format_kind} story video (target ~{int(target_sec // 60)} min).\n"
+        f"Creators: {', '.join(targets) or 'creator'}; Theme: {theme or format_kind}.\n"
+        f"Candidate moments:\n" + "\n".join(rows) + "\n\n"
+        f"Pick {min_acts} to {max_acts} coherent acts (never mundane hotel/washroom/laundry/packing filler) that tell a rewarding story totaling roughly "
+        f"{int(target_sec - 15)}-{int(target_sec + 45)} seconds.\n"
+        "Rules:\n"
+        "- Strong engaging opener first; BIGGEST climax last.\n"
+        "- Multiple acts from the same `src` MUST appear in ascending start-time order.\n"
+        f"{hi_rule}"
+        f"- Give each picked index a complete, punchy chapter title in {lang_hint} (3-6 words, max 36 chars, NO ellipsis, NO #Shorts).\n"
+        'Reply with JSON only: {"indices": [0, ...], "titles": {"0": "..."}, "theme_hook": "..."}'
+    )
+    reply = ai.ask_json(prompt)
+    if not isinstance(reply, dict):
+        ordered = _enforce_source_chronology(order_energy_curve(safe, format_kind=format_kind))
+        return [replace(s, moment_title=_ensure_hinglish_title(s.moment_title, language)) for s in ordered]
+
+    raw_indices = reply.get("indices")
+    raw_titles = reply.get("titles") if isinstance(reply.get("titles"), dict) else {}
+    picked: list[SegmentPlan] = []
+    seen: set[int] = set()
+    if isinstance(raw_indices, list):
+        for item in raw_indices:
+            try:
+                idx = int(item)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= idx < len(safe) and idx not in seen and len(picked) < max_acts:
+                seen.add(idx)
+                seg = safe[idx]
+                custom = raw_titles.get(str(idx)) or raw_titles.get(idx)
+                cleaned = _clean_chapter_title(str(custom), seg.moment_title) if custom else seg.moment_title
+                picked.append(replace(seg, moment_title=_ensure_hinglish_title(cleaned, language)))
+
+    # Top up from remaining safe candidates so 8-10 min builds never fall short.
+    avail_sec = sum(s.duration for s in safe)
+    desired_min = min(avail_sec, max(min_total_sec, target_sec * 0.94))
+    cur_dur = sum(s.duration for s in picked)
+    if cur_dur < desired_min:
+        for idx, seg in enumerate(safe):
+            if idx not in seen:
+                seen.add(idx)
+                picked.append(replace(seg, moment_title=_ensure_hinglish_title(seg.moment_title, language)))
+                cur_dur += seg.duration
+                if cur_dur >= desired_min and len(picked) >= 4:
+                    break
+
+    if not picked or sum(s.duration for s in picked) < min_total_sec:
+        ordered = _enforce_source_chronology(order_energy_curve(safe, format_kind=format_kind))
+        return [replace(s, moment_title=_ensure_hinglish_title(s.moment_title, language)) for s in ordered]
+    return _enforce_source_chronology(picked)
+
+
 def plan_compilation(
     *,
     format_kind: str = "best_of",
@@ -628,7 +858,7 @@ def plan_compilation(
     niche: str = "",
     min_total_sec: float = 120.0,
 ) -> CompilationPlan:
-    """Discover sources, pick non-overlapping segments, order energy curve & prepare compilation plan."""
+    """Discover sources, curate coherent 5-6 act arc, order chronology & prepare compilation plan."""
     fmt = str(format_kind or "best_of").strip().lower()
     if fmt not in VALID_FORMATS:
         raise ValueError(f"unsupported long-form format {format_kind!r}; expected one of {VALID_FORMATS}")
@@ -659,15 +889,20 @@ def plan_compilation(
     collected: list[SegmentPlan] = []
     total_sec = 0.0
     fetched_ids: set[str] = set()
-    # Keep track of spans picked within this run so no moment repeats.
+    # Collect a 1.55x candidate pool when AI Story Director curates acts; avoid extra uncached fetches once target_sec is filled.
+    pool_target = max(target_sec * 1.55, target_sec + 180.0) if ai.available() else target_sec
+    pool_cap = 16
     session_used: dict[str, list[moments.Moment]] = {k: list(v) for k, v in used_map.items()}
     ordered_entries = _prioritize_cached_entries(entries, used_map, format_kind=fmt)
 
     for entry in ordered_entries:
-        if total_sec >= target_sec:
+        if total_sec >= pool_target or len(collected) >= pool_cap:
+            break
+        cached_src = _cached_source_for_entry(entry)
+        if cached_src is None and total_sec >= target_sec:
             break
         try:
-            src = _cached_source_for_entry(entry) or ingest.fetch(entry["url"])
+            src = cached_src or ingest.fetch(entry["url"])
         except Exception as exc:
             warnings.append(f"skipped {entry.get('url', '')}: {exc}")
             continue
@@ -675,21 +910,31 @@ def plan_compilation(
             continue
         fetched_ids.add(src.source_id)
         already = session_used.get(src.source_id, [])
-        segs = _moments_from_source(src, entry.get("creator") or creator_handle(src.author), already, max_needed=4)
+        max_per_src = 4 if fmt == "vs" else 5
+        segs = _moments_from_source(src, entry.get("creator") or creator_handle(src.author), already, max_needed=max_per_src)
         for seg in segs:
             collected.append(seg)
             session_used.setdefault(seg.source_id, []).append(moments.Moment(seg.start, seg.end, kind="speech"))
             total_sec += seg.duration
-            if total_sec >= target_sec:
+            if total_sec >= pool_target or len(collected) >= pool_cap:
                 break
 
     if not collected or total_sec < min_total_sec:
         raise ValueError(f"insufficient highlight footage ({total_sec:.0f}s collected < {min_total_sec:.0f}s minimum)")
 
-    ordered = order_energy_curve(collected, format_kind=fmt)
-    cold_open = pick_cold_open(ordered)
-    langs = [s.language for s in ordered if s.language]
+    langs = [s.language for s in collected if s.language]
     dominant_lang = max(set(langs), key=langs.count) if langs else "en"
+    ordered = _curate_story_arc(
+        collected,
+        format_kind=fmt,
+        targets=labels,
+        theme=theme,
+        language=dominant_lang,
+        target_sec=target_sec,
+        min_total_sec=min_total_sec,
+    )
+    climax = max(ordered, key=lambda s: s.score)
+    cold_open = pick_cold_open(ordered, climax=climax)
 
     raw_title, raw_desc, raw_tags = _ai_long_metadata(
         format_kind=fmt, targets=labels, theme=theme, part_number=part_no,

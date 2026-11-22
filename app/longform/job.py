@@ -9,10 +9,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Sequence
 
-from sqlalchemy import desc, func, select, update
+from sqlalchemy import desc, func, or_, select, update
 
 from app import quota
-from app.clipper import job as clip_job
 from app.config import settings
 from app.db import session_scope
 from app.growth import channels, notify, safety
@@ -27,7 +26,26 @@ _worker_lock = threading.Lock()
 _worker_thread: Optional[threading.Thread] = None
 _TERMINAL_STATUSES = ("done", "succeeded", "failed", "cancelled", "canceled")
 _FORMAT_ROTATION = ("best_of", "vs", "theme")
+_AMBIENT_FORMATS = ("lofi_chill", "rain_focus", "night_ambient", "deep_study")
+_AMBIENT_ALIASES = {"ambient": "lofi_chill", "ambient_lofi": "lofi_chill"}
 _STOCK_CAP = 2
+
+
+def _normalize_long_format(raw: str, *, procedural: bool = False, meta: Optional[dict] = None) -> str:
+    clean = str(raw or "").strip().lower()
+    fmt = _AMBIENT_ALIASES.get(clean, clean)
+    if procedural:
+        presets = [p for p in ((meta or {}).get("presets") or _AMBIENT_FORMATS) if p in _AMBIENT_FORMATS] or list(_AMBIENT_FORMATS)
+        if fmt in ("", "best_of"):
+            return presets[0]
+        if fmt not in _AMBIENT_FORMATS:
+            raise ValueError(f"unsupported ambient preset {raw!r}; use {', '.join(_AMBIENT_FORMATS)}")
+        return fmt
+    if not fmt:
+        return "best_of"
+    if fmt not in _FORMAT_ROTATION and fmt not in _AMBIENT_FORMATS:
+        raise ValueError(f"unsupported long-form format {raw!r}; use best_of, vs, or theme")
+    return fmt
 
 
 def _parse_targets(format_kind: str, target: str, targets: Sequence[str]) -> tuple[list[str], str]:
@@ -50,24 +68,32 @@ def enqueue_long_job(
     target: str = "",
     targets: Sequence[str] = (),
     theme: str = "",
-    target_minutes: int = 8,
+    target_minutes: Optional[int] = None,
     auto_publish: Optional[bool] = None,
 ) -> str:
-    """Enqueue a 16:9 compilation build job for a managed channel (or default channel when omitted)."""
-    fmt = str(format_kind or "best_of").strip().lower()
-    if fmt not in _FORMAT_ROTATION:
-        raise ValueError(f"unsupported long-form format {format_kind!r}; use best_of, vs, or theme")
-    mins = max(6, min(10, int(target_minutes or 8)))
-    parsed_targets, parsed_theme = _parse_targets(fmt, target, targets)
-    final_theme = str(theme or parsed_theme or "").strip()
-
+    """Enqueue a 16:9 compilation or procedural ambient build job for a managed channel."""
     with session_scope() as db:
         channels._ensure_seeded(db)
         slug = str(channel_slug or "").strip()
         channel = channels.channel_by_slug(db, slug) if slug else channels.default_channel(db)
         if channel is None:
             raise ValueError(f"unknown channel {channel_slug!r}")
-        effective_auto = channels.long_auto_publish(channel) if auto_publish is None else bool(auto_publish)
+        is_proc = channels.is_procedural(channel)
+        ch_meta = dict(getattr(channel, "meta", None) or {})
+        fmt = _normalize_long_format(format_kind, procedural=is_proc, meta=ch_meta)
+        if fmt in _AMBIENT_FORMATS:
+            default_mins = int(ch_meta.get("target_minutes") or 30)
+            raw_mins = default_mins if target_minutes is None else int(target_minutes)
+            mins = max(1, min(120, raw_mins))
+        else:
+            mins = max(6, min(10, int(8 if target_minutes is None else target_minutes)))
+        parsed_targets, parsed_theme = _parse_targets(fmt, target, targets)
+        final_theme = str(theme or parsed_theme or (target if fmt in _AMBIENT_FORMATS else "") or "").strip()
+        effective_auto = (
+            False
+            if (not channel.enabled or not channels.long_auto_publish(channel))
+            else (True if auto_publish is None else bool(auto_publish))
+        )
         job = LongJob(
             channel_id=channel.id,
             format=fmt,
@@ -158,6 +184,8 @@ def _set_stage(job_id: str, stage: str) -> None:
 
 def run_next_long_job(*, now: Optional[datetime] = None) -> Optional[dict]:
     """Claim and build the oldest queued LongJob under the shared CPU RENDER_LOCK."""
+    from app.clipper import job as clip_job
+
     if not clip_job.RENDER_LOCK.acquire(blocking=False):
         return {"busy": True}
     now = now or datetime.now(timezone.utc)
@@ -182,134 +210,239 @@ def run_next_long_job(*, now: Optional[datetime] = None) -> Optional[dict]:
             ch_name = channel.name or ch_slug
             ch_niche = channel.niche or ""
             ch_brand = (settings.brand_name if channels.is_default(channel) else channel.brand_name) or ""
-            feeds = channels.feeds_for(db, channel)
+            ch_enabled = bool(channel.enabled)
+            ch_long_auto = channels.long_auto_publish(channel)
+            is_proc = channels.is_procedural(channel)
+            feeds = [] if is_proc else channels.feeds_for(db, channel)
             fmt = job.format
             targets = list(job.targets or [])
             theme = job.theme or ""
             target_mins = job.target_minutes
             auto_pub = bool(job.auto_publish)
+            prior_parts = 0
+            if fmt in _AMBIENT_FORMATS:
+                existing_long = db.execute(
+                    select(Video).where(
+                        channels.video_scope(channel),
+                        Video.source == "longform",
+                        Video.status.notin_((VideoStatus.FAILED, VideoStatus.REJECTED)),
+                    )
+                ).scalars().all()
+                prior_parts = sum(1 for v in existing_long if (v.meta or {}).get("long_format") == fmt)
 
-        from . import planner, render, thumbnails
-
-        with session_scope() as db:
-            plan = planner.plan_compilation(
-                format_kind=fmt,
-                channel_slug=ch_slug,
-                targets=targets,
-                theme=theme,
-                feeds=feeds,
-                target_minutes=target_mins,
-                db=db,
-                channel_id=ch_id,
-                niche=ch_niche,
-            )
-
-        _set_stage(job_id, f"rendering {len(plan.segments)} segments")
         out_dir = settings.content_path / "longform" / ch_slug
         out_path = out_dir / f"{job_id}.mp4"
-        rendered = render.render_compilation(plan, str(out_path), brand_name=ch_brand)
-
-        _set_stage(job_id, "generating thumbnails")
         thumbs_dir = out_dir / f"{job_id}_thumbs"
-        thumbs, thumb_prompt = thumbnails.generate_thumbnails_with_prompt(
-            rendered.output_path,
-            out_dir=thumbs_dir,
-            title=plan.title,
-            format_kind=plan.format_kind,
-            chapters=rendered.chapters,
-            timestamps=rendered.timestamps_for_thumbs,
-            part_number=plan.part_number,
-            creator_labels=plan.targets,
-        )
-
-        full_desc = youtube_description(
-            f"{plan.description}\n\nChapters:\n{rendered.chapter_text}".strip()
-            if rendered.chapter_text else plan.description
-        )
-        targets_key = "|".join(sorted({t.casefold() for t in plan.targets if t}))
-        stored_segments = [
-            {
-                "source_id": s.source_id,
-                "source_url": s.source_url,
-                "creator": s.creator,
-                "start": s.start,
-                "end": s.end,
-                "title": s.moment_title,
-                "score": s.score,
-            }
-            for s in plan.segments
-        ]
-        selected = next((t for t in thumbs if t["id"] == "v4"), thumbs[0] if thumbs else None)
-        hero_raw = thumbs_dir / "hero_raw.jpg"
-        hero_frame = str(hero_raw) if hero_raw.is_file() else ""
-        status = VideoStatus.TRANSFORMED if auto_pub else VideoStatus.PENDING
         done_at = datetime.now(timezone.utc)
 
-        with session_scope() as db:
-            video = Video(
-                source="longform",
-                source_id=job_id,
-                source_url=plan.segments[0].source_url if plan.segments else "",
-                author=", ".join(plan.targets)[:128],
-                author_name=", ".join(plan.targets)[:128],
-                title=plan.title,
-                description=full_desc,
-                language=plan.language,
-                keywords=list(plan.tags),
-                local_path=rendered.output_path,
-                transformed_path=rendered.output_path,
-                duration_sec=int(round(rendered.duration)),
-                width=render.WIDTH,
-                height=render.HEIGHT,
-                status=status,
-                channel_id=ch_id,
-                transformed_at=done_at if status == VideoStatus.TRANSFORMED else None,
-                meta={
-                    "long_form": True,
-                    "clip_rendered": False,
-                    "long_job": job_id,
-                    "long_format": plan.format_kind,
-                    "long_targets": list(plan.targets),
-                    "long_targets_key": targets_key,
-                    "part_number": plan.part_number,
-                    "long_theme": plan.theme,
-                    "long_segments": stored_segments,
-                    "chapters": [{"sec": round(sec, 2), "title": lbl} for sec, lbl in rendered.chapters],
-                    "thumbnails": thumbs,
-                    "hero_frame": hero_frame,
-                    "thumbnail_prompt": thumb_prompt,
-                    "selected_thumbnail": selected["path"] if selected else None,
-                    "selected_thumbnail_id": selected["id"] if selected else None,
-                    "thumb_version": 1,
-                },
+        if fmt in _AMBIENT_FORMATS:
+            from . import ambient
+
+            _set_stage(job_id, f"generating {fmt} ({target_mins}m)")
+            amb = ambient.generate_ambient_video(
+                preset=fmt,
+                output_path=str(out_path),
+                target_minutes=target_mins,
+                brand_name=ch_brand,
+                theme=theme,
+                part_number=prior_parts + 1,
+                thumbs_dir=thumbs_dir,
+                language="en",
             )
-            db.add(video)
-            db.flush()
-            db.add(MetadataDraft(
-                video_id=video.id,
-                title=finished_title(plan.title, shorts_tag=False),
-                description=full_desc,
-                tags=list(plan.tags),
-                detected_language=plan.language,
-                edited=False,
-            ))
-            job_row = db.get(LongJob, job_id)
-            if job_row is not None:
-                job_row.part_number = plan.part_number
-                job_row.status = "done"
-                job_row.stage = "ready"
-                job_row.video_id = video.id
-                job_row.finished_at = done_at
-                job_row.result = {"ok": True, "duration": rendered.duration, "segments": len(plan.segments)}
-            result_payload = {"ok": True, "job_id": job_id, "video_id": video.id, "duration": rendered.duration}
+            full_desc = youtube_description(
+                f"{amb.description}\n\nChapters:\n{amb.chapter_text}".strip()
+                if amb.chapter_text and "Chapters:" not in amb.description else amb.description
+            )
+            thumbs = list(amb.thumbnails or ())
+            selected = next((t for t in thumbs if t.get("id") == "v4"), thumbs[0] if thumbs else None)
+            hero_raw = thumbs_dir / "hero_raw.jpg"
+            hero_frame = amb.hero_frame or (str(hero_raw) if hero_raw.is_file() else "")
+            status = VideoStatus.TRANSFORMED if (auto_pub and ch_enabled and ch_long_auto) else VideoStatus.PENDING
+            ready_title = amb.title
+            ready_duration = amb.duration
+            ready_prompt = amb.thumbnail_prompt
+            ready_fmt = fmt
+
+            with session_scope() as db:
+                video = Video(
+                    source="longform",
+                    source_id=job_id,
+                    source_url="",
+                    author=(ch_brand or ch_name)[:128],
+                    author_name=ch_name[:128],
+                    title=amb.title,
+                    description=full_desc,
+                    language=amb.language or "en",
+                    keywords=list(amb.tags),
+                    local_path=amb.output_path,
+                    transformed_path=amb.output_path,
+                    duration_sec=int(round(amb.duration)),
+                    width=int(amb.width or 1920),
+                    height=int(amb.height or 1080),
+                    status=status,
+                    channel_id=ch_id,
+                    transformed_at=done_at if status == VideoStatus.TRANSFORMED else None,
+                    meta={
+                        "long_form": True,
+                        "clip_rendered": False,
+                        "procedural_ambient": True,
+                        "ambient_preset": fmt,
+                        "long_job": job_id,
+                        "long_format": fmt,
+                        "long_targets": [],
+                        "long_targets_key": fmt,
+                        "part_number": amb.part_number,
+                        "long_theme": theme or amb.theme,
+                        "chapters": [{"sec": round(sec, 2), "title": lbl} for sec, lbl in amb.chapters],
+                        "thumbnails": thumbs,
+                        "hero_frame": hero_frame,
+                        "thumbnail_prompt": amb.thumbnail_prompt,
+                        "selected_thumbnail": selected["path"] if selected else None,
+                        "selected_thumbnail_id": selected["id"] if selected else None,
+                        "thumb_version": 1,
+                    },
+                )
+                db.add(video)
+                db.flush()
+                db.add(MetadataDraft(
+                    video_id=video.id,
+                    title=finished_title(amb.title, shorts_tag=False),
+                    description=full_desc,
+                    tags=list(amb.tags),
+                    detected_language=amb.language or "en",
+                    edited=False,
+                ))
+                job_row = db.get(LongJob, job_id)
+                if job_row is not None:
+                    job_row.part_number = amb.part_number
+                    job_row.status = "done"
+                    job_row.stage = "ready"
+                    job_row.video_id = video.id
+                    job_row.finished_at = done_at
+                    job_row.result = {"ok": True, "duration": amb.duration, "preset": fmt}
+                result_payload = {"ok": True, "job_id": job_id, "video_id": video.id, "duration": amb.duration}
+        else:
+            from . import planner, render, thumbnails
+
+            with session_scope() as db:
+                plan = planner.plan_compilation(
+                    format_kind=fmt,
+                    channel_slug=ch_slug,
+                    targets=targets,
+                    theme=theme,
+                    feeds=feeds,
+                    target_minutes=target_mins,
+                    db=db,
+                    channel_id=ch_id,
+                    niche=ch_niche,
+                )
+
+            _set_stage(job_id, f"rendering {len(plan.segments)} segments")
+            rendered = render.render_compilation(plan, str(out_path), brand_name=ch_brand)
+
+            _set_stage(job_id, "generating thumbnails")
+            thumbs, thumb_prompt = thumbnails.generate_thumbnails_with_prompt(
+                rendered.output_path,
+                out_dir=thumbs_dir,
+                title=plan.title,
+                format_kind=plan.format_kind,
+                chapters=rendered.chapters,
+                timestamps=rendered.timestamps_for_thumbs,
+                part_number=plan.part_number,
+                creator_labels=plan.targets,
+            )
+
+            full_desc = youtube_description(
+                f"{plan.description}\n\nChapters:\n{rendered.chapter_text}".strip()
+                if rendered.chapter_text else plan.description
+            )
+            targets_key = "|".join(sorted({t.casefold() for t in plan.targets if t}))
+            stored_segments = [
+                {
+                    "source_id": s.source_id,
+                    "source_url": s.source_url,
+                    "creator": s.creator,
+                    "start": s.start,
+                    "end": s.end,
+                    "title": s.moment_title,
+                    "score": s.score,
+                }
+                for s in plan.segments
+            ]
+            selected = next((t for t in thumbs if t["id"] == "v4"), thumbs[0] if thumbs else None)
+            hero_raw = thumbs_dir / "hero_raw.jpg"
+            hero_frame = str(hero_raw) if hero_raw.is_file() else ""
+            status = VideoStatus.TRANSFORMED if (auto_pub and ch_enabled and ch_long_auto) else VideoStatus.PENDING
+            ready_title = plan.title
+            ready_duration = rendered.duration
+            ready_prompt = thumb_prompt
+            ready_fmt = plan.format_kind
+
+            with session_scope() as db:
+                video = Video(
+                    source="longform",
+                    source_id=job_id,
+                    source_url=plan.segments[0].source_url if plan.segments else "",
+                    author=", ".join(plan.targets)[:128],
+                    author_name=", ".join(plan.targets)[:128],
+                    title=plan.title,
+                    description=full_desc,
+                    language=plan.language,
+                    keywords=list(plan.tags),
+                    local_path=rendered.output_path,
+                    transformed_path=rendered.output_path,
+                    duration_sec=int(round(rendered.duration)),
+                    width=render.WIDTH,
+                    height=render.HEIGHT,
+                    status=status,
+                    channel_id=ch_id,
+                    transformed_at=done_at if status == VideoStatus.TRANSFORMED else None,
+                    meta={
+                        "long_form": True,
+                        "clip_rendered": False,
+                        "long_job": job_id,
+                        "long_format": plan.format_kind,
+                        "long_targets": list(plan.targets),
+                        "long_targets_key": targets_key,
+                        "part_number": plan.part_number,
+                        "long_theme": plan.theme,
+                        "long_segments": stored_segments,
+                        "chapters": [{"sec": round(sec, 2), "title": lbl} for sec, lbl in rendered.chapters],
+                        "thumbnails": thumbs,
+                        "hero_frame": hero_frame,
+                        "thumbnail_prompt": thumb_prompt,
+                        "selected_thumbnail": selected["path"] if selected else None,
+                        "selected_thumbnail_id": selected["id"] if selected else None,
+                        "thumb_version": 1,
+                    },
+                )
+                db.add(video)
+                db.flush()
+                db.add(MetadataDraft(
+                    video_id=video.id,
+                    title=finished_title(plan.title, shorts_tag=False),
+                    description=full_desc,
+                    tags=list(plan.tags),
+                    detected_language=plan.language,
+                    edited=False,
+                ))
+                job_row = db.get(LongJob, job_id)
+                if job_row is not None:
+                    job_row.part_number = plan.part_number
+                    job_row.status = "done"
+                    job_row.stage = "ready"
+                    job_row.video_id = video.id
+                    job_row.finished_at = done_at
+                    job_row.result = {"ok": True, "duration": rendered.duration, "segments": len(plan.segments)}
+                result_payload = {"ok": True, "job_id": job_id, "video_id": video.id, "duration": rendered.duration}
 
         try:
             notify.send_long_ready(
-                plan.title,
+                ready_title,
                 channel_name=ch_name,
-                duration_sec=int(round(rendered.duration)),
-                format_kind=plan.format_kind,
-                prompt=thumb_prompt,
+                duration_sec=int(round(ready_duration)),
+                format_kind=ready_fmt,
+                prompt=ready_prompt,
             )
         except Exception as exc:
             log.warning("longform.job: phone alert failed: %s", exc)
@@ -352,6 +485,13 @@ def _pick_auto_format(db, channel: Channel) -> tuple[str, list[str], str]:
         select(LongJob).where(LongJob.channel_id == channel.id, LongJob.status != "failed")
         .order_by(desc(LongJob.created_at), LongJob.id).limit(1)
     ).scalar_one_or_none()
+    if channels.is_procedural(channel):
+        presets = [p for p in ((channel.meta or {}).get("presets") or _AMBIENT_FORMATS) if p in _AMBIENT_FORMATS] or list(_AMBIENT_FORMATS)
+        if last and last.format in presets:
+            fmt = presets[(presets.index(last.format) + 1) % len(presets)]
+        else:
+            fmt = presets[0]
+        return fmt, [], ""
     if last and last.format in _FORMAT_ROTATION:
         next_idx = (_FORMAT_ROTATION.index(last.format) + 1) % len(_FORMAT_ROTATION)
         fmt = _FORMAT_ROTATION[next_idx]
@@ -366,15 +506,17 @@ def _pick_auto_format(db, channel: Channel) -> tuple[str, list[str], str]:
 
 
 def long_supply_job(*, now: Optional[datetime] = None) -> dict:
-    """Keep up to 2 16:9 compilations built ahead per enabled channel with long_uploads_per_day > 0."""
+    """Keep 16:9 stock queued ahead per eligible channel (including paused procedural channels into PENDING)."""
+    now = now or datetime.now(timezone.utc)
     with session_scope() as db:
-        active = [c for c in channels.active_channels(db) if channels.long_uploads_per_day(c) > 0]
+        active = channels.long_supply_channels(db)
         if not active:
             return {"skipped": "no channels configured for long-form"}
         def run_one(channel: Channel) -> dict:
             with session_scope() as s:
                 ch = s.get(Channel, channel.id) or channel
-                if safety.pause_reason(s, ch):
+                is_proc = channels.is_procedural(ch)
+                if not is_proc and safety.pause_reason(s, ch):
                     return {"skipped": "paused"}
                 scope = channels.video_scope(ch)
                 waiting_rows = s.execute(
@@ -387,18 +529,42 @@ def long_supply_job(*, now: Optional[datetime] = None) -> dict:
                 active_jobs = s.scalar(
                     select(func.count(LongJob.id)).where(LongJob.channel_id == ch.id, LongJob.status.in_(("queued", "running")))
                 ) or 0
-                if stock >= _STOCK_CAP or active_jobs > 0:
+                cap = channels.long_uploads_per_day(ch)
+                stock_cap = max(_STOCK_CAP, cap)
+                if stock >= stock_cap or active_jobs > 0:
                     return {"ok": True, "queued": False, "stock": stock, "active_jobs": active_jobs}
+                if is_proc:
+                    midnight_utc = now.astimezone(channel_zone(ch)).replace(
+                        hour=0, minute=0, second=0, microsecond=0
+                    ).astimezone(timezone.utc)
+                    created_today = s.scalar(
+                        select(func.count(LongJob.id)).where(
+                            LongJob.channel_id == ch.id,
+                            LongJob.status != "failed",
+                            LongJob.created_at >= midnight_utc,
+                        )
+                    ) or 0
+                    if created_today >= cap:
+                        return {"ok": True, "queued": False, "stock": stock, "daily_cap": cap}
                 fmt, targets, theme = _pick_auto_format(s, ch)
-                if not targets and not theme and not channels.feeds_for(s, ch):
+                if not is_proc and not targets and not theme and not channels.feeds_for(s, ch):
                     return {"skipped": "no feeds"}
+                target_mins = (
+                    max(15, min(120, int(((ch.meta or {}).get("target_minutes") or 30))))
+                    if is_proc else 8
+                )
+                auto_pub = (
+                    False
+                    if (is_proc or not ch.enabled or bool(safety.pause_reason(s, ch)))
+                    else channels.long_auto_publish(ch)
+                )
                 job = LongJob(
                     channel_id=ch.id,
                     format=fmt,
                     targets=targets,
                     theme=theme,
-                    target_minutes=8,
-                    auto_publish=channels.long_auto_publish(ch),
+                    target_minutes=target_mins,
+                    auto_publish=auto_pub,
                 )
                 s.add(job)
                 s.flush()
@@ -409,9 +575,11 @@ def long_supply_job(*, now: Optional[datetime] = None) -> dict:
 
 
 def long_autopilot_job(*, now: Optional[datetime] = None) -> dict:
-    """Publish ready (or opt-in auto-published) long-form compilations up to long_uploads_per_day/day."""
+    """Publish ready (or opt-in auto-published) long-form videos under strict triple-lock safety."""
     from tasks.pipeline import publish_task
 
+    if not settings.enable_publish:
+        return {"skipped": "publishing disabled"}
     now = now or datetime.now(timezone.utc)
     with session_scope() as db:
         active = [c for c in channels.active_channels(db) if channels.long_uploads_per_day(c) > 0]
@@ -422,8 +590,25 @@ def long_autopilot_job(*, now: Optional[datetime] = None) -> dict:
         cap = channels.long_uploads_per_day(channel)
         with session_scope() as db:
             ch = db.get(Channel, channel.id) or channel
+            if not ch.enabled:
+                return {"skipped": "disabled"}
             if safety.pause_reason(db, ch) or safety.active_hold(db, now, ch):
                 return {"skipped": "paused or held"}
+            if not settings.use_mock:
+                if channels.is_default(ch):
+                    from app.publishers import MockPublisher, get_publisher
+
+                    has_secrets = bool(settings.youtube_client_secrets and os.path.isfile(settings.youtube_client_secrets))
+                    has_token = bool(settings.youtube_token_path and os.path.isfile(settings.youtube_token_path))
+                    if isinstance(get_publisher(), MockPublisher) or not (has_secrets and has_token):
+                        return {"skipped": "credentials missing"}
+                else:
+                    has_secrets = bool(ch.client_secrets and os.path.isfile(ch.client_secrets))
+                    has_token = bool(ch.token_path and os.path.isfile(ch.token_path))
+                    if not (has_secrets and has_token):
+                        return {"skipped": "credentials missing"}
+                    if channels.is_procedural(ch) and not (ch.youtube_channel_id or "").strip():
+                        return {"skipped": "channel not linked"}
             if quota.remaining(db, ch.id) <= 0:
                 return {"skipped": "daily quota exhausted"}
             scope = channels.video_scope(ch)
@@ -441,10 +626,15 @@ def long_autopilot_job(*, now: Optional[datetime] = None) -> dict:
                 select(Video).where(scope, Video.status.in_((VideoStatus.TRANSFORMED, VideoStatus.PENDING)))
                 .order_by(Video.scraped_at)
             ).scalars().all()
-            ready = [v for v in all_long if v.status == VideoStatus.TRANSFORMED and (v.meta or {}).get("long_form")
-                     and v.transformed_path and os.path.isfile(v.transformed_path)]
+            ready = [
+                v for v in all_long
+                if v.status == VideoStatus.TRANSFORMED
+                and (v.meta or {}).get("long_form")
+                and ((v.meta or {}).get("owner_approved") or channels.long_auto_publish(ch))
+                and v.transformed_path and os.path.isfile(v.transformed_path)
+            ]
             target_video: Optional[Video] = ready[0] if ready else None
-            if target_video is None and channels.long_auto_publish(ch):
+            if target_video is None and channels.long_auto_publish(ch) and not (channels.is_procedural(ch) and not ch.enabled):
                 pending = [v for v in all_long if v.status == VideoStatus.PENDING and (v.meta or {}).get("long_form")
                            and v.transformed_path and os.path.isfile(v.transformed_path)]
                 if pending:
@@ -650,6 +840,7 @@ def _long_card(db, video: Video, slug_names: dict[str, tuple[str, str]]) -> dict
         "channel_slug": slug,
         "channel_name": cname,
         "format": meta.get("long_format") or "best_of",
+        "procedural": bool(meta.get("procedural_ambient")),
         "part_number": meta.get("part_number"),
         "targets": list(meta.get("long_targets") or []),
         "theme": meta.get("long_theme") or "",
@@ -680,7 +871,12 @@ def long_panel_data() -> dict:
         channels._ensure_seeded(db)
         ch_rows = channels.all_channels(db)
         slug_names = {c.id: (c.slug, c.name or c.slug) for c in ch_rows}
-        rows = db.execute(select(Video).order_by(desc(Video.scraped_at)).limit(120)).scalars().all()
+        rows = db.execute(
+            select(Video)
+            .where(or_(Video.source == "longform", Video.meta["long_form"].as_boolean().is_(True)))
+            .order_by(desc(Video.scraped_at))
+            .limit(120)
+        ).scalars().all()
         long_rows = [v for v in rows if (v.meta or {}).get("long_form")]
         pending = [_long_card(db, v, slug_names) for v in long_rows if v.status == VideoStatus.PENDING]
         ready = [_long_card(db, v, slug_names) for v in long_rows if v.status == VideoStatus.TRANSFORMED]
@@ -692,6 +888,14 @@ def long_panel_data() -> dict:
                 "long_uploads_per_day": channels.long_uploads_per_day(c),
                 "long_auto_publish": channels.long_auto_publish(c),
                 "feeds": channels.feeds_for(db, c),
+                "procedural": channels.is_procedural(c),
+                "mode": str((getattr(c, "meta", None) or {}).get("mode") or ""),
+                "presets": (
+                    [p for p in ((c.meta or {}).get("presets") or _AMBIENT_FORMATS) if p in _AMBIENT_FORMATS]
+                    or list(_AMBIENT_FORMATS)
+                    if channels.is_procedural(c) else []
+                ),
+                "default_target_minutes": int((c.meta or {}).get("target_minutes") or 30) if channels.is_procedural(c) else 8,
             }
             for c in ch_rows
         ]

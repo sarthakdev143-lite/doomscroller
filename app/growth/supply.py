@@ -406,6 +406,8 @@ def _why_starved(db, unread: dict[str, str], channel=None) -> tuple[str, str]:
 
 def _supply_one(channel, now: Optional[datetime] = None) -> dict:
     """Keep one managed channel's shelf stocked from its own feeds (and, for the legacy channel, the inbox)."""
+    if channels.is_procedural(channel) or (not channels.is_default(channel) and channels.uploads_per_day(channel) <= 0):
+        return {"skipped": "procedural or shorts disabled"}
     scope = channels.video_scope(channel)
     channel_id = channels.event_channel(channel)
     approval = channels.require_approval(channel)
@@ -449,9 +451,12 @@ def supply_job(now: Optional[datetime] = None) -> dict:
     if not settings.growth_enabled:
         return {"skipped": "GROWTH_ENABLED is off"}
     with session_scope() as db:
-        active = channels.active_channels(db)
-    if not active:
+        enabled = channels.active_channels(db)
+    if not enabled:
         return {"skipped": "no enabled channels"}
+    active = [c for c in enabled if not channels.is_procedural(c) and (channels.is_default(c) or channels.uploads_per_day(c) > 0)]
+    if not active:
+        return {"skipped": "no shorts channels"}
     # A single legacy channel keeps the old flat result shape; several report per channel by slug.
     if len(active) == 1 and channels.is_default(active[0]):
         return _supply_one(active[0]) if now is None else _supply_one(active[0], now)

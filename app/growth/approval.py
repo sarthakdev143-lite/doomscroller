@@ -222,6 +222,8 @@ def _attention(db, channel, waiting: int, approved: int, now: datetime) -> str:
         return "Paused by you" if paused.get("by") == "owner" else f"Paused: {(paused.get('reason') or '')[:90]}"
     if safety.active_hold(db, now, channel):
         return "Posting on hold"
+    if channel is not None and (channels.is_procedural(channel) or channels.uploads_per_day(channel) <= 0):
+        return ""
     gap = db.get(GrowthState, channels.state_key(channel, supply.SUPPLY_GAP))
     cause = (gap.value or {}).get("cause") if gap else None
     if cause:

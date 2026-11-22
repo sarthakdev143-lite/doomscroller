@@ -687,3 +687,70 @@ def test_ai_ask_opencode_comma_fallback_and_stdout_error_logging(monkeypatch, ca
     assert reply == '{"ok": true}'
     assert seen_models == ["broken/first-model", "working/second-model"]
     assert "Model unavailable" in caplog.text
+
+
+def test_ai_ask_json_appends_strict_raw_json_suffix_on_retry(monkeypatch):
+    seen_prompts: list[str] = []
+
+    def fake_ask(prompt, **kwargs):
+        seen_prompts.append(prompt)
+        return "Here is my analysis:\n- point 1" if len(seen_prompts) == 1 else '{"ok": true}'
+
+    monkeypatch.setattr(ai, "ask", fake_ask)
+    out = ai.ask_json("pick best acts")
+    assert out == {"ok": True}
+    assert len(seen_prompts) == 2
+    assert seen_prompts[0] == "pick best acts"
+    assert "valid raw JSON object" in seen_prompts[1]
+
+
+# ---------- 7. M2 summary cues & opening-frame word safety ----------
+
+
+def test_captions_summary_cues_sanitize_tags_control_chars_and_unrenderable_text():
+    ass = captions.build_ass(
+        [],
+        "HOOK LINE",
+        15.0,
+        "Arial",
+        summary_cues=[
+            (2.6, 8.0, "Setup\\N{\\fs200}Line\x00"),
+            (8.0, 14.5, "مرحبا"),  # unrenderable in Arial -> skipped
+            (9.0, 7.0, "Inverted"),  # end <= start -> skipped
+        ],
+    )
+    caption_lines = [ln for ln in ass.splitlines() if ln.startswith("Dialogue: 1,") and ",Caption,," in ln]
+    assert len(caption_lines) == 1
+    assert "\\fs200" not in caption_lines[0]
+    assert "\x00" not in caption_lines[0]
+    assert "SETUPN(FS200)LINE" in caption_lines[0]
+    assert "مرحبا" not in ass
+    assert "INVERTED" not in ass
+
+
+def test_render_moment_clamps_opening_frame_skip_before_first_word(tmp_path, monkeypatch):
+    from app.clipper import render as render_mod
+
+    monkeypatch.setattr(settings, "clip_layout", "fill")
+    monkeypatch.setattr(settings, "clip_sfx", False)
+    monkeypatch.setattr(settings, "clip_music", False)
+    src = tmp_path / "src.mp4"
+    src.write_bytes(b"0" * 20_000)
+
+    seen_skip_max: list[float] = []
+
+    def spy_offset(source, start, end, *, max_skip=1.5, min_remain=4.0):
+        seen_skip_max.append(max_skip)
+        return 0.0
+
+    monkeypatch.setattr(render_mod, "_bright_sharp_opening_offset", spy_offset)
+    monkeypatch.setattr(render_mod, "run_ffmpeg", lambda args, **kw: Path(args[-1]).write_bytes(b"0" * 2048))
+    monkeypatch.setattr(render_mod, "probe", lambda p: MediaInfo(15.0, 1080, 1920, 30.0, True))
+
+    info = MediaInfo(20.0, 1920, 1080, 30.0, True)
+    sig = _signals(20.0)
+    words = [Word("First", 0.25, 0.55), Word("word.", 0.60, 0.90)]
+    ed = edit.EditPlan(words=words, segments=[(0.0, 15.0)], speed=1.0)
+    render_mod.render_moment(str(src), info, sig, Moment(0.0, 15.0, kind="speech"), words, str(tmp_path / "out.mp4"), edit=ed)
+    # Since words[0].start == 0.25, allowed_skip < 0.5, so _bright_sharp_opening_offset is not even invoked to clip speech.
+    assert seen_skip_max == []

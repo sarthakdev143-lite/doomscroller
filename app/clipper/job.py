@@ -20,7 +20,7 @@ from app.models import ClipJob, Video, VideoStatus
 
 from app.growth import learn, recipes
 
-from . import audio_qa, music, sfx, subtitles
+from . import ai, audio_qa, music, sfx, subtitles
 from .broll import StockSession, credit_line
 from .edit import attach_memes, attach_stock, build_clean_vlog_edit, build_edit, first_sentence_text, opening_line
 from .memes import MemeSession, credit_line as meme_credit_line
@@ -339,16 +339,34 @@ def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
         stings = sfx.trending() if settings.clip_sfx else {}
         if clean_vlog:
             log.info("clipper: %s is Hindi, using clean-vlog edit with %d meme sounds on offer", label, len(stings))
-        pick_kw = ({"min_sec": 15, "max_sec": 32, "target_sec": 22}
-                   if clean_vlog else {"target_sec": settings.clip_edit_target_sec})
-        moments = pick_speech(words, signals, count=left, title=src.title, used=used,
-                              sounds=tuple(stings), **pick_kw) if speech else []
+        pick_kw = (
+            {"min_sec": 15, "max_sec": min(settings.clip_max_sec, 30), "target_sec": 22}
+            if clean_vlog
+            else {
+                "min_sec": settings.clip_min_sec,
+                "max_sec": min(settings.clip_max_sec, 32),
+                "target_sec": min(settings.clip_edit_target_sec, 26),
+            }
+        )
+        min_clip_score = 75.0 if ai.available() else 0.0
+        moments = (
+            pick_speech(
+                words, signals, count=left, title=src.title, used=used,
+                sounds=tuple(stings), min_score=min_clip_score, language=language, **pick_kw,
+            )
+            if speech else []
+        )
         # Speech clips already cut means the speech ran out, not that there was too little to begin with.
-        if speech and not moments and not any(m.kind == "speech" for m in used):
+        # Do not downgrade talking Hindi clean_vlog or AI-vetted speech videos into silent visual clips.
+        ai_vetted_speech = speech and (clean_vlog or (ai.available() and len(words) >= 80))
+        if speech and not moments and not any(m.kind == "speech" for m in used) and not ai_vetted_speech:
             warn("too little continuous speech for a speech clip, so cutting on motion and sound instead")
             speech = False
         if not speech:
-            moments = pick_visual(src.path, info, signals, count=left, title=src.title, used=used)
+            moments = pick_visual(
+                src.path, info, signals, count=left, title=src.title, used=used,
+                min_score=min_clip_score, max_sec=min(settings.clip_max_sec, 30),
+            )
         kind = "speech" if speech else "visual"
         if not moments and used:
             warn("every usable moment in this source has already been used")
@@ -396,13 +414,42 @@ def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
                 recipe["broll"] = "off"
             track = music.pick(_clip_id(src, moment))
             try:
+                if moment.sound:
+                    sting_path = stings.get(moment.sound)
+                    sound = sfx.sting(str(sting_path)) if sting_path else None
+                    sting_sec = (len(sound) / sfx.RATE) if sound is not None else sfx._STING_MAX_SEC
+                    max_edit_sec = min(31.5, max(15.0, 31.9 - (sting_sec + 0.8)))
+                else:
+                    max_edit_sec = 31.5
                 with recipes.applied(recipe):
                     if moment.kind == "speech" and timed:
                         edit = build_edit(moment, words, title=src.title)
                     elif moment.kind == "speech" and not timed:
-                        edit = build_clean_vlog_edit(moment, src.path, speed=min(1.12, settings.clip_speed))
+                        edit = build_clean_vlog_edit(
+                            moment, src.path, speed=min(1.12, settings.clip_speed),
+                            max_sec=min(31.0, max_edit_sec),
+                        )
                     else:
                         edit = None
+                    if edit and edit.duration > max_edit_sec:
+                        from .timeline import on_grid
+
+                        budget_src = max_edit_sec * edit._effective_speed
+                        trimmed: list[tuple[float, float]] = []
+                        used_src = 0.0
+                        for seg_a, seg_b in edit.segments:
+                            seg_len = seg_b - seg_a
+                            if used_src + seg_len <= budget_src:
+                                trimmed.append((seg_a, seg_b))
+                                used_src += seg_len
+                            else:
+                                rem = budget_src - used_src
+                                if rem > 0.2:
+                                    trimmed.append((seg_a, on_grid(seg_a + rem)))
+                                break
+                        if trimmed:
+                            edit.segments = trimmed
+                            edit.beats = [b for b in edit.beats if edit.to_output(b.at) is not None]
                     if edit and timed:
                         for message in attach_stock(edit, stock):
                             if message not in warnings:
@@ -419,6 +466,8 @@ def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
                         if moment.sound in stings:
                             extras["sting"] = str(stings[moment.sound])
                             log.info("clipper: clip %d of %s ends on the sound %s", number, label, moment.sound)
+                        if edit is not None and not edit.words and not edit.opening_words and moment.kind == "speech" and words:
+                            edit.opening_words = [w for w in words if w.end > moment.start and w.start < moment.end]
                         plan = render_moment(src.path, info, signals, moment, words if timed else [], out_path,
                                              edit=edit, creator=src.author_name or src.author, music=track,
                                              captions=timed, source_captioned=burned_in, **extras)
@@ -450,7 +499,11 @@ def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
                         credit = f"{credit} {meme_credit_line([c.title for c in overlays], overlays[0].provider)}".strip()
                 if plan.music:
                     credit = f"{credit} {music.credit(track)}".strip()
-                spoken = opening_line(moment, words, edit) if timed else first_sentence_text(moment, words)
+                spoken = (
+                    (opening_line(moment, words, edit) or first_sentence_text(moment, words))
+                    if moment.kind == "speech"
+                    else ""
+                )
                 video_id, saved_status = _save_clip(src, moment, out_path, plan.duration, language=language,
                                                     auto_queue=auto_queue, credit=credit, recipe=recipe,
                                                     job_id=job_id, spoken=spoken,

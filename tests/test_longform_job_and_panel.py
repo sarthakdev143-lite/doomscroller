@@ -53,8 +53,20 @@ def test_real_channels_json_is_valid_and_sets_both_channels_to_1_long_per_day(mo
     by_slug = {e["slug"]: e for e in entries}
     assert by_slug["default"]["long_uploads_per_day"] == 1
     assert by_slug["default"]["long_auto_publish"] is False
+    assert "https://www.youtube.com/@MrBeast" in by_slug["default"]["feeds"]
+    assert by_slug["indianvlogs"]["uploads_per_day"] == 3
     assert by_slug["indianvlogs"]["long_uploads_per_day"] == 1
     assert by_slug["indianvlogs"]["long_auto_publish"] is False
+    amb = by_slug["ambient"]
+    assert amb["uploads_per_day"] == 0
+    assert amb["long_uploads_per_day"] == 3
+    assert amb["long_auto_publish"] is False
+    assert amb["require_approval"] is True
+    assert amb["enabled"] is False
+    assert amb["feeds"] == []
+    assert amb["meta"]["mode"] == "procedural_ambient"
+    assert amb["meta"]["target_minutes"] == 30
+    assert amb["meta"]["generate_while_paused"] is True
 
 
 def test_enqueue_run_worker_isolation_and_render_lock(tmp_path, monkeypatch):
@@ -314,6 +326,31 @@ def test_compile_cli_enqueue_and_jobs_json(capsys):
     assert len(jobs_out["jobs"]) == 1 and jobs_out["jobs"][0]["id"] == out["job_id"]
 
 
+def test_compile_cli_accepts_ambient_format_and_default_minutes(tmp_path, capsys):
+    from scripts import compile as compile_cli
+
+    Path(settings.channels_file).write_text(json.dumps({
+        "channels": [{
+            "slug": "ambient",
+            "name": "Midnight Rain & Lofi",
+            "uploads_per_day": 0,
+            "long_uploads_per_day": 3,
+            "long_auto_publish": False,
+            "enabled": False,
+            "feeds": [],
+            "meta": {"mode": "procedural_ambient", "presets": ["lofi_chill", "rain_focus"], "target_minutes": 30},
+        }]
+    }), encoding="utf-8")
+    with session_scope() as db:
+        channels.sync_channels(db)
+    rc = compile_cli.main(["--channel", "ambient", "--format", "rain_focus", "--enqueue", "--json"])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    with session_scope() as db:
+        amb_job = db.get(LongJob, out["job_id"])
+        assert amb_job is not None and amb_job.format == "rain_focus" and amb_job.target_minutes == 30
+
+
 def test_countdown_lower_thirds_and_chapters_in_render_compilation(tmp_path, monkeypatch):
     from app.clipper.media import MediaInfo
 
@@ -350,8 +387,8 @@ def test_countdown_lower_thirds_and_chapters_in_render_compilation(tmp_path, mon
     res = lf_render.render_compilation(plan, str(tmp_path / "out.mp4"), brand_name="@Brand", include_end_screen=False, include_voiceover=False)
     assert [lbl.split()[0] for _, lbl in res.chapters] == ["Intro", "#2", "#1"]
     assert "COMING UP · #1" in ass_captured[0]
-    assert "#2 · @One — Funny Entrance" in ass_captured[1] and "#Shorts" not in ass_captured[1]
-    assert "#1 · @One — Crazy Insane Ending Payoff" in ass_captured[2]
+    assert "#2 · One — Funny Entrance" in ass_captured[1] and "#Shorts" not in ass_captured[1]
+    assert "#1 · One — Crazy Insane Ending Payoff" in ass_captured[2]
 
 
 def test_repair_waiting_drafts_strips_shorts_and_unlocks_ab_safely(tmp_path):
@@ -405,68 +442,361 @@ def test_repair_waiting_drafts_strips_shorts_and_unlocks_ab_safely(tmp_path):
         assert vl.title == "Long #Shorts"
 
 
-def test_voiceover_script_and_render_compilation_with_narrator_cards_and_fallback(tmp_path, monkeypatch):
+def test_voiceover_script_sarvam_tts_quota_and_live_bridges(tmp_path, monkeypatch):
+    import base64
+    import io
+    import wave
     from app.clipper.media import MediaInfo
     from app.longform import voiceover
 
+    # 1. _short_caption strips dangling trailing words and ellipsis cleanly.
+    assert lf_render._short_caption("I Set Myself on Fire for #Shorts") == "I Set Myself on Fire"
+    assert lf_render._short_caption("MrBeast vs KSI: Extreme Stunts &") == "MrBeast vs KSI: Extreme Stunts"
+
+    # 2. Devanagari & transcript excerpt prompt check for hi plans + pronunciation normalization.
     src = tmp_path / "src.mp4"
     src.write_bytes(b"MP4")
-    s1 = planner.SegmentPlan(str(src), "https://youtu.be/1", "1", "@One", "One", "Vid", 0.0, 20.0, 80.0, "Funny Opening", "hi")
-    s2 = planner.SegmentPlan(str(src), "https://youtu.be/2", "2", "@One", "One", "Vid", 25.0, 45.0, 99.0, "Wild Finale", "hi")
+    s1 = planner.SegmentPlan(
+        str(src), "https://youtu.be/1", "1", "@souravjvlogs", "Sourav", "Vlog", 5.0, 55.0, 80.0,
+        "Glass Bridge Fear", "hi", transcript_excerpt="avantika bridge par dar gayi",
+    )
+    s2 = planner.SegmentPlan(
+        str(src), "https://youtu.be/2", "2", "@souravjvlogs", "Sourav", "Vlog", 65.0, 125.0, 99.0,
+        "Alpine Coaster", "hi", transcript_excerpt="coaster bahut tez tha",
+    )
     co = planner.pick_cold_open([s1, s2], climax=s2)
     plan = planner.CompilationPlan(
-        format_kind="best_of", channel_slug="indianvlogs", part_number=1, targets=("@One",), theme="",
-        title="Best of One", description="Desc", tags=("vlog",), language="hi", target_seconds=120.0,
+        format_kind="best_of", channel_slug="indianvlogs", part_number=1, targets=("@souravjvlogs",), theme="",
+        title="Best of Sourav Joshi", description="Desc", tags=("vlog",), language="hi", target_seconds=180.0,
         cold_open=co, segments=(s1, s2),
     )
 
+    seen_prompts: list[str] = []
     monkeypatch.setattr(voiceover.ai, "available", lambda: True)
-    monkeypatch.setattr(
-        voiceover.ai,
-        "ask_json",
-        lambda p: {"intro": "Aaj ke top 2 moments dekho!", "bridges": ["Number 2 dekho.", "Number 1 finale!"], "outro": "Comment karo!"},
-    )
+
+    def fake_ask_json(prompt):
+        seen_prompts.append(prompt)
+        return {
+            "hook": "भाई इस रोलर कोस्टर में क्या होने वाला है!",
+            "bridges": ["सौरव और अवंतिका पुल पर फंस गए।", "और अब सबसे तेज राइड शुरू होती है!"],
+            "outro": "आपको कौन सा सीन पसंद आया कमेंट करो!",
+        }
+
+    monkeypatch.setattr(voiceover.ai, "ask_json", fake_ask_json)
     script = voiceover.generate_commentary_script(plan)
-    assert "top 2 moments" in script["intro"]
+    assert "रोलर कोस्टर" in script["hook"] and script["intro"] == script["hook"]
     assert len(script["bridges"]) == 2
+    assert "Devanagari" in seen_prompts[0] and "avantika bridge par dar gayi" in seen_prompts[0]
+    assert voiceover._clean_spoken("@MrBeast vs @souravjvlogs!") == "Mr. Beast vs Sourav Joshi!"
 
-    def fake_probe(path):
-        name = Path(path).name
-        return MediaInfo(100.0 if name == "src.mp4" else 15.0, 1920, 1080, 30.0, False)
+    # 3. synthesize_wav hits Sarvam bulbul:v3 REST API (rohan for hi-IN, shubh for en-IN) & raises SarvamTTSQuotaError on 402/429.
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(2)
+        wf.setsampwidth(2)
+        wf.setframerate(24000)
+        wf.writeframes(b"\x01\x00" * 24000)
+    b64_wav = base64.b64encode(buf.getvalue()).decode("ascii")
+    valid_bytes = buf.getvalue()
 
-    def fake_ffmpeg(args, **kwargs):
+    seen_reqs: list[dict] = []
+
+    class FakeResp:
+        def __init__(self, code, data, text=""):
+            self.status_code = code
+            self._data = data
+            self.text = text
+
+        def json(self):
+            return self._data
+
+    def fake_post(url, *, headers, json, timeout):
+        seen_reqs.append({"url": url, "headers": headers, "json": json})
+        return FakeResp(200, {"audios": [b64_wav]})
+
+    def copy_wav_ffmpeg(args, **kw):
         out_file = Path(args[-1])
         out_file.parent.mkdir(parents=True, exist_ok=True)
-        out_file.write_bytes(b"X" * 2000)
+        out_file.write_bytes(valid_bytes)
 
+    monkeypatch.setattr(settings, "sarvam_api_key", "sarvam_secret_key")
+    monkeypatch.setattr(voiceover.httpx, "post", fake_post)
+    monkeypatch.setattr(voiceover, "run_ffmpeg", copy_wav_ffmpeg)
+    dur_hi = voiceover.synthesize_wav("@MrBeast का नया चैलेंज!", tmp_path / "hi.wav", language="hi")
+    dur_en = voiceover.synthesize_wav("Crazy finish!", tmp_path / "en.wav", language="en")
+    assert dur_hi and dur_hi > 0.4 and dur_en and dur_en > 0.4
+    assert seen_reqs[0]["json"]["model"] == "bulbul:v3"
+    assert seen_reqs[0]["json"]["target_language_code"] == "hi-IN" and seen_reqs[0]["json"]["speaker"] == "rohan"
+    assert seen_reqs[0]["json"]["text"] == "Mr. Beast का नया चैलेंज!"
+    assert seen_reqs[1]["json"]["target_language_code"] == "en-IN" and seen_reqs[1]["json"]["speaker"] == "shubh"
+
+    alerts: list[str] = []
+    monkeypatch.setattr(voiceover, "_last_quota_alert_at", 0.0)
+    monkeypatch.setattr(voiceover.notify, "send", lambda msg, **kw: alerts.append(msg) or True)
+    monkeypatch.setattr(voiceover.httpx, "post", lambda *a, **kw: FakeResp(402, {}, "insufficient credits"))
+    with pytest.raises(voiceover.SarvamTTSQuotaError):
+        voiceover.synthesize_wav("Test", tmp_path / "q.wav", language="hi")
+    assert len(alerts) == 1 and "sarvam_secret_key" not in alerts[0]
+
+    # render_compilation propagates SarvamTTSQuotaError rather than shipping voiceless video.
+    monkeypatch.setattr(lf_render, "probe", lambda p: MediaInfo(100.0 if Path(p).name == "src.mp4" else 15.0, 1920, 1080, 30.0, False))
+    monkeypatch.setattr(lf_render, "_probe_duration", lambda p, f: f)
+    monkeypatch.setattr(lf_render, "run_ffmpeg", lambda args, **kw: Path(args[-1]).write_bytes(b"X" * 2000))
+    with pytest.raises(voiceover.SarvamTTSQuotaError):
+        lf_render.render_compilation(plan, str(tmp_path / "quota_abort.mp4"), brand_name="@Brand", include_end_screen=False, include_voiceover=True)
+
+    # 4. Full render_compilation with mocked voiceover uses integrated cold-open hook & live-motion bridges (zero frozen intro card!).
     synthesized: list[str] = []
 
     def fake_synth(text, out_wav, **kw):
         synthesized.append(text)
-        Path(out_wav).write_bytes(b"RIFF" + b"0" * 500)
+        Path(out_wav).write_bytes(valid_bytes)
         return 2.4
 
-    monkeypatch.setattr(lf_render, "probe", fake_probe)
-    monkeypatch.setattr(lf_render, "_probe_duration", lambda p, f: f)
-    monkeypatch.setattr(lf_render, "run_ffmpeg", fake_ffmpeg)
-    monkeypatch.setattr(voiceover, "run_ffmpeg", fake_ffmpeg)
     monkeypatch.setattr(voiceover, "synthesize_wav", fake_synth)
-
-    cards_rendered: list[str] = []
+    bridges_rendered: list[str] = []
     monkeypatch.setattr(
         voiceover,
-        "render_narrator_card",
-        lambda wav, bg, out, td, *, badge_text, **kw: cards_rendered.append(badge_text) or 2.5,
+        "render_narrator_bridge",
+        lambda wav, bg, out, td, *, badge_text, **kw: bridges_rendered.append(badge_text) or 2.5,
     )
 
     res = lf_render.render_compilation(plan, str(tmp_path / "vo_out.mp4"), brand_name="@Brand", include_end_screen=True, include_voiceover=True)
-    assert cards_rendered == ["COUNTDOWN", "#2", "#1"]
-    assert len(synthesized) == 4  # intro + 2 bridges + outro
+    assert len(bridges_rendered) == 2
+    assert bridges_rendered[0].startswith("#2") and bridges_rendered[1].startswith("#1")
+    assert len(synthesized) == 4  # hook + 2 bridges + outro
     assert [lbl.split()[0] for _, lbl in res.chapters] == ["Intro", "#2", "#1"]
 
-    # Graceful fallback when synthesize_wav returns None
+    # Clean fallback when SARVAM_API_KEY absent / synthesize_wav returns None.
     monkeypatch.setattr(voiceover, "synthesize_wav", lambda *a, **k: None)
-    cards_rendered.clear()
+    bridges_rendered.clear()
     res_fb = lf_render.render_compilation(plan, str(tmp_path / "fb_out.mp4"), brand_name="@Brand", include_end_screen=False, include_voiceover=True)
-    assert cards_rendered == []
+    assert bridges_rendered == []
     assert [lbl.split()[0] for _, lbl in res_fb.chapters] == ["Intro", "#2", "#1"]
+
+
+def test_enqueue_long_job_ambient_presets_and_duration_bounds(tmp_path):
+    Path(settings.channels_file).write_text(
+        json.dumps({
+            "channels": [
+                {"slug": "indianvlogs", "name": "Mr Indian Vlogs", "long_uploads_per_day": 1},
+                {
+                    "slug": "ambient",
+                    "name": "Midnight Rain & Lofi",
+                    "uploads_per_day": 0,
+                    "long_uploads_per_day": 3,
+                    "long_auto_publish": False,
+                    "enabled": False,
+                    "feeds": [],
+                    "meta": {
+                        "mode": "procedural_ambient",
+                        "presets": ["lofi_chill", "rain_focus", "night_ambient", "deep_study"],
+                        "target_minutes": 30,
+                        "generate_while_paused": True,
+                    },
+                },
+            ]
+        }),
+        encoding="utf-8",
+    )
+    with session_scope() as db:
+        channels.sync_channels(db)
+
+    j_comp = long_job.enqueue_long_job("indianvlogs", format_kind="best_of", target_minutes=45)
+    j_amb_default = long_job.enqueue_long_job("ambient", format_kind="best_of")
+    j_amb_alias = long_job.enqueue_long_job("ambient", format_kind="ambient", target_minutes=200)
+    j_amb_min = long_job.enqueue_long_job("ambient", format_kind="rain_focus", target_minutes=0)
+    j_amb_ok = long_job.enqueue_long_job("ambient", format_kind="deep_study", target_minutes=45)
+
+    with session_scope() as db:
+        assert db.get(LongJob, j_comp).target_minutes == 10
+        assert db.get(LongJob, j_amb_default).format == "lofi_chill"
+        assert db.get(LongJob, j_amb_default).target_minutes == 30
+        assert db.get(LongJob, j_amb_alias).format == "lofi_chill"
+        assert db.get(LongJob, j_amb_alias).target_minutes == 120
+        assert db.get(LongJob, j_amb_min).target_minutes == 1
+        assert db.get(LongJob, j_amb_ok).format == "deep_study"
+        assert db.get(LongJob, j_amb_ok).target_minutes == 45
+
+    with pytest.raises(ValueError):
+        long_job.enqueue_long_job("ambient", format_kind="invalid_preset")
+
+
+def test_procedural_long_supply_builds_pending_while_disabled_and_autopilot_triple_lock(tmp_path, monkeypatch):
+    from app.longform import ambient
+
+    Path(settings.channels_file).write_text(
+        json.dumps({
+            "channels": [
+                {
+                    "slug": "ambient",
+                    "name": "Midnight Rain & Lofi",
+                    "brand_name": "@MidnightRainLofi",
+                    "client_secrets": str(tmp_path / "missing_cs.json"),
+                    "token_path": str(tmp_path / "missing_tok.json"),
+                    "uploads_per_day": 0,
+                    "long_uploads_per_day": 3,
+                    "long_auto_publish": False,
+                    "enabled": False,
+                    "feeds": [],
+                    "meta": {
+                        "mode": "procedural_ambient",
+                        "presets": ["lofi_chill", "rain_focus", "night_ambient", "deep_study"],
+                        "target_minutes": 30,
+                        "generate_while_paused": True,
+                    },
+                }
+            ]
+        }),
+        encoding="utf-8",
+    )
+    with session_scope() as db:
+        channels.sync_channels(db)
+    assert safety.pause("ambient") is True
+
+    monkeypatch.setattr(long_job, "start_long_worker", lambda: True)
+    monkeypatch.setattr(long_job.notify, "send_long_ready", lambda *a, **kw: True)
+
+    def fake_gen(preset, output_path, **kw):
+        out = Path(output_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"MP4" * 200)
+        tdir = Path(kw["thumbs_dir"])
+        tdir.mkdir(parents=True, exist_ok=True)
+        hero = tdir / "hero_raw.jpg"
+        hero.write_bytes(b"\xff\xd8\xff\xe0H")
+        thumbs = []
+        for i in (1, 2, 3):
+            tp = tdir / f"thumb_v{i}.jpg"
+            tp.write_bytes(b"\xff\xd8\xff\xe0T")
+            thumbs.append({"id": f"v{i}", "label": f"V{i}", "path": str(tp)})
+        return ambient.AmbientResult(
+            output_path=str(out),
+            preset=preset,
+            duration=1800.0,
+            width=1920,
+            height=1080,
+            fps=30,
+            title=f"Title {preset}",
+            description="100% original procedural audio.",
+            tags=("lofi", "ambient"),
+            chapters=((0.0, "Intro"), (300.0, "Drift")),
+            chapter_text="0:00 Intro\n5:00 Drift",
+            thumbnails=tuple(thumbs),
+            hero_frame=str(hero),
+            thumbnail_prompt="Cozy rain window",
+            language="en",
+            theme=kw.get("theme") or "",
+            part_number=int(kw.get("part_number") or 1),
+        )
+
+    monkeypatch.setattr(ambient, "generate_ambient_video", fake_gen)
+
+    # Supply queues 3 rotating presets into PENDING even while disabled + paused + unlinked
+    queued_formats: list[str] = []
+    for _ in range(3):
+        sres = long_job.long_supply_job()
+        assert sres["ambient"]["queued"] is True
+        queued_formats.append(sres["ambient"]["format"])
+        rres = long_job.run_next_long_job()
+        assert rres["ok"] is True
+    assert queued_formats == ["lofi_chill", "rain_focus", "night_ambient"]
+
+    # 4th call blocked by stock cap / daily cap of 3
+    s4 = long_job.long_supply_job()
+    assert s4["ambient"]["queued"] is False
+
+    with session_scope() as db:
+        vids = db.execute(select(Video).where(Video.source == "longform")).scalars().all()
+        assert len(vids) == 3
+        assert all(v.status == VideoStatus.PENDING for v in vids)
+        assert all(v.meta.get("procedural_ambient") is True for v in vids)
+        assert vids[0].description.count("Chapters:") == 1
+
+    # Triple-lock autopilot checks:
+    # 1. enable_publish=False
+    monkeypatch.setattr(settings, "enable_publish", False)
+    assert long_job.long_autopilot_job()["skipped"] == "publishing disabled"
+
+    # 2. disabled channel (active_channels excludes enabled=False)
+    monkeypatch.setattr(settings, "enable_publish", True)
+    assert long_job.long_autopilot_job()["skipped"] == "no channels configured for long-form"
+
+    # 3. enabled=True but paused -> skipped
+    with session_scope() as db:
+        amb_ch = channels.channel_by_slug(db, "ambient")
+        amb_ch.enabled = True
+    assert long_job.long_autopilot_job()["ambient"]["skipped"] == "paused or held"
+
+    # 4. unpaused, use_mock=False, missing credentials -> skipped
+    assert safety.resume("ambient") is True
+    monkeypatch.setattr(settings, "use_mock", False)
+    assert long_job.long_autopilot_job()["ambient"]["skipped"] == "credentials missing"
+
+    # 5. creds files exist, youtube_channel_id empty -> skipped
+    (tmp_path / "missing_cs.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "missing_tok.json").write_text("{}", encoding="utf-8")
+    assert long_job.long_autopilot_job()["ambient"]["skipped"] == "channel not linked"
+
+    # 6. linked, but long_auto_publish=False and all videos PENDING -> none_ready
+    with session_scope() as db:
+        channels.channel_by_slug(db, "ambient").youtube_channel_id = "UC_AMBIENT_TEST"
+    assert long_job.long_autopilot_job()["ambient"]["skipped"] == "none_ready"
+
+
+def test_long_panel_api_exposes_ambient_presets_and_extended_minutes(tmp_path, monkeypatch):
+    Path(settings.channels_file).write_text(
+        json.dumps({
+            "channels": [
+                {"slug": "indianvlogs", "name": "Mr Indian Vlogs", "long_uploads_per_day": 1},
+                {
+                    "slug": "ambient",
+                    "name": "Midnight Rain & Lofi",
+                    "uploads_per_day": 0,
+                    "long_uploads_per_day": 3,
+                    "long_auto_publish": False,
+                    "enabled": False,
+                    "feeds": [],
+                    "meta": {
+                        "mode": "procedural_ambient",
+                        "presets": ["lofi_chill", "rain_focus", "night_ambient", "deep_study"],
+                        "target_minutes": 30,
+                        "generate_while_paused": True,
+                    },
+                },
+            ]
+        }),
+        encoding="utf-8",
+    )
+    with session_scope() as db:
+        channels.sync_channels(db)
+        amb = channels.channel_by_slug(db, "ambient")
+        mp4 = tmp_path / "amb.mp4"
+        mp4.write_bytes(b"MP4")
+        db.add(Video(
+            source="longform", source_id="amb1", source_url="", title="Rainy Focus",
+            description="100% original", transformed_path=str(mp4), status=VideoStatus.PENDING,
+            channel_id=amb.id, width=1920, height=1080, duration_sec=1800,
+            meta={"long_form": True, "procedural_ambient": True, "long_format": "rain_focus"},
+        ))
+
+    monkeypatch.setattr(long_job, "start_long_worker", lambda: True)
+    c = _signed_client()
+
+    r = c.post("/api/long/build", json={"channel_slug": "ambient", "format": "rain_focus", "target_minutes": 45})
+    assert r.status_code == 200
+    jid = r.json()["job_id"]
+    with session_scope() as db:
+        job_row = db.get(LongJob, jid)
+        assert job_row.format == "rain_focus" and job_row.target_minutes == 45
+
+    panel = c.get("/api/long/videos").json()
+    amb_info = next(x for x in panel["channels"] if x["slug"] == "ambient")
+    assert amb_info["procedural"] is True
+    assert amb_info["default_target_minutes"] == 30
+    assert "rain_focus" in amb_info["presets"]
+    assert panel["pending"][0]["procedural"] is True
+
+    ch_rows = c.get("/api/channels").json()["channels"]
+    amb_ch = next(x for x in ch_rows if x["slug"] == "ambient")
+    assert amb_ch["procedural"] is True and amb_ch["mode"] == "procedural_ambient"

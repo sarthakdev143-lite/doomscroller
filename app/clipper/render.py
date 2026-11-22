@@ -14,7 +14,7 @@ import math
 import os
 import shutil
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Optional, Sequence
 
 import numpy as np
@@ -47,7 +47,7 @@ _VISUAL_PUNCH_SEC = 1.2
 # would lose it, so keep the whole picture over a blurred fill.
 _WIDE_SPREAD = 0.22
 # A framed picture has no spare width, so its zooms stay gentle and cut off less of it.
-_FRAMED_ZOOM_SHARE = 0.5
+_FRAMED_ZOOM_SHARE = 0.65
 # With the speaker found, the framed picture moves in on them: a wide two-shot becomes a single.
 _FOCUS_ZOOM = 1.35
 # Moves smaller than this are detector jitter, not a new speaker.
@@ -63,11 +63,11 @@ _STEREO = "aformat=channel_layouts=stereo"
 # so ours can replace them instead of doubling them.
 _CAPTION_BAND = 0.2
 _MUSIC_FADE_OUT = 1.5
-_BACKDROP_LOOK = "eq=brightness=-0.22:saturation=0.85"
+_BACKDROP_LOOK = "eq=brightness=-0.42:contrast=0.72:saturation=0.45"
 # Share of the frame's height the backdrop is drawn from, starting this far down: clear of
 # captions in the lower third and of logos in the top corners.
-_BACKDROP_KEEP = 0.62
-_BACKDROP_TOP = 0.08
+_BACKDROP_KEEP = 0.80
+_BACKDROP_TOP = 0.04
 _AUDIO_EDGE_FADE = 0.008
 # A meme sound ends this long before the held last frame does.
 _STING_PAD_SEC = 0.3
@@ -190,7 +190,11 @@ def _meme_shots(edit: EditPlan) -> tuple[tuple[float, float, str], ...]:
     return tuple(shots)
 
 
-def rhythm_points(edit: EditPlan) -> list[float]:
+def rhythm_points(
+    edit: EditPlan,
+    signals: Optional[Signals] = None,
+    moment: Optional[Moment] = None,
+) -> list[float]:
     """When the framing changes, in output time: on cuts and graphics, and never long without one."""
     wanted = {0.0}
     for begin, _finish in edit.segments[1:]:
@@ -203,6 +207,30 @@ def rhythm_points(edit: EditPlan) -> list[float]:
             wanted.add(when)
     for start, seconds, _path, _offset in _broll_shots(edit):
         wanted.update((start, start + seconds))
+    if not edit.words and not edit.beats and signals is not None and moment is not None:
+        for cut in signals.cuts:
+            if math.isfinite(cut) and moment.start < cut < moment.end:
+                when = edit.to_output(cut)
+                if when is not None:
+                    wanted.add(when)
+        first_s = max(0, int(moment.start))
+        last_s = min(int(math.ceil(moment.end)), getattr(signals, "seconds", 0))
+        if last_s > first_s and len(getattr(signals, "loudness", ())) >= last_s:
+            loud_peaks = sorted(
+                range(first_s, last_s),
+                key=lambda sec: float(signals.loudness[sec]),
+                reverse=True,
+            )
+            added = 0
+            for sec in loud_peaks:
+                when = edit.to_output(float(sec))
+                if when is None or when < _RHYTHM_MIN_SEC:
+                    continue
+                if all(abs(when - prev) >= _RHYTHM_MIN_SEC for prev in wanted):
+                    wanted.add(when)
+                    added += 1
+                    if added >= 6:
+                        break
     points: list[float] = []
     for when in sorted(wanted):
         if not points or when - points[-1] >= _RHYTHM_MIN_SEC:
@@ -419,7 +447,7 @@ def plan_clip(moment: Moment, words: Sequence[Word], signals: Signals, info: Med
               if side_crop else [(0.0, 0.0)])
     duration = total_duration(segments) / speed
     if edit:
-        zoom = _edit_zoom_expression(rhythm_points(edit), duration)
+        zoom = _edit_zoom_expression(rhythm_points(edit, signals=signals, moment=moment), duration)
         shake, flash = _edit_effects(edit)
     else:
         zoom, shake, flash = _zoom_expression(_zoom_windows(moment, segments, signals)), "0", ""
@@ -664,6 +692,118 @@ def _exact_cuts(source: str, seek: float, span: float, cuts: Sequence[float]) ->
     return exact
 
 
+_OPEN_SCAN_FPS = 4
+_OPEN_SCAN_W, _OPEN_SCAN_H = 160, 90
+_OPEN_LUMA_MIN = 38.0
+_OPEN_SHARP_MIN = 6.0
+
+
+def _bright_sharp_opening_offset(
+    source: str,
+    start: float,
+    end: float,
+    *,
+    max_skip: float = 1.5,
+    min_remain: float = 4.0,
+) -> float:
+    """Return a [0.0..max_skip] offset to skip dark or blurry opening frames without clipping words."""
+    if max_skip < 0.5 or not source or not os.path.isfile(source):
+        return 0.0
+    try:
+        if os.path.getsize(source) < 10_000:
+            return 0.0
+    except OSError:
+        return 0.0
+    if not math.isfinite(start) or not math.isfinite(end) or end - start < min_remain + 0.5:
+        return 0.0
+    try:
+        raw = read_ffmpeg([
+            "-ss", f"{max(0.0, start):.3f}",
+            "-t", f"{max_skip + 0.35:.3f}",
+            "-i", os.path.abspath(source),
+            "-map", "0:v:0", "-an",
+            "-vf", (
+                f"fps={_OPEN_SCAN_FPS}:start_time=0,"
+                f"scale={_OPEN_SCAN_W}:{_OPEN_SCAN_H}:flags=fast_bilinear,format=gray"
+            ),
+            "-f", "rawvideo", "-",
+        ])
+    except MediaError:
+        return 0.0
+    frame_bytes = _OPEN_SCAN_W * _OPEN_SCAN_H
+    pixels = np.frombuffer(raw, dtype=np.uint8)
+    count = pixels.size // frame_bytes
+    if count < 2:
+        return 0.0
+    frames = pixels[:count * frame_bytes].reshape(count, _OPEN_SCAN_H, _OPEN_SCAN_W)
+    metrics: list[tuple[float, float, float]] = []
+    for idx in range(count):
+        t_off = idx / float(_OPEN_SCAN_FPS)
+        if t_off > max_skip + 1e-6 or end - (start + t_off) < min_remain:
+            break
+        arr = frames[idx].astype(np.int16)
+        luma = float(arr.mean())
+        dx = float(np.abs(np.diff(arr, axis=1)).mean())
+        dy = float(np.abs(np.diff(arr, axis=0)).mean())
+        metrics.append((t_off, luma, dx + dy))
+    if len(metrics) < 2:
+        return 0.0
+    _, luma0, sharp0 = metrics[0]
+    max_sharp = max(s for _, _, s in metrics)
+    if luma0 >= _OPEN_LUMA_MIN and sharp0 >= max(_OPEN_SHARP_MIN, 0.55 * max_sharp):
+        return 0.0
+    later = [m for m in metrics if m[0] >= 0.5]
+    if not later:
+        return 0.0
+    for t_off, luma, sharp in later:
+        if luma >= _OPEN_LUMA_MIN and sharp >= max(_OPEN_SHARP_MIN, 0.75 * max_sharp):
+            if luma0 < _OPEN_LUMA_MIN or luma > luma0 + 12.0 or sharp > sharp0 * 1.35:
+                return round(t_off, 2)
+    best_t, best_luma, best_sharp = max(later, key=lambda m: (m[1] >= _OPEN_LUMA_MIN, m[2], m[1]))
+    if (
+        (best_luma >= _OPEN_LUMA_MIN and luma0 < _OPEN_LUMA_MIN)
+        or (best_luma > luma0 + 12.0 and best_sharp >= sharp0 * 0.85)
+        or (best_sharp > sharp0 * 1.35 and best_luma >= _OPEN_LUMA_MIN)
+    ):
+        return round(best_t, 2)
+    return 0.0
+
+
+def _short_cue_line(raw: object, limit: int = 44) -> str:
+    text = " ".join(str(raw or "").replace("#", "").split()).strip()
+    if len(text) <= limit:
+        return text
+    clipped = text[:limit].rsplit(" ", 1)[0].strip()
+    return clipped or text[:limit].strip()
+
+
+def _clean_vlog_summary_cues(moment: Moment, duration: float, hook: str) -> list[tuple[float, float, str]]:
+    """Build up to 2 crisp setup->reveal cues for clean_vlog speech clips without word captions."""
+    if moment.kind != "speech" or not math.isfinite(duration) or duration <= 3.5:
+        return []
+    from app.transformers.ffmpeg_transformer import is_renderable
+
+    hook_key = " ".join((hook or "").lower().split())
+    setup = _short_cue_line(moment.title)
+    if not setup or setup.lower() == hook_key or not is_renderable(setup):
+        setup = ""
+    raw_payoff = moment.reveal or (moment.description.split(".", 1)[0] if moment.description else "")
+    payoff = _short_cue_line(raw_payoff)
+    if not payoff or payoff.lower() in (hook_key, setup.lower()) or not is_renderable(payoff):
+        payoff = "END TAK DEKHO" if setup and duration >= 8.0 else ""
+
+    if setup and payoff:
+        mid = min(duration - 1.6, max(4.5, duration * 0.54))
+        if mid > 2.8 and duration - 0.15 > mid + 0.8:
+            return [(2.6, mid, setup), (mid, duration - 0.15, payoff)]
+    solo = setup or payoff
+    if solo:
+        end_t = min(duration - 0.15, max(5.5, duration * 0.72))
+        if end_t > 2.8:
+            return [(2.6, end_t, solo)]
+    return []
+
+
 def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment,
                   words: Sequence[Word], out_path: str, edit: Optional[EditPlan] = None, creator: str = "",
                   music: Optional[str] = None, captions: bool = True, source_captioned: bool = False,
@@ -676,16 +816,38 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
     ``None`` means ``BRAND_NAME``. ``sting`` is a meme sound file, played over the held last frame."""
     # Resolve the font from the clip's own text: a Devanagari clip gets a Devanagari font (if installed)
     # for its captions and overlays, while a Latin clip resolves the same font as before.
-    sample = " ".join(w.text for w in words) + f" {moment.title or ''} {moment.hook or ''} {creator}"
+    font_words = words or ((edit.words or edit.opening_words) if edit else ())
+    sample = " ".join(w.text for w in font_words) + f" {moment.title or ''} {moment.hook or ''} {moment.reveal or ''} {creator}"
     font = resolve_font(settings.clip_font, sample)
     # Only speech clips close up their pauses; captions apply to either kind.
     cut_on = words if moment.kind == "speech" else []
+    segments = list(edit.segments) if edit else keep_segments(moment.start, moment.end, cut_on, settings.clip_silence_gap_sec)
+    if segments and segments[0][1] - segments[0][0] >= 4.0:
+        seg0_start, seg0_end = segments[0]
+        word_source = (edit.words or edit.opening_words or words) if edit else words
+        first_w = next((w for w in word_source if w.end > seg0_start and w.start < seg0_end), None)
+        allowed_skip = min(1.5, max(0.0, first_w.start - seg0_start - 0.06)) if first_w else 1.5
+        min_rem = max(4.0, min(12.0, (seg0_end - seg0_start) * 0.65))
+        if allowed_skip >= 0.5:
+            skip = _bright_sharp_opening_offset(
+                source, seg0_start, seg0_end, max_skip=allowed_skip, min_remain=min_rem,
+            )
+            if skip >= 0.4:
+                new_start = on_grid(seg0_start + skip)
+                if seg0_end - new_start >= 4.0:
+                    segments = [(new_start, seg0_end), *segments[1:]]
+                    if new_start > moment.start:
+                        moment = replace(moment, start=new_start)
+                    if edit is not None:
+                        edit = replace(edit, segments=segments)
     if edit:
-        segments = edit.segments
         clip_words = edit.output_words()
-        beats = [(edit.to_output(b.at), b.text, b.style, b.label, BEAT_SECONDS[b.style]) for b in edit.beats]
+        beats = [
+            (when, b.text, b.style, b.label, BEAT_SECONDS[b.style])
+            for b in edit.beats
+            if (when := edit.to_output(b.at)) is not None
+        ]
     else:
-        segments = keep_segments(moment.start, moment.end, cut_on, settings.clip_silence_gap_sec)
         clip_words = _shift_words(words, segments, moment.start, moment.end)
         beats = []
     sound = load_sting(sting) if sting and info.has_audio and settings.clip_sfx else None
@@ -696,7 +858,6 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
     if not captions or (source_captioned and not crop_bottom):
         clip_words = []
     brand = settings.brand_name if brand is None else brand
-    has_text = bool(font and os.path.isfile(font)) and bool(clip_words or moment.hook or creator or brand)
     if total_duration(segments) <= 0:
         raise MediaError("clip has no duration")
 
@@ -717,6 +878,16 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
                                edit.speed if edit else 1.0)
         # Face heights were measured on the whole frame; the picture may have lost its bottom band.
         focus = [(t, x, min(1.0, y / (1 - crop_bottom))) for t, x, y in focus]
+    speed_est = edit.speed if edit and math.isfinite(edit.speed) and edit.speed > 0 else 1.0
+    est_dur = total_duration(segments) / speed_est
+    summary_cues = (
+        _clean_vlog_summary_cues(moment, est_dur, moment.hook)
+        if (not captions and not clip_words and not (source_captioned and not crop_bottom))
+        else []
+    )
+    has_text = bool(font and os.path.isfile(font)) and bool(
+        clip_words or summary_cues or moment.hook or creator or brand
+    )
     plan = plan_clip(moment, cut_on, signals, info, has_graphics=has_text, exact_cuts=exact_cuts, faces=faces,
                      edit=edit, focus=focus, crop_bottom=crop_bottom,
                      end_fade=0.02 if loop_clean else _END_FADE, hold_end=not loop_clean)
@@ -728,6 +899,8 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
         plan.tail = round(len(sound) / RATE + _STING_PAD_SEC, 3)
         plan.duration += plan.tail
         plan.has_sfx = True
+    if not captions and not clip_words and not (source_captioned and not crop_bottom):
+        summary_cues = _clean_vlog_summary_cues(moment, plan.duration, moment.hook)
 
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     # A row may already point at out_path, so a half-written file must never appear there.
@@ -740,10 +913,14 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
                 os.makedirs(fonts_dir)
                 shutil.copy(font, fonts_dir)
                 with open(os.path.join(tmp, "clip.ass"), "w", encoding="utf-8") as handle:
-                    handle.write(build_ass(clip_words, moment.hook, plan.duration, font_family(font), font, beats, creator=creator, brand=brand,
-                                         layout=framed_layout(plan.picture_height) if plan.picture_height else Layout()))
+                    handle.write(build_ass(
+                        clip_words, moment.hook, plan.duration, font_family(font), font, beats,
+                        creator=creator, brand=brand,
+                        layout=framed_layout(plan.picture_height) if plan.picture_height else Layout(),
+                        summary_cues=summary_cues,
+                    ))
             if plan.has_sfx:
-                cues = sound_cues(edit, rhythm_points(edit)) if edit and settings.clip_sfx else []
+                cues = sound_cues(edit, rhythm_points(edit, signals=signals, moment=moment)) if edit and settings.clip_sfx else []
                 if plan.tail:
                     cues.append(Cue(sting_at, str(sting)))
                 build_track(os.path.join(tmp, "sfx.wav"), plan.duration, cues)

@@ -277,7 +277,7 @@ def _beat_events(beats: Sequence[tuple], font_path: Optional[str], y: int = Layo
     events: list[str] = []
     centre = _WIDTH // 2
     for when, text, style, label, seconds in beats:
-        if not math.isfinite(when) or not math.isfinite(seconds) or seconds <= 0:
+        if when is None or seconds is None or not math.isfinite(when) or not math.isfinite(seconds) or seconds <= 0:
             continue
         when = max(0.0, when)
         text = _safe(text)
@@ -347,17 +347,47 @@ def _steady_text(style: str, text: str, duration: float, y: int) -> list[str]:
     return [f"Dialogue: 0,{_clock(0)},{_clock(duration)},{style},,0,0,0,,{{\\an5\\pos({_WIDTH // 2},{y})}}{text}"]
 
 
+def _summary_cue_events(
+    cues: Sequence[tuple[float, float, str]],
+    font_path: Optional[str] = None,
+    y: int = Layout.caption_y,
+) -> list[str]:
+    """Crisp setup/reveal cues in the Caption band for clean_vlog clips without word captions."""
+    events: list[str] = []
+    for start, end, raw_text in cues:
+        if not (math.isfinite(start) and math.isfinite(end)) or end <= max(0.0, start):
+            continue
+        text = _safe(raw_text)
+        if not text or not is_renderable(text):
+            continue
+        start = max(0.0, start)
+        broken = _line_breaks(text.upper().split())
+        size = _fitted_size(broken, 76, _CAPTION_PAD, 1.0, font_path)
+        line = "\\N".join(broken)
+        events.append(
+            f"Dialogue: 1,{_clock(start)},{_clock(end)},Caption,,0,0,0,,"
+            f"{{\\an5\\pos({_WIDTH // 2},{y})\\fs{size}\\fad(120,140)\\fscx92\\fscy92"
+            f"\\t(0,140,\\fscx100\\fscy100)}}{line}"
+        )
+    return _trim_overlaps(events)
+
+
 def build_ass(words: Sequence[Word], hook: str, duration: float, font: str,
               font_path: Optional[str] = None, beats: Sequence[tuple] = (), creator: str = "", brand: str = "",
-              layout: Layout = Layout()) -> str:
+              layout: Layout = Layout(), summary_cues: Sequence[tuple[float, float, str]] = ()) -> str:
     """Full ASS document. ``words`` and ``beats`` must already be in output time."""
     font = _safe_style_token(font, "Arial")
     creator = _safe(creator)
+    caption_lines = (
+        _caption_events(words, font_path, layout.caption_y)
+        if words
+        else _summary_cue_events(summary_cues, font_path, layout.caption_y)
+    )
     events = (_steady_text("Credit", f"Credit: {creator}" if creator else "", duration, layout.credit_y)
               + _steady_text("Brand", _safe(brand), duration, layout.brand_y)
               + _beat_events(beats, font_path, layout.beat_y)
               + _hook_event(hook, duration, font_path, layout.hook_y)
-              + _caption_events(words, font_path, layout.caption_y))
+              + caption_lines)
     return "\n".join([
         "[Script Info]",
         "ScriptType: v4.00+",

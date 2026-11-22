@@ -282,10 +282,17 @@ def _ask_opencode(prompt: str, *, files: Sequence[str] = (), model: str = "") ->
     return None
 
 
+_STRICT_JSON_SUFFIX = (
+    "\n\nCRITICAL: Respond with ONLY a single valid raw JSON object starting with { and ending with }. "
+    "No markdown headings, no code fences, no explanation."
+)
+
+
 def ask_json(prompt: str, *, files: Sequence[str] = (), model: str = "") -> Optional[dict]:
-    """Like :func:`ask`, for a JSON object. Retries once on an unparsable reply."""
-    for _attempt in range(2):
-        reply = ask(prompt, files=files, model=model)
+    """Like :func:`ask`, for a JSON object. Retries once with strict raw-JSON enforcement."""
+    for attempt in range(2):
+        req_prompt = prompt if attempt == 0 else f"{prompt.rstrip()}{_STRICT_JSON_SUFFIX}"
+        reply = ask(req_prompt, files=files, model=model)
         if reply is None:
             return None
         parsed = _extract_json(reply)
