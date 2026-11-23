@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Sequence
 
 from app.clipper.media import probe, run_ffmpeg
-from app.metadata import compose, finished_title
+from app.metadata import compose, finished_title, youtube_description
 from app.transformers.fonts import resolve_font
 from app.winproc import background_subprocess_kwargs, reclaim_memory
 
@@ -303,6 +303,11 @@ def ambient_music_dir() -> Path:
     return settings.content_path / "ambient_music"
 
 
+def ambient_overlays_dir() -> Path:
+    from app.config import settings
+    return settings.content_path / "ambient_overlays"
+
+
 def list_ambient_portraits() -> list[dict]:
     root = ambient_portraits_dir()
     if not root.is_dir():
@@ -311,23 +316,29 @@ def list_ambient_portraits() -> list[dict]:
     for p in sorted(root.iterdir()):
         if p.is_file() and p.suffix.lower() in _IMAGE_EXTS:
             stem = p.stem.lower()
+            matched = stem if stem in AMBIENT_PRESETS else next((k for k in AMBIENT_PRESETS if stem.startswith(f"{k}_")), "")
             out.append({
                 "name": p.name,
-                "preset": stem if stem in AMBIENT_PRESETS else "",
+                "preset": matched,
                 "path": str(p),
                 "size_bytes": p.stat().st_size,
             })
     return out
 
 
-def list_ambient_tracks(preset: str = "") -> list[dict]:
+def list_ambient_tracks(preset: str = "", *, include_siblings: bool = False) -> list[dict]:
     root = ambient_music_dir()
     if not root.is_dir():
         return []
     key = str(preset or "").strip().lower()
     seen: set[Path] = set()
     candidates: list[tuple[str, Path]] = []
-    scan_keys = (key,) if key else tuple(AMBIENT_PRESETS)
+    if not key:
+        scan_keys = tuple(AMBIENT_PRESETS)
+    elif include_siblings:
+        scan_keys = (key,) + tuple(k for k in AMBIENT_PRESETS if k != key)
+    else:
+        scan_keys = (key,)
     for pkey in scan_keys:
         sub = root / pkey
         if sub.is_dir():
@@ -356,30 +367,130 @@ def _clean_track_title(stem: str) -> str:
     return clean[:72] or "Midnight Track"
 
 
-def _resolve_portrait(preset: str, portrait_path: Optional[Path | str] = None) -> Optional[Path]:
+def _resolve_preset_portraits(preset: str, portrait_path: Optional[Path | str] = None) -> list[Path]:
+    """Return all ordered 16:9 cinema scene portraits for a preset (or single explicit upload)."""
     if portrait_path:
         explicit = Path(portrait_path)
         if explicit.is_file():
-            return explicit
+            return [explicit]
     root = ambient_portraits_dir()
     if not root.is_dir():
-        return None
+        return []
     key = _get_preset(preset).key
+    found: list[Path] = []
+    seen: set[Path] = set()
     for ext in _IMAGE_EXTS:
         cand = root / f"{key}{ext}"
-        if cand.is_file():
-            return cand
-    prefixed = sorted(
-        p for p in root.iterdir()
-        if p.is_file() and p.suffix.lower() in _IMAGE_EXTS and p.stem.lower().startswith(f"{key}_")
-    )
-    if prefixed:
-        return prefixed[0]
+        if cand.is_file() and cand not in seen:
+            found.append(cand)
+            seen.add(cand)
+    for p in sorted(root.iterdir()):
+        if (
+            p.is_file()
+            and p not in seen
+            and p.suffix.lower() in _IMAGE_EXTS
+            and p.stem.lower().startswith(f"{key}_")
+            and not p.stem.lower().endswith("_custom")
+        ):
+            found.append(p)
+            seen.add(p)
+            if len(found) >= 4:
+                break
+    if found:
+        return found
     any_files = sorted(
         p for p in root.iterdir()
         if p.is_file() and p.suffix.lower() in _IMAGE_EXTS and not p.stem.lower().endswith("_custom")
     )
-    return any_files[0] if any_files else None
+    return any_files[:1]
+
+
+def _resolve_portrait(preset: str, portrait_path: Optional[Path | str] = None) -> Optional[Path]:
+    scenes = _resolve_preset_portraits(preset, portrait_path)
+    return scenes[0] if scenes else None
+
+
+def _resolve_overlay(preset: str) -> Optional[Path]:
+    root = ambient_overlays_dir()
+    if not root.is_dir():
+        return None
+    key = _get_preset(preset).key
+    prefs = {
+        "rain_focus": ("night_rain_glass.mp4", "warm_gold_dust.mp4"),
+        "night_ambient": ("midnight_bokeh.mp4", "warm_gold_dust.mp4"),
+        "lofi_chill": ("warm_gold_dust.mp4", "midnight_bokeh.mp4"),
+        "deep_study": ("warm_gold_dust.mp4", "midnight_bokeh.mp4"),
+    }.get(key, ("warm_gold_dust.mp4",))
+    for name in prefs:
+        cand = root / name
+        if cand.is_file():
+            return cand
+    return None
+
+
+def _load_track_credits() -> dict[str, dict]:
+    cred_path = ambient_music_dir() / "credits.json"
+    if not cred_path.is_file():
+        return {}
+    try:
+        raw = json.loads(cred_path.read_text(encoding="utf-8"))
+        return raw if isinstance(raw, dict) else {}
+    except Exception:
+        return {}
+
+
+def _order_curated_tracks(
+    tracks: Sequence[dict],
+    *,
+    seed: str = "",
+    limit: int = 12,
+    target_seconds: float = 0.0,
+) -> list[dict]:
+    ordered = list(tracks)
+    if not ordered:
+        return []
+    primary_tag = str(ordered[0].get("preset") or "")
+    if primary_tag:
+        primary = [tr for tr in ordered if str(tr.get("preset") or "") == primary_tag]
+        siblings = [tr for tr in ordered if str(tr.get("preset") or "") != primary_tag]
+    else:
+        primary, siblings = ordered, []
+    rot_p = _seed_int(seed or "curated") % len(primary)
+    rotated = primary[rot_p:] + primary[:rot_p]
+    if siblings:
+        rot_s = _seed_int(f"{seed or 'curated'}:sib") % len(siblings)
+        rotated.extend(siblings[rot_s:] + siblings[:rot_s])
+    rotated = rotated[:limit]
+    if target_seconds <= 0.0 or len(rotated) <= 2:
+        return rotated
+    chosen: list[dict] = []
+    acc = 0.0
+    for tr in rotated:
+        chosen.append(tr)
+        try:
+            dur = max(2.0, _probe_audio_duration(tr["path"]))
+        except Exception:
+            dur = 160.0
+        acc += max(1.5, dur - 4.0)
+        if len(chosen) >= 2 and acc >= (target_seconds + 15.0):
+            break
+    return chosen
+
+
+def _resolve_track_credits_for(tracks: Sequence[dict]) -> tuple[str, ...]:
+    credits_map = _load_track_credits()
+    lines: list[str] = []
+    seen: set[str] = set()
+    for tr in tracks:
+        fn = str(tr.get("filename") or Path(str(tr.get("path") or "")).name)
+        entry = credits_map.get(fn)
+        if not isinstance(entry, dict):
+            continue
+        ctxt = str(entry.get("credit_text") or "").strip()
+        if ctxt and ctxt not in seen:
+            lines.append(ctxt)
+            seen.add(ctxt)
+    return tuple(lines)
 
 
 def _prepare_portrait_canvas(
@@ -433,6 +544,7 @@ def build_ambient_metadata(
     language: str = "en",
     include_chapters: bool = True,
     chapters_override: Optional[Sequence[tuple[float, str]]] = None,
+    credits_lines: Sequence[str] = (),
 ) -> AmbientMetadata:
     """Build claim-free SEO metadata and chapters (no #Shorts, no viral/trending filler)."""
     cfg = _get_preset(preset)
@@ -484,8 +596,11 @@ def build_ambient_metadata(
     )
     clean_title = finished_title(composed.title, shorts_tag=False)
     clean_desc = composed.description
+    if credits_lines and "Music Credits:" not in clean_desc:
+        clean_desc = f"{clean_desc}\n\nMusic Credits:\n" + "\n".join(credits_lines)
     if include_chapters and chapter_text and "Chapters:" not in clean_desc:
         clean_desc = f"{clean_desc}\n\nChapters:\n{chapter_text}"
+    clean_desc = youtube_description(clean_desc)
     return AmbientMetadata(
         title=clean_title,
         description=clean_desc,
@@ -824,13 +939,12 @@ def _build_curated_mix_wav(
     target_seconds: float,
     *,
     seed: str = "",
+    pre_ordered: bool = False,
 ) -> tuple[tuple[float, str], ...]:
     """Stitch user-supplied MP3/WAV tracks with crossfade + EBU R128 normalization in 1 FFmpeg call."""
-    ordered = list(tracks)
+    ordered = list(tracks) if pre_ordered else _order_curated_tracks(tracks, seed=seed, target_seconds=target_seconds)
     if not ordered:
         raise ValueError("no curated tracks available")
-    rot = _seed_int(seed or "curated") % len(ordered)
-    ordered = (ordered[rot:] + ordered[:rot])[:12]
 
     durations: list[float] = []
     for tr in ordered:
@@ -838,7 +952,7 @@ def _build_curated_mix_wav(
 
     xf = min(4.0, min(durations) * 0.25)
     norm_chain = (
-        f"highpass=f=28,loudnorm=I=-14.6:TP=-1.5:LRA=9,"
+        f"afade=t=in:st=0:d=0.35,highpass=f=28,loudnorm=I=-14.6:TP=-1.5:LRA=9,"
         f"alimiter=limit=0.89:level=0:attack=5:release=50,"
         f"aresample={SAMPLE_RATE},aformat=channel_layouts=stereo"
     )
@@ -1205,7 +1319,7 @@ def generate_ambient_thumbnails(
 
     prompt = (
         f"Photorealistic 16:9 35mm film cinema still of an alluring young woman making warm direct eye contact in soft late-night light "
-        f"({cfg.mood_summary}), natural skin texture, shallow depth of field bokeh, dark moody shadows, classy modest cozy sweater, "
+        f"({cfg.mood_summary}), natural skin texture, shallow depth of field bokeh, dark moody shadows, classy luxury eveningwear, "
         f"zero text overlays, zero watermarks, title theme: {headline}"
     )
     try:
@@ -1260,8 +1374,11 @@ def generate_ambient_video(
     out.parent.mkdir(parents=True, exist_ok=True)
     partial = out.with_name(f"{out.stem}.tmp{out.suffix or '.mp4'}")
     job_seed = seed or f"{cfg.key}:{out.stem}:{theme}:{part_number or 1}"
-    resolved_portrait = _resolve_portrait(cfg.key, portrait_path)
-    tracks = list_ambient_tracks(cfg.key)
+    scene_portraits = _resolve_preset_portraits(cfg.key, portrait_path)
+    resolved_portrait = scene_portraits[0] if scene_portraits else None
+    overlay_mp4 = _resolve_overlay(cfg.key)
+    tracks = list_ambient_tracks(cfg.key, include_siblings=target_seconds > DEFAULT_LOOP_SEC)
+    credits_lines: tuple[str, ...] = ()
 
     chapters_override: Optional[tuple[tuple[float, str], ...]] = None
     try:
@@ -1269,11 +1386,12 @@ def generate_ambient_video(
             tmp = Path(td)
             raw_wav = tmp / "raw_loop.wav"
             norm_wav = tmp / "norm_loop.wav"
-            scene_png = tmp / "scene_2048.png"
             particles_png = tmp / "particles_2160.png"
 
             if tracks:
-                chapters_override = _build_curated_mix_wav(tracks, norm_wav, target_seconds, seed=job_seed)
+                ordered_tracks = _order_curated_tracks(tracks, seed=job_seed, target_seconds=target_seconds)
+                chapters_override = _build_curated_mix_wav(ordered_tracks, norm_wav, target_seconds, seed=job_seed, pre_ordered=True)
+                credits_lines = _resolve_track_credits_for(ordered_tracks)
             else:
                 audio_cycle = min(target_seconds, 12.8 if cfg.bpm == 75.0 else DEFAULT_LOOP_SEC)
                 if target_seconds <= DEFAULT_LOOP_SEC:
@@ -1281,12 +1399,19 @@ def generate_ambient_video(
                 _synthesize_raw_loop_wav(cfg.key, raw_wav, cycle_sec=audio_cycle, seed=job_seed)
                 _normalize_loop_wav(raw_wav, norm_wav)
 
-            if resolved_portrait is not None:
-                scene_img = _prepare_portrait_canvas(resolved_portrait, size=(2048, 1152), brand_name=brand_name)
+            scene_pngs: list[Path] = []
+            if scene_portraits:
+                for idx, p_file in enumerate(scene_portraits[:4]):
+                    sp = tmp / f"scene_{idx}.png"
+                    _prepare_portrait_canvas(p_file, size=(WIDTH, HEIGHT), brand_name=brand_name).save(sp, format="PNG")
+                    scene_pngs.append(sp)
             else:
-                scene_img = render_scene_image(cfg.key, seed=job_seed, brand_name=brand_name, size=(2048, 1152))
-            scene_img.save(scene_png, format="PNG")
-            _render_particle_sheet(cfg.key, particles_png, seed=job_seed)
+                sp = tmp / "scene_0.png"
+                render_scene_image(cfg.key, seed=job_seed, brand_name=brand_name, size=(WIDTH, HEIGHT)).save(sp, format="PNG")
+                scene_pngs.append(sp)
+
+            if overlay_mp4 is None:
+                _render_particle_sheet(cfg.key, particles_png, seed=job_seed)
 
             fade_in = min(0.60, target_seconds * 0.15)
             fade_out = min(0.80, target_seconds * 0.20)
@@ -1297,22 +1422,36 @@ def generate_ambient_video(
                 "alimiter=limit=0.89:level=0:attack=5:release=50"
             )
 
-            if target_seconds <= DEFAULT_LOOP_SEC:
-                vf_chain = (
-                    f"[0:v]crop={WIDTH}:{HEIGHT}:x='64+48*sin(2*PI*t/{DEFAULT_LOOP_SEC:.1f})':"
-                    f"y='36+24*cos(2*PI*t/{DEFAULT_LOOP_SEC:.1f})',setsar=1[bg];"
-                    f"[1:v]crop={WIDTH}:{HEIGHT}:0:'{HEIGHT}-mod(t*{HEIGHT}*2/{DEFAULT_LOOP_SEC:.1f},{HEIGHT})'[pt];"
-                    "[bg][pt]overlay=0:0:shortest=1,vignette=PI/6,format=yuv420p[vout]"
+            def _overlay_tail(base_lbl: str, ov_idx: int) -> str:
+                if overlay_mp4 is not None:
+                    return (
+                        f"[{base_lbl}]format=rgb24[basergb];"
+                        f"[{ov_idx}:v]fps={FPS},scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,"
+                        f"crop={WIDTH}:{HEIGHT},setsar=1,format=rgb24[ov];"
+                        "[basergb][ov]blend=all_mode=screen:all_opacity=0.22:shortest=1,"
+                        "noise=alls=3:allf=t,vignette=PI/6,format=yuv420p[vout]"
+                    )
+                return (
+                    f"[{ov_idx}:v]crop={WIDTH}:{HEIGHT}:0:'{HEIGHT}-mod(t*{HEIGHT}*2/{DEFAULT_LOOP_SEC:.1f},{HEIGHT})'[pt];"
+                    f"[{base_lbl}][pt]overlay=0:0:shortest=1,noise=alls=3:allf=t,vignette=PI/6,format=yuv420p[vout]"
                 )
+
+            if target_seconds <= DEFAULT_LOOP_SEC:
+                ov_args = (
+                    ["-stream_loop", "-1", "-i", str(overlay_mp4)]
+                    if overlay_mp4 is not None
+                    else ["-loop", "1", "-framerate", str(FPS), "-t", f"{target_seconds:.3f}", "-i", str(particles_png)]
+                )
+                vf_chain = f"[0:v]setsar=1[bg];{_overlay_tail('bg', 1)}"
                 run_ffmpeg(
                     [
-                        "-loop", "1", "-framerate", str(FPS), "-t", f"{target_seconds:.3f}", "-i", str(scene_png),
-                        "-loop", "1", "-framerate", str(FPS), "-t", f"{target_seconds:.3f}", "-i", str(particles_png),
+                        "-loop", "1", "-framerate", str(FPS), "-t", f"{target_seconds:.3f}", "-i", str(scene_pngs[0]),
+                        *ov_args,
                         "-stream_loop", "-1", "-i", str(norm_wav),
                         "-filter_complex", vf_chain,
                         "-map", "[vout]", "-map", "2:a:0",
                         "-t", f"{target_seconds:.3f}",
-                        "-c:v", "libx264", "-preset", "superfast", "-crf", "22",
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
                         "-pix_fmt", "yuv420p", "-r", str(FPS), "-video_track_timescale", "30000",
                         "-c:a", "aac", "-b:a", "192k", "-ar", str(SAMPLE_RATE), "-ac", "2",
                         "-af", af_chain,
@@ -1323,19 +1462,45 @@ def generate_ambient_video(
                 )
             else:
                 loop_v = tmp / "loop_v.mp4"
-                vf_loop = (
-                    f"[0:v]crop={WIDTH}:{HEIGHT}:x='64+48*sin(2*PI*t/{DEFAULT_LOOP_SEC:.1f})':"
-                    f"y='36+24*cos(2*PI*t/{DEFAULT_LOOP_SEC:.1f})',setsar=1[bg];"
-                    f"[1:v]crop={WIDTH}:{HEIGHT}:0:'{HEIGHT}-mod(t*{HEIGHT}*2/{DEFAULT_LOOP_SEC:.1f},{HEIGHT})'[pt];"
-                    "[bg][pt]overlay=0:0:shortest=1,vignette=PI/6,format=yuv420p[vout]"
+                loop_inputs: list[str] = []
+                if len(scene_pngs) >= 2:
+                    hold_sec = 24.0
+                    fade_d = 3.0
+                    n_scenes = len(scene_pngs)
+                    loop_sec = n_scenes * hold_sec
+                    loop_inputs.extend(["-loop", "1", "-framerate", str(FPS), "-t", f"{hold_sec:.3f}", "-i", str(scene_pngs[0])])
+                    for sp in scene_pngs[1:]:
+                        loop_inputs.extend(["-loop", "1", "-framerate", str(FPS), "-t", f"{hold_sec + fade_d:.3f}", "-i", str(sp)])
+                    # Wrap back smoothly into scene 0 at end of loop cycle
+                    loop_inputs.extend(["-loop", "1", "-framerate", str(FPS), "-t", f"{fade_d:.3f}", "-i", str(scene_pngs[0])])
+                    ov_idx = n_scenes + 1
+                    f_parts = ["[0:v]setsar=1[x0]"]
+                    for j in range(1, n_scenes + 1):
+                        in_lbl = f"[{j}:v]"
+                        f_parts.append(f"{in_lbl}setsar=1[s{j}]")
+                        off = j * hold_sec - fade_d
+                        f_parts.append(f"[x{j-1}][s{j}]xfade=transition=fade:duration={fade_d:.1f}:offset={off:.3f}[x{j}]")
+                    f_parts.append(_overlay_tail(f"x{n_scenes}", ov_idx))
+                    vf_loop = ";".join(f_parts)
+                else:
+                    loop_sec = DEFAULT_LOOP_SEC
+                    ov_idx = 1
+                    loop_inputs.extend(["-loop", "1", "-framerate", str(FPS), "-t", f"{loop_sec:.3f}", "-i", str(scene_pngs[0])])
+                    vf_loop = f"[0:v]setsar=1[bg];{_overlay_tail('bg', 1)}"
+
+                ov_args = (
+                    ["-stream_loop", "-1", "-i", str(overlay_mp4)]
+                    if overlay_mp4 is not None
+                    else ["-loop", "1", "-framerate", str(FPS), "-t", f"{loop_sec:.3f}", "-i", str(particles_png)]
                 )
                 run_ffmpeg(
                     [
-                        "-loop", "1", "-framerate", str(FPS), "-t", f"{DEFAULT_LOOP_SEC:.3f}", "-i", str(scene_png),
-                        "-loop", "1", "-framerate", str(FPS), "-t", f"{DEFAULT_LOOP_SEC:.3f}", "-i", str(particles_png),
+                        *loop_inputs,
+                        *ov_args,
                         "-filter_complex", vf_loop,
                         "-map", "[vout]", "-an",
-                        "-c:v", "libx264", "-preset", "superfast", "-crf", "22",
+                        "-t", f"{loop_sec:.3f}",
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
                         "-pix_fmt", "yuv420p", "-r", str(FPS), "-g", str(FPS), "-keyint_min", str(FPS),
                         "-sc_threshold", "0", "-video_track_timescale", "30000",
                         str(loop_v),
@@ -1373,6 +1538,7 @@ def generate_ambient_video(
         language=language,
         include_chapters=False,
         chapters_override=chapters_override,
+        credits_lines=credits_lines,
     )
 
     resolved_thumbs_dir = Path(thumbs_dir) if thumbs_dir is not None else (out.parent / f"{out.stem}_thumbs")

@@ -610,3 +610,59 @@ def test_curated_music_track_stitcher_builds_crossfaded_mix_and_real_chapters(tm
     assert any("rain on glass" in t for t in titles)
     assert chapters[0][0] == 0.0
 
+
+def test_steady_multi_scene_dissolve_and_rgb24_screen_overlay_and_credits(tmp_path, monkeypatch):
+    import shutil
+    from app.clipper.media import MediaInfo
+    from app.longform import ambient
+
+    monkeypatch.setattr(settings, "content_dir", str(tmp_path / "content"))
+    pdir = ambient.ambient_portraits_dir()
+    pdir.mkdir(parents=True, exist_ok=True)
+    for fn in ("lofi_chill.jpg", "lofi_chill_2.jpg"):
+        Image.new("RGB", (1376, 768), (24, 16, 20)).save(pdir / fn, "JPEG")
+
+    ovdir = ambient.ambient_overlays_dir()
+    ovdir.mkdir(parents=True, exist_ok=True)
+    (ovdir / "warm_gold_dust.mp4").write_bytes(b"OVERLAY_MP4")
+
+    mdir = ambient.ambient_music_dir() / "lofi_chill"
+    mdir.mkdir(parents=True, exist_ok=True)
+    (mdir / "Midnight Track.mp3").write_bytes(b"ID3" * 20)
+    sib_dir = ambient.ambient_music_dir() / "rain_focus"
+    sib_dir.mkdir(parents=True, exist_ok=True)
+    (sib_dir / "Sibling Track.mp3").write_bytes(b"ID3" * 20)
+    (ambient.ambient_music_dir() / "credits.json").write_text(
+        json.dumps({
+            "Midnight Track.mp3": {"credit_text": "Midnight Track by Test Artist | CC BY 4.0"},
+            "Sibling Track.mp3": {"credit_text": "Sibling Track by Sibling Artist | CC BY-SA 3.0"},
+        }),
+        encoding="utf-8",
+    )
+
+    calls: list[list[str]] = []
+
+    def fake_ffmpeg(args, **kwargs):
+        calls.append(list(args))
+        out = Path(args[-1])
+        out.parent.mkdir(parents=True, exist_ok=True)
+        if out.suffix == ".wav" and "-i" in args:
+            shutil.copyfile(args[args.index("-i") + 1], out)
+        else:
+            out.write_bytes(b"MP4_" * 50)
+
+    monkeypatch.setattr(ambient, "_probe_audio_duration", lambda p: 180.0)
+    monkeypatch.setattr(ambient, "run_ffmpeg", fake_ffmpeg)
+    monkeypatch.setattr(ambient, "probe", lambda p: MediaInfo(120.0, 1920, 1080, 30.0, True))
+
+    res = ambient.generate_ambient_video("lofi_chill", str(tmp_path / "multi.mp4"), duration_sec=120.0)
+    assert len(calls) == 3
+    loop_cmd = " ".join(calls[1])
+    assert "sin(" not in loop_cmd and "cos(" not in loop_cmd
+    assert "xfade=transition=fade:duration=3.0:offset=21.0" in loop_cmd
+    assert "xfade=transition=fade:duration=3.0:offset=45.0" in loop_cmd
+    assert "format=rgb24" in loop_cmd and "blend=all_mode=screen" in loop_cmd
+    assert res.chapters[0][1] == "Midnight Track"
+    assert "0:00 Midnight Track" in res.chapter_text
+    assert "Music Credits:\nMidnight Track by Test Artist | CC BY 4.0\nSibling Track by Sibling Artist | CC BY-SA 3.0" in res.description
+
