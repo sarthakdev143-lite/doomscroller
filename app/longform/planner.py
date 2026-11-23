@@ -49,6 +49,7 @@ _HINGLISH_CUE_RE = re.compile(
 )
 _CREATOR_DISPLAY_MAP = {
     "souravjvlogs": "Sourav Joshi",
+    "lakhneetvlogs": "Lakhneet",
     "mrbeast": "MrBeast",
     "ksi": "KSI",
     "fukrainsaan": "Fukra Insaan",
@@ -58,6 +59,12 @@ _CREATOR_DISPLAY_MAP = {
     "mrindianhacker": "MR. INDIAN HACKER",
     "crazyxyz": "Crazy XYZ",
     "rug": "FaZe Rug",
+    "staywild-": "Stay Wild",
+    "dimplemalhanvlogs": "Dimple Malhan",
+    "sonehavlogs": "Soneha",
+    "anantrastogi": "Anant Rastogi",
+    "sahiljoshivlogs7376": "Sahil Joshi",
+    "albadivlogs": "Albadi",
 }
 
 
@@ -788,8 +795,12 @@ def _curate_story_arc(
         if hi else "crisp English"
     )
     hi_rule = (
-        "- EVERY chapter title MUST be natural Hinglish (NEVER pure English like 'Mountain Magic' or 'Cafe Hopping').\n"
+        "- EVERY chapter title MUST be clean natural conversational Hinglish (NEVER pure English like 'Mountain Magic', NEVER awkward typos or weird slang like 'Maa-Peet').\n"
         if hi else ""
+    )
+    vs_rule = (
+        "- This is a VS video: pick a balanced mix including at least 2 acts from EACH distinct creator available in the list.\n"
+        if format_kind == "vs" else ""
     )
     prompt = (
         f"You are directing a high-retention YouTube 16:9 {format_kind} story video (target ~{int(target_sec // 60)} min).\n"
@@ -800,6 +811,7 @@ def _curate_story_arc(
         "Rules:\n"
         "- Strong engaging opener first; BIGGEST climax last.\n"
         "- Multiple acts from the same `src` MUST appear in ascending start-time order.\n"
+        f"{vs_rule}"
         f"{hi_rule}"
         f"- Give each picked index a complete, punchy chapter title in {lang_hint} (3-6 words, max 36 chars, NO ellipsis, NO #Shorts).\n"
         'Reply with JSON only: {"indices": [0, ...], "titles": {"0": "..."}, "theme_hook": "..."}'
@@ -826,6 +838,36 @@ def _curate_story_arc(
                 cleaned = _clean_chapter_title(str(custom), seg.moment_title) if custom else seg.moment_title
                 picked.append(replace(seg, moment_title=_ensure_hinglish_title(cleaned, language)))
 
+    # Guarantee multi-creator representation on `vs` whenever safe pool contains >=2 distinct creators.
+    if format_kind == "vs" and picked:
+        safe_creators: list[str] = list(dict.fromkeys(
+            creator_handle(s.creator).casefold() or s.creator.casefold()
+            for s in safe if (s.creator or "").strip()
+        ))
+        if len(safe_creators) >= 2:
+            for ck in safe_creators[:2]:
+                have = [s for s in picked if (creator_handle(s.creator).casefold() or s.creator.casefold()) == ck]
+                missing_pool = [
+                    (idx, s) for idx, s in enumerate(safe)
+                    if idx not in seen and (creator_handle(s.creator).casefold() or s.creator.casefold()) == ck
+                ]
+                while len(have) < 2 and missing_pool:
+                    idx_add, seg_add = max(missing_pool, key=lambda pair: pair[1].score)
+                    missing_pool.remove((idx_add, seg_add))
+                    seen.add(idx_add)
+                    norm_add = replace(seg_add, moment_title=_ensure_hinglish_title(seg_add.moment_title, language))
+                    if len(picked) >= max_acts:
+                        # Drop lowest-scored item from a more-represented creator so duration stays bounded.
+                        counts_by_c = {}
+                        for p in picked:
+                            pk = creator_handle(p.creator).casefold() or p.creator.casefold()
+                            counts_by_c[pk] = counts_by_c.get(pk, 0) + 1
+                        swappable = [p for p in picked if counts_by_c.get(creator_handle(p.creator).casefold() or p.creator.casefold(), 0) > 2]
+                        if swappable:
+                            picked.remove(min(swappable, key=lambda p: p.score))
+                    picked.append(norm_add)
+                    have.append(norm_add)
+
     # Top up from remaining safe candidates so 8-10 min builds never fall short.
     avail_sec = sum(s.duration for s in safe)
     desired_min = min(avail_sec, max(min_total_sec, target_sec * 0.94))
@@ -842,6 +884,8 @@ def _curate_story_arc(
     if not picked or sum(s.duration for s in picked) < min_total_sec:
         ordered = _enforce_source_chronology(order_energy_curve(safe, format_kind=format_kind))
         return [replace(s, moment_title=_ensure_hinglish_title(s.moment_title, language)) for s in ordered]
+    if format_kind == "vs" and len({creator_handle(s.creator).casefold() for s in picked if s.creator}) >= 2:
+        picked = order_energy_curve(picked, format_kind="vs")
     return _enforce_source_chronology(picked)
 
 
@@ -933,6 +977,21 @@ def plan_compilation(
         target_sec=target_sec,
         min_total_sec=min_total_sec,
     )
+    actual_creators = list(dict.fromkeys(
+        creator_handle(s.creator) or s.creator
+        for s in ordered
+        if str(s.creator or "").strip()
+    ))
+    if fmt == "vs" and len(actual_creators) < 2:
+        fmt = "best_of"
+        labels = actual_creators[:1] or labels[:1]
+        if db is not None:
+            part_no = next_part_number(db, channel_id, labels)
+        else:
+            from app.db import session_scope
+
+            with session_scope() as s:
+                part_no = next_part_number(s, channel_id, labels)
     climax = max(ordered, key=lambda s: s.score)
     cold_open = pick_cold_open(ordered, climax=climax)
 

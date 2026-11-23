@@ -522,3 +522,51 @@ def test_plan_compilation_cold_open_uses_peak_score_after_chronology_swap(tmp_pa
     assert plan.segments[-1].score == 81.0
     assert plan.cold_open.score == 99.0
     assert 60.0 <= plan.cold_open.start < plan.cold_open.end <= 115.0
+
+
+def test_vs_format_balances_two_creators_and_downgrades_single_creator_honestly(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "content_dir", str(tmp_path / "content"))
+    long_dir = tmp_path / "content" / "long"
+    long_dir.mkdir(parents=True)
+    for vid in ("a1", "b1"):
+        mp4 = long_dir / f"Youtube_{vid}.mp4"
+        mp4.write_bytes(b"M" * 60_000)
+        Path(f"{mp4}.transcript.json").write_text('{"words": []}', encoding="utf-8")
+
+    monkeypatch.setattr(planner, "probe", lambda p: MediaInfo(900.0, 1920, 1080, 30.0, True))
+    monkeypatch.setattr(planner.signals, "analyse", lambda p, i: Signals(900.0, np.zeros(900), np.zeros(900), np.zeros(900), np.ones(900), np.ones(900), []))
+    words = [transcribe.Word(f"word{i}", i * 0.5, i * 0.5 + 0.4) for i in range(900)]
+    monkeypatch.setattr(planner.transcribe, "transcribe", lambda p, i: transcribe.Transcript(words=words, language="en", duration=900.0))
+
+    # Case 1: Only creator @Alpha actually yielded segments -> honestly downgrades vs -> best_of (no fake "Alpha vs Beta").
+    entries_one = [{"id": "a1", "url": "https://youtube.com/watch?v=a1", "creator": "@Alpha", "duration": 900}]
+    monkeypatch.setattr(planner, "_pick_source_candidates", lambda **k: (["@Alpha", "@Beta"], entries_one))
+    monkeypatch.setattr(
+        planner.moments,
+        "pick_speech",
+        lambda *a, **k: [
+            moments.Moment(60.0 + j * 80.0, 118.0 + j * 80.0, title=f"Alpha Beat {j}", score=85.0 + j, kind="speech")
+            for j in range(4)
+        ],
+    )
+    monkeypatch.setattr(planner.ai, "available", lambda: False)
+    downgraded = planner.plan_compilation(
+        format_kind="vs", channel_slug="default", targets=["@Alpha", "@Beta"], target_minutes=6, min_total_sec=100.0,
+    )
+    assert downgraded.format_kind == "best_of"
+    assert downgraded.targets == ("@Alpha",)
+    assert " vs " not in downgraded.title.lower()
+
+    # Case 2: Both @Alpha and @Beta exist, even if AI only picks indices 0..3 (@Alpha), _curate_story_arc injects >=2 @Beta acts.
+    cands = [
+        _seg("a1", "@Alpha", 60.0 + i * 70.0, 118.0 + i * 70.0, 90.0 - i) for i in range(4)
+    ] + [
+        _seg("b1", "@Beta", 60.0 + i * 70.0, 118.0 + i * 70.0, 88.0 - i) for i in range(4)
+    ]
+    monkeypatch.setattr(planner.ai, "available", lambda: True)
+    monkeypatch.setattr(planner.ai, "ask_json", lambda p: {"indices": [0, 1, 2, 3], "titles": {}})
+    balanced = planner._curate_story_arc(
+        cands, format_kind="vs", targets=["@Alpha", "@Beta"], theme="", language="en", target_sec=360.0, min_total_sec=120.0,
+    )
+    beta_count = sum(1 for s in balanced if s.creator == "@Beta")
+    assert beta_count >= 2

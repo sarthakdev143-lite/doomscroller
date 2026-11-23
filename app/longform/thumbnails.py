@@ -39,7 +39,7 @@ def _load_pil_font(size: int, sample: str = ""):
 
 
 def _face_bonus(gray) -> float:
-    """Detect frontal faces lazily with OpenCV Haar cascade; 0.0 when unavailable."""
+    """Detect frontal faces lazily with OpenCV Haar cascade and weight by close-up face area."""
     try:
         import cv2
 
@@ -48,7 +48,11 @@ def _face_bonus(gray) -> float:
             return 0.0
         clf = cv2.CascadeClassifier(cascade_path)
         faces = clf.detectMultiScale(gray, scaleFactor=1.15, minNeighbors=4, minSize=(48, 48))
-        return float(len(faces)) if faces is not None else 0.0
+        if faces is None or len(faces) == 0:
+            return 0.0
+        frame_area = float(max(1, gray.shape[0] * gray.shape[1]))
+        max_ratio = max((float(w) * float(h)) / frame_area for (_x, _y, w, h) in faces)
+        return float(len(faces)) + min(4.0, max_ratio * 40.0)
     except Exception:
         return 0.0
 
@@ -170,10 +174,35 @@ def _save_under_2mb(img: Image.Image, dest: Path) -> str:
     return str(dest)
 
 
+_DANGLING_HEADLINE_WORDS = frozenset({
+    "ke", "ki", "ka", "ko", "se", "mein", "par", "pe", "aur", "ya", "sabse", "bahut", "ek",
+    "the", "of", "in", "on", "at", "to", "for", "and", "or", "vs", "a", "an", "most", "very", "with", "by", "from", "&",
+})
+
+
 def _headline_words(title: str, max_words: int = 4) -> str:
-    clean = " ".join(str(title or "").replace("#Shorts", "").split()).strip()
-    words = [w.strip("|—-:,") for w in clean.split() if w.strip("|—-:,")]
-    return " ".join(words[:max_words]).upper() or "BEST MOMENTS"
+    clean = str(title or "").replace("#Shorts", "").replace("#shorts", "")
+    for sep in (" | ", " — ", " - ", ": "):
+        if sep in clean:
+            head = clean.split(sep)[0].strip()
+            tail = clean.split(sep, 1)[1].strip()
+            if sep == ": " and head.lower().endswith(("best of", "compilation")) and len(tail.split()) >= 2:
+                clean = tail
+            elif len(head.split()) >= 2:
+                clean = head
+            break
+    words = [w.strip("|—-:,.") for w in clean.split() if w.strip("|—-:,.")]
+    if not words:
+        return "BEST MOMENTS"
+    out = list(words[:max_words])
+    while len(out) < len(words) and len(out) < max_words + 2 and out[-1].lower() in _DANGLING_HEADLINE_WORDS and out[-1] != "&":
+        nxt = words[len(out)]
+        if len(" ".join([*out, nxt])) > 28:
+            break
+        out.append(nxt)
+    while len(out) > 1 and out[-1].lower() in _DANGLING_HEADLINE_WORDS:
+        out.pop()
+    return " ".join(out).upper() or "BEST MOMENTS"
 
 
 def _add_gradient(img: Image.Image) -> Image.Image:
@@ -213,10 +242,6 @@ def _draw_pill_badge(draw: ImageDraw.ImageDraw, x: int, y: int, text: str, font,
 
 def _render_variant_hero(hero_path: str, dest: Path, *, title: str, badge: str) -> str:
     img = ImageOps.fit(Image.open(hero_path).convert("RGB"), (THUMB_W, THUMB_H), method=Image.Resampling.LANCZOS)
-    # Subtle 1.08x center punch zoom for tighter facial impact.
-    crop_w, crop_h = int(THUMB_W / 1.08), int(THUMB_H / 1.08)
-    left, top = (THUMB_W - crop_w) // 2, (THUMB_H - crop_h) // 2
-    img = img.crop((left, top, left + crop_w, top + crop_h)).resize((THUMB_W, THUMB_H), Image.Resampling.LANCZOS)
     img = ImageEnhance.Contrast(ImageEnhance.Color(img).enhance(1.15)).enhance(1.12)
     img = _add_gradient(img)
     draw = ImageDraw.Draw(img)

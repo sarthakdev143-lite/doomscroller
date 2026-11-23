@@ -508,7 +508,7 @@ def _prepare_portrait_canvas(
             ImageOps.exif_transpose(im).convert("RGB"),
             (w, h),
             method=Image.Resampling.LANCZOS,
-            centering=(0.5, 0.35),
+            centering=(0.5, 0.30),
         )
     fitted = ImageEnhance.Color(fitted).enhance(1.06)
     fitted = ImageEnhance.Contrast(fitted).enhance(1.05).convert("RGBA")
@@ -1318,9 +1318,9 @@ def generate_ambient_thumbnails(
     variants.append({"id": "v3", "label": "Midnight Mood", "path": _save_jpeg_under_limit(v3, out_dir / "thumb_v3.jpg")})
 
     prompt = (
-        f"Photorealistic 16:9 35mm film cinema still of an alluring young woman making warm direct eye contact in soft late-night light "
-        f"({cfg.mood_summary}), natural skin texture, shallow depth of field bokeh, dark moody shadows, classy luxury eveningwear, "
-        f"zero text overlays, zero watermarks, title theme: {headline}"
+        f"Raw candid 16:9 50mm f/1.2 photograph of a breathtaking young woman making warm alluring direct eye contact in soft golden late-night lamp light "
+        f"({cfg.mood_summary}), authentic unretouched natural skin texture with pores, creamy shallow depth of field bokeh, classy off-the-shoulder eveningwear, "
+        f"zero artificial neon gels, zero text overlays, zero watermarks, title theme: {headline}"
     )
     try:
         from app.longform import thumbnails as lf_thumbs

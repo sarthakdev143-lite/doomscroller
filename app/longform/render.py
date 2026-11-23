@@ -26,7 +26,7 @@ _END_SCREEN_SEC = 8.0
 _ALIMITER = "alimiter=limit=0.84:attack=2:release=40:level=0:latency=1"
 _BRAND_ASS_STYLE = (
     "Style: Brand,{font_name},30,&H38FFFFFF,&H000000FF,&H20000000,&H00000000,"
-    "1,0,0,0,100,100,0.5,0,1,3,1.5,9,44,44,34,1"
+    "1,0,0,0,100,100,0.5,0,1,3,1.5,9,44,64,44,1"
 )
 _DANGLING_WORDS = frozenset({
     "for", "to", "and", "&", "or", "the", "a", "an", "of", "in", "on", "at", "with", "from", "by", "vs",
@@ -327,7 +327,7 @@ def _render_cold_open_with_hook(
     music_path: Optional[Path] = None,
 ) -> float:
     """Render live bright climax teaser footage with integrated Sarvam hook narration (no frozen intro slide)."""
-    dur = max(4.8, min(7.2, float(hook_dur or 4.0) + 0.7))
+    dur = max(4.8, min(11.5, float(hook_dur or 4.0) + 0.65))
     info: MediaInfo = probe(climax.source_path)
     max_end = min(info.duration or climax.end, climax.end) if info.duration else climax.end
     win_start = max(climax.start, min(cold_open.start, max(climax.start, max_end - dur)))
@@ -375,7 +375,7 @@ def _render_cold_open_with_hook(
         parts.append(f"[vo][bed]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,{_ALIMITER},aformat=channel_layouts=stereo,asetpts=N/SR/TB[aout]")
     elif info.has_audio:
         parts.append(
-            f"[0:a]atrim=0:{dur:.3f},asetpts=PTS-STARTPTS,volume=0.18,lowpass=f=2400,"
+            f"[0:a]atrim=0:{dur:.3f},asetpts=PTS-STARTPTS,volume=0.06,lowpass=f=900,"
             f"aresample=48000,aformat=channel_layouts=stereo,apad=whole_dur={dur:.3f},atrim=0:{dur:.3f},"
             f"afade=t=in:d=0.18,afade=t=out:st={fade_out_a:.3f}:d=0.20,asetpts=N/SR/TB[bed]"
         )
@@ -751,7 +751,11 @@ def render_compilation(
                 show_pill=(bridge_card is None),
             )
             parts_to_concat.append(seg_file)
-            thumb_stamps.append(cursor + min(max(1.5, dur * 0.42), max(1.5, dur - 0.8)))
+            t_early = cursor + min(max(1.5, dur * 0.35), max(1.5, dur - 1.2))
+            t_late = cursor + min(max(2.0, dur * 0.65), max(2.0, dur - 0.8))
+            thumb_stamps.append(t_early)
+            if abs(t_late - t_early) >= 4.0:
+                thumb_stamps.append(t_late)
             cursor += dur
             reclaim_memory()
 
@@ -802,6 +806,6 @@ def render_compilation(
         duration=round(final_info.duration or cursor, 2),
         chapters=tuple(chapters),
         chapter_text=chapter_text,
-        timestamps_for_thumbs=tuple(thumb_stamps[:6]),
+        timestamps_for_thumbs=tuple(thumb_stamps[:8]),
         warnings=tuple(warnings),
     )

@@ -156,3 +156,23 @@ def test_generate_thumbnail_prompt_and_ai_backends(tmp_path, monkeypatch):
     assert seen_gem["headers"]["x-goog-api-key"] == "AIza-test-key"
     with Image.open(res_gem[1]) as im:
         assert im.size == (1280, 720) and im.format == "JPEG"
+
+
+def test_headline_words_no_dangling_hindi_suffix_and_hero_no_corner_crop(tmp_path):
+    hw = thumbnails._headline_words("Sourav Ke Sabse Crazy Adventures - Best Of Part 1", max_words=3)
+    assert not hw.endswith(("SABSE", "KE", "KA", "KI", "OF", "THE"))
+    assert "CRAZY" in hw
+    assert thumbnails._headline_words("MrBeast Best Of: Epic Challenges & Unlikely Winners", max_words=3) == "EPIC CHALLENGES"
+    assert thumbnails._headline_words("MrBeast vs Rug: 90-Day Challenge Compilation", max_words=3) == "MRBEAST VS RUG"
+
+    # Top-right corner pixel marker must survive hero render intact (no 1.08x center crop slicing corners)
+    hero = tmp_path / "marker.jpg"
+    im = Image.new("RGB", (1280, 720), (20, 20, 30))
+    for x in range(1260, 1280):
+        for y in range(0, 20):
+            im.putpixel((x, y), (255, 255, 255))
+    im.save(hero, "JPEG", quality=98)
+    out = Path(thumbnails._render_variant_hero(str(hero), tmp_path / "hero_v1.jpg", title="Test Hero", badge="PART 1"))
+    with Image.open(out) as rendered:
+        r, g, b = rendered.getpixel((1272, 8))
+        assert r > 180 and g > 180 and b > 180

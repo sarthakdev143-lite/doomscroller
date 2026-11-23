@@ -248,6 +248,42 @@ def test_render_compilation_suppresses_post_bridge_pill_and_guards_mock_mode(tmp
     assert seen_show_pill == [True, True]
 
 
+def test_cold_open_uncapped_up_to_11_5s_and_bridge_seeks_mid_broll_and_ducks_audio(tmp_path, monkeypatch):
+    wav = tmp_path / "vo.wav"
+    wav.write_bytes(_valid_wav_bytes(2.0))
+    src = tmp_path / "src.mp4"
+    src.write_bytes(b"MP4")
+    climax = planner.SegmentPlan(str(src), "https://youtu.be/1", "1", "@souravjvlogs", "Sourav Joshi", "Vlog", 10.0, 70.0, 95.0, "Bridge", "hi")
+    cold = planner.SegmentPlan(str(src), "https://youtu.be/1", "1", "@souravjvlogs", "Sourav Joshi", "Vlog", 40.0, 45.5, 95.0, "Teaser", "hi")
+
+    monkeypatch.setattr(lf_render, "probe", lambda p: MediaInfo(120.0, 1920, 1080, 30.0, True))
+    monkeypatch.setattr(lf_render, "_find_bright_offset", lambda p, a, b, need: a)
+    monkeypatch.setattr(lf_render, "_probe_duration", lambda p, f: f)
+
+    co_calls: list[list[str]] = []
+    monkeypatch.setattr(lf_render, "run_ffmpeg", lambda args, **kw: co_calls.append(list(args)) or Path(args[-1]).write_bytes(b"X" * 1000))
+    co_dur = lf_render._render_cold_open_with_hook(cold, climax, wav, 8.4, tmp_path / "co.mp4", tmp_path, format_kind="best_of", brand_name="@Brand")
+    assert co_dur >= 9.0
+    co_t = co_calls[0][co_calls[0].index("-t") + 1]
+    assert float(co_t) >= 9.0
+    co_fc = co_calls[0][co_calls[0].index("-filter_complex") + 1]
+    assert "volume=0.06,lowpass=f=900" in co_fc
+
+    seeks_seen: list[float] = []
+    monkeypatch.setattr(lf_render, "_find_bright_offset", lambda p, a, b, need: seeks_seen.append(a) or a)
+    monkeypatch.setattr(voiceover, "probe", lambda p: MediaInfo(120.0, 1920, 1080, 30.0, True))
+    br_calls: list[list[str]] = []
+    monkeypatch.setattr(voiceover, "run_ffmpeg", lambda args, **kw: br_calls.append(list(args)) or Path(args[-1]).write_bytes(b"X" * 1000))
+    voiceover.render_narrator_bridge(
+        wav, src, tmp_path / "br.mp4", tmp_path,
+        badge_text="#1 · SOURAV JOSHI", headline="Khaas Pal", duration=4.5, preview_start=10.0, preview_end=70.0,
+    )
+    assert seeks_seen and seeks_seen[0] >= 35.0
+    br_fc = br_calls[0][br_calls[0].index("-filter_complex") + 1]
+    assert "volume=0.06,lowpass=f=900" in br_fc
+    assert voiceover._clean_spoken(voiceover._clean_spoken("MrBeast and @rug vs FaZe Rug")) == "Mr. Beast and Faze Rug vs Faze Rug"
+
+
 def test_longform_invariants_winproc_and_no_idle_numpy():
     proc = subprocess.run(
         [sys.executable, "-c", "import sys, app.main, app.review, app.config, app.db, app.logging_config; assert 'numpy' not in sys.modules"],

@@ -37,14 +37,23 @@ _last_quota_alert_at = 0.0
 
 _CREATOR_SPEECH_MAP = (
     (re.compile(r"@?souravjvlogs\b", re.IGNORECASE), "Sourav Joshi"),
+    (re.compile(r"@?lakhneetvlogs\b", re.IGNORECASE), "Lakhneet"),
     (re.compile(r"@?mrbeast\b", re.IGNORECASE), "Mr. Beast"),
     (re.compile(r"@?ksi\b", re.IGNORECASE), "KSI"),
+    (re.compile(r"@rug\b", re.IGNORECASE), "Faze Rug"),
+    (re.compile(r"\bFaZe\b"), "Faze"),
+    (re.compile(r"@?staywild-?", re.IGNORECASE), "Stay Wild"),
     (re.compile(r"@?fukrainsaan\b", re.IGNORECASE), "Fukra Insaan"),
     (re.compile(r"@?triggeredinsaan\b", re.IGNORECASE), "Triggered Insaan"),
     (re.compile(r"@?flyingbeast320\b", re.IGNORECASE), "Flying Beast"),
     (re.compile(r"@?elvishyadavvlogs\b", re.IGNORECASE), "Elvish Yadav"),
     (re.compile(r"@?mrindianhacker\b", re.IGNORECASE), "Mr. Indian Hacker"),
     (re.compile(r"@?crazyxyz\b", re.IGNORECASE), "Crazy XYZ"),
+    (re.compile(r"@?dimplemalhanvlogs\b", re.IGNORECASE), "Dimple Malhan"),
+    (re.compile(r"@?sonehavlogs\b", re.IGNORECASE), "Soneha"),
+    (re.compile(r"@?anantrastogi\b", re.IGNORECASE), "Anant Rastogi"),
+    (re.compile(r"@?sahiljoshivlogs7376\b", re.IGNORECASE), "Sahil Joshi"),
+    (re.compile(r"@?albadivlogs\b", re.IGNORECASE), "Albadi"),
 )
 _CTRL_OR_EMOJI_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\U00010000-\U0010ffff]+")
 
@@ -132,8 +141,11 @@ def generate_commentary_script(plan: "CompilationPlan") -> dict:
     n = len(segs)
     hi = str(plan.language or "en").strip().lower().startswith("hi")
     lang_note = (
-        "natural conversational Hindi written STRICTLY in Devanagari script "
-        "(transliterate English loanwords and creator names into Devanagari too, e.g. ग्लास ब्रिज, रोलर कोस्टर, सौरव जोशी, मिस्टर बीस्ट; NEVER use Roman Hinglish)"
+        "everyday natural spoken YouTube Hinglish written STRICTLY in clean Devanagari script "
+        "(e.g. 'पब्लिक के बीच इतना शर्माना', 'देखो आगे क्या सीन बनता है', 'भाई ये ट्विस्ट क्रेज़ी है'; "
+        "transliterate English creator/loan words cleanly into Devanagari like ग्लास ब्रिज, सौरव जोशी, लखनीत, मिस्टर बीस्ट; "
+        "NEVER misspell Lakhneet as लक्षनीत — always write लखनीत; "
+        "STRICTLY FORBIDDEN stiff newsroom Sanskritized Hindi like 'सार्वजनिक शर्मिंदगी', 'जंगली दहशत', 'आइए देखते हैं', or 'प्रस्तुत')"
         if hi else
         "crisp conversational YouTube documentary English (high energy, natural contractions)"
     )
@@ -153,9 +165,9 @@ def generate_commentary_script(plan: "CompilationPlan") -> dict:
         "Strict rules:\n"
         "- NO hashtags (#), NO emojis, NO robotic filler.\n"
         "- Do NOT just repeat the topic title word-for-word! Build curiosity, stakes, and narrative flow from one act to the next.\n"
-        "- hook (12-18 words): plays OVER fast opening teaser footage — teases the climax payoff WITHOUT spoiling who wins.\n"
-        "- bridges (one per act, 14-24 words each): sets up what is about to happen and why the viewer should care.\n"
-        "- outro (14-20 words): short punchy reflection + debate question for comments + subscribe CTA.\n"
+        "- hook (10-14 words): punchy ~4.5s opener over fast teaser footage — teases the climax payoff WITHOUT spoiling who wins.\n"
+        "- bridges (one per act, 10-16 words each): punchy 4-5s setup of what happens next and why the viewer should care.\n"
+        "- outro (12-16 words): short crisp closing question for comments + subscribe CTA.\n"
         f'Reply with JSON only: {{"hook": "...", "bridges": ["..." ({n} items matching 0..{n - 1})], "outro": "..."}}'
     )
     reply = ai.ask_json(prompt)
@@ -291,7 +303,14 @@ def render_narrator_bridge(
     dur = max(1.0, float(duration or 1.0) + 0.35)
     need_src = max(1.0, dur / 1.18)
     src_info = probe(str(video_source))
-    seek = _find_bright_offset(str(video_source), float(preview_start), float(preview_end or src_info.duration or preview_start + 8.0), need_src)
+    span = max(0.0, float(preview_end or 0.0) - float(preview_start or 0.0))
+    if span >= 18.0:
+        broll_start = float(preview_start) + span * 0.45
+        broll_end = max(broll_start + need_src + 1.0, float(preview_end) - 2.0)
+    else:
+        broll_start = float(preview_start)
+        broll_end = float(preview_end or src_info.duration or preview_start + 8.0)
+    seek = _find_bright_offset(str(video_source), broll_start, broll_end, need_src)
 
     ass_path = tmp_dir / f"{out_path.stem}.ass"
     sample = f"{badge_text} {headline} {creator_label} {brand_name}"
@@ -334,7 +353,7 @@ def render_narrator_bridge(
         filters.append(f"[vo][bed]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,{_ALIMITER},aformat=channel_layouts=stereo,asetpts=N/SR/TB[a]")
     elif src_info.has_audio:
         filters.append(
-            f"[0:a]atrim=0:{dur:.3f},asetpts=PTS-STARTPTS,volume=0.14,lowpass=f=2000,"
+            f"[0:a]atrim=0:{dur:.3f},asetpts=PTS-STARTPTS,volume=0.06,lowpass=f=900,"
             f"aresample=48000,aformat=channel_layouts=stereo,apad=whole_dur={dur:.3f},atrim=0:{dur:.3f},"
             f"afade=t=in:d=0.20,afade=t=out:st={fade_out_a:.3f}:d=0.20,asetpts=N/SR/TB[bed]"
         )
