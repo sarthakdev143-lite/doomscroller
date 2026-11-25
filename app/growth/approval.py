@@ -16,10 +16,20 @@ from sqlalchemy import func, select, update
 
 from app.config import settings
 from app.db import session_scope
-from app.metadata import compose, finished_title, youtube_description
+from app.metadata import compose, finished_title, has_risky_title_words, youtube_description
 from app.models import GrowthEvent, GrowthState, MetadataDraft, Video, VideoStatus
 
 _QUEUE_LIMIT = 40
+
+
+def _effective_flag(video: Video) -> str:
+    meta = video.meta or {}
+    flagged = str(meta.get("growth_flagged") or "").strip()
+    if flagged:
+        return flagged
+    if meta.get("clip_rendered") and not meta.get("long_form") and has_risky_title_words(meta.get("clip_hook")):
+        return "unsafe burned-in hook"
+    return ""
 
 
 class ReviewError(ValueError):
@@ -160,7 +170,8 @@ def _card(video: Video, db) -> dict:
         "source": video.source_url or "",
         "kind": meta.get("clip_kind") or ("" if is_clip else (video.source or "")),
         "why": meta.get("clip_reason") or "",
-        "flag": meta.get("growth_flagged") or "",
+        "flag": _effective_flag(video),
+        "recipe": meta.get("growth_recipe") or {},
         "audio": _audio_line(meta.get("earshot")),
         "channel": name,
         "channel_slug": slug,
@@ -364,7 +375,7 @@ def _trustable(db, channel) -> list[Video]:
 
     return [v for v in awaiting_review(db, channels.video_scope(channel))
             if v.curated_at is None and (v.meta or {}).get("clip_ai_titled")
-            and not (v.meta or {}).get("growth_flagged") and not clip_gate_reason(v)]
+            and not _effective_flag(v) and not clip_gate_reason(v)]
 
 
 def _normalize_clip_score(raw: object) -> Optional[float]:
@@ -567,7 +578,7 @@ def reject_flagged(channel_slug: str = "") -> dict:
         rejected_ids: list[str] = []
         for video in rows:
             meta = video.meta or {}
-            if not meta.get("clip_rendered") or meta.get("long_form") or not meta.get("growth_flagged"):
+            if not meta.get("clip_rendered") or meta.get("long_form") or not _effective_flag(video):
                 continue
             video.status = VideoStatus.REJECTED
             video.curated_at = now
@@ -610,7 +621,7 @@ def _approve_clean_in_session(
     approved_ids: list[str] = []
     for video in rows:
         meta = video.meta or {}
-        if not meta.get("clip_rendered") or meta.get("long_form") or meta.get("growth_flagged"):
+        if not meta.get("clip_rendered") or meta.get("long_form") or _effective_flag(video):
             continue
         if not video.transformed_path or not os.path.exists(video.transformed_path):
             continue

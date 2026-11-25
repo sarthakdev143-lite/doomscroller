@@ -72,6 +72,8 @@ _RISKY_TITLE_REPLACEMENTS: tuple[tuple[re.Pattern[str], str, str], ...] = (
     (re.compile(r"\b(?:horrors?|darawna|darawni|darawne)\b", re.IGNORECASE), "suspense", "suspense"),
     (re.compile(r"\b(?:gandi|ganda|gande)\b", re.IGNORECASE), "wild", "ajeeb"),
     (re.compile(r"भूत(?:ों)?"), "mystery", "राज़"),
+    (re.compile(r"\b(?:shits?|shitty|bullshits?|fucks?|fucking|fucked|fuckers?|bitches?|assholes?|bastards?|wtfs?)\b", re.IGNORECASE), "wild", "bawal"),
+    (re.compile(r"\b(?:voodoo|cursed|possessed)\b", re.IGNORECASE), "mystery", "raaz"),
 )
 _HINDI_RISKY_RE = re.compile(
     r"\b(?:kachche|kachcha|bhoot(?:on)?|khoon|darawna|darawni|darawne|gandi|ganda|gande)\b",

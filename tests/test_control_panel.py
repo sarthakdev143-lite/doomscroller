@@ -1802,3 +1802,68 @@ def test_failures_endpoints_and_ui_studio_controls(tmp_path, monkeypatch):
 
     after = c.get("/api/failures").json()
     assert after == {"total": 0, "missing_file_count": 0, "items": []}
+
+
+def test_unsafe_burned_in_hook_is_flagged_blocked_from_approve_clean_and_rejected_by_reject_flagged(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+    from app.growth import approval
+    from app.models import VideoStatus
+    from app.review_ui import PAGE
+
+    assert "vstage short" in PAGE
+    assert "clipCard(c,isQueued)" in PAGE
+    assert "preload:'metadata'" not in PAGE
+
+    _write(tmp_path, monkeypatch, {"channels": [{"slug": "default", "name": "Default"}]})
+    clean_mp4 = tmp_path / "clean.mp4"
+    unsafe_mp4 = tmp_path / "unsafe.mp4"
+    clean_mp4.write_bytes(b"mp4")
+    unsafe_mp4.write_bytes(b"mp4")
+    now = datetime.now(timezone.utc)
+    with session_scope() as db:
+        channels.sync_channels(db)
+        ch = channels.channel_by_slug(db, "default")
+        v_clean = Video(
+            source="youtube",
+            source_id="hook_clean",
+            source_url="https://youtu.be/c",
+            title="Clean Clip",
+            status=VideoStatus.PENDING,
+            channel_id=ch.id,
+            transformed_path=str(clean_mp4),
+            scraped_at=now,
+            meta={"clip_rendered": True, "clip_hook": "Unbelievable final shot", "growth_recipe": {"broll": "on", "sfx": "on"}},
+        )
+        v_unsafe = Video(
+            source="youtube",
+            source_id="hook_unsafe",
+            source_url="https://youtu.be/u",
+            title="Quiz Moment",
+            status=VideoStatus.PENDING,
+            channel_id=ch.id,
+            transformed_path=str(unsafe_mp4),
+            scraped_at=now,
+            meta={"clip_rendered": True, "clip_hook": "Who took a shit in the toilet", "growth_recipe": {"broll": "off", "sfx": "on"}},
+        )
+        db.add_all([v_clean, v_unsafe])
+        db.flush()
+        id_clean, id_unsafe = v_clean.id, v_unsafe.id
+
+    q = approval.queue()
+    by_id = {c["id"]: c for c in q["clips"]}
+    assert by_id[id_unsafe]["flag"] == "unsafe burned-in hook"
+    assert by_id[id_clean]["flag"] == ""
+    assert by_id[id_clean]["recipe"] == {"broll": "on", "sfx": "on"}
+
+    res_app = approval.approve_clean()
+    assert res_app["approved"] == 1
+    assert res_app["ids"] == [id_clean]
+    with session_scope() as db:
+        assert db.get(Video, id_clean).status == VideoStatus.TRANSFORMED
+        assert db.get(Video, id_unsafe).status == VideoStatus.PENDING
+
+    res_rej = approval.reject_flagged()
+    assert res_rej["rejected"] == 1
+    assert res_rej["ids"] == [id_unsafe]
+    with session_scope() as db:
+        assert db.get(Video, id_unsafe).status == VideoStatus.REJECTED

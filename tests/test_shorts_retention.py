@@ -759,3 +759,23 @@ def test_moments_dedupes_sfx_stings_and_locks_hinglish_even_on_english_source_ti
         reply, sentences, words, t, sounds=("vine-boom-sound", "bruh"), min_sec=10, max_sec=30
     )
     assert [m.sound for m in picked] == ["vine-boom-sound", "", "bruh"]
+
+
+def test_clean_hook_and_description_sanitize_risky_words_and_dangling_tail():
+    from app.metadata import has_risky_title_words
+
+    assert has_risky_title_words("Who took a shit in the toilet") is True
+    assert "shit" not in sanitize_shorts_title("Who took a shit in the toilet", language="en").lower()
+    clean_v = sanitize_shorts_title("cursed voodoo doll with blood", language="en").lower()
+    assert "cursed" not in clean_v and "voodoo" not in clean_v and "blood" not in clean_v
+
+    assert "khoon" not in moments.clean_hook("doll ki aankhen se khoon aa raha").lower()
+    assert "shit" not in moments.clean_hook("Who took a shit in the toilet").lower()
+    assert moments.clean_hook("If I don't get this right, my friend") == "If I don't get this right"
+
+    clean_d = moments.clean_description("Blood streaming from cursed voodoo doll eyes").lower()
+    assert "blood" not in clean_d and "cursed" not in clean_d and "voodoo" not in clean_d
+
+    words = [Word("Hello", 0.0, 0.5), Word("world.", 0.5, 1.0)]
+    en_prompt = moments._speech_prompt(moments.build_sentences(words), 1, "Challenge", language="en")
+    assert "advertiser-friendly" in en_prompt.lower()
