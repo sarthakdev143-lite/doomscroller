@@ -281,7 +281,8 @@ def _speech_prompt(sentences: Sequence[Sentence], count: int, title: str, used: 
     sound_field = f', "sound": "<one of: {", ".join(sounds)}; or none>"' if sounds else ""
     sound_rule = ("A meme sound can play once, right after the clip's last line. Name one only when that last line is "
                   "plainly the joke, fail, shock or twist the sound's name describes. Anything emotional, serious or "
-                  "unclear gets none: a wrong sound ruins the clip, and most clips should get none.\n\n"
+                  "unclear gets none: a wrong sound ruins the clip, and most clips should get none. "
+                  "Never reuse the same sound on two clips from the same video.\n\n"
                   if sounds else "")
     pace_note = (f"aim for ~{target_sec} seconds of fast, punchy action."
                  if target_sec else "aim for ~24 seconds of fast, punchy action.")
@@ -291,7 +292,8 @@ def _speech_prompt(sentences: Sequence[Sentence], count: int, title: str, used: 
     hindi_rule = (
         "\nIMPORTANT FOR HINDI SPEECH: Title, hook, reveal, and description MUST be written in Romanized Hinglish "
         "(Hindi words in English/Latin alphabet ONLY — NEVER Devanagari script), punchy Indian vlog Short style, "
-        "title <= 70 chars, hook 3-5 curiosity words, and avoid sensitive words (accident, bhoot, kachche, underwear, blood, murder, horror)."
+        "title <= 70 chars, hook 3-5 curiosity words, and avoid sensitive words (accident, bhoot, kachche, underwear, blood, murder, horror). "
+        "Even if the source Video title is in English, STILL write title, hook, reveal, and description in Romanized Hinglish (NOT pure English and NEVER Devanagari)."
         if is_hindi else ""
     )
     return f"""You choose the moments from a long video that work best as standalone vertical short clips.
@@ -318,6 +320,7 @@ def _moments_from_reply(reply: dict | None, sentences: Sequence[Sentence], words
                         min_sec: Optional[int] = None, max_sec: Optional[int] = None,
                         min_score: float = 0.0) -> list[Moment]:
     moments: list[Moment] = []
+    used_sounds: set[str] = set()
     for clip in _reply_clips(reply):
         if not isinstance(clip, dict):
             continue
@@ -336,12 +339,16 @@ def _moments_from_reply(reply: dict | None, sentences: Sequence[Sentence], words
         start, end = _bounds(fitted[0], fitted[1], sentences, limit)
         written = clean_title(clip.get("title"))
         sound = str(clip.get("sound") or "").strip()
+        chosen_sound = ""
+        if sound in sounds and sound not in used_sounds:
+            chosen_sound = sound
+            used_sounds.add(sound)
         moments.append(Moment(
             start=start, end=end,
             title=written, ai_title=bool(written), hook=clean_hook(clip.get("hook")),
             description=clean_description(clip.get("description")), tags=clean_tags(clip.get("tags")),
             reason=str(clip.get("why") or "")[:300], score=score, kind="speech",
-            sound=sound if sound in sounds else "",
+            sound=chosen_sound,
             reveal=clean_hook(clip.get("reveal")),
         ))
     return moments

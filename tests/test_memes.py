@@ -472,3 +472,35 @@ def test_local_meme_pack_language_scoping_and_native_audio_cue(tmp_path, monkeyp
     fg = clip_render.build_filtergraph(fg_plan, MediaInfo(duration=10.0, width=1080, height=1920, fps=30.0, has_audio=True), 0.0)
     assert "max(0,(1-(t-" in fg
 
+
+def test_clean_vlog_meme_times_and_attach_memes_fallback_times(tmp_path, monkeypatch):
+    from app.clipper import edit as clip_edit
+
+    short_plan = clip_edit.EditPlan(words=[], segments=[(0.0, 8.0)], beats=[], speed=1.0)
+    assert clip_edit.clean_vlog_meme_times(short_plan) == []
+
+    plan = clip_edit.EditPlan(words=[], segments=[(5.0, 17.0), (19.0, 31.0)], beats=[], speed=1.0)
+    times = clip_edit.clean_vlog_meme_times(plan)
+    assert len(times) == 2
+    assert all(plan.to_output(t) is not None for t in times)
+
+    monkeypatch.setattr(settings, "content_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "tenor_api_key", "")
+    monkeypatch.setattr(settings, "giphy_api_key", "")
+    monkeypatch.setattr(settings, "clip_memes", True)
+    monkeypatch.setattr(settings, "clip_memes_allow_stills", False)
+    hi_dir = tmp_path / "memes" / "hi"
+    hi_dir.mkdir(parents=True)
+    for idx in range(2):
+        (hi_dir / f"meme_{idx}.mp4").write_bytes(b"MP4")
+    monkeypatch.setattr(memes, "_playable", lambda p, s: True)
+
+    # Without fallback_times, beats=[] keeps attach_memes a no-op.
+    assert clip_edit.attach_memes(plan, language="hi") == []
+    assert plan.meme_overlays == []
+
+    # With fallback_times, clean_vlog attaches up to 2 overlays.
+    assert clip_edit.attach_memes(plan, language="hi", fallback_times=times) == []
+    assert len(plan.meme_overlays) == 2
+    assert len({ov.clip.meme_id for ov in plan.meme_overlays}) == 2
+

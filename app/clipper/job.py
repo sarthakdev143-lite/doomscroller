@@ -22,7 +22,7 @@ from app.growth import learn, recipes
 
 from . import ai, audio_qa, music, sfx, subtitles
 from .broll import StockSession, credit_line
-from .edit import attach_memes, attach_stock, build_clean_vlog_edit, build_edit, first_sentence_text, opening_line
+from .edit import attach_memes, attach_stock, build_clean_vlog_edit, build_edit, clean_vlog_meme_times, first_sentence_text, opening_line
 from .memes import MemeSession, credit_line as meme_credit_line
 from .ingest import IngestError, SourceVideo, fetch, file_fingerprint, is_url
 from .media import Interrupted, MediaError, probe, require_tools
@@ -473,8 +473,10 @@ def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
                         for message in attach_stock(edit, stock):
                             if message not in warnings:
                                 warn(message)
+                    if edit:
+                        fallback_times = () if timed else clean_vlog_meme_times(edit)
                         try:
-                            meme_msgs = attach_memes(edit, mstock, language=language)
+                            meme_msgs = attach_memes(edit, mstock, language=language, fallback_times=fallback_times)
                         except TypeError:
                             meme_msgs = attach_memes(edit, mstock)
                         for message in meme_msgs:

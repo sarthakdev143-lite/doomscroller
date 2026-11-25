@@ -730,3 +730,32 @@ def test_metadata_hinglish_particles_homographs_and_sensitive_plurals():
         db.add(v)
         db.flush()
         assert pipeline.clip_gate_reason(v) is None
+
+
+def test_moments_dedupes_sfx_stings_and_locks_hinglish_even_on_english_source_title():
+    # Three 15s sentences separated by 1.5s gaps so build_sentences keeps all 3 distinct.
+    words = []
+    t = 0.0
+    for s_idx in range(3):
+        for w_idx in range(25):
+            words.append(Word("khatam." if w_idx == 24 else "baat", t, t + 0.6))
+            t += 0.6
+        t += 1.5
+    sentences = moments.build_sentences(words)
+    assert len(sentences) == 3
+
+    prompt_en = moments._speech_prompt(sentences, 3, "English Source Title", sounds=("vine-boom-sound", "bruh"), language="hi")
+    assert "Never reuse the same sound" in prompt_en
+    assert "Even if the source Video title is in English" in prompt_en
+
+    reply = {
+        "clips": [
+            {"first": 0, "last": 0, "title": "Pehla Clip", "score": 90, "sound": "vine-boom-sound"},
+            {"first": 1, "last": 1, "title": "Doosra Clip", "score": 88, "sound": "vine-boom-sound"},
+            {"first": 2, "last": 2, "title": "Teesra Clip", "score": 85, "sound": "bruh"},
+        ]
+    }
+    picked = moments._moments_from_reply(
+        reply, sentences, words, t, sounds=("vine-boom-sound", "bruh"), min_sec=10, max_sec=30
+    )
+    assert [m.sound for m in picked] == ["vine-boom-sound", "", "bruh"]

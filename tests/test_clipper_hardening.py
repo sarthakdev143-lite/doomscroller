@@ -704,6 +704,54 @@ def test_ai_ask_json_appends_strict_raw_json_suffix_on_retry(monkeypatch):
     assert "valid raw JSON object" in seen_prompts[1]
 
 
+def test_unwrap_cmd_shim_resolves_npm_exe_and_node_js_targets(tmp_path, monkeypatch):
+    exe = tmp_path / "node_modules" / "@opencode" / "cli" / "bin" / "opencode.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(b"MZ")
+    shim = tmp_path / "opencode.CMD"
+    shim.write_text('@ECHO off\r\n"%dp0%\\node_modules\\@opencode\\cli\\bin\\opencode.exe"   %*\r\n', encoding="utf-8")
+    assert ai._unwrap_cmd_shim(shim) == [str(exe.resolve())]
+
+    node = tmp_path / "node.exe"
+    node.write_bytes(b"MZ")
+    js = tmp_path / "node_modules" / "pkg" / "cli.js"
+    js.parent.mkdir(parents=True)
+    js.write_text("console.log(1);", encoding="utf-8")
+    js_shim = tmp_path / "pkg.cmd"
+    js_shim.write_text('@"%_prog%"  "%dp0%\\node_modules\\pkg\\cli.js" %*\r\n', encoding="utf-8")
+    assert ai._unwrap_cmd_shim(js_shim) == [str(node.resolve()), str(js.resolve())]
+
+    other = tmp_path / "other.cmd"
+    other.write_text("@echo hi\r\n", encoding="utf-8")
+    assert ai._unwrap_cmd_shim(other) is None
+
+
+def test_ask_opencode_flattens_newlines_only_for_unwrapped_cmd_with_files(tmp_path, monkeypatch):
+    img = tmp_path / "frame.jpg"
+    img.write_bytes(b"jpg")
+    monkeypatch.setattr(ai, "opencode_path", lambda: "opencode")
+    monkeypatch.setattr(settings, "opencode_model", "test/model")
+
+    seen_args: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        seen_args.append(list(command))
+        import subprocess
+
+        return subprocess.CompletedProcess(command, 0, stdout='{"type":"text","part":{"text":"ok"}}', stderr="")
+
+    monkeypatch.setattr(ai.subprocess, "run", fake_run)
+
+    monkeypatch.setattr(ai, "_command_prefix", lambda b: [r"C:\custom\wrapper.cmd"])
+    assert ai._ask_opencode("line one\nline two\r\nReply JSON", files=[str(img)]) == "ok"
+    assert "\n" not in seen_args[-1][-1] and "\r" not in seen_args[-1][-1]
+    assert "Reply JSON" in seen_args[-1][-1]
+
+    monkeypatch.setattr(ai, "_command_prefix", lambda b: [r"C:\bin\opencode.exe"])
+    assert ai._ask_opencode("line one\nline two\r\nReply JSON", files=[str(img)]) == "ok"
+    assert "\n" in seen_args[-1][-1]
+
+
 # ---------- 7. M2 summary cues & opening-frame word safety ----------
 
 

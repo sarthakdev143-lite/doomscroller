@@ -426,15 +426,46 @@ def attach_stock(plan: EditPlan, session: Optional[broll.StockSession] = None) -
     return warnings
 
 
-def attach_memes(plan: EditPlan, session: Optional[memes.MemeSession] = None, *, language: str = "") -> list[str]:
-    """Flash trending or local video memes over punch beats, keeping only downloads that worked.
+def clean_vlog_meme_times(plan: EditPlan) -> list[float]:
+    """Pick up to 2 source timestamps inside ``plan.segments`` for beatless clean_vlog meme overlays."""
+    dur = plan.duration
+    if dur < 12.0 or not plan.segments:
+        return []
+    speed = plan._effective_speed
+    out_targets = (dur * 0.36, dur * 0.72)
+    source_times: list[float] = []
+    for out_t in out_targets:
+        if out_t + _MEME_SEC > dur:
+            continue
+        src_elapsed = out_t * speed
+        acc = 0.0
+        for begin, finish in plan.segments:
+            seg_len = max(0.0, finish - begin)
+            if acc + seg_len >= src_elapsed:
+                source_times.append(round(begin + (src_elapsed - acc), 3))
+                break
+            acc += seg_len
+    return source_times[:2]
+
+
+def attach_memes(
+    plan: EditPlan,
+    session: Optional[memes.MemeSession] = None,
+    *,
+    language: str = "",
+    fallback_times: Sequence[float] = (),
+) -> list[str]:
+    """Flash trending or local video memes over punch beats (or fallback timestamps), keeping only downloads that worked.
 
     The session spans a whole job, so a rate limit stops the lookups for every
     clip rather than being rediscovered once per clip. Reaction GIFs would fail
     the literal-match vision judge stock shots use, so overlays rotate through
     the local/trending pack instead of being AI-picked.
     """
-    if not [b for b in plan.beats if b.style == PUNCH]:
+    candidate_times = sorted(b.at for b in plan.beats if b.style == PUNCH)
+    if not candidate_times and fallback_times:
+        candidate_times = sorted(float(t) for t in fallback_times if math.isfinite(t))
+    if not candidate_times:
         return []
     if not settings.clip_memes_allow_stills and memes.provider() == memes.MEMEGEN and not memes.has_local_pack(language):
         plan.meme_overlays = []
@@ -447,10 +478,10 @@ def attach_memes(plan: EditPlan, session: Optional[memes.MemeSession] = None, *,
     used: set[str] = set()
     kept: list[MemeOverlay] = []
     last_end = -_MIN_MEME_GAP_SEC
-    for beat in sorted((b for b in plan.beats if b.style == PUNCH), key=lambda b: b.at):
+    for at in candidate_times:
         if len(kept) >= _MAX_MEMES:
             break
-        when = plan.to_output(beat.at)
+        when = plan.to_output(at)
         if when is None or when < last_end + _MIN_MEME_GAP_SEC or when + _MEME_SEC > plan.duration:
             continue
         if session.stopped:
@@ -484,7 +515,7 @@ def attach_memes(plan: EditPlan, session: Optional[memes.MemeSession] = None, *,
             continue
         session.failed_files = 0
         used.add(clip.meme_id)
-        kept.append(MemeOverlay(beat.at, _MEME_SEC, clip))
+        kept.append(MemeOverlay(at, _MEME_SEC, clip))
         last_end = when + _MEME_SEC
     plan.meme_overlays = kept
     return warnings

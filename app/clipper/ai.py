@@ -27,6 +27,7 @@ import json
 import logging
 import math
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -81,10 +82,42 @@ def _resolve_cli(configured: str, name: str, fallbacks: Sequence[Path]) -> Optio
     return None
 
 
+_CMD_EXE_RE = re.compile(r'"%(?:~)?dp0%?[\\/]([^"\r\n]+?\.exe)"', re.IGNORECASE)
+_CMD_JS_RE = re.compile(r'"%(?:~)?dp0%?[\\/]([^"\r\n]+?\.(?:c|m)?js)"', re.IGNORECASE)
+
+
+def _unwrap_cmd_shim(path: Path) -> Optional[list[str]]:
+    """Resolve an npm-style .cmd/.bat shim to its direct .exe or [node, .js] command so cmd.exe never truncates args."""
+    if not path.is_file() or path.suffix.lower() not in {".cmd", ".bat"}:
+        return None
+    try:
+        with path.open("rb") as fh:
+            text = fh.read(4096).decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    m_exe = _CMD_EXE_RE.search(text)
+    if m_exe:
+        target = (path.parent / m_exe.group(1).replace("\\", "/")).resolve()
+        if target.is_file():
+            return [str(target)]
+    m_js = _CMD_JS_RE.search(text)
+    if m_js:
+        target = (path.parent / m_js.group(1).replace("\\", "/")).resolve()
+        if target.is_file():
+            sibling = path.parent / "node.exe"
+            node = str(sibling.resolve()) if sibling.is_file() else shutil.which("node")
+            if node:
+                return [node, str(target)]
+    return None
+
+
 def _command_prefix(binary: str) -> list[str]:
-    """Build argv[0..] for ``binary``, resolving ``#!`` scripts on Windows where CreateProcess cannot."""
+    """Build argv[0..] for ``binary``, unwrapping Windows .cmd shims and ``#!`` scripts."""
     if os.name == "nt":
         p = Path(binary)
+        unwrapped = _unwrap_cmd_shim(p)
+        if unwrapped:
+            return unwrapped
         if p.is_file() and p.suffix.lower() not in {".exe", ".com", ".bat", ".cmd"}:
             try:
                 with p.open("rb") as fh:
@@ -254,7 +287,12 @@ def _ask_opencode(prompt: str, *, files: Sequence[str] = (), model: str = "") ->
         # carry attachments are short, so the argument limit does not apply.
         kwargs: dict = {"stdin": subprocess.DEVNULL} if files else {"input": clean_prompt}
         if files:
-            command.append(clean_prompt)
+            arg_prompt = (
+                re.sub(r"\s*\r?\n\s*", " ", clean_prompt)
+                if (prefix and prefix[0].lower().endswith((".cmd", ".bat")))
+                else clean_prompt
+            )
+            command.append(arg_prompt)
         with tempfile.TemporaryDirectory(prefix="clipper-ai-", ignore_cleanup_errors=True) as empty_dir:
             try:
                 proc = subprocess.run(
