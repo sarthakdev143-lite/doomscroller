@@ -64,11 +64,13 @@ class MetadataUpdate(BaseModel):
 
 class RejectFlaggedRequest(BaseModel):
     channel_slug: str = ""
+    video_ids: list[str] | None = None
 
 
 class ApproveCleanRequest(BaseModel):
     channel_slug: str = ""
     min_score: float | None = None
+    video_ids: list[str] | None = None
 
 
 class PinRequest(BaseModel):
@@ -184,16 +186,19 @@ def api_logout(request: Request) -> JSONResponse:
 
 # ---------- Review ----------
 @review_app.get("/api/queue")
-def api_queue(request: Request) -> JSONResponse:
+def api_queue(request: Request, channel: str = "") -> JSONResponse:
     _guard(request)
-    return JSONResponse(approval.queue())
+    return JSONResponse(approval.queue(channel_slug=channel))
 
 
 @review_app.post("/api/clips/reject-flagged")
 def api_reject_flagged(request: Request, body: RejectFlaggedRequest | None = None) -> dict:
     _guard(request)
     try:
-        return approval.reject_flagged(body.channel_slug if body else "")
+        return approval.reject_flagged(
+            body.channel_slug if body else "",
+            video_ids=body.video_ids if body else None,
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 
@@ -207,6 +212,7 @@ def api_approve_clean(request: Request, body: ApproveCleanRequest | None = None)
                 db,
                 channel_slug=body.channel_slug if body else "",
                 min_score=body.min_score if body else None,
+                video_ids=body.video_ids if body else None,
             )
     except ValueError as exc:
         raise HTTPException(400, str(exc))

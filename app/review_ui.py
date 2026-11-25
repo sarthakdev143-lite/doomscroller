@@ -353,7 +353,7 @@ for(const [id,label,ic] of TABS){
 }
 
 /* ===================== REVIEW ===================== */
-const edits={},cards=new Map();let lastQ=null,filter='all',reviewMode='review',searchQuery='',sortBy='newest',armedResume=null,armedFlagReject=false,flagArmTimer=null,armedCleanApprove=false,cleanArmTimer=null,kbIdx=-1;
+const edits={},cards=new Map();let lastQ=null,queueChannel='',filter='all',reviewMode='review',searchQuery='',sortBy='newest',armedResume=null,armedFlagReject=false,flagArmTimer=null,armedCleanApprove=false,cleanArmTimer=null,kbIdx=-1;
 try{filter=localStorage.getItem('reviewFilter')||'all'}catch(e){}
 const rvTools=$('rv-tools'),rvSearch=$('rv-search'),rvSort=$('rv-sort'),rvSpeed=$('rv-speed');
 function syncSpeedUi(){rvSpeed.textContent='Speed: '+playbackSpeed+'x';for(const v of document.querySelectorAll('video'))applySpeed(v)}
@@ -368,7 +368,7 @@ function matchesSearch(item){
   return hay.includes(searchQuery);
 }
 function reviewBusy(){const a=document.activeElement;return(a&&(a.tagName==='INPUT'||a.tagName==='TEXTAREA')&&$('list').contains(a))||[...$('list').querySelectorAll('video')].some(v=>!v.paused&&!v.ended)}
-function setFilter(f){filter=f;armedFlagReject=false;armedCleanApprove=false;kbIdx=-1;try{localStorage.setItem('reviewFilter',f)}catch(e){}renderReview()}
+function setFilter(f){filter=f;armedFlagReject=false;armedCleanApprove=false;kbIdx=-1;try{localStorage.setItem('reviewFilter',f)}catch(e){}renderReview();if(reviewMode==='review'&&(f||'all')!==(queueChannel||'all')&&(lastQ&&(lastQ.total_waiting||0)>(lastQ.clips||[]).length||(queueChannel&&queueChannel!=='all')))loaders.review()}
 function setReviewMode(m){reviewMode=m;armedFlagReject=false;armedCleanApprove=false;kbIdx=-1;cards.clear();$('list').replaceChildren();renderReview()}
 function sourceHref(url,start){
   if(!url||!/^https?:\/\//i.test(url))return'';
@@ -379,8 +379,8 @@ function sourceHref(url,start){
 }
 function renderModes(d){
   const box=$('rv-modes');box.replaceChildren();
-  const qCount=(d.queued||[]).length,pCount=(d.posted||[]).length,sCount=(d.scraped||[]).length;
-  const modes=[['review','To review ('+d.clips.length+')']];
+  const qCount=(d.queued||[]).length,pCount=(d.posted||[]).length,sCount=(d.scraped||[]).length,totalW=d.total_waiting!=null?d.total_waiting:d.clips.length;
+  const modes=[['review','To review ('+totalW+')']];
   if(sCount>0||reviewMode==='scraped')modes.push(['scraped','Scraped ('+sCount+')']);
   modes.push(['queued','Up next ('+qCount+')'],['posted','Posted ('+pCount+')']);
   for(const [id,lbl] of modes){
@@ -452,7 +452,7 @@ function renderFlaggedBar(pool){
       }
       clearTimeout(cleanArmTimer);armedCleanApprove=false;cbtn.disabled=true;
       try{
-        const r=await api.post('/api/clips/approve-clean',{channel_slug:filter==='all'?'':filter});
+        const r=await api.post('/api/clips/approve-clean',{channel_slug:filter==='all'?'':filter,video_ids:clean.map(c=>c.id)});
         for(const id of (r.ids||[])){delete edits[id];const cd=cards.get(id);if(cd){cd.remove();cards.delete(id)}}
         toast('Approved '+(r.approved||0)+' unflagged clip'+((r.approved||0)===1?'':'s'),(r.ids&&r.ids.length===1)?r.ids[0]:null);
         loaders.review();
@@ -474,7 +474,7 @@ function renderFlaggedBar(pool){
       }
       clearTimeout(flagArmTimer);armedFlagReject=false;btn.disabled=true;
       try{
-        const r=await api.post('/api/clips/reject-flagged',{channel_slug:filter==='all'?'':filter});
+        const r=await api.post('/api/clips/reject-flagged',{channel_slug:filter==='all'?'':filter,video_ids:flagged.map(c=>c.id)});
         for(const id of (r.ids||[])){delete edits[id];const cd=cards.get(id);if(cd){cd.remove();cards.delete(id)}}
         toast('Rejected '+(r.rejected||0)+' flagged clip'+((r.rejected||0)===1?'':'s'),(r.ids&&r.ids.length===1)?r.ids[0]:null);
         loaders.review();
@@ -676,7 +676,9 @@ function renderReviewList(clips,isQueued,queuedTotal,scrapedTotal){
 function renderReview(){
   if(!lastQ)return;const d=lastQ,channels=d.channels||[],queuedAll=d.queued||[],scrapedAll=d.scraped||[];
   if(channels.length&&filter!=='all'&&!channels.some(c=>c.slug===filter))filter='all';
-  $('rv-stats').textContent=d.clips.length+' to review · '+d.approved_waiting+' queued · '+d.posted_today+' posted today · next '+(d.next_post?fmt(d.next_post):'not planned');
+  const totalW=d.total_waiting!=null?d.total_waiting:d.clips.length;
+  const reviewTxt=totalW>d.clips.length?(totalW+' to review ('+d.clips.length+' shown)'):(totalW+' to review');
+  $('rv-stats').textContent=reviewTxt+' · '+d.approved_waiting+' queued · '+d.posted_today+' posted today · next '+(d.next_post?fmt(d.next_post):'not planned');
   const paused=(channels.find(c=>c.attention&&/paused|hold/i.test(c.attention)&&!c.owner_paused)||{}).attention;
   const banner=$('banner');if(paused){banner.hidden=false;banner.replaceChildren(el('div',{className:'banner'},paused+' — some channels are not posting.'))}else banner.hidden=true;
   renderModes(d);renderChips(channels);renderStrip(channels);
@@ -970,7 +972,8 @@ function formatReportSummary(d,pickSlug){
       if(top)lines.push('- '+f+': '+top.arm+' ('+top.multiplier+'x views · '+Math.round((top.p_best||0)*100)+'% best · n='+top.n+')');
     }
   }
-  const probs=d.problems||[];
+  const allProbs=d.problems||[];
+  const probs=pickSlug?allProbs.filter(p=>(p.channel_slug||'default')===pickSlug):allProbs;
   if(probs.length){
     lines.push('Recent problems (30d): '+probs.length);
     for(const p of probs.slice(0,3))lines.push('- '+(p.channel?'['+p.channel+'] ':'')+p.summary);
@@ -1002,12 +1005,16 @@ function renderReport(){
   }
   for(const [label,arr] of [['Best videos',bestList],['Worst videos',view.worst||[]]]){if(!arr.length)continue;
     const card=el('div',{className:'card',style:'padding:12px'});card.append(el('h2',{},label));
-    for(const r of arr){const line=el('div',{className:'rowline'});line.append(el('span',{style:'overflow:hidden;text-overflow:ellipsis;white-space:nowrap'},r.title||'—'),el('span',{className:'r'},(r.views||0).toLocaleString()+(r.diagnosis?(' · '+r.diagnosis):'')));card.append(line)}body.append(card)}
-  if((d.problems||[]).length){const card=el('div',{className:'card',style:'padding:12px'});card.append(el('h2',{},'Problems (30 days)'));
-    for(const p of d.problems.slice(0,20)){const line=el('div',{className:'rowline'});line.append(el('span',{},(p.channel?('['+p.channel+'] '):'')+p.summary),el('span',{className:'r'},ago(p.at)));card.append(line)}body.append(card);setAlert('report',true)}
-  else setAlert('report',false);
-  if((d.events||[]).length){const card=el('div',{className:'card',style:'padding:12px'});card.append(el('h2',{},'Recent activity'));
-    for(const e of d.events.slice(0,25)){const line=el('div',{className:'rowline'});line.append(el('span',{},(e.channel?('['+e.channel+'] '):'')+e.summary),el('span',{className:'r'},ago(e.at)));card.append(line)}body.append(card)}
+    for(const r of arr){const line=el('div',{className:'rowline'});const titleNode=r.url?el('a',{href:r.url,target:'_blank',rel:'noopener',className:'srclink',style:'overflow:hidden;text-overflow:ellipsis;white-space:nowrap'},r.title||'—'):el('span',{style:'overflow:hidden;text-overflow:ellipsis;white-space:nowrap'},r.title||'—');line.append(titleNode,el('span',{className:'r'},(r.views||0).toLocaleString()+(r.diagnosis?(' · '+r.diagnosis):'')));card.append(line)}body.append(card)}
+  const allProbs=d.problems||[];
+  const probs=reportPick?allProbs.filter(p=>(p.channel_slug||'default')===reportPick):allProbs;
+  if(probs.length){const card=el('div',{className:'card',style:'padding:12px'});card.append(el('h2',{},'Problems (30 days)'));
+    for(const p of probs.slice(0,20)){const line=el('div',{className:'rowline'});line.append(el('span',{},(p.channel?('['+p.channel+'] '):'')+p.summary),el('span',{className:'r'},ago(p.at)));card.append(line)}body.append(card);setAlert('report',allProbs.length>0)}
+  else setAlert('report',allProbs.length>0);
+  const allEvs=d.events||[];
+  const evs=reportPick?allEvs.filter(e=>(e.channel_slug||'default')===reportPick):allEvs;
+  if(evs.length){const card=el('div',{className:'card',style:'padding:12px'});card.append(el('h2',{},'Recent activity'));
+    for(const e of evs.slice(0,25)){const line=el('div',{className:'rowline'});line.append(el('span',{},(e.channel?('['+e.channel+'] '):'')+e.summary),el('span',{className:'r'},ago(e.at)));card.append(line)}body.append(card)}
 }
 async function loadReport(){try{reportData=await api.get('/api/report');renderReport()}catch(e){$('rp-body').replaceChildren(el('div',{className:'err'},'Could not load.'))}}
 
@@ -1515,9 +1522,18 @@ function longCard(item){
 
   const mk=(lbl,node)=>{const d=el('div');d.append(el('label',{},lbl),node);return d};
   const titleInp=el('input',{value:item.title||''});
+  const titleCnt=el('span',{className:'tcnt'});
+  const syncTitleCnt=()=>{titleCnt.textContent=titleInp.value.length+'/100';titleCnt.className='tcnt'+(titleInp.value.length>100?' over':'')};
+  syncTitleCnt();
+  titleInp.addEventListener('input',syncTitleCnt);
+  const titleRow=el('div',{className:'trow'});titleRow.append(titleInp,titleCnt);
   const descInp=el('textarea',{rows:4,value:item.description||''});
+  const descCnt=el('span',{className:'tcnt'});
+  const syncLongDescCnt=()=>{const bytes=new TextEncoder().encode(descInp.value).length;descCnt.textContent=bytes+'/5000B';descCnt.className='tcnt'+(bytes>5000?' over':'')};
+  syncLongDescCnt();
+  descInp.addEventListener('input',syncLongDescCnt);
   const tagsInp=el('input',{value:(item.tags||[]).join(', ')});
-  body.append(mk('Title (no #Shorts)',titleInp));
+  body.append(mk('Title (no #Shorts)',titleRow));
 
   if(item.status==='pending'||item.status==='transformed'){
     const acts=el('div',{className:'actions'});
@@ -1610,7 +1626,9 @@ function longCard(item){
   const metaDet=el('details',{className:'sx'});
   metaDet.append(el('summary',{},'Description, Tags & ChatGPT Prompt'));
   const metaWrap=el('div',{style:'display:grid;gap:8px;margin-top:8px'});
-  metaWrap.append(mk('Description & Chapters',descInp),mk('Tags (comma-separated)',tagsInp));
+  const descHead=el('div',{style:'display:flex;justify-content:space-between;align-items:baseline'});
+  descHead.append(el('label',{style:'margin:0'},'Description & Chapters'),descCnt);
+  metaWrap.append(descHead,descInp,mk('Tags (comma-separated)',tagsInp));
   if(item.status==='pending'||item.status==='transformed'){
     const saveMeta=el('button',{className:'ghost'},'Save metadata');
     saveMeta.onclick=async()=>{
@@ -1775,7 +1793,7 @@ document.addEventListener('keydown',e=>{
 
 /* ---------- wiring ---------- */
 const loaders={
-  review:async()=>{try{lastQ=await api.get('/api/queue');renderReview()}catch(e){if(e instanceof Response&&e.status===401)$('rv-stats').textContent='Session expired — reopen your link.'}},
+  review:async()=>{try{const want=filter||'all';const qStr=want!=='all'?('?channel='+encodeURIComponent(filter)):'';lastQ=await api.get('/api/queue'+qStr);queueChannel=want;renderReview()}catch(e){if(e instanceof Response&&e.status===401)$('rv-stats').textContent='Session expired — reopen your link.'}},
   clip:loadClip,long:loadLong,channels:loadChannels,status:()=>loadDoctor(false),report:loadReport,controls:loadControls,
 };
 show('review');

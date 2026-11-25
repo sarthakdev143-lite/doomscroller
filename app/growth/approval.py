@@ -36,17 +36,25 @@ class ReviewError(ValueError):
     pass
 
 
-def awaiting_review(db, scope=None, limit: int = _QUEUE_LIMIT) -> list[Video]:
+def awaiting_review(db, scope=None, limit: Optional[int] = _QUEUE_LIMIT) -> list[Video]:
     conds = [Video.status == VideoStatus.PENDING]
     if scope is not None:
         conds.append(scope)
-    cap = max(1, int(limit))
-    rows = db.execute(select(Video).where(*conds)
-                      .order_by(Video.scraped_at.desc()).limit(cap * 3)).scalars().all()
-    return [v for v in rows if (v.meta or {}).get("clip_rendered")
-            and not (v.meta or {}).get("long_form")
-            and v.transformed_path
-            and os.path.exists(v.transformed_path)][:cap]
+    stmt = select(Video).where(*conds).order_by(Video.scraped_at.desc())
+    if limit is not None:
+        cap = max(1, int(limit))
+        rows = db.execute(stmt.limit(cap * 3)).scalars().all()
+    else:
+        cap = None
+        rows = db.execute(stmt).scalars().all()
+    out = [
+        v for v in rows
+        if (v.meta or {}).get("clip_rendered")
+        and not (v.meta or {}).get("long_form")
+        and v.transformed_path
+        and os.path.exists(v.transformed_path)
+    ]
+    return out[:cap] if cap is not None else out
 
 
 def _balanced_awaiting_review(db, active: Sequence) -> list[Video]:
@@ -292,7 +300,7 @@ def _channel_status(db, channel) -> dict:
         Video.status == VideoStatus.PUBLISHED, Video.published_at >= today, scope)) or 0
     plan = db.get(GrowthState, channels.state_key(channel, "plan"))
     waiting_posts = [p for p in (plan.value or {}).get("posts", []) if p.get("state") == "waiting"] if plan else []
-    waiting = len(awaiting_review(db, scope))
+    waiting = len(awaiting_review(db, scope, limit=None))
     approved = len(ready_clips(db, scope))
     pause = safety.pause_state(db, channel)
     return {
@@ -309,21 +317,28 @@ def _channel_status(db, channel) -> dict:
     }
 
 
-def queue() -> dict:
+def queue(channel_slug: str = "") -> dict:
     from . import channels
     from .autopilot import ready_clips
 
+    slug = (channel_slug or "").strip()
     with session_scope() as db:
         active = channels.active_channels(db)
-        cards = [_card(v, db) for v in _balanced_awaiting_review(db, active)]
+        per = [_channel_status(db, c) for c in active]
+        total_waiting = sum(c["waiting"] for c in per) if per else len(awaiting_review(db, limit=None))
+        target = channels.channel_by_slug(db, slug) if (slug and slug != "all") else None
+        if target is not None:
+            cards = [_card(v, db) for v in awaiting_review(db, channels.video_scope(target))[:_QUEUE_LIMIT]]
+        else:
+            cards = [_card(v, db) for v in _balanced_awaiting_review(db, active)]
         scraped = [_card(v, db) for v in awaiting_scraped(db)]
         queued = [_card(v, db) for v in ready_clips(db)][:_QUEUE_LIMIT]
-        per = [_channel_status(db, c) for c in active]
         posted = recent_posts(db)
     # A single legacy channel keeps the flat view; several add a per-channel status strip and filter chips.
     multi = len(active) > 1 or (len(active) == 1 and not channels.is_default(active[0]))
     return {
         "clips": cards,
+        "total_waiting": total_waiting,
         "scraped": scraped,
         "queued": queued,
         "channels": per if multi else [],
@@ -594,10 +609,19 @@ def reject(video_id: str) -> dict:
         return {"id": video_id, "status": video.status.value}
 
 
-def reject_flagged(channel_slug: str = "") -> dict:
-    """Reject all flagged pending rendered clips in one batch (optionally scoped to one channel)."""
+def _allowed_id_set(video_ids: Optional[Sequence[str]]) -> Optional[set[str]]:
+    if video_ids is None:
+        return None
+    return {str(x).strip() for x in video_ids if str(x).strip()}
+
+
+def reject_flagged(channel_slug: str = "", video_ids: Optional[Sequence[str]] = None) -> dict:
+    """Reject flagged pending rendered clips in one batch (optionally scoped to one channel and/or IDs)."""
     from . import channels
 
+    allowed = _allowed_id_set(video_ids)
+    if allowed is not None and not allowed:
+        return {"rejected": 0, "ids": []}
     slug = (channel_slug or "").strip()
     now = datetime.now(timezone.utc)
     with session_scope() as db:
@@ -611,6 +635,8 @@ def reject_flagged(channel_slug: str = "") -> dict:
         rows = db.execute(select(Video).where(*conds).order_by(Video.scraped_at.desc())).scalars().all()
         rejected_ids: list[str] = []
         for video in rows:
+            if allowed is not None and video.id not in allowed:
+                continue
             meta = video.meta or {}
             if not meta.get("clip_rendered") or meta.get("long_form") or not _effective_flag(video):
                 continue
@@ -626,9 +652,13 @@ def _approve_clean_in_session(
     *,
     channel_slug: str = "",
     min_score: Optional[float] = None,
+    video_ids: Optional[Sequence[str]] = None,
 ) -> dict:
     from . import channels
 
+    allowed = _allowed_id_set(video_ids)
+    if allowed is not None and not allowed:
+        return {"approved": 0, "ids": []}
     threshold: Optional[float] = None
     if min_score is not None:
         if isinstance(min_score, bool):
@@ -654,6 +684,8 @@ def _approve_clean_in_session(
     rows = db.execute(select(Video).where(*conds).order_by(Video.scraped_at.desc())).scalars().all()
     approved_ids: list[str] = []
     for video in rows:
+        if allowed is not None and video.id not in allowed:
+            continue
         meta = video.meta or {}
         if not meta.get("clip_rendered") or meta.get("long_form") or _effective_flag(video):
             continue
@@ -680,15 +712,18 @@ def approve_clean(
     db=None,
     channel_slug: str = "",
     min_score: Optional[float] = None,
+    video_ids: Optional[Sequence[str]] = None,
 ) -> dict:
-    """Approve all unflagged awaiting_review clips matching channel_slug and optional min_score."""
+    """Approve all unflagged awaiting_review clips matching channel_slug, optional min_score, and video_ids."""
     if isinstance(db, str):
         channel_slug = db
         db = None
     if db is None:
         with session_scope() as owned_db:
-            return _approve_clean_in_session(owned_db, channel_slug=channel_slug, min_score=min_score)
-    return _approve_clean_in_session(db, channel_slug=channel_slug, min_score=min_score)
+            return _approve_clean_in_session(
+                owned_db, channel_slug=channel_slug, min_score=min_score, video_ids=video_ids
+            )
+    return _approve_clean_in_session(db, channel_slug=channel_slug, min_score=min_score, video_ids=video_ids)
 
 
 _DECISION_KEYS = ("owner_approved", "owner_rejected", "auto_approved")

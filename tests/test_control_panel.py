@@ -1960,3 +1960,149 @@ def test_review_ui_keeps_channel_chips_on_posted_and_refocuses_keyboard_after_de
 
     assert "reviewMode==='posted'||reviewMode==='scraped'" not in PAGE
     assert "if(kbIdx>=0)focusCard(kbIdx)" in PAGE
+
+
+def test_queue_channel_param_total_waiting_and_scoped_bulk_video_ids(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from app.growth import approval
+    from app.models import VideoStatus
+
+    _write(
+        tmp_path,
+        monkeypatch,
+        {
+            "channels": [
+                {"slug": "default", "name": "Default"},
+                {"slug": "indianvlogs", "name": "Indian Vlogs", "enabled": True},
+            ]
+        },
+    )
+    mp4 = tmp_path / "clip.mp4"
+    mp4.write_bytes(b"mp4")
+    now = datetime.now(timezone.utc)
+    def_clean_ids: list[str] = []
+    flagged_id = ""
+    with session_scope() as db:
+        channels.sync_channels(db)
+        ch_def = channels.channel_by_slug(db, "default")
+        ch_hi = channels.channel_by_slug(db, "indianvlogs")
+        for i in range(41):
+            v = Video(
+                source="youtube",
+                source_id=f"def_clean_{i}",
+                source_url=f"https://youtu.be/dc{i}",
+                title=f"Def Clean {i}",
+                status=VideoStatus.PENDING,
+                channel_id=ch_def.id,
+                transformed_path=str(mp4),
+                scraped_at=now - timedelta(minutes=i),
+                meta={"clip_rendered": True},
+            )
+            db.add(v)
+            db.flush()
+            def_clean_ids.append(v.id)
+        vf = Video(
+            source="youtube",
+            source_id="def_flag_0",
+            source_url="https://youtu.be/df0",
+            title="Def Flag",
+            status=VideoStatus.PENDING,
+            channel_id=ch_def.id,
+            transformed_path=str(mp4),
+            scraped_at=now + timedelta(seconds=10),
+            meta={"clip_rendered": True, "growth_flagged": "unsafe burned-in hook"},
+        )
+        db.add(vf)
+        db.flush()
+        flagged_id = vf.id
+        for i in range(3):
+            db.add(
+                Video(
+                    source="youtube",
+                    source_id=f"hi_clip_{i}",
+                    source_url=f"https://youtu.be/hc{i}",
+                    title=f"Hi {i}",
+                    status=VideoStatus.PENDING,
+                    channel_id=ch_hi.id,
+                    transformed_path=str(mp4),
+                    scraped_at=now - timedelta(hours=4, minutes=i),
+                    meta={"clip_rendered": True},
+                )
+            )
+
+    c = _client()
+    q_all = c.get("/api/queue").json()
+    assert q_all["total_waiting"] == 45
+    assert len(q_all["clips"]) == approval._QUEUE_LIMIT
+
+    q_def = c.get("/api/queue?channel=default").json()
+    assert len(q_def["clips"]) == approval._QUEUE_LIMIT
+    assert all(clip["channel_slug"] == "default" for clip in q_def["clips"])
+
+    # Scoped bulk approve only approves the requested visible video_ids
+    pick_two = def_clean_ids[:2]
+    r_empty = c.post("/api/clips/approve-clean", json={"channel_slug": "default", "video_ids": []}).json()
+    assert r_empty["approved"] == 0
+    r_two = c.post("/api/clips/approve-clean", json={"channel_slug": "default", "video_ids": pick_two}).json()
+    assert r_two["approved"] == 2 and set(r_two["ids"]) == set(pick_two)
+
+    # Flagged reject with unrelated ID rejects nothing; exact ID rejects 1
+    assert c.post("/api/clips/reject-flagged", json={"channel_slug": "default", "video_ids": [def_clean_ids[5]]}).json()["rejected"] == 0
+    r_flag = c.post("/api/clips/reject-flagged", json={"channel_slug": "default", "video_ids": [flagged_id]}).json()
+    assert r_flag["rejected"] == 1 and r_flag["ids"] == [flagged_id]
+
+
+def test_report_events_carry_channel_slug_best_has_url_and_ui_wiring(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from app.growth import report
+    from app.models import GrowthEvent, VideoSnapshot, VideoStatus
+    from app.review_ui import PAGE
+
+    _write(
+        tmp_path,
+        monkeypatch,
+        {
+            "channels": [
+                {"slug": "default", "name": "Default"},
+                {"slug": "indianvlogs", "name": "Indian Vlogs", "enabled": True},
+            ]
+        },
+    )
+    now = datetime.now(timezone.utc)
+    pub_at = now - timedelta(hours=settings.growth_horizon_hours + 5)
+    with session_scope() as db:
+        channels.sync_channels(db)
+        ch_hi = channels.channel_by_slug(db, "indianvlogs")
+        v = Video(
+            source="youtube",
+            source_id="rep_v1",
+            source_url="https://youtu.be/src1",
+            title="Top Short",
+            status=VideoStatus.PUBLISHED,
+            youtube_video_id="REALYT999",
+            published_at=pub_at,
+            channel_id=ch_hi.id,
+            meta={"clip_rendered": True, "yt_privacy": "public"},
+        )
+        db.add(v)
+        db.flush()
+        db.add(VideoSnapshot(video_id=v.id, taken_at=pub_at + timedelta(minutes=30), age_hours=0.5, views=10))
+        db.add(VideoSnapshot(video_id=v.id, taken_at=now, age_hours=float(settings.growth_horizon_hours + 2), views=2500))
+        db.add(GrowthEvent(kind="posted", video_id=v.id, channel_id=ch_hi.id, summary="Hi posted"))
+        db.add(GrowthEvent(kind="starved", channel_id=None, summary="Default starved"))
+        db.flush()
+        rep = report.build_report(db)
+
+    hi_best = rep["channels"]["indianvlogs"]["best"]
+    assert len(hi_best) == 1
+    assert hi_best[0]["url"] == "https://youtube.com/shorts/REALYT999"
+    ev_by_sum = {e["summary"]: e for e in rep["events"] + rep["problems"]}
+    assert ev_by_sum["Hi posted"]["channel_slug"] == "indianvlogs"
+    assert ev_by_sum["Default starved"]["channel_slug"] == "default"
+
+    assert "video_ids:clean.map(c=>c.id)" in PAGE
+    assert "video_ids:flagged.map(c=>c.id)" in PAGE
+    assert "?channel='+encodeURIComponent(filter)" in PAGE
+    assert "p.channel_slug||'default')===reportPick" in PAGE
+    assert "'/5000B'" in PAGE
+    assert "'/100'" in PAGE

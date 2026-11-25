@@ -344,10 +344,14 @@ def _stock_warning(db, stock: int, channel=None) -> Optional[str]:
 
 
 def _events(db, *where, limit: Optional[int] = None) -> list[dict]:
-    names = {c.id: (c.name or c.slug) for c in channels.all_channels(db)}
+    all_chs = channels.all_channels(db)
+    names = {c.id: (c.name or c.slug) for c in all_chs}
+    slugs = {c.id: c.slug for c in all_chs}
     rows = select(GrowthEvent).where(*where).order_by(GrowthEvent.created_at.desc()).limit(limit)
     return [{"at": e.created_at.isoformat(), "kind": e.kind, "summary": e.summary,
-             "channel": names.get(e.channel_id, "")} for e in db.execute(rows).scalars()]
+             "channel": names.get(e.channel_id, ""),
+             "channel_slug": slugs.get(e.channel_id, "default") if e.channel_id else "default"}
+            for e in db.execute(rows).scalars()]
 
 
 def _section(db, channel, now: datetime) -> dict:
@@ -359,12 +363,20 @@ def _section(db, channel, now: datetime) -> dict:
     paused, plan, focus, summary = (db.get(GrowthState, key(name)) for name in ("paused", "plan", "focus", "summary"))
     results = matured_results(db, scope=scope, zone=channel_zone(channel))
     diagnoses = {}
+    yt_ids: dict[str, str] = {}
     if results:
         for video in db.execute(select(Video).where(Video.id.in_([r.video_id for r in results]))).scalars():
             diagnoses[video.id] = (video.meta or {}).get("growth_diagnosis", {})
+            yt_ids[video.id] = (video.youtube_video_id or "").strip()
     ranked = sorted(results, key=lambda r: -r.views)
-    row = lambda r: {"id": r.video_id, "title": r.title, "views": r.views, "retention": r.retention,
-                     "arms": r.arms, "diagnosis": diagnoses.get(r.video_id, {}).get("reason", "")}
+    row = lambda r: {
+        "id": r.video_id, "title": r.title, "views": r.views, "retention": r.retention,
+        "arms": r.arms, "diagnosis": diagnoses.get(r.video_id, {}).get("reason", ""),
+        "url": (
+            f"https://youtube.com/shorts/{yt_ids[r.video_id]}"
+            if yt_ids.get(r.video_id) and not yt_ids[r.video_id].startswith("MOCK_") else ""
+        ),
+    }
     best_rows = ranked[:5]
     rest = ranked[len(best_rows):]
     stock = len(ready_clips(db, scope))
