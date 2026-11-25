@@ -413,7 +413,8 @@ def _call_llm(system_prompt: str, user_prompt: str) -> Optional[str]:
     try:
         proc = subprocess.run(
             ["z-ai", "chat", "--prompt", user_prompt, "--system", system_prompt],
-            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=settings.llm_timeout_sec,
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=settings.llm_timeout_sec,
             **background_subprocess_kwargs(low_priority=True),
         )
     except subprocess.TimeoutExpired:
@@ -433,8 +434,13 @@ def _call_llm(system_prompt: str, user_prompt: str) -> Optional[str]:
         payload = json.loads(proc.stdout[start:])
     except json.JSONDecodeError:
         return None
-    choices = payload.get("choices") or [{}]
-    return (choices[0].get("message") or {}).get("content")
+    if not isinstance(payload, dict):
+        return None
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        return None
+    msg = choices[0].get("message")
+    return msg.get("content") if isinstance(msg, dict) else None
 
 
 def llm_available() -> bool:

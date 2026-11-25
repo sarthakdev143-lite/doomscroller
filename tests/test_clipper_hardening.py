@@ -1014,3 +1014,40 @@ def test_wave13_transcribe_sarvam_cleanup_interrupted_unified_scrub_and_atomic_c
     assert not list(tmp_path.glob("*.tmp.wav"))
 
 
+def test_wave15_sfx_propagates_interrupted_media_sideways_nan_and_metadata_llm_encoding(
+    tmp_path, monkeypatch
+):
+    import subprocess
+    from app import metadata
+    from app.clipper import media, sfx
+
+    # A. sfx.sting and sfx._decode_pack propagate Interrupted instead of swallowing it
+    def raise_interrupted(*_a, **_kw):
+        raise media.Interrupted("stopping")
+
+    monkeypatch.setattr(media, "read_ffmpeg", raise_interrupted)
+    with pytest.raises(media.Interrupted):
+        sfx.sting("dummy.mp3")
+    with pytest.raises(media.Interrupted):
+        sfx._decode_pack(tmp_path / "whoosh.mp3")
+
+    # B. media._is_sideways handles non-dict side_data_list items and non-finite rotations
+    assert media._is_sideways({"tags": {"rotate": "inf"}, "side_data_list": ["not-a-dict", None]}) is False
+    assert media._is_sideways({"tags": {"rotate": "nan"}}) is False
+    assert media._is_sideways({"side_data_list": [{"rotation": -90}]}) is True
+
+    # C. metadata._call_llm passes encoding="utf-8", errors="replace" and handles non-dict JSON safely
+    captured_kwargs: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        captured_kwargs.update(kwargs)
+        return subprocess.CompletedProcess(cmd, 0, stdout='{"choices": ["not-a-dict"]}', stderr="")
+
+    monkeypatch.setattr(metadata.shutil, "which", lambda _name: "/usr/bin/z-ai")
+    monkeypatch.setattr(metadata.subprocess, "run", fake_run)
+    assert metadata._call_llm("sys", "usr") is None
+    assert captured_kwargs.get("encoding") == "utf-8"
+    assert captured_kwargs.get("errors") == "replace"
+
+
+

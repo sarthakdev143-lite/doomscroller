@@ -73,6 +73,11 @@ def _summarise(result: object) -> str:
         ]
         return notify._redact(", ".join(parts) or "no notification channels configured")[:200]
     sections = [v for v in result.values() if isinstance(v, dict)]
+    errors = [
+        f"{slug}: {d['error']}"
+        for slug, d in result.items()
+        if isinstance(d, dict) and d.get("error")
+    ]
     data = sections or [result]
     counts: dict[str, float] = {}
     notes: list[str] = []
@@ -90,6 +95,10 @@ def _summarise(result: object) -> str:
     ]
     if isinstance(result.get("active"), list):
         bits.append(f"{len(result['active'])} channels active")
+    if errors:
+        if bits:
+            return notify._redact(f"{', '.join(bits)}; {'; '.join(errors)}")[:200]
+        return notify._redact("; ".join(errors))[:200]
     if not bits and notes:
         return notify._redact(notes[0])[:160]
     return notify._redact(", ".join(bits) or "done, nothing to do")[:200]

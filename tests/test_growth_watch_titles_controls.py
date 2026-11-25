@@ -641,3 +641,68 @@ def test_watch_skips_permanently_unavailable_video_and_youtube_scrubs_tts_keys(t
     for s in ("sk_sarvam_w10_111", "el_key_w10_222", "dg_key_w10_333"):
         assert s not in scrubbed
 
+
+def test_wave15_controls_per_channel_errors_safe_engagement_comment_and_scrubbed_collect_safety(
+    tmp_path, monkeypatch
+):
+    from app.growth import collect
+
+    # A. controls._summarise surfaces per-channel errors with and without counts
+    summary_err = controls._summarise(
+        {"default": {"skipped": "nothing published"}, "indianvlogs": {"error": "token expired"}}
+    )
+    assert "indianvlogs: token expired" in summary_err
+
+    summary_both = controls._summarise(
+        {"default": {"snapshots": 4}, "indianvlogs": {"error": "quota exceeded"}}
+    )
+    assert "4 stats updated" in summary_both
+    assert "indianvlogs: quota exceeded" in summary_both
+
+    # B. titles.engagement_comment rejects non-strings and risky words
+    monkeypatch.setattr(titles.ai, "available", lambda: True)
+    monkeypatch.setattr(titles.ai, "ask_json", lambda _p: {"comment": True})
+    assert (
+        titles.engagement_comment("Cool Video", language="en")
+        == "Be honest — what would you have done here?"
+    )
+    monkeypatch.setattr(titles.ai, "ask_json", lambda _p: {"comment": ["bad list"]})
+    assert (
+        titles.engagement_comment("Cool Video", language="en")
+        == "Be honest — what would you have done here?"
+    )
+    monkeypatch.setattr(titles.ai, "ask_json", lambda _p: {"comment": "Was that ghost murder scene real?"})
+    assert (
+        titles.engagement_comment("Cool Video", language="en")
+        == "Be honest — what would you have done here?"
+    )
+    monkeypatch.setattr(titles.ai, "ask_json", lambda _p: {"comment": "Kya sach me bhoot tha wahan?"})
+    assert (
+        titles.engagement_comment("Desi Vlog", language="hi")
+        == "Sach batao, is par aapka kya reaction hota?"
+    )
+
+    # C. safety.set_hold and collect error/event helpers scrub secrets
+    monkeypatch.setattr(settings, "proxy_url", "http://u:CANARY_COLLECT_W15@10.0.0.1:8080")
+    now = datetime(2026, 11, 25, 10, 0, tzinfo=timezone.utc)
+    with session_scope() as db:
+        safety.set_hold(db, now, "proxy http://u:CANARY_COLLECT_W15@10.0.0.1:8080 denied")
+    with session_scope() as db:
+        hold_state = db.get(GrowthState, "hold")
+        assert "CANARY_COLLECT_W15" not in str((hold_state.value or {}).get("reason", ""))
+        ev_hold = db.execute(select(GrowthEvent).where(GrowthEvent.kind == "account_hold")).scalar_one()
+        assert "CANARY_COLLECT_W15" not in ev_hold.summary
+
+    collect._note_stats_failure(RuntimeError("http://u:CANARY_COLLECT_W15@10.0.0.1:8080 failed"))
+    collect._note_analytics_failure(RuntimeError("http://u:CANARY_COLLECT_W15@10.0.0.1:8080 failed"), now)
+    with session_scope() as db:
+        st_collect = db.get(GrowthState, "collect")
+        assert "CANARY_COLLECT_W15" not in str((st_collect.value or {}).get("analytics_error", ""))
+        evs = db.execute(
+            select(GrowthEvent).where(GrowthEvent.kind.in_(("collect_failed", "analytics_failed")))
+        ).scalars().all()
+        assert len(evs) == 2
+        for ev in evs:
+            assert "CANARY_COLLECT_W15" not in ev.summary
+
+

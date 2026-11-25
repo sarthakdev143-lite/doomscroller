@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import select
 
 from app.db import session_scope
+from app.logging_config import scrub_secrets
 from app.models import GrowthEvent, GrowthState, Video, VideoSnapshot, VideoStatus
 from app.publishers.youtube_publisher import explain_api_error
 
@@ -212,15 +213,16 @@ def _scope(channel):
 
 
 def _note_stats_failure(exc: Exception, channel=None) -> None:
+    cause = scrub_secrets(explain_api_error(exc))
     with session_scope() as db:
-        note_once(db, "collect_failed", f"Could not read video stats, so nothing was measured: {explain_api_error(exc)}",
+        note_once(db, "collect_failed", f"Could not read video stats, so nothing was measured: {cause}",
                   key=channels.state_key(channel, "") if channel is not None else "", channel_id=_ev(channel))
 
 
 def _note_analytics_failure(exc: Exception, now: datetime, channel=None) -> Optional[str]:
     """One failed run is logged. The return value is what the job should fail with, once it has lasted."""
     now = aware(now)
-    cause = explain_api_error(exc, api=_ANALYTICS_API)
+    cause = scrub_secrets(explain_api_error(exc, api=_ANALYTICS_API))
     with session_scope() as db:
         status = {**health(db, channel), "analytics_error": cause}
         status["analytics_failing_since"] = status["analytics_failing_since"] or now.isoformat()
@@ -252,9 +254,10 @@ def _collect_one(channel, now: datetime) -> dict:
             raise RuntimeError(wrong)
         recorded = _record_stats(set(ids), _fetch_stats(insights, ids), now, scope)
     except Exception as exc:
-        log.warning("growth: could not read video stats: %s", exc)
+        err = scrub_secrets(str(exc))
+        log.warning("growth: could not read video stats: %s", err)
         _note_stats_failure(exc, channel)
-        return {"error": f"video stats: {exc}"}
+        return {"error": f"video stats: {err}"}
     _update_health(channel, last_success=now.isoformat())
     result: dict = {"snapshots": recorded}
     # Analytics adds to the signal, but views alone still drive the loop.
@@ -262,8 +265,9 @@ def _collect_one(channel, now: datetime) -> dict:
         result["analytics"] = _record_analytics(insights, now, scope)
         _update_health(channel, analytics_failing_since=None, analytics_error=None)
     except Exception as exc:
-        log.warning("growth: analytics unavailable: %s", exc)
-        result["analytics_error"] = str(exc)[:300]
+        err = scrub_secrets(str(exc))
+        log.warning("growth: analytics unavailable: %s", err)
+        result["analytics_error"] = err[:300]
         lasting = _note_analytics_failure(exc, now, channel)
         if lasting:
             result["error"] = lasting

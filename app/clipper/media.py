@@ -79,12 +79,17 @@ def _frame_rate(raw: object) -> float:
 
 def _is_sideways(stream: dict) -> bool:
     """Phones store portrait video as rotated landscape; ffmpeg rotates on decode."""
-    rotation = (stream.get("tags") or {}).get("rotate", 0)
+    tags = stream.get("tags")
+    rotation = tags.get("rotate", 0) if isinstance(tags, dict) else 0
     for side in stream.get("side_data_list") or []:
-        rotation = side.get("rotation", rotation)
+        if isinstance(side, dict):
+            rotation = side.get("rotation", rotation)
+    if isinstance(rotation, bool):
+        return False
     try:
-        return abs(int(float(rotation))) % 180 == 90
-    except (TypeError, ValueError):
+        val = float(rotation)
+        return math.isfinite(val) and abs(int(val)) % 180 == 90
+    except (TypeError, ValueError, OverflowError):
         return False
 
 

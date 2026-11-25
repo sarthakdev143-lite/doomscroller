@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import object_session
 
 from app.db import session_scope
+from app.logging_config import scrub_secrets
 from app.models import GrowthEvent, GrowthState, Video, VideoStatus
 
 from .factors import author_names, aware
@@ -265,6 +266,7 @@ def active_hold(db, now: datetime, channel=None) -> Optional[dict]:
 def set_hold(db, now: datetime, reason: Optional[str], channel=None) -> None:
     """The next clip would fail the same way. The row stays after the hour, so a long outage logs one event."""
     now = aware(now)
+    reason = scrub_secrets(str(reason)) if reason is not None else None
     key = _ckey(channel, "hold")
     if db.get(GrowthState, key) is None:
         from . import channels

@@ -101,12 +101,13 @@ def connect(slug: str, *, again: bool = False, no_browser: bool = False, port: i
         if channels.is_default(channel):
             print("That is the channel from your .env. Connect it with: venv/bin/python scripts/youtube_oauth.py")
             return 1
-        secrets, token = channel.client_secrets, channel.token_path
+        secrets = channel.client_secrets
+        token = channel.token_path or f"secrets/{slug}_token.json"
     if not secrets or not os.path.exists(secrets):
         print(_GOOGLE.format(slug=slug, secrets=secrets or f"secrets/{slug}_client_secret.json"))
         return 1
 
-    if again or not os.path.exists(token):
+    if again or not (token and os.path.exists(token)):
         print(f"Sign in with the Google account that owns the {slug} YouTube channel, and pick THAT channel.")
         command = [sys.executable, str(Path(__file__).with_name("youtube_oauth.py")), "--channel", slug, "--force"]
         command += ["--no-browser"] if no_browser else []

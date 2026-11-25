@@ -186,13 +186,16 @@ def engagement_comment(
         return fallback
     if not isinstance(reply, dict):
         return fallback
-    raw = str(reply.get("comment") or "")
+    raw = reply.get("comment")
+    if not isinstance(raw, str):
+        return fallback
     cleaned = _HASHTAG_RE.sub("", _CTRL_RE.sub("", raw))
     cleaned = _strip_wrapping_quotes(" ".join(cleaned.split())).strip()[:120]
     if (
         not cleaned
         or _REFUSAL_RE.search(cleaned)
         or has_devanagari(cleaned)
+        or has_risky_title_words(cleaned)
         or (not hi and is_hinglish_text(cleaned))
         or not any(ch.isalnum() for ch in cleaned)
     ):

@@ -145,10 +145,12 @@ def trending(*, language: str = "") -> dict[str, Path]:
 def sting(path: str) -> Optional[np.ndarray]:
     """A meme sound ready to mix: leading silence trimmed, capped and faded, at a fixed peak. None if unreadable."""
     try:
-        from .media import read_ffmpeg
+        from .media import Interrupted, read_ffmpeg
         raw = read_ffmpeg(["-i", str(path), "-map", "0:a:0", "-af", "silenceremove=start_periods=1:start_threshold=-50dB",
                            "-ac", "1", "-ar", str(RATE), "-t", f"{_STING_MAX_SEC}", "-f", "f32le", "-"])
         sound = np.frombuffer(raw, dtype=np.float32).astype(np.float64)
+    except Interrupted:
+        raise
     except Exception:
         return None
     peak = float(np.max(np.abs(sound))) if len(sound) else 0.0
@@ -162,6 +164,8 @@ def sting(path: str) -> Optional[np.ndarray]:
 
 def _decode_pack(path: Path) -> Optional[np.ndarray]:
     """Mono float64 samples at RATE for a pack file, else None. Never raises."""
+    from .media import Interrupted, read_ffmpeg
+
     try:
         if path.suffix.lower() == ".wav":
             with wave.open(str(path), "rb") as handle:
@@ -176,10 +180,11 @@ def _decode_pack(path: Path) -> Optional[np.ndarray]:
                 # Nearest-neighbour resample: one-shots, not music.
                 mono = mono[np.minimum(len(mono) - 1, (np.arange(int(len(mono) * RATE / rate)) * rate / RATE).astype(int))]
             return mono
-        from .media import read_ffmpeg
         raw = read_ffmpeg(["-i", str(path), "-map", "0:a:0", "-ac", "1", "-ar", str(RATE),
                            "-t", f"{_PACK_SLICE_SEC}", "-f", "f32le", "-"])
         return np.frombuffer(raw, dtype=np.float32).astype(np.float64)
+    except Interrupted:
+        raise
     except Exception:
         return None
 
