@@ -1214,7 +1214,7 @@ def generate_ambient_thumbnails(
     portrait_path: Optional[Path | str] = None,
 ) -> tuple[list[dict], str, str]:
     """Generate hero_raw.jpg + 3 distinct 1280x720 portrait/cinema thumbnails (plus optional AI v4)."""
-    from PIL import Image, ImageDraw, ImageEnhance
+    from PIL import Image, ImageEnhance
 
     cfg = _get_preset(preset)
     out_dir = Path(out_dir)
@@ -1234,17 +1234,13 @@ def generate_ambient_thumbnails(
     v1 = Image.alpha_composite(v1, Image.new("RGBA", (THUMB_W, THUMB_H), (10, 22, 64, 52)))
     variants.append({"id": "v1", "label": "Midnight Cobalt", "path": _save_jpeg_under_limit(v1, out_dir / "thumb_v1.jpg")})
 
-    # v2: VHS Violet Memory (closer crop + deep indigo/purple cast + subtle camcorder PLAY ▶ / SP stamp like @imissher.ambient)
+    # v2: VHS Violet Memory (closer crop + deep indigo/purple cast, zero text)
     crop_w, crop_h = int(THUMB_W * 0.88), int(THUMB_H * 0.88)
     dx = (THUMB_W - crop_w) // 2
     dy = int((THUMB_H - crop_h) * 0.28)
     v2 = scene.crop((dx, dy, dx + crop_w, dy + crop_h)).resize((THUMB_W, THUMB_H), Image.Resampling.LANCZOS)
     v2 = ImageEnhance.Contrast(v2).enhance(1.12).convert("RGBA")
     v2 = Image.alpha_composite(v2, Image.new("RGBA", (THUMB_W, THUMB_H), (42, 18, 92, 62)))
-    d2 = ImageDraw.Draw(v2)
-    f_vhs = _pil_font(22, "PLAY SP 00:00:24")
-    d2.text((46, 36), "PLAY >", font=f_vhs, fill=(225, 232, 255, 42))
-    d2.text((46, THUMB_H - 58), "SP", font=f_vhs, fill=(225, 232, 255, 36))
     variants.append({"id": "v2", "label": "VHS Memory", "path": _save_jpeg_under_limit(v2, out_dir / "thumb_v2.jpg")})
 
     # v3: Deep Twilight (moody high-contrast silhouette vignette, pure zero-text)
@@ -1361,7 +1357,7 @@ def generate_ambient_video(
             af_chain = (
                 f"afade=t=in:st=0:d={fade_in:.2f},"
                 f"afade=t=out:st={fade_out_st:.3f}:d={fade_out:.2f},"
-                "alimiter=limit=0.89:level=0:attack=5:release=50"
+                "alimiter=limit=0.79:level=0:attack=5:release=50"
             )
 
             def _overlay_tail(base_lbl: str, ov_idx: int) -> str:
@@ -1442,7 +1438,7 @@ def generate_ambient_video(
                         "-filter_complex", vf_loop,
                         "-map", "[vout]", "-an",
                         "-t", f"{loop_sec:.3f}",
-                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "24",
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
                         "-pix_fmt", "yuv420p", "-r", str(FPS), "-g", str(FPS), "-keyint_min", str(FPS),
                         "-sc_threshold", "0", "-video_track_timescale", "30000",
                         str(loop_v),

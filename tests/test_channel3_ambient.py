@@ -157,6 +157,27 @@ def test_generate_ambient_thumbnails_produces_3_distinct_1280x720_jpegs(tmp_path
     assert "ambient" in prompt.lower() or "night" in prompt.lower()
 
 
+def test_thumb_v2_has_no_opaque_white_vhs_stamp_over_portrait(tmp_path, monkeypatch):
+    from app.longform import ambient, thumbnails as lf_thumbs
+
+    monkeypatch.setattr(lf_thumbs, "generate_ai_thumbnail", lambda *a, **kw: None)
+    dark_jpg = tmp_path / "dark.jpg"
+    Image.new("RGB", (1376, 768), (20, 20, 40)).save(dark_jpg, format="JPEG", quality=95)
+
+    ambient.generate_ambient_thumbnails(
+        "night_ambient",
+        out_dir=tmp_path / "t",
+        title="x",
+        duration_sec=60.0,
+        seed="s",
+        portrait_path=dark_jpg,
+    )
+    with Image.open(tmp_path / "t" / "thumb_v2.jpg") as im:
+        crop = im.convert("RGB").crop((40, 30, 140, 62))
+        extrema = crop.getextrema()
+    assert all(hi < 120 for _, hi in extrema), f"unexpected bright stamp in v2 corner: {extrema}"
+
+
 def test_generate_ambient_video_rejects_bad_preset_and_uses_run_ffmpeg(tmp_path, monkeypatch):
     from app.clipper.media import MediaInfo
     from app.longform import ambient
