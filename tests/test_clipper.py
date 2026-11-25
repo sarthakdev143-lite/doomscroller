@@ -1947,6 +1947,36 @@ def test_youtube_sign_in_wall_says_what_to_do(monkeypatch):
         ingest.fetch("https://youtube.com/watch?v=x")
 
 
+def test_stale_extractor_raises_actionable_error_and_alerts_once(monkeypatch):
+    class Stale:
+        def __init__(self, options):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def extract_info(self, url, download):
+            raise RuntimeError("ERROR: [youtube] x: Requested format is not available. Use --list-formats")
+
+    import yt_dlp
+    from app.growth import notify
+
+    sent: list[tuple[str, str]] = []
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", Stale)
+    monkeypatch.setattr(ingest, "_last_stale_alert_at", 0.0, raising=False)
+    monkeypatch.setattr(notify, "send", lambda text, **kw: sent.append((text, kw.get("title", ""))) or True)
+
+    for _ in range(2):
+        with pytest.raises(ingest.IngestError, match=r"pip install -U yt-dlp") as caught:
+            ingest.fetch("https://youtube.com/watch?v=x")
+        assert caught.value.permanent is False
+    assert len(sent) == 1
+    assert "yt-dlp" in sent[0][0]
+
+
 # ---------- Job and queue ----------
 def _source(tmp_path, source_id):
     path = tmp_path / f"{source_id}.mp4"

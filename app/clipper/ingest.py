@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import shutil
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -23,6 +24,28 @@ log = logging.getLogger(__name__)
 _GONE = ("private video", "video is private", "video unavailable", "video is unavailable", "has been removed",
          "no longer available", "been terminated", "premieres in", "will begin in")
 _NOT_GONE = ("try again later", "in your country")
+_STALE_EXTRACTOR = (
+    "only images are available",
+    "n challenge solving failed",
+    "requested format is not available",
+    "no video formats found",
+)
+_STALE_ALERT_COOLDOWN_SEC = 6 * 3600
+_last_stale_alert_at = 0.0
+
+
+def _alert_stale_extractor_once(detail: str) -> None:
+    global _last_stale_alert_at
+    now = time.monotonic()
+    if _last_stale_alert_at and (now - _last_stale_alert_at) < _STALE_ALERT_COOLDOWN_SEC:
+        return
+    _last_stale_alert_at = now
+    try:
+        from app.growth import notify
+
+        notify.send(detail, title="Doomscroller: downloads broken")
+    except Exception as exc:
+        log.warning("ingest: stale-extractor alert failed: %s", type(exc).__name__)
 
 
 class IngestError(RuntimeError):
@@ -219,6 +242,14 @@ def _from_url(url: str) -> SourceVideo:
         # A private video's message also mentions --cookies, so this comes first.
         if _is_gone(detail):
             raise IngestError(f"source is not available: {detail}", permanent=True) from None
+        lowered = detail.lower()
+        if any(mark in lowered for mark in _STALE_EXTRACTOR):
+            msg = (
+                f"YouTube changed its player and yt-dlp {yt_dlp.version.__version__} can no longer read video formats. "
+                "Update it: venv\\Scripts\\python.exe -m pip install -U yt-dlp, then restart the daemon."
+            )
+            _alert_stale_extractor_once(msg)
+            raise IngestError(msg) from None
         if "confirm you" in detail or "--cookies" in detail:
             raise IngestError(
                 "YouTube wants a signed-in session for this download. Set "

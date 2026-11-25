@@ -13,7 +13,7 @@ python-dotenv==1.1.1
 APScheduler==3.11.0
 
 # Scraping & Media Download
-yt-dlp==2026.10.26
+yt-dlp==2026.11.23
 httpx==0.28.1
 
 # Image, Captions & Active-Speaker Face Framing (ffmpeg must be on system PATH)
