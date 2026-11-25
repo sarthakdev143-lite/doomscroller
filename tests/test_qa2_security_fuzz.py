@@ -832,6 +832,8 @@ def test_system_doctor_growth_doctor_oauth_status_and_backup_never_leak_secrets(
         f"FREESOUND_API_KEY={CANARIES['freesound_api_key']}",
         f"DEEPGRAM_API_KEY={CANARIES['deepgram_api_key']}",
         f"SARVAM_API_KEY={CANARIES['sarvam_api_key']}",
+        "ELEVENLABS_API_KEY=CANARY_ELEVEN_SECRET_666",
+        "CARTESIA_API_KEY=CANARY_CARTESIA_SECRET_777",
         "NTFY_TOPIC=CANARY_NTFY_SECRET_TOPIC_555",
     ]
     env_path.write_text("\n".join(env_lines) + "\n", encoding="utf-8")
@@ -861,7 +863,7 @@ def test_system_doctor_growth_doctor_oauth_status_and_backup_never_leak_secrets(
     combined_doc = json.dumps(doc_dict) + "\n" + human_out
     assert doc_dict["env"]["review_token_set"] is True
     assert all(doc_dict["env"]["optional_keys"].values())
-    for secret in (*CANARIES.values(), "CANARY_NTFY_SECRET_TOPIC_555"):
+    for secret in (*CANARIES.values(), "CANARY_ELEVEN_SECRET_666", "CANARY_CARTESIA_SECRET_777", "CANARY_NTFY_SECRET_TOPIC_555"):
         assert secret not in combined_doc
 
     # 3. scripts/youtube_oauth.py inspect_token

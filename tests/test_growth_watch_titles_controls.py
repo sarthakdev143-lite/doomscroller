@@ -413,6 +413,44 @@ def test_title_rewrite_matches_the_text_language(monkeypatch):
     assert "Hinglish" in seen["prompt"]
 
 
+def test_english_titles_and_comments_block_hinglish_leaks(monkeypatch):
+    seen = []
+
+    def fake_ask(prompt):
+        seen.append(prompt)
+        return {"title": "Kitna masala daalna chahiye khane mein?"}
+
+    monkeypatch.setattr(titles.ai, "available", lambda: True)
+    monkeypatch.setattr(titles.ai, "ask_json", fake_ask)
+
+    out_title, out_style = titles.styled_title(
+        "question", "If You Ain't Sneezing, It Ain't Seasoned", "Add more spice", language="en"
+    )
+    assert out_style == "plain"
+    assert out_title == "If You Ain't Sneezing, It Ain't Seasoned"
+    for forbidden in ("Hinglish", "bhoot", "kachche"):
+        assert forbidden not in seen[0]
+
+    monkeypatch.setattr(
+        titles.ai,
+        "ask_json",
+        lambda prompt: {"title": "Bola 'Very Bad Employee', phir Mr Singh ke saath kya kiya?"},
+    )
+    out2, style2 = titles.styled_title(
+        "curiosity", "He Said I Was Very Bad Employee", "Wait for it", language="en"
+    )
+    assert (out2, style2) == ("He Said I Was Very Bad Employee", "plain")
+
+    assert titles.styled_title("quote", "English Title", "Bhai aaj hadh ho gayi", language="en") == (
+        "English Title",
+        "plain",
+    )
+
+    monkeypatch.setattr(titles.ai, "ask_json", lambda prompt: {"comment": "Bhai aaj hadh kar di yaar!"})
+    comment = titles.engagement_comment("Cool Video", language="en")
+    assert comment == "Be honest — what would you have done here?"
+
+
 # ---------- 4. channels.py: URL normalization, case-insensitive dedup, numeric bounds ----------
 
 

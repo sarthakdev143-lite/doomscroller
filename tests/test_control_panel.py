@@ -1707,3 +1707,98 @@ def test_panel_approve_without_edits_keeps_ab_title_testing_enabled(tmp_path):
     assert r.status_code == 200
     with session_scope() as db:
         assert db.query(MetadataDraft).filter_by(video_id=vid).one().edited is False
+
+
+def test_failures_endpoints_and_ui_studio_controls(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from app.models import VideoStatus
+    from app.review import review_app
+    from app.review_ui import PAGE
+
+    assert "vstage" in PAGE
+    assert "mediaPlaying" in PAGE
+    assert "long-chips" in PAGE
+    assert "/api/failures" in PAGE
+    assert "/api/failures/cleanup" in PAGE
+
+    unauth = TestClient(review_app)
+    assert unauth.get("/api/failures").status_code == 401
+    assert unauth.post("/api/failures/cleanup", json={"action": "archive"}).status_code == 401
+
+    _write(tmp_path, monkeypatch, {"channels": [{"slug": "indianvlogs", "name": "Indian Vlogs"}]})
+    existing_mp4 = tmp_path / "good_long.mp4"
+    existing_mp4.write_bytes(b"mp4-bytes")
+
+    now = datetime.now(timezone.utc)
+    with session_scope() as db:
+        channels.sync_channels(db)
+        ch = channels.channel_by_slug(db, "indianvlogs")
+        v_missing = Video(
+            source="youtube",
+            source_id="fail_missing",
+            source_url="https://youtu.be/fm",
+            title="Missing file clip",
+            author="CreatorA",
+            status=VideoStatus.FAILED,
+            channel_id=None,
+            transformed_path=str(tmp_path / "gone.mp4"),
+            error="upload quota",
+            scraped_at=now - timedelta(minutes=2),
+            meta={"clip_rendered": True},
+        )
+        v_has_file = Video(
+            source="longform",
+            source_id="fail_has_file",
+            source_url="",
+            title="Existing file long",
+            author="CreatorB",
+            status=VideoStatus.FAILED,
+            channel_id=ch.id,
+            transformed_path=str(existing_mp4),
+            error="transient 503",
+            scraped_at=now - timedelta(minutes=1),
+            meta={"long_form": True},
+        )
+        db.add_all([v_missing, v_has_file])
+        db.flush()
+        id_missing, id_has_file = v_missing.id, v_has_file.id
+
+    c = _client()
+    res = c.get("/api/failures")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["total"] == 2
+    assert data["missing_file_count"] == 1
+    assert [it["id"] for it in data["items"]] == [id_has_file, id_missing]
+    by_id = {it["id"]: it for it in data["items"]}
+    assert by_id[id_has_file]["channel_slug"] == "indianvlogs"
+    assert by_id[id_has_file]["is_long"] is True
+    assert by_id[id_has_file]["has_file"] is True
+    assert by_id[id_missing]["channel_slug"] == "default"
+    assert by_id[id_missing]["is_long"] is False
+    assert by_id[id_missing]["has_file"] is False
+
+    # Bad action -> 400
+    assert c.post("/api/failures/cleanup", json={"action": "bogus"}).status_code == 400
+    # Retry on missing-file failure -> 409
+    assert c.post("/api/failures/cleanup", json={"video_id": id_missing, "action": "retry"}).status_code == 409
+
+    # Archive missing-only leaves existing-file failure untouched
+    arch = c.post("/api/failures/cleanup", json={"missing_only": True, "action": "archive"})
+    assert arch.status_code == 200 and arch.json() == {"archived": 1}
+    with session_scope() as db:
+        row_m = db.get(Video, id_missing)
+        assert row_m.status == VideoStatus.REJECTED
+        assert row_m.meta.get("archived_failure") is True
+        assert db.get(Video, id_has_file).status == VideoStatus.FAILED
+
+    # Retry existing-file failure -> moves to TRANSFORMED and clears error
+    retried = c.post("/api/failures/cleanup", json={"video_id": id_has_file, "action": "retry"})
+    assert retried.status_code == 200 and retried.json() == {"retried": 1, "id": id_has_file}
+    with session_scope() as db:
+        row_h = db.get(Video, id_has_file)
+        assert row_h.status == VideoStatus.TRANSFORMED
+        assert row_h.error is None
+
+    after = c.get("/api/failures").json()
+    assert after == {"total": 0, "missing_file_count": 0, "items": []}

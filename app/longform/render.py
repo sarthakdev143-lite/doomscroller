@@ -21,9 +21,11 @@ from .planner import CompilationPlan, SegmentPlan
 log = logging.getLogger(__name__)
 
 WIDTH, HEIGHT, FPS = 1920, 1080, 30
+_MOTION_WIDTH, _MOTION_HEIGHT = 1996, 1124
 _TRANSITION_SEC = 0.16
 _END_SCREEN_SEC = 8.0
 _ALIMITER = "alimiter=limit=0.84:attack=2:release=40:level=0:latency=1"
+_KINETIC_POP = r"\fscx114\fscy114\t(0,140,\fscx100\fscy100)"
 _BRAND_ASS_STYLE = (
     "Style: Brand,{font_name},30,&H38FFFFFF,&H000000FF,&H20000000,&H00000000,"
     "1,0,0,0,100,100,0.5,0,1,3,1.5,9,44,64,44,1"
@@ -110,7 +112,12 @@ def _write_ass_overlay(
     # Place act/chapter pills cleanly at top-left (Alignment=7) so bottom creator subtitles never collide.
     banner = " — ".join(part for part in (badge_text, lower_third) if part).strip()
     if banner:
-        lines.append(f"Dialogue: 1,{st},{et},Pill,,0,0,0,,{{\\fad(180,260)}}{_ass_safe(banner)}")
+        lines.append(f"Dialogue: 1,{st},{et},Pill,,0,0,0,,{{{_KINETIC_POP}\\fad(180,260)}}{_ass_safe(banner)}")
+        if badge_text:
+            lines.append(
+                f"Dialogue: 2,{st},{et},Pill,,0,0,0,,"
+                "{\\p1\\pos(48,30)\\c&H24D2FF&\\bord0\\shad0\\fad(180,260)}m 0 0 l 72 0 l 72 4 l 0 4{\\p0}"
+            )
     if brand:
         lines.append(f"Dialogue: 0,0:00:00.00,9:59:59.00,Brand,,0,0,0,,{_ass_safe(brand)}")
     ass_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -152,9 +159,13 @@ def _write_bridge_ass(
     st = _ass_clock(0.08)
     et = _ass_clock(max(0.4, float(hold_sec) - 0.08))
     if badge_text:
-        lines.append(f"Dialogue: 1,{st},{et},BridgeBadge,,0,0,0,,{{\\fad(160,200)}}{_ass_safe(badge_text)}")
+        lines.append(f"Dialogue: 1,{st},{et},BridgeBadge,,0,0,0,,{{{_KINETIC_POP}\\fad(160,200)}}{_ass_safe(badge_text)}")
+        lines.append(
+            f"Dialogue: 1,{st},{et},BridgeBadge,,0,0,0,,"
+            "{\\p1\\pos(64,112)\\c&H24D2FF&\\bord0\\shad0\\fad(160,200)}m 0 0 l 96 0 l 96 5 l 0 5{\\p0}"
+        )
     if headline:
-        lines.append(f"Dialogue: 2,{st},{et},BridgeTitle,,0,0,0,,{{\\fad(200,220)}}{_ass_safe(headline)}")
+        lines.append(f"Dialogue: 2,{st},{et},BridgeTitle,,0,0,0,,{{{_KINETIC_POP}\\fad(200,220)}}{_ass_safe(headline)}")
     if brand:
         lines.append(f"Dialogue: 0,0:00:00.00,9:59:59.00,Brand,,0,0,0,,{_ass_safe(brand)}")
     ass_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -314,6 +325,44 @@ def _short_caption(text: str, max_words: int = 6, max_chars: int = 38) -> str:
     return " ".join(parts).rstrip(" -|:,—.")
 
 
+def _build_entry_sfx(
+    wav_path: Path,
+    *,
+    cue_at: float,
+    kind: str,
+    seed: str,
+    language: str = "",
+) -> Optional[Path]:
+    """Generate a short entry SFX WAV via clipper.sfx (numpy imported lazily)."""
+    if not settings.clip_sfx:
+        return None
+    try:
+        from app.clipper import sfx
+
+        sfx_kind = sfx.IMPACT if kind == "impact" else sfx.WHOOSH
+        sfx.build_track(str(wav_path), max(1.0, cue_at + 1.0), [sfx.Cue(cue_at, sfx_kind)], seed=seed, language=language)
+        if wav_path.is_file() and wav_path.stat().st_size > 44:
+            return wav_path
+    except Exception as exc:
+        log.debug("longform.render: sfx skipped (%s): %s", kind, exc)
+    return None
+
+
+def _pick_real_music(seed: str) -> Optional[Path]:
+    """Pick an owner/CC track from content/music/, never a _synth sine bed."""
+    if not settings.clip_music:
+        return None
+    try:
+        from app.clipper import music
+
+        cand = music.pick(seed)
+        if cand is not None and "_synth" not in cand.parts and cand.is_file():
+            return cand
+    except Exception:
+        pass
+    return None
+
+
 def _render_cold_open_with_hook(
     cold_open: SegmentPlan,
     climax: SegmentPlan,
@@ -353,9 +402,22 @@ def _render_cold_open_with_hook(
         "-ss", f"{max(0.0, seek):.3f}", "-i", os.path.abspath(climax.source_path),
         "-i", str(hook_wav),
     ]
+    next_idx = 2
     has_music = music_path is not None and Path(music_path).is_file()
+    music_idx = -1
     if has_music:
+        music_idx = next_idx
+        next_idx += 1
         inputs += ["-stream_loop", "-1", "-i", str(music_path)]
+    sfx_wav = _build_entry_sfx(
+        tmp_dir / "cold_sfx.wav", cue_at=0.15, kind="impact",
+        seed=f"co:{climax.source_id}", language=climax.language,
+    )
+    sfx_idx = -1
+    if sfx_wav is not None:
+        sfx_idx = next_idx
+        next_idx += 1
+        inputs += ["-i", str(sfx_wav)]
 
     fade_out_v = max(0.2, dur - 0.20)
     fade_out_a = max(0.2, dur - 0.20)
@@ -366,20 +428,32 @@ def _render_cold_open_with_hook(
         f"[1:a]adelay=180|180,loudnorm=I=-14:TP=-1.5:LRA=9,aresample=48000,"
         f"aformat=channel_layouts=stereo,apad=whole_dur={dur:.3f},atrim=0:{dur:.3f},asetpts=N/SR/TB[vo]",
     ]
+    mix_labels = ["[vo]"]
     if has_music:
         parts.append(
-            f"[2:a]volume=0.08,aresample=48000,aformat=channel_layouts=stereo,"
+            f"[{music_idx}:a]volume=0.08,aresample=48000,aformat=channel_layouts=stereo,"
             f"afade=t=in:d=0.18,afade=t=out:st={fade_out_a:.3f}:d=0.20,"
             f"atrim=0:{dur:.3f},asetpts=N/SR/TB[bed]"
         )
-        parts.append(f"[vo][bed]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,{_ALIMITER},aformat=channel_layouts=stereo,asetpts=N/SR/TB[aout]")
+        mix_labels.append("[bed]")
     elif info.has_audio:
         parts.append(
             f"[0:a]atrim=0:{dur:.3f},asetpts=PTS-STARTPTS,volume=0.06,lowpass=f=900,"
             f"aresample=48000,aformat=channel_layouts=stereo,apad=whole_dur={dur:.3f},atrim=0:{dur:.3f},"
             f"afade=t=in:d=0.18,afade=t=out:st={fade_out_a:.3f}:d=0.20,asetpts=N/SR/TB[bed]"
         )
-        parts.append(f"[vo][bed]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,{_ALIMITER},aformat=channel_layouts=stereo,asetpts=N/SR/TB[aout]")
+        mix_labels.append("[bed]")
+    if sfx_idx >= 0:
+        parts.append(
+            f"[{sfx_idx}:a]volume=0.75,aresample=48000,aformat=channel_layouts=stereo,"
+            f"apad=whole_dur={dur:.3f},atrim=0:{dur:.3f},asetpts=N/SR/TB[sfx]"
+        )
+        mix_labels.append("[sfx]")
+    if len(mix_labels) > 1:
+        parts.append(
+            f"{''.join(mix_labels)}amix=inputs={len(mix_labels)}:duration=first:dropout_transition=0:normalize=0,"
+            f"{_ALIMITER},aformat=channel_layouts=stereo,asetpts=N/SR/TB[aout]"
+        )
     else:
         parts.append(f"[vo]{_ALIMITER},aformat=channel_layouts=stereo,asetpts=N/SR/TB[aout]")
 
@@ -486,21 +560,80 @@ def _render_segment(
     fade_out_v = max(0.2, seg_len - 0.16)
     fade_out_a = max(0.2, seg_len - 0.16)
     ass_suffix = f",ass={_filter_path_arg(str(ass_file))}:fontsdir={_filter_path_arg(fonts_dir)}" if has_overlay else ""
+    pan_sign = "+" if index % 2 == 0 else "-"
+    y_share = 0.50 if index % 2 == 0 else 0.46
     parts.append(
-        f"[vcat]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,"
-        f"crop={WIDTH}:{HEIGHT},setsar=1,fps={FPS},fade=t=in:st=0:d=0.14,fade=t=out:st={fade_out_v:.3f}:d=0.16{ass_suffix}[vout]"
+        f"[vcat]scale={_MOTION_WIDTH}:{_MOTION_HEIGHT}:force_original_aspect_ratio=increase,"
+        f"crop={WIDTH}:{HEIGHT}:x='(iw-ow)*0.5*(0.5{pan_sign}0.5*sin(t*0.18))':y='(ih-oh)*{y_share:.2f}',"
+        f"setsar=1,fps={FPS},fade=t=in:st=0:d=0.14,fade=t=out:st={fade_out_v:.3f}:d=0.16{ass_suffix}[vout]"
     )
 
     inputs = ["-ss", f"{seek_pad:.3f}", "-i", os.path.abspath(seg.source_path)]
+    next_idx = 1
+    null_idx = -1
+    if not info.has_audio:
+        null_idx = next_idx
+        next_idx += 1
+        inputs += ["-f", "lavfi", "-t", f"{seg_len:.3f}", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"]
+
+    sfx_wav = _build_entry_sfx(
+        tmp_dir / f"seg_{index}_{'co' if is_cold_open else 'main'}_sfx.wav",
+        cue_at=0.15 if is_cold_open else 0.10,
+        kind="impact" if is_cold_open else "whoosh",
+        seed=f"{seg.source_id}:{index}",
+        language=seg.language,
+    )
+    sfx_idx = -1
+    if sfx_wav is not None:
+        sfx_idx = next_idx
+        next_idx += 1
+        inputs += ["-i", str(sfx_wav)]
+
+    seg_music = None if is_cold_open else _pick_real_music(f"{seg.source_id}:{index}")
+    music_idx = -1
+    if seg_music is not None:
+        music_idx = next_idx
+        next_idx += 1
+        inputs += ["-stream_loop", "-1", "-i", str(seg_music)]
+
+    mix_labels: list[str] = []
     if info.has_audio:
         parts.append(
             "[acat]acompressor=threshold=0.12:ratio=3:attack=20:release=200:makeup=2,"
-            f"loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,{_ALIMITER},aformat=channel_layouts=stereo,"
+            "loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,aformat=channel_layouts=stereo[voice]"
+        )
+        mix_labels.append("[voice]")
+    else:
+        parts.append(f"[{null_idx}:a]aresample=48000,aformat=channel_layouts=stereo,asetpts=N/SR/TB[voice]")
+        mix_labels.append("[voice]")
+
+    if sfx_idx >= 0:
+        parts.append(
+            f"[{sfx_idx}:a]volume=0.72,aresample=48000,aformat=channel_layouts=stereo,"
+            f"apad=whole_dur={seg_len:.3f},atrim=0:{seg_len:.3f},asetpts=N/SR/TB[sfx]"
+        )
+        mix_labels.append("[sfx]")
+    if music_idx >= 0:
+        parts.append(
+            f"[{music_idx}:a]volume=0.045,lowpass=f=2400,aresample=48000,aformat=channel_layouts=stereo,"
+            f"afade=t=in:d=0.25,afade=t=out:st={fade_out_a:.3f}:d=0.25,"
+            f"atrim=0:{seg_len:.3f},asetpts=N/SR/TB[bed]"
+        )
+        mix_labels.append("[bed]")
+
+    if len(mix_labels) > 1:
+        parts.append(
+            f"{''.join(mix_labels)}amix=inputs={len(mix_labels)}:duration=first:dropout_transition=0:normalize=0,"
+            f"{_ALIMITER},aformat=channel_layouts=stereo,"
+            f"afade=t=in:d=0.14,afade=t=out:st={fade_out_a:.3f}:d=0.16,asetpts=N/SR/TB[aout]"
+        )
+    elif info.has_audio:
+        parts.append(
+            f"[voice]{_ALIMITER},aformat=channel_layouts=stereo,"
             f"afade=t=in:d=0.14,afade=t=out:st={fade_out_a:.3f}:d=0.16,asetpts=N/SR/TB[aout]"
         )
     else:
-        inputs += ["-f", "lavfi", "-t", f"{seg_len:.3f}", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"]
-        parts.append("[1:a]aresample=48000,aformat=channel_layouts=stereo,asetpts=N/SR/TB[aout]")
+        parts.append("[voice]asetpts=N/SR/TB[aout]")
 
     run_ffmpeg(
         [
@@ -623,10 +756,17 @@ def render_compilation(
     out.parent.mkdir(parents=True, exist_ok=True)
     partial = out.with_name(out.name + ".tmp.mp4")
     warnings = list(plan.warnings)
-    use_vo = (
-        bool(settings.longform_voiceover) and not (settings.use_mock and not (settings.sarvam_api_key or "").strip())
-        if include_voiceover is None else bool(include_voiceover)
-    )
+    if include_voiceover is None:
+        if not bool(settings.longform_voiceover):
+            use_vo = False
+        elif settings.use_mock:
+            from . import voiceover as vo_mod
+
+            use_vo = vo_mod.has_any_tts_key()
+        else:
+            use_vo = True
+    else:
+        use_vo = bool(include_voiceover)
     # Never pull _synth sine drones into 16:9 documentary videos; only real owner tracks.
     owner_tracks = music.library()
     owner_music: Optional[Path] = owner_tracks[0] if owner_tracks else None
@@ -639,16 +779,20 @@ def render_compilation(
         voiceover = None
         script: dict = {}
         if use_vo:
-            from . import voiceover as vo_mod
+            missing_srcs = [str(s.source_path) for s in (plan.cold_open, *plan.segments) if not os.path.isfile(str(s.source_path))]
+            if missing_srcs:
+                warnings.append("voiceover skipped: missing source clip file")
+            else:
+                from . import voiceover as vo_mod
 
-            try:
-                voiceover = vo_mod
-                script = voiceover.generate_commentary_script(plan)
-            except vo_mod.SarvamTTSQuotaError:
-                raise
-            except Exception as exc:
-                warnings.append(f"voiceover skipped: {exc}")
-                voiceover = None
+                try:
+                    voiceover = vo_mod
+                    script = voiceover.generate_commentary_script(plan)
+                except vo_mod.SarvamTTSQuotaError:
+                    raise
+                except Exception as exc:
+                    warnings.append(f"voiceover skipped: {exc}")
+                    voiceover = None
 
         parts_to_concat: list[Path] = []
         chapters: list[tuple[float, str]] = [(0.0, "Intro / Preview")]

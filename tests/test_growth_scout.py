@@ -222,3 +222,28 @@ def test_the_env_channel_takes_scouted_creators_alongside_growth_feeds(tmp_path,
         assert channels.feeds_for(db, channels.channel_by_slug(db, "default")) == [GOOD, NEW]
     with pytest.raises(channels.ChannelsConfigError):  # a creator still feeds one channel only
         channels.change_feeds("vlogs", add=(NEW,))
+
+
+def test_the_scout_enforces_english_spoken_language_rule(tmp_path, monkeypatch):
+    seen_prompts = []
+    candidates = [{"handle": "@Sejalgabavlogs", "name": "Sejal Gaba Vlogs", "views": 90000, "titles": ["24 Hours Challenge"]}]
+    monkeypatch.setattr(scout.ai, "ask_json", lambda prompt: seen_prompts.append(prompt) or {"pick": None, "why": "Hindi vlogger"})
+
+    pick, _ = scout._vet("challenge", ["@airrack"], candidates, target_languages=["en"])
+    assert pick is None
+    assert "English ONLY" in seen_prompts[0]
+    assert "even if their video titles are written in English" in seen_prompts[0]
+
+    path = tmp_path / "channels.json"
+    path.write_text(
+        json.dumps({"channels": [{"slug": "default", "niche": "entertainment", "meta": {"target_languages": ["en"]}}]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "channels_file", str(path))
+    with session_scope() as db:
+        channels.sync_channels(db)
+    monkeypatch.setattr(scout.ai, "available", lambda: True)
+    monkeypatch.setattr(scout, "_search", lambda query: candidates)
+    out = scout.scout_job()
+    assert out["default"]["added"] is None
+    assert "English ONLY" in seen_prompts[-1]

@@ -703,7 +703,9 @@ def test_clean_vlog_source_captioned_fill_and_vertical_suppress_summary_cues(tmp
 def test_metadata_hinglish_particles_homographs_and_sensitive_plurals():
     assert sanitize_shorts_title("Accidents happen") == "scene happen"
     assert sanitize_shorts_title("Bhooton ka ghar") == "raaz ka ghar"
-    assert sanitize_shorts_title("Murders and Ghosts") == "drama and raaz"
+    assert sanitize_shorts_title("Murders and Ghosts") == "drama and mystery"
+    assert sanitize_shorts_title("Murders and Ghosts", language="hi") == "drama and raaz"
+    assert sanitize_shorts_title("Ghost Bikini Accident", language="en") == "mystery outfit scene"
     assert detect_language("Ho Ho Hum") == "en"
     assert detect_language("Piyush Ka Surprise") == "hi"
     assert detect_language("Pointing Out the Cliffs From the Boat") == "en"

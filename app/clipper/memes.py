@@ -32,7 +32,8 @@ log = logging.getLogger(__name__)
 # httpx logs every URL at INFO, and the meme keys travel in the URL.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-TENOR, GIPHY, MEMEGEN = "Tenor", "Giphy", "MemeGen"
+TENOR, GIPHY, MEMEGEN, LOCAL = "Tenor", "Giphy", "MemeGen", "Local"
+_LOCAL_VIDEO_EXTS = frozenset({".mp4", ".webm", ".mov", ".gif"})
 _TENOR_FEATURED_URL = "https://tenor.googleapis.com/v2/featured"
 _TENOR_SEARCH_URL = "https://tenor.googleapis.com/v2/search"
 _GIPHY_TRENDING_URL = "https://api.giphy.com/v1/gifs/trending"
@@ -374,16 +375,56 @@ def _local_copy(candidate: Candidate, seconds: float) -> Optional[Path]:
     return None
 
 
+def local_pack(language: str = "") -> list[Candidate]:
+    """Owner-curated video memes in content/memes/{en,hi}/ or content/memes/ (no API key needed)."""
+    root = settings.content_path / "memes"
+    if not root.is_dir():
+        return []
+    code = str(language or "").strip().lower().split("-")[0]
+    dirs: list[Path] = []
+    if code in ("en", "hi") and (root / code).is_dir():
+        dirs.append(root / code)
+    dirs.append(root)
+    out: list[Candidate] = []
+    seen: set[str] = set()
+    for folder in dirs:
+        for p in sorted(folder.iterdir()):
+            if not p.is_file() or p.suffix.lower() not in _LOCAL_VIDEO_EXTS or p.name.startswith("meme-"):
+                continue
+            mid = f"local-{_safe_meme_id(p.stem)}"
+            if mid in seen:
+                continue
+            seen.add(mid)
+            out.append(Candidate(mid, str(p), p.stem.replace("_", " ").replace("-", " "), "", LOCAL))
+    return out
+
+
+def has_local_pack(language: str = "") -> bool:
+    return bool(local_pack(language))
+
+
 def fetch(query: str, seconds: float, *, exclude: Iterable[str] = (),
-          choose: Optional[Callable[[list[Candidate]], list[Candidate]]] = None) -> Optional[MemeClip]:
+          choose: Optional[Callable[[list[Candidate]], list[Candidate]]] = None,
+          language: str = "") -> Optional[MemeClip]:
     """A local meme file for this overlay, or None if nothing suits.
 
-    An empty query means the trending pack, rotated through `exclude`.
-    `choose` gets the results worth trying, best first.
+    Checks owner-curated video memes in content/memes/ first (preserving native audio),
+    then falls back to Tenor/Giphy/MemeGen.
     """
     if not math.isfinite(seconds) or seconds <= 0:
         return None
     skip = set(exclude)
+    local_items = [c for c in local_pack(language) if c.meme_id not in skip]
+    if query and local_items:
+        qwords = [w for w in re.split(r"[^a-z0-9]+", query.lower()) if w]
+        matched = [c for c in local_items if any(w in c.title.lower() for w in qwords)]
+        local_items = matched or local_items
+    if choose is not None and local_items:
+        local_items = choose(local_items)
+    for cand in local_items:
+        p = Path(cand.link)
+        if p.is_file() and _playable(p, seconds):
+            return MemeClip(meme_id=cand.meme_id, path=str(p), title=cand.title, provider=LOCAL)
     try:
         found = search(query) if query else trending()
     except SearchBlocked:

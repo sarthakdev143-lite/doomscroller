@@ -994,3 +994,75 @@ def media_path(video_id: str) -> Optional[str]:
             if path and os.path.isfile(path):
                 return path
         return None
+
+
+def _has_video_file(video: Video) -> bool:
+    return any(bool(p and os.path.isfile(p)) for p in (video.transformed_path, video.local_path))
+
+
+def list_failed_videos(limit: int = 50) -> dict:
+    """List FAILED video rows with file-presence info for the Status tab's failures cleanup UI."""
+    from . import channels
+
+    capped = max(1, min(200, int(limit)))
+    with session_scope() as db:
+        slug_map = {c.id: c.slug for c in channels.all_channels(db)}
+        rows = (
+            db.execute(select(Video).where(Video.status == VideoStatus.FAILED).order_by(Video.scraped_at.desc()))
+            .scalars()
+            .all()
+        )
+        missing = 0
+        items: list[dict] = []
+        for v in rows:
+            has_file = _has_video_file(v)
+            if not has_file:
+                missing += 1
+            if len(items) < capped:
+                items.append({
+                    "id": v.id,
+                    "title": v.title or "",
+                    "channel_slug": slug_map.get(v.channel_id, "default") if v.channel_id else "default",
+                    "author": v.author_name or v.author or "",
+                    "error": v.error or "",
+                    "is_long": bool((v.meta or {}).get("long_form")),
+                    "has_file": has_file,
+                    "created_at": v.scraped_at.isoformat() if v.scraped_at else "",
+                })
+        return {"total": len(rows), "missing_file_count": missing, "items": items}
+
+
+def cleanup_failed_videos(*, video_id: str = "", missing_only: bool = True, action: str = "archive") -> dict:
+    """Archive FAILED videos (to REJECTED) or retry a single FAILED video whose rendered file exists."""
+    if action not in ("archive", "retry"):
+        raise ValueError(f"unsupported action {action!r}; must be 'archive' or 'retry'")
+    vid = (video_id or "").strip()
+    now = datetime.now(timezone.utc)
+    with session_scope() as db:
+        if action == "retry":
+            if not vid:
+                raise ReviewError("video_id is required to retry")
+            video = db.get(Video, vid)
+            if video is None:
+                raise ReviewError("no such video")
+            if video.status != VideoStatus.FAILED:
+                raise ReviewError(f"video is {video.status.value}, not failed")
+            if not video.transformed_path or not os.path.isfile(video.transformed_path):
+                raise ReviewError("rendered file is missing on disk")
+            video.status = VideoStatus.TRANSFORMED
+            video.error = None
+            return {"retried": 1, "id": vid}
+
+        conds = [Video.status == VideoStatus.FAILED]
+        if vid:
+            conds.append(Video.id == vid)
+        rows = db.execute(select(Video).where(*conds)).scalars().all()
+        count = 0
+        for v in rows:
+            if not vid and missing_only and _has_video_file(v):
+                continue
+            v.status = VideoStatus.REJECTED
+            v.curated_at = now
+            v.meta = {**(v.meta or {}), "archived_failure": True}
+            count += 1
+        return {"archived": count}

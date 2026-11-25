@@ -26,9 +26,9 @@ log = logging.getLogger(__name__)
 
 VALID_FORMATS = ("best_of", "vs", "theme")
 _MIN_SOURCE_DURATION_SEC = 180
-_SEGMENT_MIN_SEC = 38
-_SEGMENT_MAX_SEC = 78
-_SEGMENT_TARGET_SEC = 58
+_SEGMENT_MIN_SEC = 35
+_SEGMENT_MAX_SEC = 70
+_SEGMENT_TARGET_SEC = 42
 _MONETIZATION_UNSAFE_RE = re.compile(
     r"\b(?:sperm|semen|porn|nsfw|nude|nudity|sex|sexual|suicide|self[- ]harm|kill yourself|gore|cocaine|meth|heroin)\b",
     re.IGNORECASE,

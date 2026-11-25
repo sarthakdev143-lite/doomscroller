@@ -152,6 +152,8 @@ def test_generate_ambient_thumbnails_produces_3_distinct_1280x720_jpegs(tmp_path
             assert im.format == "JPEG"
             assert im.size == (1280, 720)
     assert len(blobs) == 3
+    assert [v["id"] for v in variants[:3]] == ["v1", "v2", "v3"]
+    assert all(not tpl.endswith("]") for p in ambient.AMBIENT_PRESETS.values() for tpl in p.title_templates)
     assert "ambient" in prompt.lower() or "night" in prompt.lower()
 
 
@@ -605,6 +607,7 @@ def test_curated_music_track_stitcher_builds_crossfaded_mix_and_real_chapters(tm
     assert len(ff_calls) == 1
     cmd = " ".join(ff_calls[0])
     assert "acrossfade" in cmd and "loudnorm" in cmd and "alimiter" in cmd
+    assert "asetrate=" in cmd and "aecho=" in cmd
     titles = [lbl for _, lbl in chapters]
     assert any("stay a little longer" in t for t in titles)
     assert any("rain on glass" in t for t in titles)

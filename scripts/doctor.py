@@ -34,6 +34,8 @@ WARN_FREE_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB
 OPTIONAL_SECRET_KEYS: tuple[str, ...] = (
     "DEEPGRAM_API_KEY",
     "SARVAM_API_KEY",
+    "ELEVENLABS_API_KEY",
+    "CARTESIA_API_KEY",
     "PIXABAY_API_KEY",
     "PEXELS_API_KEY",
     "TENOR_API_KEY",
@@ -284,6 +286,13 @@ def run_doctor(
 
     # 4. .env & REVIEW_TOKEN + optional API keys (BOOLEAN PRESENCE ONLY — NEVER VALUES)
     def _has_key(key: str) -> bool:
+        if key == "ELEVENLABS_API_KEY":
+            return bool(
+                os.environ.get("ELEVENLABS_API_KEY", "").strip()
+                or dotenv_vals.get("ELEVENLABS_API_KEY", "").strip()
+                or os.environ.get("ELEVEN_LABS_API_KEY", "").strip()
+                or dotenv_vals.get("ELEVEN_LABS_API_KEY", "").strip()
+            )
         return bool(os.environ.get(key, "").strip() or dotenv_vals.get(key, "").strip())
 
     env_exists = bool(target_env is not None and target_env.is_file())

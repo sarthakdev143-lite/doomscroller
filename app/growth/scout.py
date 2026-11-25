@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, Sequence
 from urllib.parse import quote_plus
 
 from sqlalchemy import func, select
@@ -54,12 +54,26 @@ def _search(query: str) -> list[dict]:
     return sorted(found.values(), key=lambda c: -c["views"])
 
 
-def _vet(niche: str, current: list[str], candidates: list[dict]) -> tuple[Optional[dict], str]:
+def _vet(
+    niche: str, current: list[str], candidates: list[dict], *, target_languages: Sequence[str] = ()
+) -> tuple[Optional[dict], str]:
     """The one candidate the AI would add, with its reason, or (None, reason)."""
+    langs = [str(x).strip().lower() for x in target_languages if str(x).strip()]
+    if langs and all(lang.startswith("en") for lang in langs):
+        lang_rule = (
+            "\nTarget spoken language: English ONLY. Refuse Hindi, Hinglish, or Indian-language vloggers "
+            "and any creator who speaks another language in their videos, even if their video titles are written in English."
+        )
+    elif langs and all(lang.startswith("hi") for lang in langs):
+        lang_rule = "\nTarget spoken language: Hindi / Hinglish only."
+    elif langs:
+        lang_rule = f"\nTarget spoken languages: {', '.join(langs)} only."
+    else:
+        lang_rule = ""
     rows = "\n".join(f"[{i}] {c['name']} ({c['handle']}), best upload this week {c['views']:,} views: "
                      + " | ".join(c["titles"][:2]) for i, c in enumerate(candidates))
     reply = ai.ask_json(f"""A YouTube Shorts channel cuts clips from other creators' long videos. Its niche: {niche}.
-It already clips: {", ".join(current) or "nobody yet"}.
+It already clips: {", ".join(current) or "nobody yet"}.{lang_rule}
 
 Pick the one candidate below that would fit this channel best, or none. Only an independent creator whose own long
 videos (vlogs, challenges, experiments, commentary) fit the niche and speak the same language as the creators above.
@@ -109,7 +123,9 @@ def _scout_one(channel) -> dict:
     candidates = [c for c in _search(channel.niche) if c["handle"].casefold() not in known][:_CANDIDATES]
     if not candidates:
         return {"found": 0}
-    pick, why = _vet(channel.niche, live, candidates)
+    pick, why = _vet(
+        channel.niche, live, candidates, target_languages=channels.target_languages(channel)
+    )
     if pick is None:
         log.info("scout: %s added nobody from %d candidates: %s", channel.slug, len(candidates), why or "no reason given")
         return {"found": len(candidates), "added": None, "why": why}

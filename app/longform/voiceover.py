@@ -1,9 +1,14 @@
-"""Sarvam AI bulbul:v3 voiceover synthesis, documentary storytelling scripts & live-motion bridges."""
+"""Multi-provider long-form TTS (ElevenLabs eleven_v4, Cartesia sonic-3, Sarvam bulbul:v3),
+cost-saving SHA-256 disk cache, documentary script generator, and live-motion narrator bridges.
+"""
 from __future__ import annotations
 
 import base64
+import hashlib
 import logging
+import os
 import re
+import shutil
 import tempfile
 import time
 import wave
@@ -14,7 +19,6 @@ import httpx
 
 from app.clipper import ai
 from app.clipper.media import probe, run_ffmpeg
-from app.clipper.render import _filter_path_arg
 from app.config import settings
 from app.growth import notify
 from app.growth.youtube import scrub_secrets
@@ -27,6 +31,9 @@ log = logging.getLogger(__name__)
 
 _SARVAM_TTS_URL = "https://api.sarvam.ai/text-to-speech"
 _SARVAM_MODEL = "bulbul:v3"
+_ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format=mp3_44100_128"
+_CARTESIA_TTS_URL = "https://api.cartesia.ai/tts/bytes"
+
 _ALIMITER = "alimiter=limit=0.84:attack=2:release=40:level=0:latency=1"
 _VOICE_CFG = {
     "hi": {"lang": "hi-IN", "speaker": "rohan", "pace": 1.06, "temperature": 0.7},
@@ -59,25 +66,68 @@ _CTRL_OR_EMOJI_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\U00010000-\U0010ffff]+")
 
 
 class SarvamTTSQuotaError(RuntimeError):
-    """Raised when Sarvam AI TTS rejects requests due to exhausted credits, quota, or key failure."""
+    """Raised when configured TTS providers reject requests due to exhausted credits, quota, or missing/invalid keys."""
+
+
+TTSQuotaError = SarvamTTSQuotaError
+
+
+class _ProviderQuotaError(RuntimeError):
+    """Internal per-provider quota/auth failure allowing failover before raising SarvamTTSQuotaError."""
+
+
+def _provider_key(provider: str) -> str:
+    if provider == "elevenlabs":
+        return settings.resolved_elevenlabs_api_key
+    if provider == "cartesia":
+        return (settings.cartesia_api_key or "").strip()
+    if provider == "sarvam":
+        return (settings.sarvam_api_key or "").strip()
+    return ""
+
+
+def has_any_tts_key() -> bool:
+    """Return True when at least one high-quality neural TTS key is configured."""
+    return any(bool(_provider_key(p)) for p in ("elevenlabs", "cartesia", "sarvam"))
+
+
+def tts_status() -> dict:
+    """Return non-secret TTS failover order, model names, disk-cache hits count, and auto-supply guard."""
+    cache_dir = settings.content_path / "tts_cache"
+    cache_files = len(list(cache_dir.glob("*.wav"))) if cache_dir.is_dir() else 0
+    return {
+        "en_chain": _provider_chain("en"),
+        "hi_chain": _provider_chain("hi"),
+        "elevenlabs_model": (settings.elevenlabs_model_id or "eleven_v4").strip(),
+        "cartesia_model": (settings.cartesia_model_id or "sonic-3").strip(),
+        "sarvam_model": _SARVAM_MODEL,
+        "cache_files": cache_files,
+        "auto_supply": bool(settings.longform_auto_supply),
+    }
 
 
 def _scrub(text: str) -> str:
     clean = scrub_secrets(str(text or ""))
-    key = (settings.sarvam_api_key or "").strip()
-    if key:
-        clean = clean.replace(key, "[REDACTED]")
+    for secret in (
+        settings.sarvam_api_key,
+        settings.cartesia_api_key,
+        settings.elevenlabs_api_key,
+        settings.eleven_labs_api_key,
+    ):
+        val = (secret or "").strip()
+        if val:
+            clean = clean.replace(val, "[REDACTED]")
     return clean
 
 
-def _notify_quota_once(detail: str) -> None:
+def _notify_quota_once(detail: str, *, title: str = "Sarvam AI TTS Alert") -> None:
     global _last_quota_alert_at
     now = time.monotonic()
     if _last_quota_alert_at and (now - _last_quota_alert_at) < _QUOTA_ALERT_COOLDOWN_SEC:
         return
     _last_quota_alert_at = now
     try:
-        notify.send(_scrub(detail), title="Sarvam AI TTS Alert")
+        notify.send(_scrub(detail), title=title)
     except Exception as exc:
         log.warning("longform.voiceover: quota alert send failed: %s", type(exc).__name__)
 
@@ -102,37 +152,37 @@ def _default_script(plan: "CompilationPlan") -> dict:
     who_clean = ", ".join(_clean_spoken(t, max_chars=40) for t in plan.targets if str(t).strip())
     if hi:
         who_hi = who_clean or "सौरव जोशी"
-        hook = f"भाई, {who_hi} के इन {n} मोमेंट्स में जो आखिरी मोड़ आया है ना, किसी ने नहीं सोचा था!"
+        hook = f"भाई, {who_hi} के इन {n} मोमेंट्स का आखिरी मोड़ किसी ने नहीं सोचा था!"
         bridges = []
         for idx, s in enumerate(segs, start=1):
             rank = (n - idx + 1) if plan.format_kind != "vs" else idx
             who_seg = _clean_spoken(s.creator, max_chars=36) or who_hi
             if plan.format_kind == "vs":
-                bridges.append(f"राउंड {idx} में {who_seg} का सबसे खतरनाक चैलेंज शुरू होता है, ध्यान से देखिए।")
+                bridges.append(f"राउंड {idx} में {who_seg} का सबसे बड़ा चैलेंज शुरू होता है।")
             elif rank == 1:
-                bridges.append("और अब आता है आज की कहानी का सबसे पागल और बड़ा क्लाइमेक्स, अंत तक जरूर देखना!")
+                bridges.append("और अब आज की कहानी का सबसे पागल क्लाइमेक्स, अंत तक जरूर देखना!")
             else:
-                bridges.append(f"चैप्टर {idx} में {who_seg} के सामने एक बिल्कुल अनोखा मोड़ आता है, आगे क्या हुआ खुद देखो।")
-        outro = "आपको आज की कहानी का कौन सा पल सबसे ज्यादा मजेदार या खतरनाक लगा? कमेंट में जरूर बताइए और सब्सक्राइब कीजिए!"
+                bridges.append(f"चैप्टर {idx} में {who_seg} के सामने एक अनोखा मोड़ आता है।")
+        outro = "कौन सा पल सबसे मजेदार लगा? कमेंट में बताओ और सब्सक्राइब करो!"
     else:
         who_en = who_clean or "these creators"
-        hook = f"Everything escalates fast in {who_en}'s wildest challenge run yet — wait until you see how the finale ends."
+        hook = f"Everything escalates fast in {who_en}'s wildest run yet — wait for the ending."
         bridges = []
         for idx, s in enumerate(segs, start=1):
             rank = (n - idx + 1) if plan.format_kind != "vs" else idx
             who_seg = _clean_spoken(s.creator, max_chars=36) or who_en
             if plan.format_kind == "vs":
-                bridges.append(f"Round {idx} shifts the pressure straight onto {who_seg} — watch how this play unfolds.")
+                bridges.append(f"Round {idx} puts the pressure straight on {who_seg}.")
             elif rank == 1:
-                bridges.append("And now the final payoff everyone waited for — here is how it ends at number one.")
+                bridges.append("Now the final payoff everyone waited for at number one.")
             else:
-                bridges.append(f"Next up at number {rank}, {who_seg} walks into a moment nobody saw coming.")
-        outro = "Which moment shocked you the most? Drop your verdict in the comments and subscribe for the next story."
+                bridges.append(f"Next at number {rank}, {who_seg} hits an unexpected turn.")
+        outro = "Which moment topped it all? Drop your pick below and subscribe."
     return {"hook": hook, "intro": hook, "bridges": bridges, "outro": outro}
 
 
 def generate_commentary_script(plan: "CompilationPlan") -> dict:
-    """Generate cohesive documentary commentary lines tailored for Sarvam AI bulbul:v3."""
+    """Generate cohesive, concise documentary commentary lines tailored for natural neural TTS."""
     fallback = _default_script(plan)
     segs = list(plan.segments)
     if not segs or not ai.available():
@@ -159,15 +209,15 @@ def generate_commentary_script(plan: "CompilationPlan") -> dict:
             + (f" | context={excerpt}" if excerpt else "")
         )
     prompt = (
-        f"Write gripping, story-driven narrator commentary lines in {lang_note} for a cohesive {n}-act YouTube 16:9 video "
+        f"Write gripping, concise narrator commentary lines in {lang_note} for a cohesive {n}-act YouTube 16:9 video "
         f"titled {plan.title!r}.\n"
         f"Acts in exact playback order:\n" + "\n".join(rows) + "\n\n"
         "Strict rules:\n"
-        "- NO hashtags (#), NO emojis, NO robotic filler.\n"
+        "- NO hashtags (#), NO emojis, NO robotic filler. Keep lines tight to save voiceover duration.\n"
         "- Do NOT just repeat the topic title word-for-word! Build curiosity, stakes, and narrative flow from one act to the next.\n"
-        "- hook (10-14 words): punchy ~4.5s opener over fast teaser footage — teases the climax payoff WITHOUT spoiling who wins.\n"
-        "- bridges (one per act, 10-16 words each): punchy 4-5s setup of what happens next and why the viewer should care.\n"
-        "- outro (12-16 words): short crisp closing question for comments + subscribe CTA.\n"
+        "- hook (8-12 words): punchy ~4s opener over fast teaser footage — teases the climax payoff WITHOUT spoiling who wins.\n"
+        "- bridges (one per act, 8-12 words each): punchy 3.5-4.5s setup of what happens next and why the viewer should care.\n"
+        "- outro (10-14 words): crisp closing question for comments + subscribe CTA.\n"
         f'Reply with JSON only: {{"hook": "...", "bridges": ["..." ({n} items matching 0..{n - 1})], "outro": "..."}}'
     )
     reply = ai.ask_json(prompt)
@@ -190,27 +240,110 @@ def _is_quota_or_auth_failure(status_code: int, body: str) -> bool:
     return any(tok in low for tok in ("quota", "credit", "insufficient", "balance", "limit exceeded"))
 
 
-def synthesize_wav(
-    text: str,
-    out_wav: Path,
-    *,
-    language: str = "en",
-) -> Optional[float]:
-    """Synthesize normalized 48kHz stereo WAV via Sarvam AI bulbul:v3; raises SarvamTTSQuotaError on credit exhaustion."""
-    clean = _clean_spoken(text, max_chars=500)
-    if not clean:
-        return None
-    api_key = (settings.sarvam_api_key or "").strip()
-    if not api_key:
-        msg = (
-            "SARVAM_API_KEY is missing or empty — Sarvam AI (bulbul:v3) is required for "
-            "long-form voiceover; refusing silent or robotic TTS fallback."
-        )
-        _notify_quota_once(msg)
-        raise SarvamTTSQuotaError(msg)
+def _provider_chain(lang_code: str) -> list[str]:
+    base = ["sarvam", "cartesia", "elevenlabs"] if lang_code == "hi" else ["elevenlabs", "cartesia", "sarvam"]
+    pref = str(settings.longform_tts_provider or "auto").strip().lower()
+    if pref in ("elevenlabs", "cartesia", "sarvam"):
+        order = [pref] + [p for p in base if p != pref]
+    else:
+        order = base
+    return [p for p in order if _provider_key(p)]
 
-    code = str(language or "en").strip().lower().split("-")[0]
-    cfg = _VOICE_CFG["hi" if code == "hi" else "en"]
+
+def _provider_spec(provider: str, lang_code: str) -> tuple[str, str]:
+    if provider == "elevenlabs":
+        model = (settings.elevenlabs_model_id or "eleven_v4").strip()
+        voice = (
+            (settings.elevenlabs_voice_hi if lang_code == "hi" else settings.elevenlabs_voice_en)
+            or "TX3LPaxmHKxFdv7VOQHJ"
+        ).strip()
+        return model, voice
+    if provider == "cartesia":
+        model = (settings.cartesia_model_id or "sonic-3").strip()
+        voice = (
+            (settings.cartesia_voice_hi if lang_code == "hi" else settings.cartesia_voice_en)
+            or ("4877b818-c7fe-4c89-b1cf-eadf8e23da72" if lang_code == "hi" else "47c38ca4-5f35-497b-b1a3-415245fb35e1")
+        ).strip()
+        return model, voice
+    cfg = _VOICE_CFG["hi" if lang_code == "hi" else "en"]
+    return _SARVAM_MODEL, f"{cfg['lang']}:{cfg['speaker']}"
+
+
+def _cache_file(provider: str, lang_code: str, clean: str) -> Path:
+    model_id, voice_id = _provider_spec(provider, lang_code)
+    digest = hashlib.sha256(f"{provider}|{model_id}|{voice_id}|{lang_code}|{clean}".encode("utf-8")).hexdigest()
+    return settings.content_path / "tts_cache" / f"{digest}.wav"
+
+
+def _wav_duration(path: Path) -> float:
+    try:
+        with wave.open(str(path), "rb") as wf:
+            rate_hz = wf.getframerate()
+            return (wf.getnframes() / float(rate_hz)) if rate_hz > 0 else 0.0
+    except Exception:
+        return 0.0
+
+
+def _synth_elevenlabs(clean: str, lang_code: str, api_key: str) -> Optional[tuple[bytes, str]]:
+    model_id, voice_id = _provider_spec("elevenlabs", lang_code)
+    try:
+        resp = httpx.post(
+            _ELEVENLABS_TTS_URL.format(voice_id=voice_id),
+            headers={"xi-api-key": api_key, "Content-Type": "application/json", "Accept": "audio/mpeg"},
+            json={
+                "text": clean,
+                "model_id": model_id,
+                "voice_settings": {"stability": 0.45, "similarity_boost": 0.78, "style": 0.15, "use_speaker_boost": True},
+            },
+            timeout=35.0,
+        )
+    except Exception as exc:
+        log.warning("longform.voiceover: ElevenLabs request error: %s", _scrub(str(exc)))
+        return None
+    if resp.status_code != 200:
+        excerpt = _scrub(resp.text[:240])
+        if _is_quota_or_auth_failure(resp.status_code, resp.text):
+            raise _ProviderQuotaError(f"ElevenLabs HTTP {resp.status_code}: {excerpt}")
+        log.warning("longform.voiceover: ElevenLabs HTTP %d: %s", resp.status_code, excerpt)
+        return None
+    raw = getattr(resp, "content", b"") or b""
+    return (raw, ".mp3") if len(raw) >= 200 else None
+
+
+def _synth_cartesia(clean: str, lang_code: str, api_key: str) -> Optional[tuple[bytes, str]]:
+    model_id, voice_id = _provider_spec("cartesia", lang_code)
+    try:
+        resp = httpx.post(
+            _CARTESIA_TTS_URL,
+            headers={
+                "X-API-Key": api_key,
+                "Cartesia-Version": (settings.cartesia_version or "2026-08-14").strip(),
+                "Content-Type": "application/json",
+            },
+            json={
+                "model_id": model_id,
+                "transcript": clean,
+                "voice": {"mode": "id", "id": voice_id},
+                "output_format": {"container": "wav", "encoding": "pcm_s16le", "sample_rate": 44100},
+                "language": "hi" if lang_code == "hi" else "en",
+            },
+            timeout=35.0,
+        )
+    except Exception as exc:
+        log.warning("longform.voiceover: Cartesia request error: %s", _scrub(str(exc)))
+        return None
+    if resp.status_code != 200:
+        excerpt = _scrub(resp.text[:240])
+        if _is_quota_or_auth_failure(resp.status_code, resp.text):
+            raise _ProviderQuotaError(f"Cartesia HTTP {resp.status_code}: {excerpt}")
+        log.warning("longform.voiceover: Cartesia HTTP %d: %s", resp.status_code, excerpt)
+        return None
+    raw = getattr(resp, "content", b"") or b""
+    return (raw, ".wav") if len(raw) >= 200 else None
+
+
+def _synth_sarvam(clean: str, lang_code: str, api_key: str) -> Optional[tuple[bytes, str]]:
+    cfg = _VOICE_CFG["hi" if lang_code == "hi" else "en"]
     payload = {
         "text": clean,
         "target_language_code": cfg["lang"],
@@ -231,55 +364,121 @@ def synthesize_wav(
     except Exception as exc:
         log.warning("longform.voiceover: Sarvam TTS request error: %s", _scrub(str(exc)))
         return None
-
     if resp.status_code != 200:
         excerpt = _scrub(resp.text[:240])
         if _is_quota_or_auth_failure(resp.status_code, resp.text):
-            msg = (
-                f"Sarvam AI TTS credits exhausted or key rejected (HTTP {resp.status_code}). "
-                "Please create a fresh Sarvam account/key and update SARVAM_API_KEY in .env — "
-                "long-form builds are paused so we never ship robotic audio."
-            )
-            _notify_quota_once(msg)
-            raise SarvamTTSQuotaError(f"{msg} Detail: {excerpt}")
+            raise _ProviderQuotaError(f"Sarvam AI TTS credits exhausted or key rejected (HTTP {resp.status_code}): {excerpt}")
         log.warning("longform.voiceover: Sarvam TTS HTTP %d: %s", resp.status_code, excerpt)
         return None
-
     try:
         audios = (resp.json() or {}).get("audios") or []
         raw_bytes = base64.b64decode(audios[0]) if audios else b""
     except Exception as exc:
         log.warning("longform.voiceover: malformed Sarvam TTS payload: %s", type(exc).__name__)
         return None
-    if len(raw_bytes) < 200:
+    return (raw_bytes, ".wav") if len(raw_bytes) >= 200 else None
+
+
+_SYNTH_FN = {
+    "elevenlabs": _synth_elevenlabs,
+    "cartesia": _synth_cartesia,
+    "sarvam": _synth_sarvam,
+}
+
+
+def synthesize_wav(
+    text: str,
+    out_wav: Path,
+    *,
+    language: str = "en",
+) -> Optional[float]:
+    """Synthesize normalized 48kHz stereo WAV with multi-provider failover and SHA-256 disk caching.
+
+    Raises SarvamTTSQuotaError (TTSQuotaError) when no TTS key is set or every configured provider
+    rejects the request due to credits/quota/auth.
+    """
+    clean = _clean_spoken(text, max_chars=360)
+    if not clean:
         return None
+
+    code = str(language or "en").strip().lower().split("-")[0]
+    chain = _provider_chain(code)
+    if not chain:
+        msg = (
+            "No TTS API key is configured (SARVAM_API_KEY, ELEVENLABS_API_KEY, or CARTESIA_API_KEY) — "
+            "refusing silent or robotic TTS fallback."
+        )
+        _notify_quota_once(msg, title="Sarvam AI TTS Alert")
+        raise SarvamTTSQuotaError(msg)
 
     out_wav = Path(out_wav)
     out_wav.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="longform-tts-", ignore_cleanup_errors=True) as td:
-        tmp_dir = Path(td)
-        raw_wav = tmp_dir / "sarvam_raw.wav"
-        raw_wav.write_bytes(raw_bytes)
+    # Skip disk caching only when a test inherits the shared session-wide temp content_dir.
+    cache_on = not (os.environ.get("PYTEST_CURRENT_TEST") and "doomscroller-test-content" in str(settings.content_path))
+    if cache_on:
+        for cached_prov in chain:
+            cfile = _cache_file(cached_prov, code, clean)
+            if cfile.is_file():
+                cdur = _wav_duration(cfile)
+                if cdur >= 0.4:
+                    shutil.copyfile(cfile, out_wav)
+                    return cdur
+
+    quota_errors: list[str] = []
+
+    for prov in chain:
+        cfile = _cache_file(prov, code, clean)
         try:
-            run_ffmpeg(
-                [
-                    "-i", str(raw_wav),
-                    "-af",
-                    "silenceremove=start_periods=1:start_silence=0.04:start_threshold=-45dB,"
-                    "areverse,silenceremove=start_periods=1:start_silence=0.05:start_threshold=-45dB,areverse,"
-                    f"loudnorm=I=-14:TP=-1.5:LRA=9,aresample=48000,{_ALIMITER},aformat=channel_layouts=stereo",
-                    "-ar", "48000", "-ac", "2",
-                    str(out_wav),
-                ],
-                cwd=str(tmp_dir),
-            )
-            with wave.open(str(out_wav), "rb") as wf:
-                rate_hz = wf.getframerate()
-                dur = (wf.getnframes() / float(rate_hz)) if rate_hz > 0 else 0.0
-            return dur if dur >= 0.4 else None
-        except Exception as exc:
-            log.warning("longform.voiceover: WAV normalization failed: %s", exc)
-            return None
+            res = _SYNTH_FN[prov](clean, code, _provider_key(prov))
+        except _ProviderQuotaError as exc:
+            err_clean = _scrub(str(exc))
+            log.warning("longform.voiceover: %s quota/auth failover: %s", prov, err_clean)
+            quota_errors.append(err_clean)
+            continue
+        if not res:
+            continue
+
+        raw_bytes, ext = res
+        with tempfile.TemporaryDirectory(prefix="longform-tts-", ignore_cleanup_errors=True) as td:
+            tmp_dir = Path(td)
+            raw_in = tmp_dir / f"{prov}_raw{ext}"
+            raw_in.write_bytes(raw_bytes)
+            try:
+                run_ffmpeg(
+                    [
+                        "-i", str(raw_in),
+                        "-af",
+                        "silenceremove=start_periods=1:start_silence=0.04:start_threshold=-45dB,"
+                        "areverse,silenceremove=start_periods=1:start_silence=0.05:start_threshold=-45dB,areverse,"
+                        f"loudnorm=I=-14:TP=-1.5:LRA=9,aresample=48000,{_ALIMITER},aformat=channel_layouts=stereo",
+                        "-ar", "48000", "-ac", "2",
+                        str(out_wav),
+                    ],
+                    cwd=str(tmp_dir),
+                )
+            except Exception as exc:
+                log.warning("longform.voiceover: WAV normalization failed (%s): %s", prov, exc)
+                continue
+
+        dur = _wav_duration(out_wav)
+        if dur >= 0.4:
+            if cache_on:
+                try:
+                    cfile.parent.mkdir(parents=True, exist_ok=True)
+                    tmp_cache = cfile.with_suffix(".wav.tmp")
+                    shutil.copyfile(out_wav, tmp_cache)
+                    tmp_cache.replace(cfile)
+                except Exception:
+                    pass
+            return dur
+
+    if quota_errors:
+        joined = "; ".join(quota_errors)
+        alert_title = "Sarvam AI TTS Alert" if chain == ["sarvam"] else "TTS Voiceover Quota Alert"
+        msg = _scrub(f"All configured TTS providers exhausted/rejected credits ({joined}).")
+        _notify_quota_once(msg, title=alert_title)
+        raise SarvamTTSQuotaError(msg)
+    return None
 
 
 def render_narrator_bridge(
@@ -298,6 +497,7 @@ def render_narrator_bridge(
     music_path: Optional[Path] = None,
 ) -> float:
     """Render a live-motion 1080p narrator bridge with clean upper-left typography & ducked stereo audio."""
+    from app.clipper.render import _filter_path_arg
     from .render import FPS, HEIGHT, WIDTH, _common_encode_args, _find_bright_offset, _probe_duration, _write_bridge_ass
 
     dur = max(1.0, float(duration or 1.0) + 0.35)

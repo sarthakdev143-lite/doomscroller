@@ -145,6 +145,12 @@ class LongApproveRequest(BaseModel):
     variant_id: str | None = None
 
 
+class FailureCleanupRequest(BaseModel):
+    video_id: str = ""
+    missing_only: bool = True
+    action: str = "archive"
+
+
 @review_app.get("/", response_class=HTMLResponse)
 def page(request: Request, key: str = ""):
     if key and settings.review_token and hmac.compare_digest(key.encode(), settings.review_token.encode()):
@@ -479,6 +485,28 @@ def api_doctor(request: Request, live: bool = False) -> JSONResponse:
     from app.growth.report import doctor
 
     return JSONResponse(doctor(live=live))
+
+
+@review_app.get("/api/failures")
+def api_failures(request: Request) -> JSONResponse:
+    _guard(request)
+    return JSONResponse(approval.list_failed_videos())
+
+
+@review_app.post("/api/failures/cleanup")
+def api_failures_cleanup(request: Request, body: FailureCleanupRequest | None = None) -> dict:
+    _guard(request)
+    req = body or FailureCleanupRequest()
+    try:
+        return approval.cleanup_failed_videos(
+            video_id=req.video_id,
+            missing_only=req.missing_only,
+            action=req.action,
+        )
+    except approval.ReviewError as exc:
+        raise HTTPException(409, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
 
 
 def _read_tunnel_url() -> str:

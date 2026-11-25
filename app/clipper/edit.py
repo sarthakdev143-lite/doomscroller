@@ -426,17 +426,17 @@ def attach_stock(plan: EditPlan, session: Optional[broll.StockSession] = None) -
     return warnings
 
 
-def attach_memes(plan: EditPlan, session: Optional[memes.MemeSession] = None) -> list[str]:
-    """Flash trending memes over punch beats, keeping only downloads that worked.
+def attach_memes(plan: EditPlan, session: Optional[memes.MemeSession] = None, *, language: str = "") -> list[str]:
+    """Flash trending or local video memes over punch beats, keeping only downloads that worked.
 
     The session spans a whole job, so a rate limit stops the lookups for every
     clip rather than being rediscovered once per clip. Reaction GIFs would fail
     the literal-match vision judge stock shots use, so overlays rotate through
-    the trending pack instead of being AI-picked.
+    the local/trending pack instead of being AI-picked.
     """
     if not [b for b in plan.beats if b.style == PUNCH]:
         return []
-    if not settings.clip_memes_allow_stills and memes.provider() == memes.MEMEGEN:
+    if not settings.clip_memes_allow_stills and memes.provider() == memes.MEMEGEN and not memes.has_local_pack(language):
         plan.meme_overlays = []
         return []
     if not memes.available():
@@ -456,7 +456,10 @@ def attach_memes(plan: EditPlan, session: Optional[memes.MemeSession] = None) ->
         if session.stopped:
             break
         try:
-            clip = memes.fetch("", _MEME_SEC, exclude=used)
+            try:
+                clip = memes.fetch("", _MEME_SEC, exclude=used, language=language)
+            except TypeError:
+                clip = memes.fetch("", _MEME_SEC, exclude=used)
         except memes.SearchBlocked as exc:
             session.stopped = True
             warnings.append(f"{memes.scrub_secrets(exc)}, so the rest of this job's memes were skipped")

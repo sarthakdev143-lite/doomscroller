@@ -78,36 +78,68 @@ def _usable_pack_file(path: Path) -> bool:
         return False
 
 
-def pack_pick(kind: str, seed: str) -> Optional[Path]:
+def _iter_usable(directory: Path) -> list[Path]:
+    if not directory.is_dir():
+        return []
+    try:
+        return sorted(p for p in directory.iterdir() if _usable_pack_file(p))
+    except OSError:
+        return []
+
+
+def _norm_lang(language: str) -> str:
+    code = str(language or "").strip().lower()
+    if not code:
+        return ""
+    return "hi" if code.startswith("hi") else "en"
+
+
+def pack_pick(kind: str, seed: str, *, language: str = "") -> Optional[Path]:
     """A pack file for this cue kind, or None when the pack has nothing usable.
 
     Files whose stem names the kind (or an alias) win; otherwise the pick rotates
-    through the whole pack. Deterministic per seed, so a re-render sounds the same.
+    through the matching language folder (never mixing ``hi/`` into English).
+    Deterministic per seed, so a re-render sounds the same.
     """
     root = pack_dir()
     if not root.is_dir():
         return None
-    try:
-        files = sorted(p for p in root.iterdir() if _usable_pack_file(p))
-    except OSError:
-        return None
-    if not files:
-        return None
+    lang = _norm_lang(language)
     aliases = _KIND_ALIASES.get(kind, ())
-    named = [p for p in files if any(a in p.stem.lower() for a in aliases)]
-    if not named:
-        return None
-    index = int(hashlib.sha1(f"{seed}|{kind}".encode()).hexdigest(), 16) % len(named)
-    return named[index]
+
+    search_dirs = [root] if not lang else [root / lang, root]
+    for folder in search_dirs:
+        files = _iter_usable(folder)
+        if not files:
+            continue
+        named = [p for p in files if any(a in p.stem.lower() for a in aliases)]
+        if named:
+            index = int(hashlib.sha1(f"{seed}|{kind}".encode()).hexdigest(), 16) % len(named)
+            return named[index]
+    return None
 
 
-def trending() -> dict[str, Path]:
-    """The owner's meme sounds in ``<pack>/trending``, by file name. The AI picks one by what its name says."""
-    root = pack_dir() / "trending"
-    try:
-        return {p.stem: p for p in sorted(root.iterdir()) if _usable_pack_file(p)}
-    except OSError:
-        return {}
+def trending(*, language: str = "") -> dict[str, Path]:
+    """The owner's meme sounds by file name, scoped by language when specified."""
+    root = pack_dir()
+    lang = _norm_lang(language)
+    if not lang:
+        return {p.stem: p for p in _iter_usable(root / "trending")}
+    if lang == "hi":
+        # Merge trending + hi/ with hi/ taking precedence on duplicate stems.
+        merged = {p.stem: p for p in _iter_usable(root / "trending")}
+        for p in _iter_usable(root / "hi"):
+            merged[p.stem] = p
+        return dict(sorted(merged.items()))
+    # English (or non-Hindi): prefer en/, then non-Hindi root/trending files (never hi/).
+    en_files = {p.stem: p for p in _iter_usable(root / "en")}
+    if en_files:
+        return en_files
+    hi_stems = {p.stem for p in _iter_usable(root / "hi")}
+    fallback = {p.stem: p for p in _iter_usable(root / "trending") if p.stem not in hi_stems}
+    if not fallback:
+        fallback = {p.stem: p for p in _iter_usable(root) if p.stem not in hi_stems}
+    return fallback
 
 
 def sting(path: str) -> Optional[np.ndarray]:
@@ -152,13 +184,13 @@ def _decode_pack(path: Path) -> Optional[np.ndarray]:
         return None
 
 
-def build_track(path: str, duration: float, cues: Sequence[Cue], seed: str = "") -> None:
+def build_track(path: str, duration: float, cues: Sequence[Cue], seed: str = "", *, language: str = "") -> None:
     """Write a mono WAV holding every cue at its time."""
     safe_duration = duration if math.isfinite(duration) and duration > 0 else 0.0
     rng = np.random.default_rng(7)
     track = np.zeros(max(1, int(RATE * (safe_duration + 1.0))), dtype=np.float64)
     makers = {WHOOSH: lambda: _whoosh(rng), IMPACT: _impact, POP: _pop}
-    pack = {kind: pack_pick(kind, seed) for kind in makers}
+    pack = {kind: pack_pick(kind, seed, language=language) for kind in makers}
     for cue in cues:
         if not math.isfinite(cue.at):
             continue

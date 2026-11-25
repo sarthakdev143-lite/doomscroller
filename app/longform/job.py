@@ -20,6 +20,8 @@ from app.metadata import compose, finished_title, youtube_description
 from app.models import Channel, GrowthEvent, LongJob, MetadataDraft, Video, VideoStatus
 from app.winproc import reclaim_memory
 
+from . import ab
+
 log = logging.getLogger(__name__)
 
 _worker_lock = threading.Lock()
@@ -239,6 +241,13 @@ def run_next_long_job(*, now: Optional[datetime] = None) -> Optional[dict]:
             from . import ambient
 
             _set_stage(job_id, f"generating {fmt} ({target_mins}m)")
+            with session_scope() as s:
+                ch = channels.get_channel(s, ch_id) or channels.default_channel(s)
+                exp = (
+                    ab.choose_next_experiment(s, ch, [fmt], portraits=ambient.list_ambient_portraits())
+                    if ch is not None
+                    else {"preset": fmt, "thumb": "v2", "portrait_path": "", "portrait": ""}
+                )
             amb = ambient.generate_ambient_video(
                 preset=fmt,
                 output_path=str(out_path),
@@ -248,13 +257,20 @@ def run_next_long_job(*, now: Optional[datetime] = None) -> Optional[dict]:
                 part_number=prior_parts + 1,
                 thumbs_dir=thumbs_dir,
                 language="en",
+                portrait_path=exp["portrait_path"] or None,
             )
             full_desc = youtube_description(
                 f"{amb.description}\n\nChapters:\n{amb.chapter_text}".strip()
                 if amb.chapter_text and "Chapters:" not in amb.description else amb.description
             )
             thumbs = list(amb.thumbnails or ())
-            selected = _default_ambient_thumbnail(thumbs)
+            selected = next(
+                (t for t in thumbs if isinstance(t, dict) and t.get("id") == "v4"),
+                None,
+            ) or next(
+                (t for t in thumbs if isinstance(t, dict) and t.get("id") == exp["thumb"]),
+                None,
+            ) or _default_ambient_thumbnail(thumbs)
             hero_raw = thumbs_dir / "hero_raw.jpg"
             hero_frame = amb.hero_frame or (str(hero_raw) if hero_raw.is_file() else "")
             status = VideoStatus.TRANSFORMED if (auto_pub and ch_enabled and ch_long_auto) else VideoStatus.PENDING
@@ -301,6 +317,11 @@ def run_next_long_job(*, now: Optional[datetime] = None) -> Optional[dict]:
                         "selected_thumbnail": selected["path"] if selected else None,
                         "selected_thumbnail_id": selected["id"] if selected else None,
                         "thumb_version": 1,
+                        "ambient_ab_arms": ab.record_arms(
+                            preset=fmt,
+                            thumb_id=selected["id"] if selected else exp["thumb"],
+                            portrait_path=getattr(amb, "portrait_path", "") or "",
+                        ),
                     },
                 )
                 db.add(video)
@@ -482,17 +503,14 @@ def start_long_worker() -> bool:
 
 
 def _pick_auto_format(db, channel: Channel) -> tuple[str, list[str], str]:
+    if channels.is_procedural(channel):
+        presets = [p for p in ((channel.meta or {}).get("presets") or _AMBIENT_FORMATS) if p in _AMBIENT_FORMATS] or list(_AMBIENT_FORMATS)
+        fmt = ab.choose_next_experiment(db, channel, presets)["preset"]
+        return fmt, [], ""
     last = db.execute(
         select(LongJob).where(LongJob.channel_id == channel.id, LongJob.status != "failed")
         .order_by(desc(LongJob.created_at), LongJob.id).limit(1)
     ).scalar_one_or_none()
-    if channels.is_procedural(channel):
-        presets = [p for p in ((channel.meta or {}).get("presets") or _AMBIENT_FORMATS) if p in _AMBIENT_FORMATS] or list(_AMBIENT_FORMATS)
-        if last and last.format in presets:
-            fmt = presets[(presets.index(last.format) + 1) % len(presets)]
-        else:
-            fmt = presets[0]
-        return fmt, [], ""
     if last and last.format in _FORMAT_ROTATION:
         next_idx = (_FORMAT_ROTATION.index(last.format) + 1) % len(_FORMAT_ROTATION)
         fmt = _FORMAT_ROTATION[next_idx]
@@ -517,8 +535,11 @@ def long_supply_job(*, now: Optional[datetime] = None) -> dict:
             with session_scope() as s:
                 ch = s.get(Channel, channel.id) or channel
                 is_proc = channels.is_procedural(ch)
-                if not is_proc and safety.pause_reason(s, ch):
-                    return {"skipped": "paused"}
+                if not is_proc:
+                    if not settings.longform_auto_supply:
+                        return {"skipped": "auto-supply disabled"}
+                    if safety.pause_reason(s, ch):
+                        return {"skipped": "paused"}
                 scope = channels.video_scope(ch)
                 waiting_rows = s.execute(
                     select(Video).where(scope, Video.status.in_((VideoStatus.PENDING, VideoStatus.TRANSFORMED)))
@@ -531,22 +552,21 @@ def long_supply_job(*, now: Optional[datetime] = None) -> dict:
                     select(func.count(LongJob.id)).where(LongJob.channel_id == ch.id, LongJob.status.in_(("queued", "running")))
                 ) or 0
                 cap = channels.long_uploads_per_day(ch)
-                stock_cap = max(_STOCK_CAP, cap)
+                stock_cap = max(_STOCK_CAP, cap) if is_proc else 1
                 if stock >= stock_cap or active_jobs > 0:
                     return {"ok": True, "queued": False, "stock": stock, "active_jobs": active_jobs}
-                if is_proc:
-                    midnight_utc = now.astimezone(channel_zone(ch)).replace(
-                        hour=0, minute=0, second=0, microsecond=0
-                    ).astimezone(timezone.utc)
-                    created_today = s.scalar(
-                        select(func.count(LongJob.id)).where(
-                            LongJob.channel_id == ch.id,
-                            LongJob.status != "failed",
-                            LongJob.created_at >= midnight_utc,
-                        )
-                    ) or 0
-                    if created_today >= cap:
-                        return {"ok": True, "queued": False, "stock": stock, "daily_cap": cap}
+                midnight_utc = now.astimezone(channel_zone(ch)).replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                ).astimezone(timezone.utc)
+                created_today = s.scalar(
+                    select(func.count(LongJob.id)).where(
+                        LongJob.channel_id == ch.id,
+                        LongJob.status != "failed",
+                        LongJob.created_at >= midnight_utc,
+                    )
+                ) or 0
+                if created_today >= cap:
+                    return {"ok": True, "queued": False, "stock": stock, "daily_cap": cap}
                 fmt, targets, theme = _pick_auto_format(s, ch)
                 if not is_proc and not targets and not theme and not channels.feeds_for(s, ch):
                     return {"skipped": "no feeds"}
@@ -714,6 +734,12 @@ def select_thumbnail(video_id: str, variant_id: str) -> dict:
             raise ValueError(f"thumbnail variant {variant_id!r} not found")
         meta["selected_thumbnail"] = match["path"]
         meta["selected_thumbnail_id"] = variant_id
+        if "ambient_ab_arms" in meta or meta.get("procedural_ambient"):
+            meta["ambient_ab_arms"] = ab.record_arms(
+                preset=str(meta.get("ambient_preset") or meta.get("long_format") or ""),
+                thumb_id=variant_id,
+                portrait_path=str(meta.get("portrait_path") or ""),
+            )
         video.meta = meta
         return {"id": video_id, "selected_thumbnail_id": variant_id}
 
@@ -737,6 +763,12 @@ def upload_custom_thumbnail(video_id: str, raw_bytes: bytes) -> dict:
         meta["selected_thumbnail"] = saved_path
         meta["selected_thumbnail_id"] = "custom"
         meta["thumb_version"] = ver
+        if "ambient_ab_arms" in meta or meta.get("procedural_ambient"):
+            meta["ambient_ab_arms"] = ab.record_arms(
+                preset=str(meta.get("ambient_preset") or meta.get("long_format") or ""),
+                thumb_id="custom",
+                portrait_path=str(meta.get("portrait_path") or ""),
+            )
         video.meta = meta
         return {"id": video_id, "selected_thumbnail_id": "custom", "thumb_version": ver}
 
@@ -975,6 +1007,7 @@ def _long_card(db, video: Video, slug_names: dict[str, tuple[str, str]]) -> dict
         "selected_thumbnail_id": meta.get("selected_thumbnail_id") or (thumbs[0]["id"] if thumbs else ""),
         "chapters": list(meta.get("chapters") or []),
         "video_url": f"/api/media/{video.id}" if video.transformed_path and os.path.isfile(video.transformed_path) else "",
+        "size_mb": round(os.path.getsize(video.transformed_path) / 1048576, 1) if video.transformed_path and os.path.isfile(video.transformed_path) else 0.0,
         "youtube_url": f"https://www.youtube.com/watch?v={video.youtube_video_id}" if video.youtube_video_id and not video.youtube_video_id.startswith("MOCK_") else "",
         "views": int(video.views or 0),
         "thumb_version": ver,
@@ -1017,7 +1050,9 @@ def long_panel_data() -> dict:
             }
             for c in ch_rows
         ]
-    from . import ambient
+        proc_ch = next((c for c in ch_rows if channels.is_procedural(c)), None)
+        ambient_ab = ab.evaluate_ambient_ab(db, proc_ch) if proc_ch is not None else None
+    from . import ambient, voiceover
     tracks = ambient.list_ambient_tracks()
     portraits = ambient.list_ambient_portraits()
     return {
@@ -1026,6 +1061,8 @@ def long_panel_data() -> dict:
         "posted": posted,
         "jobs": list_long_jobs(),
         "channels": channel_list,
+        "ambient_ab": ambient_ab,
+        "tts_status": voiceover.tts_status(),
         "ambient_stats": {
             "tracks_count": len(tracks),
             "portraits_count": len(portraits),

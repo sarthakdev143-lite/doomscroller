@@ -826,7 +826,7 @@ def test_manual_publish_during_title_writing_does_not_upload_twice(tmp_path, pub
     with session_scope() as db:
         db.add(GrowthState(key="plan", value=waiting_plan()))
 
-    def owner_clicks_publish(style, title, hook):
+    def owner_clicks_publish(style, title, hook, **_):
         assert publish_task(video_id)["ok"] is True
         return "Autopilot title #Shorts", "plain"
 
@@ -3954,7 +3954,7 @@ def test_quote_title_needs_a_real_line():
 def test_autopilot_hands_titles_the_transcript_never_the_hook(monkeypatch, tmp_path, publisher, meta, handed_over):
     seen = []
 
-    def styled(style, title, opening_line):
+    def styled(style, title, opening_line, **_):
         seen.append(opening_line)
         return title, "plain"
 
@@ -3962,6 +3962,34 @@ def test_autopilot_hands_titles_the_transcript_never_the_hook(monkeypatch, tmp_p
     ready_file_clip(tmp_path, **meta)  # its clip_hook is "Nobody told me this"
     autopilot._publish_next(policy(), START, "post")
     assert seen == [handed_over]
+
+
+def test_autopilot_passes_channel_target_language_to_styled_title(monkeypatch, tmp_path, publisher):
+    seen_langs = []
+
+    def styled(style, title, opening_line, **kwargs):
+        seen_langs.append(kwargs.get("language"))
+        return title, "plain"
+
+    monkeypatch.setattr(titles, "styled_title", styled)
+    monkeypatch.setattr(settings, "target_languages", '["en"]')
+    ready_file_clip(tmp_path)
+    autopilot._publish_next(policy(), START, "post")
+    assert seen_langs == ["en"]
+
+    with session_scope() as db:
+        ch = Channel(slug="hindi_ch", name="Hindi", niche="hindi vlog", meta={"target_languages": ["hi"]})
+        db.add(ch)
+        db.flush()
+        ch_id = ch.id
+    vid_id = ready_file_clip(tmp_path, n=1)
+    with session_scope() as db:
+        vid = db.get(Video, vid_id)
+        vid.channel_id = ch_id
+        vid.language = "hi"
+        ch = db.get(Channel, ch_id)
+    autopilot._publish_next(policy(), START, "post2", channel=ch)
+    assert seen_langs == ["en", "hi"]
 
 
 def test_ai_titles_get_no_opening_line_to_lean_on_when_there_is_none(monkeypatch):

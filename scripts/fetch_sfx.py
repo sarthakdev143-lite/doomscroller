@@ -1,9 +1,8 @@
-"""Download trending CC0 SFX from Freesound into the runtime pack (content/sfx/).
+"""Download trending SFX from Freesound (CC0) or MyInstants into content/sfx/.
 
-Only Creative Commons 0 sounds are kept, so clips need no attribution line and
-the synth fallback stays silent. Needs a free key from
-https://freesound.org/apiv2/apply (set FREESOUND_API_KEY, see .env.example).
-Without a key there is nothing to download; the synth still plays.
+Freesound needs FREESOUND_API_KEY (see .env.example). When --source is auto (default),
+Freesound is used if FREESOUND_API_KEY is set, otherwise MyInstants populates
+content/sfx/en/, content/sfx/hi/, and content/sfx/trending/.
 """
 from __future__ import annotations
 
@@ -15,7 +14,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.clipper import trending_sfx  # noqa: E402
+from app.clipper import myinstants, trending_sfx  # noqa: E402
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -23,11 +22,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit", type=int, default=10, help="trending sounds to fetch (1..50)")
     parser.add_argument("--search", action="append", default=[],
                         help="extra search term to fetch top result for (repeatable)")
+    parser.add_argument("--source", choices=("auto", "freesound", "myinstants"), default="auto",
+                        help="SFX source: auto (freesound if key set, else myinstants)")
+    parser.add_argument("--lang", choices=("en", "hi", "both"), default="both",
+                        help="language bucket for MyInstants (en, hi, or both)")
     parser.add_argument("--json", action="store_true", help="print result as JSON")
     return parser
 
 
-def fetch_packs(limit: int, searches: list[str]) -> dict:
+def _fetch_freesound(limit: int, searches: list[str]) -> dict:
     if not trending_sfx.available():
         raise ValueError("set FREESOUND_API_KEY first (see .env.example)")
     if not 1 <= limit <= 50:
@@ -76,13 +79,27 @@ def fetch_packs(limit: int, searches: list[str]) -> dict:
             "skipped": skipped, "files": sorted(set(downloaded))}
 
 
+def fetch_packs(limit: int, searches: list[str], source: str = "auto", lang: str = "both") -> dict:
+    chosen = (source or "auto").strip().lower()
+    if chosen == "auto":
+        chosen = "freesound" if trending_sfx.available() else "myinstants"
+    if chosen == "freesound":
+        return _fetch_freesound(limit, searches)
+    if chosen == "myinstants":
+        try:
+            return myinstants.fetch_all(limit=limit, lang=lang, searches=searches)
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from None
+    raise ValueError(f"unsupported source: {source!r}")
+
+
 def main(n: int | list[str] | None = None) -> int:
     if not isinstance(n, list):
         n = sys.argv[1:]
     parser = build_parser()
     args = parser.parse_args(n)
     try:
-        summary = fetch_packs(args.limit, args.search or [])
+        summary = fetch_packs(args.limit, args.search or [], source=args.source, lang=args.lang)
     except ValueError as exc:
         if args.json:
             print(json.dumps({"ok": False, "error": str(exc)}, indent=2))
@@ -92,7 +109,7 @@ def main(n: int | list[str] | None = None) -> int:
     if args.json:
         print(json.dumps(summary, indent=2))
     else:
-        print(f"Fetched {summary['downloaded']} CC0 sounds via {summary['provider']} "
+        print(f"Fetched {summary['downloaded']} sounds via {summary['provider']} "
               f"({summary['skipped']} skipped) into content/sfx/.")
     return 0
 

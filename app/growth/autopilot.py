@@ -300,16 +300,21 @@ def _publish_next(current: Policy, now: datetime, post_id: str, channel=None) ->
         vmeta = video.meta or {}
         video_id, title, spoken = video.id, video.title or "", vmeta.get("clip_opening_line", "")
         context = " ".join(p for p in (vmeta.get("clip_reason") or "", vmeta.get("llm_description") or "") if p).strip()
+        langs = channels.target_languages(channel)
+        raw_lang = (video.language or "").strip().lower()
+        video_lang = (raw_lang if raw_lang in langs else langs[0]) if langs else (raw_lang or "en")
 
     try:
-        return _send_clip(current, video_id, title, spoken, post_id, context=context)
+        return _send_clip(current, video_id, title, spoken, post_id, context=context, language=video_lang)
     except Exception as exc:
         log.exception("growth: the publish step failed for %s", video_id[:8])
         count_publish_failure(video_id)
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
-def _send_clip(current: Policy, video_id: str, title: str, spoken: str, post_id: str, *, context: str = "") -> dict:
+def _send_clip(
+    current: Policy, video_id: str, title: str, spoken: str, post_id: str, *, context: str = "", language: str = ""
+) -> dict:
     from tasks.pipeline import generate_metadata_for_video, publish_task
 
     style = pick_arm(current, "title_style", titles.available_styles())
@@ -320,10 +325,8 @@ def _send_clip(current: Policy, video_id: str, title: str, spoken: str, post_id:
     # A title someone wrote by hand wins, and is not a test of anything.
     if edited:
         final, actual = None, "plain"
-    elif context:
-        final, actual = titles.styled_title(style, title, spoken, context=context)
     else:
-        final, actual = titles.styled_title(style, title, spoken)
+        final, actual = titles.styled_title(style, title, spoken, context=context, language=language)
     with session_scope() as db:
         video = db.get(Video, video_id)
         video.meta = {**(video.meta or {}), "growth_title_style": actual, "growth_title": final,

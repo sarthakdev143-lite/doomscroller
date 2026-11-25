@@ -223,7 +223,7 @@ def test_filtergraph_overlays_meme_top_right():
     plan.memes = ((2.0, 1.5, "meme.mp4"),)
     graph = render.build_filtergraph(plan, info, 0.0)
     assert "[meme0]" in graph
-    assert "overlay=x='W-w-30':y=180" in graph
+    assert "overlay=x='W-w-30+max(0,(1-(t-2.000)/0.14))*140':y=180" in graph
     assert "enable='between(t,1.983,3.483)'" in graph  # half-frame adjusted like b-roll
 
 
@@ -409,3 +409,66 @@ def test_slow_meme_overlay_renders_through_real_ffmpeg(tmp_path, monkeypatch):
                          [], str(out), edit=edit)
     assert [round(s, 1) for s, _, _ in plan.memes] == [1.0]
     assert probe(str(out)).duration == pytest.approx(plan.duration, abs=0.5)
+
+
+def test_local_meme_pack_language_scoping_and_native_audio_cue(tmp_path, monkeypatch):
+    import numpy as np
+    from app.clipper import edit as clip_edit, render as clip_render
+    from app.clipper.media import MediaInfo
+    from app.clipper.moments import Moment
+    from app.clipper.signals import Signals
+
+    monkeypatch.setattr(settings, "content_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "tenor_api_key", "")
+    monkeypatch.setattr(settings, "giphy_api_key", "")
+    monkeypatch.setattr(settings, "clip_memes", True)
+    monkeypatch.setattr(settings, "clip_memes_allow_stills", False)
+
+    hi_dir = tmp_path / "memes" / "hi"
+    hi_dir.mkdir(parents=True)
+    hi_mp4 = hi_dir / "khatam_tata.mp4"
+    hi_mp4.write_bytes(b"FAKE_MP4")
+    monkeypatch.setattr(memes, "_playable", lambda p, s: True)
+
+    assert memes.has_local_pack("hi") is True
+    got = memes.fetch("", 1.5, language="hi")
+    assert got is not None and got.provider == memes.LOCAL and got.path == str(hi_mp4)
+
+    plan_e = clip_edit.EditPlan(
+        words=[],
+        segments=[(0.0, 10.0)],
+        beats=[clip_edit.Beat(at=2.0, text="PUNCH", style=clip_edit.PUNCH)],
+        speed=1.0,
+    )
+    clip_edit.attach_memes(plan_e, language="hi")
+    assert len(plan_e.meme_overlays) == 1
+    assert plan_e.meme_overlays[0].clip.path == str(hi_mp4)
+
+    # Confirm render_moment wires a video meme's audio stream into sfx.build_track cues + kinetic pop-in.
+    src_mp4 = tmp_path / "src.mp4"
+    src_mp4.write_bytes(b"SRC")
+    built_cues = []
+    monkeypatch.setattr(clip_render, "probe", lambda p: MediaInfo(duration=10.0, width=1080, height=1920, fps=30.0, has_audio=True))
+    monkeypatch.setattr(clip_render, "build_track", lambda path, dur, cues, **kw: built_cues.extend(cues) or Path(path).write_bytes(b"WAV"))
+    monkeypatch.setattr(clip_render, "run_ffmpeg", lambda args, cwd=None: Path(args[-1]).write_bytes(b"0" * 2048))
+    monkeypatch.setattr(clip_render, "_bright_sharp_opening_offset", lambda *a, **kw: 0.0)
+
+    out_mp4 = tmp_path / "out.mp4"
+    sig = Signals(duration=10.0, motion=np.zeros(10), loudness=np.zeros(10),
+                  brightness=np.zeros(10), centroid=np.full(10, 0.5),
+                  centroid_weight=np.ones(10), cuts=[])
+    fg_plan = clip_render.render_moment(
+        str(src_mp4),
+        MediaInfo(duration=10.0, width=1080, height=1920, fps=30.0, has_audio=True),
+        sig,
+        Moment(0.0, 10.0, kind="speech"),
+        [],
+        str(out_mp4),
+        edit=plan_e,
+        captions=False,
+    )
+    assert fg_plan.has_sfx is True
+    assert any(Path(c.sound) == hi_mp4.resolve() for c in built_cues)
+    fg = clip_render.build_filtergraph(fg_plan, MediaInfo(duration=10.0, width=1080, height=1920, fps=30.0, has_audio=True), 0.0)
+    assert "max(0,(1-(t-" in fg
+

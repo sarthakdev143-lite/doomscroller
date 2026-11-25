@@ -63,15 +63,19 @@ _HINGLISH_PARTICLES = frozenset({
     "ka", "ki", "ke", "ko", "se", "pe", "mein", "hai", "nahi",
     "kya", "kyun", "kaise", "aur", "yaar", "bhai", "wala", "wali",
 })
-_RISKY_TITLE_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"\b(?:kachche|kachcha|underwears?|lingeries?|bikinis?)\b", re.IGNORECASE), "kapde"),
-    (re.compile(r"\baccidents?\b", re.IGNORECASE), "scene"),
-    (re.compile(r"\b(?:bhoot(?:on)?|ghosts?|haunted)\b", re.IGNORECASE), "raaz"),
-    (re.compile(r"\b(?:khoon|bloods?|bloody)\b", re.IGNORECASE), "shock"),
-    (re.compile(r"\b(?:murders?|murdered|murdering|kills?|killed|killing|deaths?|dead)\b", re.IGNORECASE), "drama"),
-    (re.compile(r"\b(?:horrors?|darawna|darawni|darawne)\b", re.IGNORECASE), "suspense"),
-    (re.compile(r"\b(?:gandi|ganda|gande)\b", re.IGNORECASE), "ajeeb"),
-    (re.compile(r"भूत(?:ों)?"), "राज़"),
+_RISKY_TITLE_REPLACEMENTS: tuple[tuple[re.Pattern[str], str, str], ...] = (
+    (re.compile(r"\b(?:kachche|kachcha|underwears?|lingeries?|bikinis?)\b", re.IGNORECASE), "outfit", "kapde"),
+    (re.compile(r"\baccidents?\b", re.IGNORECASE), "scene", "scene"),
+    (re.compile(r"\b(?:bhoot(?:on)?|ghosts?|haunted)\b", re.IGNORECASE), "mystery", "raaz"),
+    (re.compile(r"\b(?:khoon|bloods?|bloody)\b", re.IGNORECASE), "shock", "shock"),
+    (re.compile(r"\b(?:murders?|murdered|murdering|kills?|killed|killing|deaths?|dead)\b", re.IGNORECASE), "drama", "drama"),
+    (re.compile(r"\b(?:horrors?|darawna|darawni|darawne)\b", re.IGNORECASE), "suspense", "suspense"),
+    (re.compile(r"\b(?:gandi|ganda|gande)\b", re.IGNORECASE), "wild", "ajeeb"),
+    (re.compile(r"भूत(?:ों)?"), "mystery", "राज़"),
+)
+_HINDI_RISKY_RE = re.compile(
+    r"\b(?:kachche|kachcha|bhoot(?:on)?|khoon|darawna|darawni|darawne|gandi|ganda|gande)\b",
+    re.IGNORECASE,
 )
 
 
@@ -123,13 +127,17 @@ def is_hinglish_text(text: Optional[str]) -> bool:
 def has_risky_title_words(text: Optional[str]) -> bool:
     if not text:
         return False
-    return any(pattern.search(text) for pattern, _rep in _RISKY_TITLE_REPLACEMENTS)
+    return any(pattern.search(text) for pattern, *_ in _RISKY_TITLE_REPLACEMENTS)
 
 
-def sanitize_shorts_title(title: Optional[str]) -> str:
+def sanitize_shorts_title(title: Optional[str], *, language: str = "") -> str:
     cleaned = str(title or "")
-    for pattern, replacement in _RISKY_TITLE_REPLACEMENTS:
-        cleaned = pattern.sub(replacement, cleaned)
+    lang = (language or "").strip().lower()
+    hi = lang.startswith("hi") if lang else (
+        has_devanagari(cleaned) or is_hinglish_text(cleaned) or bool(_HINDI_RISKY_RE.search(cleaned))
+    )
+    for pattern, en_rep, hi_rep in _RISKY_TITLE_REPLACEMENTS:
+        cleaned = pattern.sub(hi_rep if hi else en_rep, cleaned)
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
@@ -285,10 +293,10 @@ def compose(
     description = _strip_unsafe(description)
     max_chars = _SHORTS_TITLE_MAX if is_short else _TITLE_MAX
     use_title_tag = is_short and title_shorts_tag
-    raw_title = sanitize_shorts_title(title or "") if is_short else (title or "")
+    raw_title = sanitize_shorts_title(title or "", language=language) if is_short else (title or "")
     clean_title = _clean_title(raw_title, reserve_shorts=use_title_tag, max_chars=max_chars)
     if not clean_title:
-        fallback_src = sanitize_shorts_title(description) if is_short else description
+        fallback_src = sanitize_shorts_title(description, language=language) if is_short else description
         clean_title = _clean_title(fallback_src, reserve_shorts=use_title_tag, max_chars=max_chars) or "Watch this"
     if use_title_tag and _SHORTS_HASHTAG.lower() not in clean_title.lower():
         clean_title = f"{clean_title} {_SHORTS_HASHTAG}"

@@ -65,7 +65,7 @@ def test_real_channels_json_is_valid_and_sets_both_channels_to_1_long_per_day(mo
     assert amb["enabled"] is False
     assert amb["feeds"] == []
     assert amb["meta"]["mode"] == "procedural_ambient"
-    assert amb["meta"]["target_minutes"] == 30
+    assert amb["meta"]["target_minutes"] == 60
     assert amb["meta"]["generate_while_paused"] is True
 
 

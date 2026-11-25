@@ -243,6 +243,25 @@ def _store_audio_qa(video_id: str, path: str) -> None:
         log.warning("clipper: could not store audio QA for %s: %s", video_id, exc)
 
 
+def _call_render(*args, **kwargs):
+    try:
+        return render_moment(*args, **kwargs)
+    except TypeError as exc:
+        if "language" in str(exc) and "language" in kwargs:
+            kwargs.pop("language", None)
+            return render_moment(*args, **kwargs)
+        raise
+
+
+def _trending_stings(language: str) -> dict:
+    if not settings.clip_sfx:
+        return {}
+    try:
+        return sfx.trending(language=language)
+    except TypeError:
+        return sfx.trending()
+
+
 def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
                 auto_queue: Optional[bool] = None, progress: Optional[Progress] = None,
                 job_id: Optional[str] = None, mine: bool = False, channel_id: Optional[str] = None) -> dict:
@@ -336,7 +355,7 @@ def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
         # pacing, zoom rhythm, music bed, and optional meme stings. Trending stings also work for English!
         timed = language != "hi"
         clean_vlog = speech and not timed
-        stings = sfx.trending() if settings.clip_sfx else {}
+        stings = _trending_stings(language)
         if clean_vlog:
             log.info("clipper: %s is Hindi, using clean-vlog edit with %d meme sounds on offer", label, len(stings))
         pick_kw = (
@@ -454,7 +473,11 @@ def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
                         for message in attach_stock(edit, stock):
                             if message not in warnings:
                                 warn(message)
-                        for message in attach_memes(edit, mstock):
+                        try:
+                            meme_msgs = attach_memes(edit, mstock, language=language)
+                        except TypeError:
+                            meme_msgs = attach_memes(edit, mstock)
+                        for message in meme_msgs:
                             if message not in warnings:
                                 warn(message)
                     try:
@@ -463,14 +486,16 @@ def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
                         if (not moment.hook or not is_renderable(moment.hook)) and moment.title:
                             moment.hook = fallback_hook(moment.title)
                         extras = dict(branding)
+                        if language:
+                            extras["language"] = language
                         if moment.sound in stings:
                             extras["sting"] = str(stings[moment.sound])
                             log.info("clipper: clip %d of %s ends on the sound %s", number, label, moment.sound)
                         if edit is not None and not edit.words and not edit.opening_words and moment.kind == "speech" and words:
                             edit.opening_words = [w for w in words if w.end > moment.start and w.start < moment.end]
-                        plan = render_moment(src.path, info, signals, moment, words if timed else [], out_path,
-                                             edit=edit, creator=src.author_name or src.author, music=track,
-                                             captions=timed, source_captioned=burned_in, **extras)
+                        plan = _call_render(src.path, info, signals, moment, words if timed else [], out_path,
+                                            edit=edit, creator=src.author_name or src.author, music=track,
+                                            captions=timed, source_captioned=burned_in, **extras)
                     except MediaError as exc:
                         if not (edit and (edit.cutaways or edit.meme_overlays)):
                             raise
@@ -481,9 +506,9 @@ def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
                         warn(f"clip {number} lost its {' and '.join(lost)}, which would not render: {exc}")
                         edit.cutaways = []
                         edit.meme_overlays = []
-                        plan = render_moment(src.path, info, signals, moment, words if timed else [], out_path, edit=edit,
-                                             creator=src.author_name or src.author, music=track,
-                                             captions=timed, source_captioned=burned_in, **extras)
+                        plan = _call_render(src.path, info, signals, moment, words if timed else [], out_path, edit=edit,
+                                            creator=src.author_name or src.author, music=track,
+                                            captions=timed, source_captioned=burned_in, **extras)
                 if recipe:
                     # Record what the clip got: no key or no matches means no B-roll, whatever was asked for.
                     recipe["broll"] = "on" if edit and edit.cutaways else "off"

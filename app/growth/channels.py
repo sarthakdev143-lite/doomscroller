@@ -975,6 +975,20 @@ def require_approval(channel: Channel) -> bool:
     return settings.growth_require_approval if is_default(channel) else channel.require_approval
 
 
+def target_languages(channel: Optional[Channel]) -> list[str]:
+    """Configured target languages for a channel, falling back to niche hint or global settings."""
+    if channel is not None:
+        meta_langs = (channel.meta or {}).get("target_languages")
+        if isinstance(meta_langs, (list, tuple)):
+            cleaned = [str(x).strip().lower() for x in meta_langs if str(x).strip()]
+            if cleaned:
+                return cleaned
+        niche = (channel.niche or "").lower()
+        if "hindi" in niche or "hinglish" in niche:
+            return ["hi"]
+    return settings.languages_list
+
+
 def state_key(channel: Channel, name: str) -> str:
     """Namespace a GrowthState key by channel, so each channel keeps its own plan, focus and clocks.
 

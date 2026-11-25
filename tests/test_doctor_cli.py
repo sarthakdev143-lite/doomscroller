@@ -31,6 +31,8 @@ def test_doctor_happy_path_and_never_leaks_secrets(tmp_path, monkeypatch, capsys
         "REVIEW_TOKEN": "canary-review-secret-alpha-991",
         "DEEPGRAM_API_KEY": "canary-deepgram-secret-beta-992",
         "SARVAM_API_KEY": "canary-sarvam-secret-gamma-993",
+        "ELEVEN_LABS_API_KEY": "canary-eleven-secret-theta-998",
+        "CARTESIA_API_KEY": "canary-cartesia-secret-iota-999",
         "PIXABAY_API_KEY": "",
         "PEXELS_API_KEY": "canary-pexels-secret-delta-994",
         "TENOR_API_KEY": "canary-tenor-secret-eta-997",
@@ -45,6 +47,7 @@ def test_doctor_happy_path_and_never_leaks_secrets(tmp_path, monkeypatch, capsys
     )
     for k in canaries:
         monkeypatch.delenv(k, raising=False)
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "canary-telegram-env-zeta-996")
 
     monkeypatch.setattr(doctor.shutil, "which", lambda name: f"/usr/bin/{name}")
@@ -81,6 +84,8 @@ def test_doctor_happy_path_and_never_leaks_secrets(tmp_path, monkeypatch, capsys
     assert report["env"]["optional_keys"] == {
         "DEEPGRAM_API_KEY": True,
         "SARVAM_API_KEY": True,
+        "ELEVENLABS_API_KEY": True,
+        "CARTESIA_API_KEY": True,
         "PIXABAY_API_KEY": False,
         "PEXELS_API_KEY": True,
         "TENOR_API_KEY": True,

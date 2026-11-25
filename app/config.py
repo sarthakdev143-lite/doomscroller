@@ -233,6 +233,18 @@ class Settings(BaseSettings):
     # no-speech (motion) path (their Hindi title/credit still render with a Devanagari font). With a key,
     # Deepgram-detected Hindi audio is re-transcribed by Sarvam and captioned. Needs `hi` in TARGET_LANGUAGES.
     sarvam_api_key: str = ""
+    # ElevenLabs & Cartesia TTS keys for long-form voiceover (auto-failover chain with SHA-256 disk cache).
+    elevenlabs_api_key: str = ""
+    eleven_labs_api_key: str = ""
+    elevenlabs_model_id: str = "eleven_v4"
+    elevenlabs_voice_en: str = "TX3LPaxmHKxFdv7VOQHJ"
+    elevenlabs_voice_hi: str = "TX3LPaxmHKxFdv7VOQHJ"
+    cartesia_api_key: str = ""
+    cartesia_model_id: str = "sonic-3"
+    cartesia_version: str = "2026-08-14"
+    cartesia_voice_en: str = "47c38ca4-5f35-497b-b1a3-415245fb35e1"
+    cartesia_voice_hi: str = "4877b818-c7fe-4c89-b1cf-eadf8e23da72"
+    longform_tts_provider: str = "auto"
     # Empty means PATH, then ~/.opencode/bin/opencode.
     opencode_bin: str = ""
     # Chosen by the owner for every call. Comma-separated fallback chain; first working model wins.
@@ -265,8 +277,10 @@ class Settings(BaseSettings):
     youtube_made_for_kids: bool = False
     # Post one short AI engagement question comment right after uploading (requires youtube.force-ssl scope).
     youtube_auto_comment: bool = True
-    # Add free neural countdown voiceover bridges on 16:9 compilations for YPP transformative originality.
+    # Add neural countdown voiceover bridges on 16:9 compilations for YPP transformative originality.
     longform_voiceover: bool = True
+    # Background auto-queueing for non-procedural long-form compilations (set false in .env to avoid unattended paid TTS calls).
+    longform_auto_supply: bool = True
 
     # ---- Growth loop (app/growth) ----
     # Posts, measures and adapts on its own. It takes over publishing from AUTO_PUBLISH.
@@ -465,6 +479,11 @@ class Settings(BaseSettings):
                 raise ValueError("must be a finite number")
         return v
 
+    @property
+    def resolved_elevenlabs_api_key(self) -> str:
+        """Accept either ELEVENLABS_API_KEY (official SDK) or ELEVEN_LABS_API_KEY (.env alias)."""
+        return (self.elevenlabs_api_key or self.eleven_labs_api_key or "").strip()
+
     @field_validator(
         "use_mock", "use_llm_metadata", "auto_publish", "enable_publish",
         "auto_discovery", "auto_approve", "allow_unknown_language",
@@ -473,7 +492,7 @@ class Settings(BaseSettings):
         "clip_memes_allow_stills", "clip_music_synth_fallback", "clip_loop_ending",
         "clip_trending_sfx",
         "growth_enabled", "youtube_made_for_kids", "youtube_auto_comment", "longform_voiceover",
-        "claude_fallback", "growth_require_approval", "earshot_qa", mode="before",
+        "longform_auto_supply", "claude_fallback", "growth_require_approval", "earshot_qa", mode="before",
     )
     @classmethod
     def _coerce_bool(cls, v):

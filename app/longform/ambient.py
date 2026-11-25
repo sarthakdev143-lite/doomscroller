@@ -94,43 +94,43 @@ class AmbientResult:
 AMBIENT_PRESETS: dict[str, AmbientPreset] = {
     "lofi_chill": AmbientPreset(
         key="lofi_chill",
-        label="Late Night POV · Bedroom Glow",
-        bpm=75.0,
-        musical_key="F maj9",
+        label="2AM Memory · Slowed Dark Ambient",
+        bpm=54.0,
+        musical_key="F min9",
         chords_midi=(
-            (53, 57, 60, 64, 67),
-            (52, 55, 59, 62, 67),
-            (50, 53, 57, 60, 64),
-            (48, 52, 55, 59, 62),
+            (53, 56, 60, 63, 67),
+            (51, 55, 58, 62, 67),
+            (49, 53, 56, 60, 63),
+            (48, 51, 55, 58, 63),
         ),
-        bass_midi=(41, 40, 38, 36),
-        pulse_mode="lofi_beat",
-        rain_level=0.14,
-        vinyl_level=0.20,
-        brown_level=0.18,
-        shimmer_level=0.16,
-        sky_top=(24, 19, 43),
-        sky_bottom=(74, 43, 75),
-        glow_color=(255, 175, 95),
-        accent_color=(255, 206, 138),
+        bass_midi=(41, 39, 37, 36),
+        pulse_mode="ethereal_pad",
+        rain_level=0.16,
+        vinyl_level=0.14,
+        brown_level=0.22,
+        shimmer_level=0.24,
+        sky_top=(8, 12, 32),
+        sky_bottom=(24, 18, 54),
+        glow_color=(122, 138, 255),
+        accent_color=(172, 188, 255),
         scene_style="rooftop_window",
-        mood_summary="Warm intimate felt piano, midnight bedroom fairy-light nostalgia, and slow late-night longing.",
+        mood_summary="Slowed ethereal dark ambient pads, distant felt piano reverb, and 2am midnight stillness.",
         title_templates=(
-            "i wish i could meet you one last time | late night pov [{dur}]",
-            "3am conversations that never happened — slow lofi mix [{dur}]",
-            "you stayed in my head all night | warm bedroom lofi [{dur}]",
+            "she was only a dream",
+            "i still think about her",
+            "3am, you're not alone",
         ),
         tags=(
-            "late night pov", "sad lofi beats", "3am playlist", "missing you music",
-            "midnight feelings", "chillhop instrumental", "romantic lofi", "warm felt piano",
-            "late night thoughts", "nostalgic lofi mix", "sleep music playlist", "emotional lofi",
-            "rainy bedroom vibes", "soft study beats", "indie night vibe",
+            "ambient music", "dark ambient", "sleep music", "2am thoughts",
+            "late night loneliness", "oneheart", "snowfall ambient", "sad ambient mix",
+            "slowed and reverb", "insomnia relief", "midnight playlist", "dreamscape",
+            "music for overthinking", "calm your mind", "night ambient mix",
         ),
     ),
     "rain_focus": AmbientPreset(
         key="rain_focus",
-        label="Midnight Rain · Hold On",
-        bpm=60.0,
+        label="Midnight Rain · Sleep & Dissociate",
+        bpm=52.0,
         musical_key="D min9",
         chords_midi=(
             (50, 53, 57, 60, 64),
@@ -141,31 +141,31 @@ AMBIENT_PRESETS: dict[str, AmbientPreset] = {
         bass_midi=(38, 34, 31, 33),
         pulse_mode="rain_swell",
         rain_level=0.58,
-        vinyl_level=0.06,
+        vinyl_level=0.08,
         brown_level=0.34,
-        shimmer_level=0.15,
-        sky_top=(14, 26, 43),
-        sky_bottom=(31, 59, 77),
-        glow_color=(127, 209, 232),
-        accent_color=(172, 232, 247),
+        shimmer_level=0.22,
+        sky_top=(6, 15, 34),
+        sky_bottom=(16, 36, 62),
+        glow_color=(102, 174, 232),
+        accent_color=(162, 214, 248),
         scene_style="rainy_glass",
-        mood_summary="Steady rain on midnight window glass with tender acoustic chords for quiet comfort and sleep.",
+        mood_summary="Soft rain on cold glass with cavern-reverb dark ambient chords for deep sleep.",
         title_templates=(
-            "it's late, get some sleep | midnight rain playlist [{dur}]",
-            "close your eyes, i'm right here — rain & warm piano [{dur}]",
-            "quiet rain on the window while the city sleeps [{dur}]",
+            "it's late, go to bed.",
+            "let your mind rest.",
+            "it's 3 am, you need sleep.",
         ),
         tags=(
-            "midnight rain playlist", "sleep rain sounds", "late night comfort", "rain on window",
-            "calm night ambience", "emotional rain music", "get some sleep", "3am rain mix",
-            "cozy window rain", "sad piano rain", "gentle night playlist", "rainy evening mood",
-            "insomnia relief music", "soft ambient rain", "peaceful midnight",
+            "midnight rain", "sleep rain sounds", "dark ambient music", "rain on window",
+            "sounds for sleep", "go to sleep", "insomnia music", "3am rain mix",
+            "sad piano rain", "slowed reverb ambient", "calm night ambience", "night rain",
+            "ambient sleep music", "peaceful midnight", "deep sleep soundscape",
         ),
     ),
     "night_ambient": AmbientPreset(
         key="night_ambient",
-        label="Nocturne Closeness · Candlelight",
-        bpm=60.0,
+        label="Cobalt Twilight · Nocturne Drone",
+        bpm=50.0,
         musical_key="C min9",
         chords_midi=(
             (48, 51, 55, 58, 62),
@@ -175,32 +175,32 @@ AMBIENT_PRESETS: dict[str, AmbientPreset] = {
         ),
         bass_midi=(36, 32, 29, 31),
         pulse_mode="nocturne_drone",
-        rain_level=0.06,
-        vinyl_level=0.05,
-        brown_level=0.26,
-        shimmer_level=0.34,
-        sky_top=(7, 11, 24),
-        sky_bottom=(23, 34, 68),
-        glow_color=(196, 215, 255),
-        accent_color=(218, 230, 255),
+        rain_level=0.10,
+        vinyl_level=0.06,
+        brown_level=0.28,
+        shimmer_level=0.36,
+        sky_top=(5, 9, 24),
+        sky_bottom=(14, 26, 64),
+        glow_color=(130, 168, 255),
+        accent_color=(198, 218, 255),
         scene_style="starry_horizon",
-        mood_summary="Deep velvety candlelight nocturne pads, delicate chimes, and hypnotic midnight stillness.",
+        mood_summary="Deep cobalt midnight synth drones, slowed reverb shimmer, and quiet solitude.",
         title_templates=(
-            "you are mine. | midnight nocturne playlist [{dur}]",
-            "don't let go tonight — slow ambient candlelight mix [{dur}]",
-            "lost in your eyes at 2am | deep night ambient [{dur}]",
+            "nothing feels the same anymore.",
+            "you're not alone",
+            "forget about it, relax.",
         ),
         tags=(
-            "night ambient music", "midnight playlist", "romantic ambient", "2am vibes",
-            "slow nocturne", "candlelight ambience", "emotional ambient", "deep night focus",
-            "hypnotic soundscape", "late night chill", "dreamy ambient pads", "sleep soundscape",
-            "midnight calm", "ethereal night mix", "ambient chillout",
+            "dark ambient mix", "night ambient music", "ambient music dark", "sleep music",
+            "music for sleep", "2am vibes", "slow nocturne", "oneheart",
+            "antent", "diedlonely", "ethereal night mix", "dreamy ambient pads",
+            "late night chill", "hypnotic soundscape", "ambient chillout",
         ),
     ),
     "deep_study": AmbientPreset(
         key="deep_study",
-        label="Desk Lamp Glow · Stay With Me",
-        bpm=75.0,
+        label="Empty Train · Midnight Drift",
+        bpm=56.0,
         musical_key="A min9",
         chords_midi=(
             (45, 48, 52, 55, 59),
@@ -209,27 +209,27 @@ AMBIENT_PRESETS: dict[str, AmbientPreset] = {
             (43, 47, 50, 52, 59),
         ),
         bass_midi=(33, 29, 36, 31),
-        pulse_mode="study_pulse",
-        rain_level=0.14,
-        vinyl_level=0.09,
+        pulse_mode="midnight_drift",
+        rain_level=0.18,
+        vinyl_level=0.10,
         brown_level=0.30,
-        shimmer_level=0.22,
-        sky_top=(13, 27, 34),
-        sky_bottom=(42, 33, 31),
-        glow_color=(245, 194, 107),
-        accent_color=(255, 221, 158),
+        shimmer_level=0.26,
+        sky_top=(8, 16, 32),
+        sky_bottom=(22, 22, 48),
+        glow_color=(140, 168, 245),
+        accent_color=(194, 212, 255),
         scene_style="study_desk",
-        mood_summary="Tender amber desk-lamp felt piano melodies and quiet late-night company.",
+        mood_summary="Slowed midnight reverb tones and quiet cobalt stillness for late-night overthinking.",
         title_templates=(
-            "don't go yet, stay a little longer | late night playlist [{dur}]",
-            "just you, me & the rain outside — soft piano flow [{dur}]",
-            "after midnight coffee & quiet thoughts | chill mix [{dur}]",
+            "let your heart rest for a moment..",
+            "calm down.",
+            "you need some rest.",
         ),
         tags=(
-            "late night playlist", "warm felt piano", "after midnight mix", "quiet company music",
-            "soft instrumental", "rainy cafe ambience", "nostalgic piano", "study and chill",
-            "midnight coffee music", "emotional chillout", "reading night vibe", "cozy ambient mix",
-            "gentle focus music", "late night desk", "soft night beats",
+            "late night playlist", "dark ambient", "after midnight mix", "quiet company music",
+            "slowed ambient", "rainy night ambience", "sad piano", "sleep soundscape",
+            "midnight stillness", "emotional chillout", "overthinking music", "cozy dark ambient",
+            "nocturne chill", "late night focus", "night solitude",
         ),
     ),
 }
@@ -416,11 +416,11 @@ def _resolve_overlay(preset: str) -> Optional[Path]:
         return None
     key = _get_preset(preset).key
     prefs = {
-        "rain_focus": ("night_rain_glass.mp4", "warm_gold_dust.mp4"),
+        "rain_focus": ("midnight_bokeh.mp4", "warm_gold_dust.mp4"),
         "night_ambient": ("midnight_bokeh.mp4", "warm_gold_dust.mp4"),
-        "lofi_chill": ("warm_gold_dust.mp4", "midnight_bokeh.mp4"),
-        "deep_study": ("warm_gold_dust.mp4", "midnight_bokeh.mp4"),
-    }.get(key, ("warm_gold_dust.mp4",))
+        "lofi_chill": ("midnight_bokeh.mp4", "warm_gold_dust.mp4"),
+        "deep_study": ("midnight_bokeh.mp4", "warm_gold_dust.mp4"),
+    }.get(key, ("midnight_bokeh.mp4", "warm_gold_dust.mp4"))
     for name in prefs:
         cand = root / name
         if cand.is_file():
@@ -499,8 +499,8 @@ def _prepare_portrait_canvas(
     size: tuple[int, int] = (WIDTH, HEIGHT),
     brand_name: str = "",
 ) -> "Image.Image":
-    """Fit a portrait into 16:9 with upper-center eye preservation, cinema contrast, and moody bottom scrim."""
-    from PIL import Image, ImageDraw, ImageEnhance, ImageOps
+    """Fit an alluring night portrait into 16:9 with eye-preserving framing, soft cobalt-violet film grade, and zero text."""
+    from PIL import Image, ImageEnhance, ImageOps
 
     w, h = size
     with Image.open(portrait_file) as im:
@@ -508,27 +508,24 @@ def _prepare_portrait_canvas(
             ImageOps.exif_transpose(im).convert("RGB"),
             (w, h),
             method=Image.Resampling.LANCZOS,
-            centering=(0.5, 0.30),
+            centering=(0.5, 0.24),
         )
-    fitted = ImageEnhance.Color(fitted).enhance(1.06)
-    fitted = ImageEnhance.Contrast(fitted).enhance(1.05).convert("RGBA")
+    # Feather-light polish so owner-graded midnight portraits keep their native colors and crispness.
+    fitted = ImageEnhance.Color(fitted).enhance(0.98)
+    fitted = ImageEnhance.Brightness(fitted).enhance(0.96)
+    fitted = ImageEnhance.Contrast(fitted).enhance(1.04).convert("RGBA")
 
-    # Subtle bottom-edge mood gradient so ambient particles & lowercase overlays read cleanly.
+    cobalt_wash = Image.new("RGBA", (w, h), (18, 22, 68, 12))
+    out = Image.alpha_composite(fitted, cobalt_wash)
+
+    # Gentle bottom-edge vignette leaving the face, eyes, and silhouette luminous.
     scrim = Image.new("RGBA", (1, h), (0, 0, 0, 0))
     px = scrim.load()
-    start_y = int(h * 0.56)
+    start_y = int(h * 0.72)
     for y in range(start_y, h):
         frac = (y - start_y) / max(1, h - start_y)
-        px[0, y] = (6, 7, 12, int(round(135 * (frac ** 1.45))))
-    out = Image.alpha_composite(fitted, scrim.resize((w, h), Image.Resampling.BILINEAR))
-
-    if brand_name.strip():
-        bd = ImageDraw.Draw(out)
-        font = _pil_font(max(20, w // 68), brand_name)
-        text = brand_name.strip()
-        bb = bd.textbbox((0, 0), text, font=font)
-        tw = bb[2] - bb[0]
-        bd.text((w - tw - max(96, int(w * 0.06)), h - max(64, int(h * 0.065))), text, font=font, fill=(245, 240, 232, 130))
+        px[0, y] = (6, 8, 18, int(round(48 * (frac ** 1.5))))
+    out = Image.alpha_composite(out, scrim.resize((w, h), Image.Resampling.BILINEAR))
     return out.convert("RGB")
 
 
@@ -693,60 +690,44 @@ def _synthesize_raw_loop_wav(
             chord_r += sh_env * 0.028 * cfg.shimmer_level * np.sin(2.0 * np.pi * (f_hi - 0.3) * lt)
 
         f_b = _midi_to_hz(bass)
-        bass_tone = 0.125 * (np.sin(2.0 * np.pi * f_b * lt) + 0.20 * np.sin(4.0 * np.pi * f_b * lt))
+        bass_tone = 0.145 * (np.sin(2.0 * np.pi * f_b * lt) + 0.18 * np.sin(4.0 * np.pi * f_b * lt))
         _add_periodic(i0, np.column_stack([env * (chord_l + bass_tone), env * (chord_r + bass_tone)]))
 
-        # 1b. Felt-piano emotional arpeggio top-line notes + stereo delay echo (periodic-wrapped).
-        arp_indices = (0, 2, 4, 3) if (bar_idx % 2 == 0) else (4, 2, 1, 3)
-        note_dur = min(1.55, actual_bar_sec * 0.65)
+        # 1b. Sparse distant felt-piano notes + long cavernous ping-pong hall tail (zero upbeat snare/kick).
+        arp_indices = (0, 2, 4) if (bar_idx % 2 == 0) else (4, 2, 3)
+        note_dur = min(2.20, actual_bar_sec * 0.80)
         nlen = max(128, int(round(note_dur * SAMPLE_RATE)))
         nt = np.arange(nlen, dtype=np.float64) / float(SAMPLE_RATE)
-        felt_env = np.exp(-nt / max(0.35, note_dur * 0.48)) * np.minimum(1.0, nt / 0.018) * np.minimum(1.0, (note_dur - nt) / 0.04)
-        for step_i, sub_frac in enumerate(sub_steps):
+        felt_env = np.exp(-nt / max(0.55, note_dur * 0.55)) * np.minimum(1.0, nt / 0.032) * np.minimum(1.0, (note_dur - nt) / 0.06)
+        for step_i, sub_frac in enumerate(sub_steps[:3]):
             c_idx = arp_indices[step_i % len(arp_indices)] % len(chord)
             oct_shift = 24 if (step_i == 2 and bar_idx % 2 == 1) else 12
             fm = _midi_to_hz(chord[c_idx] + oct_shift)
-            vel = 0.072 if step_i in (0, 2) else 0.052
-            pan = 0.38 if (step_i % 2 == 0) else 0.62
-            wt_l = 2.0 * np.pi * (fm + 0.18) * nt
-            wt_r = 2.0 * np.pi * (fm - 0.18) * nt + 0.09
-            felt_l = vel * felt_env * (0.80 * np.sin(wt_l) + 0.16 * np.sin(2.0 * wt_l) + 0.04 * np.cos(3.0 * wt_l))
-            felt_r = vel * felt_env * (0.80 * np.sin(wt_r) + 0.16 * np.sin(2.0 * wt_r) + 0.04 * np.cos(3.0 * wt_r))
+            vel = 0.056 if step_i == 0 else 0.040
+            pan = 0.34 if (step_i % 2 == 0) else 0.66
+            wt_l = 2.0 * np.pi * (fm + 0.22) * nt
+            wt_r = 2.0 * np.pi * (fm - 0.22) * nt + 0.11
+            felt_l = vel * felt_env * (0.85 * np.sin(wt_l) + 0.12 * np.sin(2.0 * wt_l))
+            felt_r = vel * felt_env * (0.85 * np.sin(wt_r) + 0.12 * np.sin(2.0 * wt_r))
             note_start = i0 + int(round(sub_frac * actual_bar_sec * SAMPLE_RATE))
             _add_periodic(note_start, np.column_stack([felt_l * (1.2 - pan), felt_r * (0.2 + pan)]))
-            # Soft stereo ping-pong delay repeat.
-            echo_start = note_start + int(round(0.36 * SAMPLE_RATE))
-            _add_periodic(echo_start, np.column_stack([felt_r * 0.28, felt_l * 0.28]))
+            for echo_i, (d_sec, g_echo) in enumerate(((0.42, 0.36), (0.88, 0.19))):
+                echo_start = note_start + int(round(d_sec * SAMPLE_RATE))
+                sig_e = np.column_stack([felt_r * g_echo, felt_l * g_echo]) if echo_i % 2 == 0 else np.column_stack([felt_l * g_echo, felt_r * g_echo])
+                _add_periodic(echo_start, sig_e)
 
-    # 2. Gentle periodic pulse layer wrapped across cycle boundary.
-    beat_sec = actual_bar_sec / 4.0
-    if cfg.pulse_mode == "lofi_beat":
-        n_beats = bars * 4
-        for b in range(n_beats):
-            bi = int(round(b * beat_sec * SAMPLE_RATE))
-            if b % 4 in (0, 2):
-                klen = int(0.14 * SAMPLE_RATE)
-                kt = np.arange(klen, dtype=np.float64) / float(SAMPLE_RATE)
-                freq_curve = 42.0 + 52.0 * np.exp(-kt / 0.032)
-                phase = 2.0 * np.pi * np.cumsum(freq_curve) / float(SAMPLE_RATE)
-                kenv = np.exp(-kt / 0.055) * np.minimum(1.0, kt / 0.004)
-                kick = 0.15 * kenv * np.sin(phase)
-                _add_periodic(bi, np.column_stack([kick, kick]))
-            else:
-                hlen = int(0.065 * SAMPLE_RATE)
-                ht = np.arange(hlen, dtype=np.float64) / float(SAMPLE_RATE)
-                henv = np.exp(-ht / 0.018) * np.minimum(1.0, ht / 0.003)
-                brush = 0.036 * henv[:, None] * rng.standard_normal((hlen, 2))
-                _add_periodic(bi, brush)
-    elif cfg.pulse_mode == "study_pulse":
-        n_beats = bars * 4
-        for b in range(0, n_beats, 2):
-            bi = int(round(b * beat_sec * SAMPLE_RATE))
-            plen = int(0.16 * SAMPLE_RATE)
-            pt = np.arange(plen, dtype=np.float64) / float(SAMPLE_RATE)
-            penv = np.sin(np.pi * pt / (plen / float(SAMPLE_RATE))) ** 2
-            thump = 0.065 * penv * np.sin(2.0 * np.pi * 65.0 * pt)
-            _add_periodic(bi, np.column_stack([thump, thump]))
+    # 2. Gentle drumless sub-bass breathing swell wrapped across cycle boundary.
+    beat_sec = actual_bar_sec / 2.0
+    n_swells = bars * 2
+    for b in range(n_swells):
+        bi = int(round(b * beat_sec * SAMPLE_RATE))
+        slen = int(min(0.65, beat_sec * 0.6) * SAMPLE_RATE)
+        if slen > 64:
+            st = np.arange(slen, dtype=np.float64) / float(SAMPLE_RATE)
+            senv = np.sin(np.pi * st / (slen / float(SAMPLE_RATE))) ** 2
+            f_sub = _midi_to_hz(cfg.bass_midi[(b // 2) % len(cfg.bass_midi)])
+            sub = 0.052 * senv * np.sin(2.0 * np.pi * f_sub * st)
+            _add_periodic(bi, np.column_stack([sub, sub]))
 
     buf = np.zeros((n_samples, 2), dtype=np.float64)
     buf[:m_samples] = periodic
@@ -950,9 +931,14 @@ def _build_curated_mix_wav(
     for tr in ordered:
         durations.append(max(2.0, _probe_audio_duration(tr["path"])))
 
-    xf = min(4.0, min(durations) * 0.25)
+    # Slowed (~0.86x) + cavernous stereo hall reverb so curated tracks feel nocturnal & hypnotic.
+    slow_ratio = 0.86
+    durations = [d / slow_ratio for d in durations]
+    xf = min(4.5, min(durations) * 0.25)
     norm_chain = (
-        f"afade=t=in:st=0:d=0.35,highpass=f=28,loudnorm=I=-14.6:TP=-1.5:LRA=9,"
+        f"asetrate={SAMPLE_RATE}*{slow_ratio:.2f},aresample={SAMPLE_RATE},"
+        "highpass=f=28,lowpass=f=3600,aecho=0.8:0.86:55|115:0.36|0.22,"
+        f"afade=t=in:st=0:d=0.45,loudnorm=I=-14.6:TP=-1.5:LRA=9,"
         f"alimiter=limit=0.89:level=0:attack=5:release=50,"
         f"aresample={SAMPLE_RATE},aformat=channel_layouts=stereo"
     )
@@ -1240,87 +1226,43 @@ def generate_ambient_thumbnails(
     else:
         scene = render_scene_image(cfg.key, seed=seed or title, brand_name="", size=(THUMB_W, THUMB_H))
     hero_path = _save_jpeg_under_limit(scene, out_dir / "hero_raw.jpg")
-    headline = _short_headline(title, cfg.label)
-    dur_badge = _duration_badge(duration_sec).lower()
 
     variants: list[dict] = []
 
-    # v1: Intimate POV (deep lower cinema gradient + complete crisp headline bottom-left + amber whisper)
-    v1 = scene.copy().convert("RGBA")
-    scrim1 = Image.new("RGBA", (1, THUMB_H), (0, 0, 0, 0))
-    s1_px = scrim1.load()
-    start_y = int(THUMB_H * 0.42)
-    for y in range(start_y, THUMB_H):
-        frac = max(0.0, (y - start_y) / max(1, THUMB_H - start_y))
-        s1_px[0, y] = (6, 7, 12, int(round(220 * (frac ** 1.35))))
-    v1 = Image.alpha_composite(v1, scrim1.resize((THUMB_W, THUMB_H), Image.Resampling.BILINEAR))
-    overlay = Image.new("RGBA", (THUMB_W, THUMB_H), (0, 0, 0, 0))
-    od = ImageDraw.Draw(overlay)
-    f_size1 = 44 if len(headline) > 32 else 54
-    f_big = _pil_font(f_size1, headline)
-    lines1 = _wrap_lines(headline, f_big, int(THUMB_W * 0.84), od, max_lines=2)
-    step1 = f_size1 + 6
-    line_y = THUMB_H - (86 + step1 * len(lines1))
-    for ln in lines1:
-        od.text((58 + 2, line_y + 3), ln, font=f_big, fill=(0, 0, 0, 185))
-        od.text((58, line_y), ln, font=f_big, fill=(252, 248, 240, 252))
-        line_y += step1
-    od.line((58, line_y + 6, 148, line_y + 6), fill=(*cfg.glow_color, 235), width=3)
-    sub = f"{dur_badge} · late night playlist" + (f" · {brand_name.strip()}" if brand_name.strip() else "")
-    od.text((58, line_y + 18), sub, font=_pil_font(23, sub), fill=(*cfg.accent_color, 235))
-    v1 = Image.alpha_composite(v1, overlay)
-    variants.append({"id": "v1", "label": "Intimate POV", "path": _save_jpeg_under_limit(v1, out_dir / "thumb_v1.jpg")})
+    # v1: Cold Midnight Cobalt (zero text — pure atmospheric cobalt/indigo night memory matching @songsforcry / @nowayout.8)
+    v1 = ImageEnhance.Color(scene).enhance(0.90).convert("RGBA")
+    v1 = Image.alpha_composite(v1, Image.new("RGBA", (THUMB_W, THUMB_H), (10, 22, 64, 52)))
+    variants.append({"id": "v1", "label": "Midnight Cobalt", "path": _save_jpeg_under_limit(v1, out_dir / "thumb_v1.jpg")})
 
-    # v2: Pure Gaze (closer upper-center eye-contact crop + cinema color punch + minimal corner duration)
-    crop_w, crop_h = int(THUMB_W * 0.90), int(THUMB_H * 0.90)
+    # v2: VHS Violet Memory (closer crop + deep indigo/purple cast + subtle camcorder PLAY ▶ / SP stamp like @imissher.ambient)
+    crop_w, crop_h = int(THUMB_W * 0.88), int(THUMB_H * 0.88)
     dx = (THUMB_W - crop_w) // 2
     dy = int((THUMB_H - crop_h) * 0.28)
     v2 = scene.crop((dx, dy, dx + crop_w, dy + crop_h)).resize((THUMB_W, THUMB_H), Image.Resampling.LANCZOS)
-    v2 = ImageEnhance.Color(v2).enhance(1.10)
-    v2 = ImageEnhance.Contrast(v2).enhance(1.13).convert("RGBA")
-    scrim2 = Image.new("RGBA", (1, THUMB_H), (0, 0, 0, 0))
-    s2_px = scrim2.load()
-    for y in range(int(THUMB_H * 0.72), THUMB_H):
-        frac = (y - int(THUMB_H * 0.72)) / max(1, THUMB_H - int(THUMB_H * 0.72))
-        s2_px[0, y] = (6, 6, 10, int(round(130 * (frac ** 1.4))))
-    v2 = Image.alpha_composite(v2, scrim2.resize((THUMB_W, THUMB_H), Image.Resampling.BILINEAR))
+    v2 = ImageEnhance.Contrast(v2).enhance(1.12).convert("RGBA")
+    v2 = Image.alpha_composite(v2, Image.new("RGBA", (THUMB_W, THUMB_H), (42, 18, 92, 62)))
     d2 = ImageDraw.Draw(v2)
-    whisp = f"{dur_badge}  ·  after midnight"
-    f_w = _pil_font(24, whisp)
-    bbw = d2.textbbox((0, 0), whisp, font=f_w)
-    d2.text((THUMB_W - (bbw[2] - bbw[0]) - 50, THUMB_H - 64), whisp, font=f_w, fill=(248, 240, 228, 215))
-    variants.append({"id": "v2", "label": "Pure Gaze", "path": _save_jpeg_under_limit(v2, out_dir / "thumb_v2.jpg")})
+    f_vhs = _pil_font(22, "PLAY SP 00:00:24")
+    d2.text((46, 36), "PLAY >", font=f_vhs, fill=(225, 232, 255, 42))
+    d2.text((46, THUMB_H - 58), "SP", font=f_vhs, fill=(225, 232, 255, 36))
+    variants.append({"id": "v2", "label": "VHS Memory", "path": _save_jpeg_under_limit(v2, out_dir / "thumb_v2.jpg")})
 
-    # v3: Midnight Mood (lower dark scrim + amber-cream editorial headline kept low away from face + minimalist corner time)
-    v3 = ImageEnhance.Color(scene).enhance(1.18).convert("RGBA")
+    # v3: Deep Twilight (moody high-contrast silhouette vignette, pure zero-text)
+    v3 = ImageEnhance.Brightness(scene).enhance(0.84)
+    v3 = ImageEnhance.Contrast(v3).enhance(1.22).convert("RGBA")
+    v3 = Image.alpha_composite(v3, Image.new("RGBA", (THUMB_W, THUMB_H), (8, 16, 48, 70)))
     scrim3 = Image.new("RGBA", (1, THUMB_H), (0, 0, 0, 0))
     s3_px = scrim3.load()
-    for y in range(int(THUMB_H * 0.48), THUMB_H):
-        frac = (y - int(THUMB_H * 0.48)) / max(1, THUMB_H - int(THUMB_H * 0.48))
-        s3_px[0, y] = (8, 10, 18, int(round(205 * (frac ** 1.45))))
+    for y in range(int(THUMB_H * 0.52), THUMB_H):
+        frac = (y - int(THUMB_H * 0.52)) / max(1, THUMB_H - int(THUMB_H * 0.52))
+        s3_px[0, y] = (4, 6, 16, int(round(170 * (frac ** 1.4))))
     v3 = Image.alpha_composite(v3, scrim3.resize((THUMB_W, THUMB_H), Image.Resampling.BILINEAR))
-    ov3 = Image.new("RGBA", (THUMB_W, THUMB_H), (0, 0, 0, 0))
-    d3 = ImageDraw.Draw(ov3)
-    f_size3 = 42 if len(headline) > 32 else 48
-    f3 = _pil_font(f_size3, headline)
-    lines3 = _wrap_lines(headline, f3, int(THUMB_W * 0.72), d3, max_lines=2)
-    step3 = f_size3 + 6
-    y3 = THUMB_H - (56 + step3 * len(lines3))
-    for ln in lines3:
-        d3.text((54 + 2, y3 + 2), ln, font=f3, fill=(0, 0, 0, 195))
-        d3.text((54, y3), ln, font=f3, fill=(*cfg.accent_color, 250))
-        y3 += step3
-    pill_txt = dur_badge
-    pf = _pil_font(22, pill_txt)
-    tb = d3.textbbox((0, 0), pill_txt, font=pf)
-    d3.text((THUMB_W - (tb[2] - tb[0]) - 46, THUMB_H - 60), pill_txt, font=pf, fill=(252, 248, 240, 210))
-    v3 = Image.alpha_composite(v3, ov3)
-    variants.append({"id": "v3", "label": "Midnight Mood", "path": _save_jpeg_under_limit(v3, out_dir / "thumb_v3.jpg")})
+    variants.append({"id": "v3", "label": "Deep Twilight", "path": _save_jpeg_under_limit(v3, out_dir / "thumb_v3.jpg")})
 
     prompt = (
-        f"Raw candid 16:9 50mm f/1.2 photograph of a breathtaking young woman making warm alluring direct eye contact in soft golden late-night lamp light "
-        f"({cfg.mood_summary}), authentic unretouched natural skin texture with pores, creamy shallow depth of field bokeh, classy off-the-shoulder eveningwear, "
-        f"zero artificial neon gels, zero text overlays, zero watermarks, title theme: {headline}"
+        f"Candid blurry 2000s midnight Sony digicam portrait of an alluring goth alt baddie woman in cold dark cobalt blue and violet twilight lighting "
+        f"({cfg.mood_summary}), intimate eye contact like @imissher.ambient and @istillmissh3rr, "
+        f"subtle low-light ISO film grain, soft out-of-focus background bokeh, zero AI gloss, zero text overlays, zero watermarks"
     )
     try:
         from app.longform import thumbnails as lf_thumbs
@@ -1428,12 +1370,12 @@ def generate_ambient_video(
                         f"[{base_lbl}]format=rgb24[basergb];"
                         f"[{ov_idx}:v]fps={FPS},scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,"
                         f"crop={WIDTH}:{HEIGHT},setsar=1,format=rgb24[ov];"
-                        "[basergb][ov]blend=all_mode=screen:all_opacity=0.22:shortest=1,"
-                        "noise=alls=3:allf=t,vignette=PI/6,format=yuv420p[vout]"
+                        "[basergb][ov]blend=all_mode=screen:all_opacity=0.12:shortest=1,"
+                        "noise=alls=2:allf=t,vignette=PI/6,format=yuv420p[vout]"
                     )
                 return (
                     f"[{ov_idx}:v]crop={WIDTH}:{HEIGHT}:0:'{HEIGHT}-mod(t*{HEIGHT}*2/{DEFAULT_LOOP_SEC:.1f},{HEIGHT})'[pt];"
-                    f"[{base_lbl}][pt]overlay=0:0:shortest=1,noise=alls=3:allf=t,vignette=PI/6,format=yuv420p[vout]"
+                    f"[{base_lbl}][pt]overlay=0:0:shortest=1,noise=alls=2:allf=t,vignette=PI/6,format=yuv420p[vout]"
                 )
 
             if target_seconds <= DEFAULT_LOOP_SEC:
@@ -1451,7 +1393,7 @@ def generate_ambient_video(
                         "-filter_complex", vf_chain,
                         "-map", "[vout]", "-map", "2:a:0",
                         "-t", f"{target_seconds:.3f}",
-                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "24",
                         "-pix_fmt", "yuv420p", "-r", str(FPS), "-video_track_timescale", "30000",
                         "-c:a", "aac", "-b:a", "192k", "-ar", str(SAMPLE_RATE), "-ac", "2",
                         "-af", af_chain,
@@ -1500,7 +1442,7 @@ def generate_ambient_video(
                         "-filter_complex", vf_loop,
                         "-map", "[vout]", "-an",
                         "-t", f"{loop_sec:.3f}",
-                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "24",
                         "-pix_fmt", "yuv420p", "-r", str(FPS), "-g", str(FPS), "-keyint_min", str(FPS),
                         "-sc_threshold", "0", "-video_track_timescale", "30000",
                         str(loop_v),

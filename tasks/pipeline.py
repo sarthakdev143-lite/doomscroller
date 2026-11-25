@@ -110,16 +110,9 @@ def _channel_languages(video: Video) -> list[str]:
     else:
         with session_scope() as db:
             channel = _lookup(db)
-    if channel is not None:
-        meta_langs = (channel.meta or {}).get("target_languages")
-        if isinstance(meta_langs, (list, tuple)):
-            cleaned = [str(x).strip().lower() for x in meta_langs if str(x).strip()]
-            if cleaned:
-                return cleaned
-        niche = (channel.niche or "").lower()
-        if "hindi" in niche or "hinglish" in niche:
-            return ["hi"]
-    return settings.languages_list
+    from app.growth import channels
+
+    return channels.target_languages(channel)
 
 
 def channel_focus_reason(

@@ -573,14 +573,13 @@ def build_filtergraph(plan: ClipPlan, info: MediaInfo, seek: float) -> str:
         parts.append(f"[under{index}][broll{index}]overlay=eof_action=pass:repeatlast=0:"
                      f"enable='between(t,{start - _HALF_FRAME:.3f},{start + seconds - _HALF_FRAME:.3f})'[over{index}]")
         chain = f"[over{index}]null"
-    # Meme GIFs sit top-right over the picture, under the captions, so reactions
-    # flash without covering speech text or the Shorts buttons.
+    # Meme clips slide/pop in from the right over 0.14s, under captions and clear of Shorts buttons.
     meme_base = first_input + len(plan.broll)
     for index, (start, seconds, _path) in enumerate(plan.memes):
         parts.append(f"[{meme_base + index}:v]scale=300:-2:flags=lanczos,setsar=1,fps={FPS},"
                      f"setpts=PTS-STARTPTS+{start:.3f}/TB[meme{index}]")
         parts.append(chain + f"[munder{index}]")
-        parts.append(f"[munder{index}][meme{index}]overlay=x='W-w-30':y=180:eof_action=pass:"
+        parts.append(f"[munder{index}][meme{index}]overlay=x='W-w-30+max(0,(1-(t-{start:.3f})/0.14))*140':y=180:eof_action=pass:"
                      f"enable='between(t,{start - _HALF_FRAME:.3f},{start + seconds - _HALF_FRAME:.3f})'[mover{index}]")
         chain = f"[mover{index}]null"
     if plan.picture_height:
@@ -807,7 +806,7 @@ def _clean_vlog_summary_cues(moment: Moment, duration: float, hook: str) -> list
 def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment,
                   words: Sequence[Word], out_path: str, edit: Optional[EditPlan] = None, creator: str = "",
                   music: Optional[str] = None, captions: bool = True, source_captioned: bool = False,
-                  brand: Optional[str] = None, sting: Optional[str] = None) -> ClipPlan:
+                  brand: Optional[str] = None, sting: Optional[str] = None, language: str = "") -> ClipPlan:
     """Write the finished clip to ``out_path`` and return its plan.
 
     ``source_captioned`` means the footage burns in its own captions. In the framed layout their band is cut
@@ -893,6 +892,18 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
                      end_fade=0.02 if loop_clean else _END_FADE, hold_end=not loop_clean)
     if music and info.has_audio:
         plan.music = os.path.abspath(music)
+    meme_audio_cues: list[Cue] = []
+    if info.has_audio and settings.clip_sfx:
+        for m_start, _m_sec, m_path in plan.memes:
+            if os.path.splitext(m_path)[1].lower() in _STILL_MEME_EXTS or not os.path.isfile(m_path):
+                continue
+            try:
+                if probe(m_path).has_audio:
+                    meme_audio_cues.append(Cue(m_start, os.path.abspath(m_path)))
+            except Exception:
+                pass
+    if meme_audio_cues:
+        plan.has_sfx = True
     sting_at = plan.duration
     if sound is not None:
         # Hold the last frame under the sound, so it lands after the punchline and never over a word.
@@ -921,9 +932,10 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
                     ))
             if plan.has_sfx:
                 cues = sound_cues(edit, rhythm_points(edit, signals=signals, moment=moment)) if edit and settings.clip_sfx else []
+                cues.extend(meme_audio_cues)
                 if plan.tail:
                     cues.append(Cue(sting_at, str(sting)))
-                build_track(os.path.join(tmp, "sfx.wav"), plan.duration, cues)
+                build_track(os.path.join(tmp, "sfx.wav"), plan.duration, cues, language=language)
             # The bar needs an end: an endless source keeps ffmpeg running forever if
             # the moment turns out to have no frames.
             args = [*_seek_args(seek), "-i", os.path.abspath(source),
