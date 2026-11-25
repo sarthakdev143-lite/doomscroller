@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 import httpx
 from sqlalchemy import select
 
+from app import logging_config
 from app.config import PROJECT_ROOT, settings
 from app.db import session_scope
 from app.models import GrowthEvent, GrowthState, Video, VideoStatus
@@ -59,7 +60,7 @@ def _redact(text: str) -> str:
         out = out.replace(rev_tok, "[REDACTED]")
     out = _BOT_TOKEN_RE.sub("bot[REDACTED]", out)
     out = _QUERY_SECRET_RE.sub(r"\1[REDACTED]", out)
-    return out
+    return logging_config.scrub_secrets(out)
 
 
 def _clean_header(value: str, fallback: str = "") -> str:

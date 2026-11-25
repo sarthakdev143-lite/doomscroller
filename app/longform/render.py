@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from app.clipper import timeline
+from app.clipper.captions import font_family
 from app.clipper.media import MediaError, MediaInfo, probe, run_ffmpeg
 from app.clipper.render import _filter_path_arg
 from app.config import settings
@@ -74,6 +75,14 @@ def _ass_clock(seconds: float) -> str:
     return f"{centis // 360000}:{centis // 6000 % 60:02d}:{centis // 100 % 60:02d}.{centis % 100:02d}"
 
 
+def _ass_font_name(font_path: str) -> str:
+    """Resolve the real TTF family name for ASS styles so libass matches fontsdir."""
+    if not font_path:
+        return "Arial"
+    fam = font_family(font_path).replace(",", " ").strip()
+    return fam or Path(font_path).stem.replace(",", " ").strip() or "Arial"
+
+
 def _write_ass_overlay(
     ass_path: Path,
     *,
@@ -86,11 +95,7 @@ def _write_ass_overlay(
     fonts_dir: str = "",
 ) -> None:
     font_path = resolve_font(settings.clip_font, sample_text or f"{badge_text} {lower_third} {brand}")
-    font_name = "Arial"
-    if font_path:
-        stem = Path(font_path).stem.replace(",", " ")
-        if stem:
-            font_name = stem
+    font_name = _ass_font_name(font_path)
     lines = [
         "[Script Info]",
         "ScriptType: v4.00+",
@@ -134,11 +139,7 @@ def _write_bridge_ass(
 ) -> None:
     """Write editorial upper-left documentary bridge typography away from bottom creator subtitles."""
     font_path = resolve_font(settings.clip_font, sample_text or f"{badge_text} {headline} {brand}")
-    font_name = "Arial"
-    if font_path:
-        stem = Path(font_path).stem.replace(",", " ")
-        if stem:
-            font_name = stem
+    font_name = _ass_font_name(font_path)
     lines = [
         "[Script Info]",
         "ScriptType: v4.00+",
@@ -185,13 +186,8 @@ def _write_outro_ass(
     headline = "अगला वीडियो देखें और सब्सक्राइब करें!" if hi else "Watch Next & Subscribe for More!"
     sample = sample_text or f"{badge} {headline} {brand}"
     font_path = resolve_font(settings.clip_font, sample)
-    font_name = "Arial"
-    fonts_dir = str(ass_path.parent)
-    if font_path:
-        fonts_dir = str(Path(font_path).parent)
-        stem = Path(font_path).stem.replace(",", " ")
-        if stem:
-            font_name = stem
+    font_name = _ass_font_name(font_path)
+    fonts_dir = str(Path(font_path).parent) if font_path else str(ass_path.parent)
     lines = [
         "[Script Info]",
         "ScriptType: v4.00+",
@@ -541,12 +537,27 @@ def _render_segment(
     seek_pad = max(0.0, keeps[0][0])
     parts: list[str] = []
     joined: list[str] = []
+    n_keeps = len(keeps)
+    if n_keeps > 1:
+        parts.append(f"[0:v]split={n_keeps}{''.join(f'[vin{i}]' for i in range(n_keeps))}")
+        if info.has_audio:
+            parts.append(f"[0:a]asplit={n_keeps}{''.join(f'[ain{i}]' for i in range(n_keeps))}")
     for i, (ka, kb) in enumerate(keeps):
         ra = max(0.0, ka - seek_pad)
         rb = max(ra + 0.1, kb - seek_pad)
-        parts.append(f"[0:v]trim=start={ra:.3f}:end={rb:.3f},setpts=PTS-STARTPTS[v{i}]")
+        vin = f"[vin{i}]" if n_keeps > 1 else "[0:v]"
+        parts.append(f"{vin}trim=start={ra:.3f}:end={rb:.3f},setpts=PTS-STARTPTS[v{i}]")
         if info.has_audio:
-            parts.append(f"[0:a]atrim=start={ra:.3f}:end={rb:.3f},asetpts=PTS-STARTPTS[a{i}]")
+            ain = f"[ain{i}]" if n_keeps > 1 else "[0:a]"
+            seg_d = rb - ra
+            if n_keeps > 1 and seg_d > 0.04:
+                fade = min(0.008, seg_d * 0.1)
+                parts.append(
+                    f"{ain}atrim=start={ra:.3f}:end={rb:.3f},asetpts=PTS-STARTPTS,"
+                    f"afade=t=in:st=0:d={fade:.3f},afade=t=out:st={max(0.0, seg_d - fade):.3f}:d={fade:.3f}[a{i}]"
+                )
+            else:
+                parts.append(f"{ain}atrim=start={ra:.3f}:end={rb:.3f},asetpts=PTS-STARTPTS[a{i}]")
             joined.extend([f"[v{i}]", f"[a{i}]"])
         else:
             joined.append(f"[v{i}]")

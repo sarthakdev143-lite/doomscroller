@@ -1089,6 +1089,7 @@ def long_panel_data() -> dict:
         "posted": posted,
         "jobs": list_long_jobs(),
         "channels": channel_list,
+        "ambient_presets": ambient.list_presets(),
         "ambient_ab": ambient_ab,
         "tts_status": voiceover.tts_status(),
         "ambient_stats": {

@@ -1349,8 +1349,8 @@ async function loadClip(){
 }
 
 /* ===================== LONG FORM ===================== */
-let longPollTimer=null,longChanSel=null,longChannels=[],syncLongBuildMode=null,lastLongChanSlug='',prevLongActive=new Set(),ambientStats={tracks_count:0,portraits_count:0,tracks:[]},ambientStatsEl=null,ambientTrackWrap=null,longStatus='all',longFilter='all',longData=null;
-const AMBIENT_LABELS={lofi_chill:'Bedroom Glow · One Last Time',rain_focus:'Midnight Rain · Get Some Sleep',night_ambient:'Candlelight · You Are Mine',deep_study:'Desk Lamp · Stay Longer'};
+let longPollTimer=null,longChanSel=null,longChannels=[],syncLongBuildMode=null,lastLongChanSlug='',prevLongActive=new Set(),ambientStats={tracks_count:0,portraits_count:0,tracks:[]},ambientPresetLabels={},ambientStatsEl=null,ambientTrackWrap=null,longStatus='all',longFilter='all',longData=null;
+const AMBIENT_LABELS={lofi_chill:'2AM Memory · Slowed Dark Ambient',rain_focus:'Midnight Rain · Sleep & Dissociate',night_ambient:'Cobalt Twilight · Nocturne Drone',deep_study:'Empty Train · Midnight Drift'};
 function longBusy(){const list=$('long-list');if(!list)return false;const a=document.activeElement;const editing=a&&(a.tagName==='INPUT'||a.tagName==='TEXTAREA'||a.tagName==='SELECT')&&list.contains(a);return editing||!!list.querySelector('video')||!!list.querySelector('details[open]')}
 function buildLongForm(){
   const box=$('long-build-form');if(!box||box.dataset.built)return;box.dataset.built='1';
@@ -1396,7 +1396,7 @@ function buildLongForm(){
     fmtSel.replaceChildren();
     if(isProc){
       const presets=(ch.presets&&ch.presets.length)?ch.presets:['lofi_chill','rain_focus','night_ambient','deep_study'];
-      for(const p of presets)fmtSel.append(el('option',{value:p},AMBIENT_LABELS[p]||p));
+      for(const p of presets)fmtSel.append(el('option',{value:p},ambientPresetLabels[p]||AMBIENT_LABELS[p]||p));
       if(curFmt&&presets.includes(curFmt))fmtSel.value=curFmt;
       minsLbl.textContent='Target length (15–120 min)';
       minsInp.min='1';minsInp.max='120';
@@ -1762,6 +1762,8 @@ async function loadLong(){
     const d=await api.get('/api/long/videos');
     longData=d;
     longChannels=d.channels||[];
+    ambientPresetLabels={};
+    for(const pr of (d.ambient_presets||[])){if(pr&&pr.key&&pr.label)ambientPresetLabels[pr.key]=pr.label;}
     ambientStats=d.ambient_stats||{tracks_count:0,portraits_count:0,tracks:[]};
     if(longChanSel){
       const cur=longChanSel.value;

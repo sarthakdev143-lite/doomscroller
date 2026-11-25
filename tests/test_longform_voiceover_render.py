@@ -349,3 +349,51 @@ def test_real_ffmpeg_bridge_segment_and_outro_peak_and_continuity(tmp_path):
             capture_output=True, text=True, check=True,
         ).stderr
         assert "silence_start" not in sil, f"unexpected silence dropout in {clip.name}: {sil}"
+
+
+def test_longform_ass_uses_real_font_family_and_multi_keep_segment_splits_with_afade(tmp_path, monkeypatch):
+    from app.clipper import captions
+
+    fp = lf_render.resolve_font(settings.clip_font, "Hello World")
+    assert fp, "expected a resolvable system font"
+    real_family = captions.font_family(fp)
+    stem = Path(fp).stem.replace(",", " ")
+
+    ov_ass = tmp_path / "ov.ass"
+    br_ass = tmp_path / "br.ass"
+    out_ass = tmp_path / "out.ass"
+    lf_render._write_ass_overlay(ov_ass, badge_text="#1 · CREATOR", lower_third="Epic Moment", brand="@Brand", hold_sec=5.0)
+    lf_render._write_bridge_ass(br_ass, badge_text="#1 · CREATOR", headline="Epic Moment", brand="@Brand", hold_sec=3.5)
+    lf_render._write_outro_ass(out_ass, brand="@Brand", hold_sec=6.0, language="en")
+
+    for ass_file in (ov_ass, br_ass, out_ass):
+        styles_text = "\n".join(
+            line for line in ass_file.read_text(encoding="utf-8").splitlines() if line.startswith("Style:")
+        )
+        assert f",{real_family}," in styles_text, f"{ass_file.name} missing real family {real_family!r}: {styles_text}"
+        if stem.lower() != real_family.lower():
+            assert f",{stem}," not in styles_text, f"{ass_file.name} leaked font filename stem {stem!r}: {styles_text}"
+
+    src = tmp_path / "src.mp4"
+    src.write_bytes(b"MP4")
+    monkeypatch.setattr(lf_render, "probe", lambda p: MediaInfo(120.0, 1920, 1080, 30.0, True))
+    monkeypatch.setattr(lf_render.timeline, "detect_silences", lambda *a, **k: [(20.0, 24.0)])
+
+    ffmpeg_cmds: list[list[str]] = []
+
+    def fake_ffmpeg(args, **kwargs):
+        ffmpeg_cmds.append(list(args))
+        Path(args[-1]).write_bytes(b"SEG")
+
+    monkeypatch.setattr(lf_render, "run_ffmpeg", fake_ffmpeg)
+    seg = planner.SegmentPlan(
+        str(src), "https://youtu.be/1", "1", "@creator", "Creator", "Hot", 10.0, 50.0, 90.0, "Split Test", "en",
+    )
+    lf_render._render_segment(
+        seg, tmp_path / "out.mp4", tmp_path, index=1, display_rank=1, is_cold_open=False,
+        format_kind="best_of", brand_name="@Brand", gentle_trim=True, show_pill=True,
+    )
+    fc = ffmpeg_cmds[0][ffmpeg_cmds[0].index("-filter_complex") + 1]
+    assert "[0:v]split=2" in fc
+    assert "[0:a]asplit=2" in fc
+    assert "afade=t=in" in fc and "afade=t=out" in fc

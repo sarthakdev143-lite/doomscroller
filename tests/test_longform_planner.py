@@ -614,3 +614,44 @@ def test_longform_titles_use_display_creator_names_not_raw_handles(monkeypatch):
     assert "@souravjvlogs" not in seen_prompts[0] and "Sourav Joshi" in seen_prompts[0]
     assert ai_title == "Best Of Sourav Joshi: Chaos & Lakhneet"
     assert "@" not in ai_title
+
+
+def test_plan_compilation_skips_unreadable_source_and_uses_next(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "content_dir", str(tmp_path / "content"))
+    long_dir = tmp_path / "content" / "long"
+    long_dir.mkdir(parents=True)
+    for vid in ("bad1", "good1"):
+        (long_dir / f"Youtube_{vid}.mp4").write_bytes(b"M" * 60_000)
+
+    monkeypatch.setattr(
+        planner,
+        "_pick_source_candidates",
+        lambda **k: (
+            ["@Creator"],
+            [
+                {"id": "bad1", "url": "https://youtube.com/watch?v=bad1", "creator": "@Creator", "duration": 600},
+                {"id": "good1", "url": "https://youtube.com/watch?v=good1", "creator": "@Creator", "duration": 600},
+            ],
+        ),
+    )
+
+    def fake_moments(src, creator, already, max_needed=5):
+        if src.source_id == "bad1":
+            raise RuntimeError("corrupt moov atom")
+        return [
+            _seg("good1", creator, 50.0 + i * 70.0, 95.0 + i * 70.0, 92.0 - i)
+            for i in range(4)
+        ]
+
+    monkeypatch.setattr(planner, "_moments_from_source", fake_moments)
+    monkeypatch.setattr(planner.ai, "available", lambda: False)
+
+    plan = planner.plan_compilation(
+        format_kind="best_of",
+        channel_slug="default",
+        targets=["@Creator"],
+        target_minutes=6,
+        min_total_sec=100.0,
+    )
+    assert plan.segments and all(s.source_id == "good1" for s in plan.segments)
+    assert any("bad1" in w and "corrupt moov atom" in w for w in plan.warnings)

@@ -15,7 +15,7 @@ from typing import Optional, Sequence
 from sqlalchemy import select
 
 from app.clipper import ai, ingest, moments, signals, transcribe
-from app.clipper.media import MediaInfo, probe
+from app.clipper.media import Interrupted, MediaInfo, probe
 from app.config import settings
 from app.growth import safety
 from app.metadata import compose, detect_language
@@ -970,7 +970,14 @@ def plan_compilation(
         fetched_ids.add(src.source_id)
         already = session_used.get(src.source_id, [])
         max_per_src = 4 if fmt == "vs" else 5
-        segs = _moments_from_source(src, entry.get("creator") or creator_handle(src.author), already, max_needed=max_per_src)
+        try:
+            segs = _moments_from_source(src, entry.get("creator") or creator_handle(src.author), already, max_needed=max_per_src)
+        except Interrupted:
+            raise
+        except Exception as exc:
+            log.warning("planner: skipping unreadable source %s: %s", entry.get("url", ""), exc)
+            warnings.append(f"skipped {entry.get('url', '')}: {exc}")
+            continue
         for seg in segs:
             collected.append(seg)
             session_used.setdefault(seg.source_id, []).append(moments.Moment(seg.start, seg.end, kind="speech"))

@@ -597,3 +597,16 @@ def test_notify_digest_includes_long_posted_watch_url_and_ambient_ready_steps(tm
     assert "ambient mix ready" in sent[0].lower()
     assert "Save Raw Frame" not in sent[0]
     assert "pick thumbnail" in sent[0].lower()
+
+
+def test_notify_redact_scrubs_tts_ai_keys_and_bearer_tokens(monkeypatch):
+    monkeypatch.setattr(settings, "sarvam_api_key", "sk_sarvam_secret_987")
+    monkeypatch.setattr(settings, "elevenlabs_api_key", "el_secret_654")
+    monkeypatch.setattr(settings, "openai_api_key", "sk-proj-openai-321")
+    raw = (
+        "TTS fail sk_sarvam_secret_987; el=el_secret_654; "
+        "oai=sk-proj-openai-321; Authorization: Bearer tok_abc_123; bot999888:SECRET_TG"
+    )
+    clean = notify._redact(raw)
+    for secret in ("sk_sarvam_secret_987", "el_secret_654", "sk-proj-openai-321", "tok_abc_123", "999888:SECRET_TG"):
+        assert secret not in clean

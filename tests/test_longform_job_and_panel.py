@@ -1022,3 +1022,16 @@ def test_publish_task_uses_music_category_and_ambient_comment_for_procedural_amb
     assert res["ok"] is True and res["youtube_id"] == "AMB_YT_99"
     assert uploads[0]["category"] == 10
     assert len(comments) == 1 and "#1" not in comments[0][1]
+
+
+def test_long_panel_data_exposes_ambient_presets_matching_ui_labels():
+    from app.longform import ambient
+    from app.review_ui import PAGE
+
+    data = long_job.long_panel_data()
+    expected = ambient.list_presets()
+    assert data.get("ambient_presets") == expected
+    for preset in expected:
+        assert preset["label"] in PAGE
+    assert "Bedroom Glow · One Last Time" not in PAGE
+    assert "ambientPresetLabels" in PAGE
