@@ -1089,3 +1089,31 @@ def test_long_job_recover_orphans_handles_interrupted_and_scrubs_errors(tmp_path
         row = db.get(LongJob, orphan_id)
         assert row.status == "failed"
         assert "sk_sarvam_secret_wave10" not in (row.error or "")
+
+
+def test_wave18_long_build_maps_lookup_error_to_400_and_ui_preserves_state_and_uploads(monkeypatch):
+    from app.review_ui import PAGE
+
+    monkeypatch.setattr(
+        long_job,
+        "enqueue_long_job",
+        lambda *a, **kw: (_ for _ in ()).throw(LookupError("missing channel")),
+    )
+    c = _signed_client()
+    resp = c.post("/api/long/build", json={"channel_slug": "missing", "format": "best_of"})
+    assert resp.status_code == 400
+    assert "missing channel" in resp.json()["detail"]
+
+    # Long-form state preservation & dirty tracking
+    assert "const longEdits={}" in PAGE
+    assert "Object.keys(longEdits).length>0" in PAGE
+    assert "card.dataset.longId=item.id" in PAGE
+    assert "thumbDet.dataset.k='thumb'" in PAGE and "metaDet.dataset.k='meta'" in PAGE
+    assert "openDet" in PAGE and "vidState" in PAGE
+
+    # Long-tab XHR api.upload limits (10 MB thumb/portrait, 30 MB track) & drag-drop wiring
+    assert "30*1024*1024" in PAGE
+    assert "10*1024*1024" in PAGE
+    assert "wireDrop(ambientTrackWrap" in PAGE
+    assert "wireDrop(upBtn" in PAGE
+    assert "wireDrop(portBtn" in PAGE

@@ -2194,3 +2194,127 @@ def test_wave11_panel_status_headline_shorts_counter_report_worst_and_deduped_te
     assert "/api/notify/test" in PAGE
     assert "fmtLabel" in PAGE
     assert "target:'_blank',rel:'noopener'" in PAGE
+
+
+def test_wave18_http_security_headers_post_login_and_logout_cookie_flags(monkeypatch):
+    from app.review import review_app
+    from app.review_ui import LOCKED
+
+    assert 'method="post"' in LOCKED
+
+    # 1. Security headers on 401 locked root and 401 /api/*
+    unauth = TestClient(review_app)
+    r_locked = unauth.get("/")
+    assert r_locked.status_code == 401
+    assert r_locked.headers.get("x-content-type-options") == "nosniff"
+    assert r_locked.headers.get("x-frame-options") == "DENY"
+    assert r_locked.headers.get("referrer-policy") == "no-referrer"
+
+    r_api_401 = unauth.get("/api/queue")
+    assert r_api_401.status_code == 401
+    assert r_api_401.headers.get("x-content-type-options") == "nosniff"
+    assert r_api_401.headers.get("x-frame-options") == "DENY"
+    assert r_api_401.headers.get("referrer-policy") == "no-referrer"
+    assert "no-store" in (r_api_401.headers.get("cache-control") or "").lower()
+
+    # 2. POST / with invalid key returns 401 with alert banner and no cookie
+    bad_post = unauth.post("/", data={"key": "wrong-secret"}, follow_redirects=False)
+    assert bad_post.status_code == 401
+    assert 'role="alert"' in bad_post.text and "Invalid review key" in bad_post.text
+    assert "set-cookie" not in {k.lower() for k in bad_post.headers.keys()}
+
+    # 3. POST / with valid key over normalized proxy proto ("HTTPS, http") sets Secure cookie & redirects 303
+    https_c = TestClient(review_app, base_url="https://testserver")
+    ok_post = https_c.post(
+        "/",
+        data={"key": "panel-test-key"},
+        headers={"X-Forwarded-Proto": "HTTPS, http"},
+        follow_redirects=False,
+    )
+    assert ok_post.status_code == 303
+    sc = ok_post.headers.get("set-cookie", "").lower()
+    assert "httponly" in sc and "samesite=lax" in sc and "secure" in sc
+
+    r_ok = https_c.get("/")
+    assert r_ok.status_code == 200
+    assert r_ok.headers.get("x-content-type-options") == "nosniff"
+    assert r_ok.headers.get("x-frame-options") == "DENY"
+    assert r_ok.headers.get("referrer-policy") == "no-referrer"
+
+    r_api = https_c.get("/api/queue")
+    assert r_api.status_code == 200
+    assert "no-store" in (r_api.headers.get("cache-control") or "").lower()
+    assert r_api.headers.get("x-content-type-options") == "nosniff"
+
+    # 4. POST /api/logout clears cookie with matching Secure/HttpOnly/SameSite=Lax flags
+    logout = https_c.post("/api/logout", headers={"X-Forwarded-Proto": "HTTPS, http"})
+    assert logout.status_code == 200
+    del_sc = logout.headers.get("set-cookie", "").lower()
+    assert "httponly" in del_sc and "samesite=lax" in del_sc and "secure" in del_sc
+    assert https_c.get("/api/queue").status_code == 401
+
+    # 5. GET /?key=... continues working
+    get_unlock = TestClient(review_app).get("/?key=panel-test-key", follow_redirects=False)
+    assert get_unlock.status_code == 303
+
+    # 6. POST / when review_token == "" returns 503 without setting cookie
+    monkeypatch.setattr(settings, "review_token", "")
+    unconf_post = TestClient(review_app).post("/", data={"key": "panel-test-key"}, follow_redirects=False)
+    assert unconf_post.status_code == 503
+    assert "set-cookie" not in {k.lower() for k in unconf_post.headers.keys()}
+
+
+def test_wave18_upload_clip_cleans_final_path_on_unexpected_enqueue_failure(tmp_path, monkeypatch):
+    from app.clipper import job as clip_job
+    from app.review import review_app
+
+    monkeypatch.setattr(settings, "content_dir", str(tmp_path / "content"))
+    monkeypatch.setattr(clip_job, "enqueue_from_panel", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("db crash")))
+
+    c = TestClient(review_app, raise_server_exceptions=False)
+    assert c.get("/?key=panel-test-key", follow_redirects=False).status_code == 303
+
+    resp = c.post("/api/clip/upload?filename=crash.mp4", content=b"fake-video-bytes")
+    assert resp.status_code == 500
+    inbox = tmp_path / "content" / "inbox"
+    assert list(inbox.glob("*")) == []
+
+
+def test_wave18_panel_ux_no_alerts_error_handling_state_and_a11y():
+    from app.review_ui import PAGE
+
+    # Non-blocking error UX: zero alert() calls, toast error class, errMsg/errBox/401, api.post setConn(true)
+    assert "alert(" not in PAGE
+    assert ".snack.err" in PAGE
+    assert "errMsg" in PAGE and "errBox" in PAGE
+    assert "Session expired — reopen your link." in PAGE
+    assert "if(!e._http)setConn(true)" in PAGE
+
+    # Unified api.upload helper, Clip tab clear-file & URL/file conflict
+    assert "upload:(u,file," in PAGE
+    assert "512*1024*1024" in PAGE
+    assert "Clear selected file" in PAGE
+    assert "if(v&&picked)" in PAGE
+
+    # Review state preservation, syncDescCnt on title Enter, setReviewMode reload, rvTools postedPool
+    assert "c.description=r.description;syncDescCnt()" in PAGE
+    assert "card._sig" in PAGE and "card._isDirty" in PAGE
+    assert "postedPool.length<=2" in PAGE
+    assert "if(m==='review'" in PAGE and "loaders.review()" in PAGE
+
+    # Controls 60s open-details guard, scheduler health & r.error, dynamic shFix, buildAddForm 0 posts/day
+    assert "$('ct-body').querySelector('details[open]')" in PAGE
+    assert "d.scheduler.health" in PAGE and "r.error" in PAGE
+    assert "Fix missing folders" in PAGE and "shFix.textContent=" in PAGE
+    assert "up.value===''?3:Number(up.value)" in PAGE
+
+    # Accessibility & responsive polish
+    assert "aria-pressed" in PAGE
+    assert 'role="tablist"' in PAGE and "role:'tab'" in PAGE
+    assert "aria-selected" in PAGE and "aria-controls" in PAGE
+    assert 'role="tabpanel"' in PAGE and "aria-labelledby" in PAGE
+    assert 'role="dialog"' in PAGE and 'aria-modal="true"' in PAGE and "kbdPrevFocus" in PAGE
+    assert "stage.tabIndex=0" in PAGE and "stage.setAttribute('role','button'" in PAGE
+    assert ":focus-visible" in PAGE
+    assert "@media(max-width:419px)" in PAGE
+    assert "nav{height:52px" in PAGE

@@ -9,6 +9,7 @@ from __future__ import annotations
 import hmac
 import re
 from contextlib import asynccontextmanager
+from urllib.parse import parse_qs
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
@@ -18,7 +19,7 @@ from app import logging_config, scheduler
 from app.config import settings
 from app.db import init_db, session_scope
 from app.growth import approval, controls, safety
-from app.review_ui import LOCKED, MANIFEST, PAGE, UNCONFIGURED
+from app.review_ui import LOCKED, MANIFEST, PAGE, UNCONFIGURED, locked_page
 
 
 @asynccontextmanager
@@ -35,6 +36,24 @@ review_app = FastAPI(
     lifespan=_lifespan,
 )
 _COOKIE = "review_key"
+_NO_STORE = {"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"}
+
+
+@review_app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    if request.url.path.startswith("/api/"):
+        for k, v in _NO_STORE.items():
+            response.headers.setdefault(k, v)
+    return response
+
+
+def _is_https(request: Request) -> bool:
+    proto = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
+    return proto == "https" or request.url.scheme == "https"
 
 
 def _allowed(request: Request) -> bool:
@@ -153,21 +172,38 @@ class FailureCleanupRequest(BaseModel):
     action: str = "archive"
 
 
+def _unlock_or_locked(request: Request, key: str = ""):
+    # Never let a phone cache the page: a stale copy hides new tabs and fixes until cleared by hand.
+    if not settings.review_token:
+        return HTMLResponse(UNCONFIGURED, status_code=503, headers=_NO_STORE)
+    if key and hmac.compare_digest(key.encode(), settings.review_token.encode()):
+        response = RedirectResponse("/", status_code=303)
+        response.set_cookie(
+            _COOKIE,
+            key,
+            max_age=90 * 24 * 3600,
+            httponly=True,
+            samesite="lax",
+            secure=_is_https(request),
+        )
+        return response
+    if key:
+        return HTMLResponse(locked_page("Invalid review key."), status_code=401, headers=_NO_STORE)
+    if not _allowed(request):
+        return HTMLResponse(LOCKED, status_code=401, headers=_NO_STORE)
+    return HTMLResponse(PAGE, headers=_NO_STORE)
+
+
 @review_app.get("/", response_class=HTMLResponse)
 def page(request: Request, key: str = ""):
-    if key and settings.review_token and hmac.compare_digest(key.encode(), settings.review_token.encode()):
-        response = RedirectResponse("/", status_code=303)
-        secure = request.headers.get("x-forwarded-proto") == "https" or request.url.scheme == "https"
-        response.set_cookie(_COOKIE, key, max_age=90 * 24 * 3600, httponly=True, samesite="lax", secure=secure)
-        return response
-    # Never let a phone cache the page: it is redeployed on every update, and a stale copy from the last
-    # deploy is exactly what hides new tabs and fixes until the browser is cleared by hand.
-    no_store = {"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"}
-    if not settings.review_token:
-        return HTMLResponse(UNCONFIGURED, status_code=503, headers=no_store)
-    if not _allowed(request):
-        return HTMLResponse(LOCKED, status_code=401, headers=no_store)
-    return HTMLResponse(PAGE, headers=no_store)
+    return _unlock_or_locked(request, key)
+
+
+@review_app.post("/", response_class=HTMLResponse)
+async def post_login(request: Request):
+    body = (await request.body()).decode("utf-8", "replace")
+    key = (parse_qs(body).get("key") or [""])[0]
+    return _unlock_or_locked(request, key)
 
 
 @review_app.get("/manifest.webmanifest")
@@ -180,7 +216,7 @@ def manifest(request: Request) -> JSONResponse:
 def api_logout(request: Request) -> JSONResponse:
     _guard(request)
     response = JSONResponse({"ok": True})
-    response.delete_cookie(_COOKIE)
+    response.delete_cookie(_COOKIE, httponly=True, samesite="lax", secure=_is_https(request))
     return response
 
 
@@ -573,13 +609,7 @@ def api_logs(request: Request, limit: int = 80, level: str = "all") -> JSONRespo
         lines = [logging_config.scrub_secrets(ln) for ln in raw_lines if _WARN_LOG_RE.search(ln)][-clamped:]
     else:
         lines = [logging_config.scrub_secrets(ln) for ln in logging_config.read_recent_logs(limit=clamped)]
-    return JSONResponse(
-        {"lines": lines, "count": len(lines), "level": norm_level},
-        headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"},
-    )
-
-
-_NO_STORE = {"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"}
+    return JSONResponse({"lines": lines, "count": len(lines), "level": norm_level})
 
 
 @review_app.get("/api/system/doctor")
@@ -587,7 +617,7 @@ def api_system_doctor(request: Request) -> JSONResponse:
     _guard(request)
     from scripts import doctor as sys_doctor
 
-    return JSONResponse(sys_doctor.run_doctor(fix=False), headers=_NO_STORE)
+    return JSONResponse(sys_doctor.run_doctor(fix=False))
 
 
 @review_app.post("/api/system/doctor/fix")
@@ -595,7 +625,7 @@ def api_system_doctor_fix(request: Request) -> JSONResponse:
     _guard(request)
     from scripts import doctor as sys_doctor
 
-    return JSONResponse(sys_doctor.run_doctor(fix=True), headers=_NO_STORE)
+    return JSONResponse(sys_doctor.run_doctor(fix=True))
 
 
 @review_app.get("/api/backup")
@@ -603,11 +633,7 @@ def api_backup(request: Request) -> JSONResponse:
     _guard(request)
     return JSONResponse(
         approval.export_snapshot(),
-        headers={
-            "Content-Disposition": 'attachment; filename="doomscroller-backup.json"',
-            "Cache-Control": "no-store, max-age=0",
-            "Pragma": "no-cache",
-        },
+        headers={"Content-Disposition": 'attachment; filename="doomscroller-backup.json"'},
     )
 
 
@@ -705,6 +731,7 @@ async def api_upload_clip(
         raise HTTPException(400, str(exc))
     except Exception:
         part_path.unlink(missing_ok=True)
+        final_path.unlink(missing_ok=True)
         raise
     clip_job.start_queue_worker()
     return {"job_id": job_id, "status": "queued", "bytes": written, "filename": final_path.name}
@@ -795,7 +822,7 @@ def api_long_build(body: LongBuildRequest, request: Request) -> dict:
             target_minutes=body.target_minutes,
             auto_publish=body.auto_publish,
         )
-    except ValueError as exc:
+    except (LookupError, ValueError) as exc:
         raise HTTPException(400, str(exc))
     long_job.start_long_worker()
     return {"job_id": job_id, "status": "queued"}
@@ -857,7 +884,7 @@ def api_long_hero(video_id: str, request: Request):
     return FileResponse(
         path,
         media_type="image/jpeg",
-        headers={**_NO_STORE, "Content-Disposition": f'attachment; filename="hero-{safe_id}.jpg"'},
+        headers={"Content-Disposition": f'attachment; filename="hero-{safe_id}.jpg"'},
     )
 
 
@@ -869,7 +896,7 @@ def api_long_thumb(video_id: str, variant_id: str, request: Request):
     path = long_job.thumbnail_path(video_id, variant_id)
     if path is None:
         raise HTTPException(404, "no such thumbnail")
-    return FileResponse(path, media_type="image/jpeg", headers=_NO_STORE)
+    return FileResponse(path, media_type="image/jpeg")
 
 
 @review_app.post("/api/long/{video_id}/thumbnail")
