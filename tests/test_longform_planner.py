@@ -570,3 +570,47 @@ def test_vs_format_balances_two_creators_and_downgrades_single_creator_honestly(
     )
     beta_count = sum(1 for s in balanced if s.creator == "@Beta")
     assert beta_count >= 2
+
+
+def test_longform_titles_use_display_creator_names_not_raw_handles(monkeypatch):
+    t_en, d_en, _ = planner._fallback_title_and_desc(
+        format_kind="best_of", targets=["@souravjvlogs"], theme="", part_number=2, niche="vlogs", language="en",
+    )
+    assert t_en == "Best of Sourav Joshi Part 2"
+    assert "@" not in t_en and "@" not in d_en
+
+    t_hi, d_hi, _ = planner._fallback_title_and_desc(
+        format_kind="best_of", targets=["@souravjvlogs"], theme="", part_number=1, niche="vlogs", language="hi",
+    )
+    assert "Sourav Joshi" in t_hi and "@" not in t_hi and "@" not in d_hi
+
+    t_vs, d_vs, _ = planner._fallback_title_and_desc(
+        format_kind="vs", targets=["@souravjvlogs", "@LakhneetVlogs"], theme="", part_number=None, niche="vlogs", language="hi",
+    )
+    assert t_vs == "Sourav Joshi vs Lakhneet — Biggest Moments"
+    assert "@" not in t_vs and "@" not in d_vs
+
+    seen_prompts: list[str] = []
+    monkeypatch.setattr(planner.ai, "available", lambda: True)
+
+    def fake_ask(prompt):
+        seen_prompts.append(prompt)
+        return {
+            "title": "Best Of @souravjvlogs: Chaos & @LakhneetVlogs",
+            "description": "Unstoppable moments.",
+            "tags": ["vlog"],
+        }
+
+    monkeypatch.setattr(planner.ai, "ask_json", fake_ask)
+    ai_title, _, _ = planner._ai_long_metadata(
+        format_kind="best_of",
+        targets=["@souravjvlogs"],
+        theme="",
+        part_number=1,
+        niche="vlogs",
+        language="hi",
+        segments=[_seg("s1", "@souravjvlogs", 10.0, 55.0, 90.0)],
+    )
+    assert "@souravjvlogs" not in seen_prompts[0] and "Sourav Joshi" in seen_prompts[0]
+    assert ai_title == "Best Of Sourav Joshi: Chaos & Lakhneet"
+    assert "@" not in ai_title

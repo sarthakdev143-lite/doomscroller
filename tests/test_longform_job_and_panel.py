@@ -389,6 +389,12 @@ def test_countdown_lower_thirds_and_chapters_in_render_compilation(tmp_path, mon
     assert "COMING UP · #1" in ass_captured[0]
     assert "#2 · One — Funny Entrance" in ass_captured[1] and "#Shorts" not in ass_captured[1]
     assert "#1 · One — Crazy Insane Ending Payoff" in ass_captured[2]
+    assert [lbl for _, lbl in res.chapters] == [
+        "Intro / Preview",
+        "#2 One — Funny Entrance #Shorts",
+        "#1 One — Crazy Insane Ending Payoff",
+    ]
+    assert "@" not in res.chapter_text
 
 
 def test_repair_waiting_drafts_strips_shorts_and_unlocks_ab_safely(tmp_path):
@@ -887,3 +893,80 @@ def test_channel3_portrait_and_track_upload_endpoints_require_guard_and_validate
     panel = c.get("/api/long/videos").json()
     assert panel["ambient_stats"]["tracks_count"] == 1
     assert panel["ambient_stats"]["portraits_count"] >= 1
+
+
+def test_long_unapprove_clear_finished_and_block_procedural_clip_panel(tmp_path, monkeypatch):
+    Path(settings.channels_file).write_text(
+        json.dumps({
+            "channels": [
+                {"slug": "indianvlogs", "name": "Mr Indian Vlogs", "long_uploads_per_day": 1},
+                {
+                    "slug": "ambient",
+                    "name": "After Midnight POV",
+                    "uploads_per_day": 0,
+                    "long_uploads_per_day": 3,
+                    "enabled": False,
+                    "feeds": [],
+                    "meta": {"mode": "procedural_ambient", "presets": ["lofi_chill"]},
+                },
+            ]
+        }),
+        encoding="utf-8",
+    )
+    with session_scope() as db:
+        channels.sync_channels(db)
+        hi = channels.channel_by_slug(db, "indianvlogs")
+        mp4 = tmp_path / "comp.mp4"
+        mp4.write_bytes(b"MP4DATA")
+        v_ready = Video(
+            source="longform", source_id="lr1", source_url="https://youtu.be/lr1",
+            title="Ready Long", description="Desc", transformed_path=str(mp4),
+            status=VideoStatus.PENDING, channel_id=hi.id, width=1920, height=1080,
+            meta={"long_form": True},
+        )
+        v_pub = Video(
+            source="longform", source_id="lp1", source_url="https://youtu.be/lp1",
+            title="Pub Long", description="Desc", transformed_path=str(mp4),
+            status=VideoStatus.PUBLISHED, youtube_video_id="YTPUB1", channel_id=hi.id,
+            meta={"long_form": True},
+        )
+        j_done = LongJob(channel_id=hi.id, format="best_of", status="done")
+        j_fail = LongJob(channel_id=hi.id, format="vs", status="failed", error="boom")
+        j_wait = LongJob(channel_id=hi.id, format="theme", status="queued")
+        db.add_all([v_ready, v_pub, j_done, j_fail, j_wait])
+        db.flush()
+        vid_ready, vid_pub = v_ready.id, v_pub.id
+        jid_done, jid_fail, jid_wait = j_done.id, j_fail.id, j_wait.id
+
+    anon = TestClient(review_app)
+    assert anon.post(f"/api/long/{vid_ready}/unapprove").status_code == 401
+    assert anon.post("/api/long/clear-finished").status_code == 401
+
+    c = _signed_client()
+
+    # Procedural ambient channels cannot receive Shorts clips via /api/clip.
+    bad_clip = c.post("/api/clip", json={"source": "https://youtu.be/dQw4w9WgXcQ", "channel_slug": "ambient"})
+    assert bad_clip.status_code == 400 and "procedural" in bad_clip.json()["detail"].lower()
+
+    # Approve -> TRANSFORMED, then unapprove -> back to PENDING and owner_approved cleared.
+    assert c.post(f"/api/long/{vid_ready}/approve", json={}).status_code == 200
+    unapp = c.post(f"/api/long/{vid_ready}/unapprove")
+    assert unapp.status_code == 200 and unapp.json() == {"id": vid_ready, "status": "pending"}
+    with session_scope() as db:
+        row = db.get(Video, vid_ready)
+        assert row.status == VideoStatus.PENDING
+        assert "owner_approved" not in (row.meta or {})
+    assert c.post(f"/api/long/{vid_ready}/unapprove").status_code == 409
+    assert c.post(f"/api/long/{vid_pub}/unapprove").status_code == 409
+
+    # Clear finished long jobs hides done/failed but preserves rows & leaves queued intact.
+    cleared = c.post("/api/long/clear-finished")
+    assert cleared.status_code == 200
+    body = cleared.json()
+    assert body["cleared"] == 2 and set(body["ids"]) == {jid_done, jid_fail}
+    visible_jobs = c.get("/api/long/jobs").json()["jobs"]
+    assert [j["id"] for j in visible_jobs] == [jid_wait]
+    with session_scope() as db:
+        assert (db.get(LongJob, jid_done).result or {}).get("dismissed") is True
+        assert (db.get(LongJob, jid_fail).result or {}).get("dismissed") is True
+        assert db.get(LongJob, jid_wait).status == "queued"

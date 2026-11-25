@@ -801,6 +801,14 @@ def api_long_jobs(request: Request, limit: int = 20) -> JSONResponse:
     return JSONResponse({"jobs": long_job.list_long_jobs(limit=max(1, min(50, int(limit))))})
 
 
+@review_app.post("/api/long/clear-finished")
+def api_clear_finished_long_jobs(request: Request) -> dict:
+    _guard(request)
+    from app.longform import job as long_job
+
+    return long_job.clear_finished_long_jobs()
+
+
 @review_app.post("/api/long/jobs/{job_id}/retry")
 def api_retry_long_job(job_id: str, request: Request) -> dict:
     _guard(request)
@@ -940,6 +948,19 @@ def api_long_approve(video_id: str, request: Request, body: LongApproveRequest |
             tags=body.tags if body else None,
             variant_id=body.variant_id if body else None,
         )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
+
+
+@review_app.post("/api/long/{video_id}/unapprove")
+def api_long_unapprove(video_id: str, request: Request) -> dict:
+    _guard(request)
+    from app.longform import job as long_job
+
+    try:
+        return long_job.unapprove_long(video_id)
     except LookupError as exc:
         raise HTTPException(404, str(exc))
     except ValueError as exc:

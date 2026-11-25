@@ -625,6 +625,8 @@ def enqueue_from_panel(source: str, *, count: int = 3, auto_queue: Optional[bool
             ch = channels.channel_by_slug(db, slug)
             if ch is None:
                 raise ValueError(f"unknown channel {slug!r}")
+            if channels.is_procedural(ch):
+                raise ValueError(f"channel {slug!r} is a procedural ambient channel and does not accept Shorts clips")
             channel_id = channels.event_channel(ch)
             effective_auto_queue = (not channels.require_approval(ch)) if auto_queue is None else bool(auto_queue)
     elif auto_queue is not None:

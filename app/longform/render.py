@@ -839,9 +839,10 @@ def render_compilation(
         for idx, seg in enumerate(plan.segments, start=1):
             rank = (total_segs - idx + 1) if plan.format_kind != "vs" else idx
             prefix = f"Round {idx}" if plan.format_kind == "vs" else f"#{rank}"
-            label = f"{prefix} {seg.creator} — {seg.moment_title}".strip(" —")
+            cname = display_creator_name(seg.creator)
+            label = f"{prefix} {cname} — {seg.moment_title}".strip(" —")
             clean_headline = _short_caption(seg.moment_title, max_words=6, max_chars=38) or "Key Moment"
-            badge = f"ROUND {idx} · {display_creator_name(seg.creator).upper()}" if plan.format_kind == "vs" else f"#{rank} · {display_creator_name(seg.creator).upper()}"
+            badge = f"ROUND {idx} · {cname.upper()}" if plan.format_kind == "vs" else f"#{rank} · {cname.upper()}"
 
             bridge_card: Optional[Path] = None
             bridge_dur = 0.0

@@ -177,6 +177,19 @@ def dismiss_long_job(job_id: str) -> dict:
     return {"id": job_id, "dismissed": True}
 
 
+def clear_finished_long_jobs() -> dict:
+    """Hide terminal long-form jobs from the list while preserving daily-cap and rotation history."""
+    with session_scope() as db:
+        rows = db.execute(
+            select(LongJob).where(func.lower(LongJob.status).in_(_TERMINAL_STATUSES))
+        ).scalars().all()
+        fresh = [r for r in rows if not (isinstance(r.result, dict) and r.result.get("dismissed") is True)]
+        for row in fresh:
+            row.result = {**(row.result or {}), "dismissed": True}
+        ids = [row.id for row in fresh]
+    return {"cleared": len(ids), "ids": ids}
+
+
 def _set_stage(job_id: str, stage: str) -> None:
     with session_scope() as db:
         job = db.get(LongJob, job_id)
@@ -955,6 +968,21 @@ def approve_long(
         video.transformed_at = video.transformed_at or now
         video.curated_at = now
         video.meta = {**(video.meta or {}), "owner_approved": now.isoformat()}
+        return {"id": video.id, "status": video.status.value}
+
+
+def unapprove_long(video_id: str) -> dict:
+    """Pull an approved (unpublished) compilation back to PENDING for further review/edits."""
+    with session_scope() as db:
+        video = _long_video(db, video_id)
+        if video.status != VideoStatus.TRANSFORMED:
+            raise ValueError(f"cannot pull back a {video.status.value} compilation")
+        meta = dict(video.meta or {})
+        meta.pop("owner_approved", None)
+        meta.pop("long_auto_published", None)
+        video.meta = meta
+        video.status = VideoStatus.PENDING
+        video.curated_at = None
         return {"id": video.id, "status": video.status.value}
 
 

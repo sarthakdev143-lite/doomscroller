@@ -244,10 +244,14 @@ kbd{background:#111;border:1px solid var(--line);border-radius:5px;padding:1px 6
       <h2 style="margin:0">Build a 16:9 Compilation</h2>
       <div id="long-build-form" style="display:grid;gap:10px"></div>
     </div>
-    <h2 style="margin:0">Long-form jobs</h2>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+      <h2 style="margin:0">Long-form jobs</h2>
+      <button id="long-clear-finished" class="ghost" style="padding:6px 10px;font-size:12px" hidden>Clear finished</button>
+    </div>
     <div id="long-jobs" style="display:grid;gap:10px"></div>
     <h2 style="margin:0">Compilations</h2>
     <div id="long-tts" class="sub" hidden></div>
+    <div id="long-modes" class="modes"></div>
     <div class="chips" id="long-chips"></div>
     <details id="long-ab" class="act" hidden></details>
     <div id="long-list" style="display:grid;gap:12px"></div>
@@ -1167,9 +1171,10 @@ async function syncClipChannels(){
   try{
     const d=await api.get('/api/channels');const chans=d.channels||[];
     const wrap=clipChanSel.parentElement;
-    if(chans.length<=1&&(!chans[0]||chans[0].default)){wrap.hidden=true;clipChanSel.value='';return}
+    const eligible=chans.filter(c=>!c.default&&!c.procedural);
+    if(!eligible.length){wrap.hidden=true;clipChanSel.value='';return}
     const prev=clipChanSel.value;clipChanSel.replaceChildren(el('option',{value:''},'Default channel'));
-    for(const c of chans)clipChanSel.append(el('option',{value:c.slug},(c.name||c.slug)+(c.enabled?'':' (off)')));
+    for(const c of eligible)clipChanSel.append(el('option',{value:c.slug},(c.name||c.slug)+(c.enabled?'':' (off)')));
     if([...clipChanSel.options].some(o=>o.value===prev))clipChanSel.value=prev;
     wrap.hidden=false;
   }catch(e){}
@@ -1322,10 +1327,18 @@ async function loadClip(){
 }
 
 /* ===================== LONG FORM ===================== */
-let longPollTimer=null,longChanSel=null,longChannels=[],syncLongBuildMode=null,ambientStats={tracks_count:0,portraits_count:0,tracks:[]},ambientStatsEl=null,ambientTrackWrap=null,longFilter='all',longData=null;
+let longPollTimer=null,longChanSel=null,longChannels=[],syncLongBuildMode=null,lastLongChanSlug='',prevLongActive=new Set(),ambientStats={tracks_count:0,portraits_count:0,tracks:[]},ambientStatsEl=null,ambientTrackWrap=null,longStatus='all',longFilter='all',longData=null;
 const AMBIENT_LABELS={lofi_chill:'Bedroom Glow · One Last Time',rain_focus:'Midnight Rain · Get Some Sleep',night_ambient:'Candlelight · You Are Mine',deep_study:'Desk Lamp · Stay Longer'};
+function longBusy(){const list=$('long-list');if(!list)return false;const a=document.activeElement;const editing=a&&(a.tagName==='INPUT'||a.tagName==='TEXTAREA'||a.tagName==='SELECT')&&list.contains(a);return editing||!!list.querySelector('video')||!!list.querySelector('details[open]')}
 function buildLongForm(){
   const box=$('long-build-form');if(!box||box.dataset.built)return;box.dataset.built='1';
+  const clrLong=$('long-clear-finished');
+  if(clrLong)clrLong.onclick=async()=>{
+    clrLong.disabled=true;
+    try{const r=await api.post('/api/long/clear-finished');toast('Cleared '+(r.cleared||0)+' finished job'+((r.cleared||0)===1?'':'s'));refreshLongJobs()}
+    catch(e){alert(e.message)}
+    clrLong.disabled=false;
+  };
   longChanSel=el('select');
   const fmtSel=el('select');
   const targetInp=el('input',{placeholder:'@Creator, "@A vs @B", or theme topic'});
@@ -1353,6 +1366,9 @@ function buildLongForm(){
   const btn=el('button',{className:'btn'},'Build 16:9 Compilation');
   syncLongBuildMode=()=>{
     const ch=longChannels.find(x=>x.slug===longChanSel.value);
+    const chSlug=longChanSel.value||'';
+    const chanChanged=chSlug!==lastLongChanSlug;
+    lastLongChanSlug=chSlug;
     const isProc=!!(ch&&ch.procedural);
     const curFmt=fmtSel.value;
     fmtSel.replaceChildren();
@@ -1361,7 +1377,8 @@ function buildLongForm(){
       for(const p of presets)fmtSel.append(el('option',{value:p},AMBIENT_LABELS[p]||p));
       if(curFmt&&presets.includes(curFmt))fmtSel.value=curFmt;
       minsLbl.textContent='Target length (15–120 min)';
-      minsInp.min='1';minsInp.max='120';minsInp.value=String(ch.default_target_minutes||30);
+      minsInp.min='1';minsInp.max='120';
+      if(chanChanged)minsInp.value=String(ch.default_target_minutes||30);
       targetLbl.textContent='Scene / POV title or mood note (optional)';
       targetInp.placeholder='e.g. i wish i could meet you one last time';
       btn.textContent='Build 16:9 POV Mix';
@@ -1373,7 +1390,8 @@ function buildLongForm(){
       }
       if(curFmt&&['best_of','vs','theme'].includes(curFmt))fmtSel.value=curFmt;
       minsLbl.textContent='Target length (6–10 min)';
-      minsInp.min='6';minsInp.max='10';minsInp.value='8';
+      minsInp.min='6';minsInp.max='10';
+      if(chanChanged||Number(minsInp.value)<6||Number(minsInp.value)>10)minsInp.value='8';
       targetLbl.textContent='Creator(s) or theme (optional)';
       targetInp.placeholder='@Creator, "@A vs @B", or theme topic';
       btn.textContent='Build 16:9 Compilation';
@@ -1407,7 +1425,11 @@ function buildLongForm(){
 }
 function renderLongJobs(jobs){
   clearTimeout(longPollTimer);
-  const box=$('long-jobs');box.replaceChildren();
+  const box=$('long-jobs'),clrLong=$('long-clear-finished');
+  const FINISHED=new Set(['done','succeeded','failed','cancelled','canceled']);
+  if(clrLong)clrLong.hidden=!jobs.some(j=>FINISHED.has(String(j.status||'').toLowerCase()));
+  prevLongActive=new Set(jobs.filter(j=>j.status==='queued'||j.status==='running').map(j=>j.id));
+  box.replaceChildren();
   if(!jobs.length){box.append(el('div',{className:'empty'},'No long-form build jobs yet.'));return}
   let anyActive=false;
   for(const j of jobs){
@@ -1423,18 +1445,32 @@ function renderLongJobs(jobs){
     const btns=el('div',{className:'rowbtns',style:'margin-top:4px'});
     if(j.status==='failed'){
       const rt=el('button',{className:'ghost'},'Retry');
-      rt.onclick=async()=>{rt.disabled=true;try{await api.post('/api/long/jobs/'+encodeURIComponent(j.id)+'/retry');toast('Re-queued');loadLong()}catch(e){alert(e.message);rt.disabled=false}};
+      rt.onclick=async()=>{rt.disabled=true;try{await api.post('/api/long/jobs/'+encodeURIComponent(j.id)+'/retry');toast('Re-queued');refreshLongJobs()}catch(e){alert(e.message);rt.disabled=false}};
       btns.append(rt);
     }
     if(j.status!=='running'){
       const dm=el('button',{className:j.status==='failed'?'danger':'ghost'},j.status==='queued'?'Cancel':'Dismiss');
-      dm.onclick=async()=>{dm.disabled=true;try{await api.post('/api/long/jobs/'+encodeURIComponent(j.id)+'/dismiss');loadLong()}catch(e){alert(e.message);dm.disabled=false}};
+      dm.onclick=async()=>{dm.disabled=true;try{await api.post('/api/long/jobs/'+encodeURIComponent(j.id)+'/dismiss');refreshLongJobs()}catch(e){alert(e.message);dm.disabled=false}};
       btns.append(dm);
     }
     if(btns.childNodes.length)card.append(btns);
     box.append(card);
   }
-  if(anyActive&&active==='long')longPollTimer=setTimeout(()=>{if(active==='long')loadLong()},4500);
+  if(anyActive&&active==='long')longPollTimer=setTimeout(()=>{if(active==='long')refreshLongJobs()},4500);
+}
+async function refreshLongJobs(){
+  const wasActive=new Set(prevLongActive);
+  try{
+    const d=await api.get('/api/long/jobs');
+    const jobs=d.jobs||[];
+    if(longData)longData.jobs=jobs;
+    const nowActive=new Set(jobs.filter(j=>j.status==='queued'||j.status==='running').map(j=>j.id));
+    const finishedAny=[...wasActive].some(id=>!nowActive.has(id));
+    renderLongJobs(jobs);
+    const pendCount=((longData&&longData.pending)||[]).length;
+    setAlert('long',pendCount>0||jobs.some(j=>j.status==='failed'));
+    if(finishedAny&&!longBusy())loadLong();
+  }catch(e){}
 }
 function longCard(item){
   const card=el('div',{className:'card'});
@@ -1468,7 +1504,8 @@ function longCard(item){
   top.append(el('span',{className:'pill'},item.channel_slug),el('span',{className:'tag'},String(item.format||'').replace(/_/g,' ')+(item.part_number?(' · Part '+item.part_number):'')),el('span',{className:'tag '+(item.status==='transformed'?'on':'warn')},item.status==='transformed'?'Ready':item.status));
   body.append(top);
   const metaLine=el('div',{className:'meta'});
-  metaLine.append(document.createTextNode([durStr,item.width+'×'+item.height,item.views?(item.views.toLocaleString()+' views'):''].filter(Boolean).join(' · ')));
+  const chapCnt=(item.chapters&&item.chapters.length)?(item.chapters.length+' chapters'):'';
+  metaLine.append(document.createTextNode([durStr,item.width+'×'+item.height,chapCnt,item.views?(item.views.toLocaleString()+' views'):''].filter(Boolean).join(' · ')));
   if(item.video_url){
     metaLine.append(document.createTextNode(' · '),el('a',{href:item.video_url+'?download=1',download:'',className:'srclink'},'Save MP4'));
   }
@@ -1482,19 +1519,29 @@ function longCard(item){
 
   if(item.status==='pending'||item.status==='transformed'){
     const acts=el('div',{className:'actions'});
-    const appBtn=el('button',{className:'yes'},item.status==='transformed'?'Approved (on shelf)':'Approve for 16:9 queue');
-    appBtn.onclick=async()=>{
-      appBtn.disabled=true;
-      try{await api.post('/api/long/'+encodeURIComponent(item.id)+'/approve',{
-        title:titleInp.value,description:descInp.value,tags:tagsInp.value.split(',').map(s=>s.trim()).filter(Boolean)
-      });toast('Approved compilation');loadLong()}catch(e){alert(e.message);appBtn.disabled=false}
-    };
+    if(item.status==='pending'){
+      const appBtn=el('button',{className:'yes'},'Approve for 16:9 queue');
+      appBtn.onclick=async()=>{
+        appBtn.disabled=true;
+        try{await api.post('/api/long/'+encodeURIComponent(item.id)+'/approve',{
+          title:titleInp.value,description:descInp.value,tags:tagsInp.value.split(',').map(s=>s.trim()).filter(Boolean)
+        });toast('Approved compilation');loadLong()}catch(e){alert(e.message);appBtn.disabled=false}
+      };
+      acts.append(appBtn);
+    }else{
+      const pullBtn=el('button',{className:'ghost'},'Pull back to Pending');
+      pullBtn.onclick=async()=>{
+        pullBtn.disabled=true;
+        try{await api.post('/api/long/'+encodeURIComponent(item.id)+'/unapprove');toast('Moved back to Pending');loadLong()}catch(e){alert(e.message);pullBtn.disabled=false}
+      };
+      acts.append(pullBtn);
+    }
     const rejBtn=el('button',{className:'nope'},'Reject');
     rejBtn.onclick=async()=>{
       rejBtn.disabled=true;
       try{await api.post('/api/long/'+encodeURIComponent(item.id)+'/reject');toast('Rejected compilation');loadLong()}catch(e){alert(e.message);rejBtn.disabled=false}
     };
-    acts.append(appBtn,rejBtn);
+    acts.append(rejBtn);
     body.append(acts);
   }else if(item.youtube_url){
     body.append(el('a',{href:item.youtube_url,target:'_blank',className:'srclink'},'Watch on YouTube →'));
@@ -1504,7 +1551,7 @@ function longCard(item){
   thumbDet.append(el('summary',{},'Thumbnails & Portrait / Raw Frame'));
   const thumbWrap=el('div',{style:'display:grid;gap:8px;margin-top:8px'});
   if((item.thumbnails||[]).length){
-    thumbWrap.append(el('label',{},'Thumbnail (pick 1 of 3 or upload custom 1280×720)'));
+    thumbWrap.append(el('label',{},'Thumbnail (pick 1 of '+item.thumbnails.length+' or upload custom 1280×720)'));
     const grid=el('div',{className:'thumbs'});
     for(const t of item.thumbnails){
       const b=el('button',{className:'thumb-opt'+(t.id===item.selected_thumbnail_id?' sel':''),type:'button'});
@@ -1583,9 +1630,21 @@ function longCard(item){
 }
 function renderLongList(){
   if(!longData)return;
-  const d=longData,all=[...(d.pending||[]),...(d.ready||[]),...(d.posted||[])];
+  const d=longData,pend=d.pending||[],rdy=d.ready||[],pub=d.posted||[],all=[...pend,...rdy,...pub];
+  const mbox=$('long-modes');
+  if(mbox){
+    mbox.replaceChildren();
+    if(all.length){
+      for(const [id,lbl] of [['all','All ('+all.length+')'],['pending','Pending ('+pend.length+')'],['transformed','Ready ('+rdy.length+')'],['published','Posted ('+pub.length+')']]){
+        const b=el('button',{className:longStatus===id?'on':''},lbl);
+        b.onclick=()=>{longStatus=id;renderLongList()};
+        mbox.append(b);
+      }
+    }
+  }
+  const byStatus=longStatus==='pending'?pend:(longStatus==='transformed'?rdy:(longStatus==='published'?pub:all));
   const counts=new Map();
-  for(const it of all){const s=it.channel_slug||'default';counts.set(s,(counts.get(s)||0)+1)}
+  for(const it of byStatus){const s=it.channel_slug||'default';counts.set(s,(counts.get(s)||0)+1)}
   const chips=$('long-chips');chips.replaceChildren();
   const slugs=[];
   for(const c of (d.channels||[]))if(counts.has(c.slug))slugs.push(c.slug);
@@ -1593,12 +1652,12 @@ function renderLongList(){
   if(longFilter!=='all'&&!counts.has(longFilter))longFilter='all';
   if(slugs.length){
     const mkChip=(slug,label,n)=>{const c=el('div',{className:'chip'+(longFilter===slug?' on':'')});c.append(el('span',{},label));if(n)c.append(el('span',{className:'n'},n));c.onclick=()=>{longFilter=slug;renderLongList()};return c};
-    chips.append(mkChip('all','All',all.length));
+    chips.append(mkChip('all','All',byStatus.length));
     for(const s of slugs){const ch=(d.channels||[]).find(x=>x.slug===s);chips.append(mkChip(s,(ch&&ch.name)||s,counts.get(s)||0))}
   }
-  const items=longFilter==='all'?all:all.filter(it=>(it.channel_slug||'default')===longFilter);
+  const items=longFilter==='all'?byStatus:byStatus.filter(it=>(it.channel_slug||'default')===longFilter);
   const list=$('long-list');list.replaceChildren();
-  if(!items.length){list.append(el('div',{className:'empty'},all.length?'No compilations for this channel.':'No 16:9 videos yet. Build one above or wait for the supply job.'));return}
+  if(!items.length){list.append(el('div',{className:'empty'},all.length?'No compilations match this filter.':'No 16:9 videos yet. Build one above or wait for the supply job.'));return}
   for(const item of items)list.append(longCard(item));
 }
 function renderAmbientAb(ab){
@@ -1721,7 +1780,7 @@ show('review');
 // Refresh the tab you are looking at. Review and the quick tabs poll; never while you are typing or a clip plays.
 function mediaPlaying(){return [...document.querySelectorAll('video')].some(v=>!v.paused&&!v.ended)}
 setInterval(()=>{const a=document.activeElement;const typing=a&&(a.tagName==='INPUT'||a.tagName==='TEXTAREA'||a.tagName==='SELECT');
-  if(typing||mediaPlaying())return;if(active==='review'&&reviewBusy())return;if(active==='status')return;loaders[active]&&loaders[active]()},60000);
+  if(typing||mediaPlaying())return;if(active==='review'&&reviewBusy())return;if(active==='long'&&longBusy())return;if(active==='status')return;loaders[active]&&loaders[active]()},60000);
 // Keep the review badge current even on another tab, cheaply.
 setInterval(async()=>{if(active==='review')return;try{const q=await api.get('/api/queue');setAlert('review',q.clips.length>0||(q.scraped||[]).length>0)}catch(e){}},90000);
 </script></body></html>"""

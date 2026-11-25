@@ -1941,3 +1941,15 @@ def test_queue_balances_active_channels_and_posted_carries_channel_slug(tmp_path
     assert len(hi_clips) == 3
     assert len(q["clips"]) == approval._QUEUE_LIMIT
     assert q["posted"][0]["channel_slug"] == "indianvlogs"
+
+
+def test_long_and_clip_panel_ux_wiring():
+    from app.review_ui import PAGE
+
+    assert 'id="long-clear-finished"' in PAGE
+    assert "/api/long/clear-finished" in PAGE
+    assert "/unapprove" in PAGE
+    assert "!c.default&&!c.procedural" in PAGE
+    assert "function refreshLongJobs()" in PAGE
+    assert "function longBusy()" in PAGE
+    assert "item.thumbnails.length" in PAGE

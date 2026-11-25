@@ -65,6 +65,14 @@ _CREATOR_DISPLAY_MAP = {
     "anantrastogi": "Anant Rastogi",
     "sahiljoshivlogs7376": "Sahil Joshi",
     "albadivlogs": "Albadi",
+    "ishowspeed": "IShowSpeed",
+    "sidemen": "Sidemen",
+    "loganpaulvlogs": "Logan Paul",
+    "jidion": "JiDion",
+    "airrack": "Airrack",
+    "ryantrahan": "Ryan Trahan",
+    "betasquad": "Beta Squad",
+    "rebeccazamolo": "Rebecca Zamolo",
 }
 
 
@@ -98,6 +106,10 @@ def display_creator_name(creator: str) -> str:
     if not raw:
         return "Creator"
     return _CREATOR_DISPLAY_MAP.get(raw.casefold(), raw)
+
+
+def _clean_handles(text: str) -> str:
+    return re.sub(r"@([A-Za-z0-9._-]+)", lambda m: display_creator_name(m.group(1)), str(text or ""))
 
 
 @dataclass(frozen=True)
@@ -575,8 +587,9 @@ def _fallback_title_and_desc(
 ) -> tuple[str, str, list[str]]:
     clean_targets = [t for t in targets if t]
     if format_kind == "vs" and len(clean_targets) >= 2:
-        title = f"{clean_targets[0]} vs {clean_targets[1]} — Biggest Moments"
-        desc = f"Round-by-round showdown between {clean_targets[0]} and {clean_targets[1]}."
+        left, right = display_creator_name(clean_targets[0]), display_creator_name(clean_targets[1])
+        title = f"{left} vs {right} — Biggest Moments"
+        desc = f"Round-by-round showdown between {left} and {right}."
         tags = ["compilation", clean_targets[0].lstrip("@"), clean_targets[1].lstrip("@"), "vs"]
     elif format_kind == "theme":
         label = theme.strip() or f"{(niche or 'Top Creators').title()} Highlights"
@@ -585,14 +598,14 @@ def _fallback_title_and_desc(
         tags = ["compilation", label.lower()[:30], "highlights"]
     else:
         who = clean_targets[0] if clean_targets else (niche or "Creator")
+        cname = display_creator_name(who)
         part_txt = f" Part {part_number}" if part_number and part_number > 1 else ""
         if language == "hi":
-            cname = display_creator_name(who)
             title = f"{cname} Ke Best Moments{part_txt}"
             desc = f"{cname} ke sabse mazedaar aur khatarnak moments{part_txt}."
         else:
-            title = f"Best of {who}{part_txt}"
-            desc = f"The funniest and biggest moments from {who}{part_txt}."
+            title = f"Best of {cname}{part_txt}"
+            desc = f"The funniest and biggest moments from {cname}{part_txt}."
         tags = ["compilation", who.lstrip("@"), "best moments"]
     if language == "hi":
         tags.append("hindi vlog")
@@ -616,18 +629,20 @@ def _ai_long_metadata(
     if not ai.available():
         return fallback_title, fallback_desc, fallback_tags
     lang_hint = "Hinglish (Hindi in Roman script)" if language == "hi" else "natural English"
-    seg_lines = "\n".join(f"- {s.creator}: {s.moment_title} ({s.duration:.0f}s)" for s in segments[:12])
+    display_targets = [display_creator_name(t) for t in targets if t]
+    seg_lines = "\n".join(f"- {display_creator_name(s.creator)}: {s.moment_title} ({s.duration:.0f}s)" for s in segments[:12])
     prompt = (
         f"Write YouTube long-form compilation metadata in {lang_hint}.\n"
-        f"Format: {format_kind}; Creators: {', '.join(targets)}; Theme: {theme or niche}; Part: {part_number or 1}.\n"
+        f"Format: {format_kind}; Creators: {', '.join(display_targets)}; Theme: {theme or niche}; Part: {part_number or 1}.\n"
         f"Segments included:\n{seg_lines}\n\n"
-        "Rules: NO clickbait lies, NO hashtags (#Shorts) anywhere in title, <= 75 chars crisp intriguing title.\n"
+        "Rules: NO clickbait lies, NO hashtags (#Shorts) anywhere in title, <= 75 chars crisp intriguing title. Use natural creator names (never raw @handles).\n"
         'Reply with JSON only: {"title": "...", "description": "1-2 short teaser sentences", "tags": ["tag1", ...]}'
     )
     reply = ai.ask_json(prompt)
     if not isinstance(reply, dict):
         return fallback_title, fallback_desc, fallback_tags
-    title = str(reply.get("title") or "").strip() or fallback_title
+    raw_title = str(reply.get("title") or "").strip()
+    title = _clean_handles(raw_title) if raw_title else fallback_title
     desc = str(reply.get("description") or "").strip() or fallback_desc
     raw_tags = reply.get("tags")
     tags = [str(t).strip() for t in raw_tags if str(t).strip()] if isinstance(raw_tags, list) else fallback_tags
