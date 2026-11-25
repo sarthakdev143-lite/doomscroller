@@ -2181,3 +2181,16 @@ def test_logs_warn_scans_past_recent_info_and_redacts_tts_ai_keys(tmp_path, monk
         t.join()
     assert not errs
     assert len(logging_config.read_job_history(limit=20)) == 8
+
+
+def test_wave11_panel_status_headline_shorts_counter_report_worst_and_deduped_test_alert():
+    from app.review_ui import PAGE
+
+    assert "[el('span',{className:'ready" not in PAGE
+    assert "el('div',{className:'ready '+(d.ready?'y':'n')" in PAGE
+    assert "'/70'" in PAGE and "'/100'" in PAGE
+    assert "worstList" in PAGE
+    assert "a.action==='test_notify'" in PAGE
+    assert "/api/notify/test" in PAGE
+    assert "fmtLabel" in PAGE
+    assert "target:'_blank',rel:'noopener'" in PAGE

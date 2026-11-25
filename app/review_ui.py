@@ -539,7 +539,7 @@ function clipCard(c,isQueued){
   const trow=el('div',{className:'trow'});
   const t=el('input',{value:c.id in edits?edits[c.id]:c.title,'aria-label':'Clip title'});
   const cnt=el('span',{className:'tcnt'});
-  const syncCnt=()=>{cnt.textContent=t.value.length+'/100';cnt.className='tcnt'+(t.value.length>100?' over':'')};
+  const syncCnt=()=>{cnt.textContent=t.value.length+'/70';cnt.className='tcnt'+(t.value.length>70?' over':'')};
   syncCnt();
   t.addEventListener('input',()=>{edits[c.id]=t.value;syncCnt()});
   t.addEventListener('keydown',async e=>{
@@ -883,7 +883,7 @@ function checkRow(c){
 function renderDoctor(d,live,failures){
   const head=$('dc-head');head.replaceChildren();
   const r=el('div',{className:'card',style:'padding:12px;display:grid;gap:8px'});
-  r.append(el('div',{},[el('span',{className:'ready '+(d.ready?'y':'n')},d.ready?'Ready to run':'Not fully ready')]));
+  r.append(el('div',{className:'ready '+(d.ready?'y':'n')},d.ready?'Ready to run':'Not fully ready'));
   const btn=el('button',{className:'ghost'},live?'Re-check with Google':'Run full check (asks Google)');
   btn.onclick=()=>loadDoctor(true);r.append(btn);head.append(r);
   const body=$('dc-body');body.replaceChildren();
@@ -1012,11 +1012,14 @@ function renderReport(){
   if(view.factors&&Object.keys(view.factors).length){const card=el('div',{className:'card',style:'padding:12px'});card.append(el('h2',{},'What the tests show'));
     for(const [factor,rows] of Object.entries(view.factors)){card.append(el('div',{style:'font-weight:600;margin-top:6px'},factor));
       for(const r of rows){const line=el('div',{className:'rowline'});line.append(el('span',{},r.arm),el('span',{className:'r'},r.multiplier+'x views · '+Math.round(r.p_best*100)+'% best · n='+r.n));card.append(line)}}body.append(card)}
-  let bestList=view.best||[];
+  let bestList=view.best||[],worstList=view.worst||[];
   if(!bestList.length&&!reportPick&&chans){
     bestList=Object.entries(chans).flatMap(([slug,s])=>(s.best||[]).map(r=>({...r,title:'['+(s.name||slug)+'] '+(r.title||'—')}))).sort((a,b)=>(b.views||0)-(a.views||0)).slice(0,5);
   }
-  for(const [label,arr] of [['Best videos',bestList],['Worst videos',view.worst||[]]]){if(!arr.length)continue;
+  if(!worstList.length&&!reportPick&&chans){
+    worstList=Object.entries(chans).flatMap(([slug,s])=>(s.worst||[]).map(r=>({...r,title:'['+(s.name||slug)+'] '+(r.title||'—')}))).sort((a,b)=>(a.views||0)-(b.views||0)).slice(0,5);
+  }
+  for(const [label,arr] of [['Best videos',bestList],['Worst videos',worstList]]){if(!arr.length)continue;
     const card=el('div',{className:'card',style:'padding:12px'});card.append(el('h2',{},label));
     for(const r of arr){const line=el('div',{className:'rowline'});const titleNode=r.url?el('a',{href:r.url,target:'_blank',rel:'noopener',className:'srclink',style:'overflow:hidden;text-overflow:ellipsis;white-space:nowrap'},r.title||'—'):el('span',{style:'overflow:hidden;text-overflow:ellipsis;white-space:nowrap'},r.title||'—');line.append(titleNode,el('span',{className:'r'},(r.views||0).toLocaleString()+(r.diagnosis?(' · '+r.diagnosis):'')));card.append(line)}body.append(card)}
   const allProbs=d.problems||[];
@@ -1097,7 +1100,7 @@ function renderControls(d){
     body.append(sc);
   }
   body.append(el('h2',{},'Run something now'));
-  for(const a of d.actions){const st=d.status[a.action]||{};const card=el('div',{className:'act'});
+  for(const a of d.actions){if(a.action==='test_notify')continue;const st=d.status[a.action]||{};const card=el('div',{className:'act'});
     const top=el('div',{className:'top'});top.append(el('span',{className:'lb'},a.label));
     const stx=el('span',{className:'st '+(st.state||'')});
     stx.textContent=st.state==='running'?'running…':(st.state==='done'?('done '+ago(st.at)):(st.state==='error'?'error':''));
@@ -1351,6 +1354,7 @@ async function loadClip(){
 /* ===================== LONG FORM ===================== */
 let longPollTimer=null,longChanSel=null,longChannels=[],syncLongBuildMode=null,lastLongChanSlug='',prevLongActive=new Set(),ambientStats={tracks_count:0,portraits_count:0,tracks:[]},ambientPresetLabels={},ambientStatsEl=null,ambientTrackWrap=null,longStatus='all',longFilter='all',longData=null;
 const AMBIENT_LABELS={lofi_chill:'2AM Memory · Slowed Dark Ambient',rain_focus:'Midnight Rain · Sleep & Dissociate',night_ambient:'Cobalt Twilight · Nocturne Drone',deep_study:'Empty Train · Midnight Drift'};
+const fmtLabel=f=>ambientPresetLabels[f]||AMBIENT_LABELS[f]||String(f||'').replace(/_/g,' ');
 function longBusy(){const list=$('long-list');if(!list)return false;const a=document.activeElement;const editing=a&&(a.tagName==='INPUT'||a.tagName==='TEXTAREA'||a.tagName==='SELECT')&&list.contains(a);return editing||!!list.querySelector('video')||!!list.querySelector('details[open]')}
 function buildLongForm(){
   const box=$('long-build-form');if(!box||box.dataset.built)return;box.dataset.built='1';
@@ -1458,7 +1462,7 @@ function renderLongJobs(jobs){
     if(j.status==='queued'||j.status==='running')anyActive=true;
     const card=el('div',{className:'act'});
     const top=el('div',{className:'top'});
-    const desc=[j.channel_slug,j.format,(j.targets||[]).join(' vs ')||j.theme].filter(Boolean).join(' · ');
+    const desc=[j.channel_slug,fmtLabel(j.format),(j.targets||[]).join(' vs ')||j.theme].filter(Boolean).join(' · ');
     top.append(el('span',{className:'lb'},desc||j.format));
     const cls=j.status==='done'?'done':(j.status==='failed'?'err':(j.status==='running'?'run':''));
     top.append(el('span',{className:'st '+cls},j.status+(j.stage?(' · '+j.stage):'')));
@@ -1523,7 +1527,7 @@ function longCard(item){
   const body=el('div',{className:'body'});
   const top=el('div',{className:'badges'});
   if(item.procedural)top.append(el('span',{className:'pill'},'Procedural · Claim-Free'));
-  top.append(el('span',{className:'pill'},item.channel_slug),el('span',{className:'tag'},String(item.format||'').replace(/_/g,' ')+(item.part_number?(' · Part '+item.part_number):'')),el('span',{className:'tag '+(item.status==='transformed'?'on':'warn')},item.status==='transformed'?'Ready':item.status));
+  top.append(el('span',{className:'pill'},item.channel_slug),el('span',{className:'tag'},fmtLabel(item.format)+(item.part_number?(' · Part '+item.part_number):'')),el('span',{className:'tag '+(item.status==='transformed'?'on':'warn')},item.status==='transformed'?'Ready':item.status));
   body.append(top);
   const metaLine=el('div',{className:'meta'});
   const chapCnt=(item.chapters&&item.chapters.length)?(item.chapters.length+' chapters'):'';
@@ -1587,7 +1591,7 @@ function longCard(item){
     acts.append(rejBtn);
     body.append(acts);
   }else if(item.youtube_url){
-    body.append(el('a',{href:item.youtube_url,target:'_blank',className:'srclink'},'Watch on YouTube →'));
+    body.append(el('a',{href:item.youtube_url,target:'_blank',rel:'noopener',className:'srclink'},'Watch on YouTube →'));
   }
 
   const thumbDet=el('details',{className:'sx'});

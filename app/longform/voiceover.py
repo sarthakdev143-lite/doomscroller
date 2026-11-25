@@ -17,11 +17,11 @@ from typing import TYPE_CHECKING, Optional
 
 import httpx
 
+from app import logging_config
 from app.clipper import ai
 from app.clipper.media import probe, run_ffmpeg
 from app.config import settings
 from app.growth import notify
-from app.growth.youtube import scrub_secrets
 from app.transformers.fonts import resolve_font
 
 if TYPE_CHECKING:
@@ -40,6 +40,7 @@ _VOICE_CFG = {
     "en": {"lang": "en-IN", "speaker": "shubh", "pace": 1.06, "temperature": 0.65},
 }
 _QUOTA_ALERT_COOLDOWN_SEC = 30 * 60
+_TRANSIENT_TTS_STATUSES = frozenset({500, 502, 503, 504})
 _last_quota_alert_at = 0.0
 
 _CREATOR_SPEECH_MAP = (
@@ -76,6 +77,10 @@ class _ProviderQuotaError(RuntimeError):
     """Internal per-provider quota/auth failure allowing failover before raising SarvamTTSQuotaError."""
 
 
+class _ProviderTransientError(RuntimeError):
+    """Internal per-provider transient 5xx/network failure eligible for a second-pass retry."""
+
+
 def _provider_key(provider: str) -> str:
     if provider == "elevenlabs":
         return settings.resolved_elevenlabs_api_key
@@ -107,17 +112,7 @@ def tts_status() -> dict:
 
 
 def _scrub(text: str) -> str:
-    clean = scrub_secrets(str(text or ""))
-    for secret in (
-        settings.sarvam_api_key,
-        settings.cartesia_api_key,
-        settings.elevenlabs_api_key,
-        settings.eleven_labs_api_key,
-    ):
-        val = (secret or "").strip()
-        if val:
-            clean = clean.replace(val, "[REDACTED]")
-    return clean
+    return logging_config.scrub_secrets(str(text or ""))
 
 
 def _notify_quota_once(detail: str, *, title: str = "Sarvam AI TTS Alert") -> None:
@@ -284,22 +279,34 @@ def _wav_duration(path: Path) -> float:
         return 0.0
 
 
+def _post_tts(
+    url: str, *, headers: dict, payload: dict, provider_name: str, timeout: float = 35.0
+) -> httpx.Response:
+    try:
+        resp = httpx.post(url, headers=headers, json=payload, timeout=timeout)
+    except Exception as exc:
+        msg = _scrub(str(exc))
+        log.warning("longform.voiceover: %s request error: %s", provider_name, msg)
+        raise _ProviderTransientError(f"{provider_name}: {msg}") from None
+    if resp.status_code in _TRANSIENT_TTS_STATUSES:
+        excerpt = _scrub(resp.text[:240])
+        log.warning("longform.voiceover: %s HTTP %d: %s", provider_name, resp.status_code, excerpt)
+        raise _ProviderTransientError(f"{provider_name} HTTP {resp.status_code}: {excerpt}")
+    return resp
+
+
 def _synth_elevenlabs(clean: str, lang_code: str, api_key: str) -> Optional[tuple[bytes, str]]:
     model_id, voice_id = _provider_spec("elevenlabs", lang_code)
-    try:
-        resp = httpx.post(
-            _ELEVENLABS_TTS_URL.format(voice_id=voice_id),
-            headers={"xi-api-key": api_key, "Content-Type": "application/json", "Accept": "audio/mpeg"},
-            json={
-                "text": clean,
-                "model_id": model_id,
-                "voice_settings": {"stability": 0.45, "similarity_boost": 0.78, "style": 0.15, "use_speaker_boost": True},
-            },
-            timeout=35.0,
-        )
-    except Exception as exc:
-        log.warning("longform.voiceover: ElevenLabs request error: %s", _scrub(str(exc)))
-        return None
+    resp = _post_tts(
+        _ELEVENLABS_TTS_URL.format(voice_id=voice_id),
+        headers={"xi-api-key": api_key, "Content-Type": "application/json", "Accept": "audio/mpeg"},
+        payload={
+            "text": clean,
+            "model_id": model_id,
+            "voice_settings": {"stability": 0.45, "similarity_boost": 0.78, "style": 0.15, "use_speaker_boost": True},
+        },
+        provider_name="ElevenLabs",
+    )
     if resp.status_code != 200:
         excerpt = _scrub(resp.text[:240])
         if _is_quota_or_auth_failure(resp.status_code, resp.text):
@@ -312,26 +319,22 @@ def _synth_elevenlabs(clean: str, lang_code: str, api_key: str) -> Optional[tupl
 
 def _synth_cartesia(clean: str, lang_code: str, api_key: str) -> Optional[tuple[bytes, str]]:
     model_id, voice_id = _provider_spec("cartesia", lang_code)
-    try:
-        resp = httpx.post(
-            _CARTESIA_TTS_URL,
-            headers={
-                "X-API-Key": api_key,
-                "Cartesia-Version": (settings.cartesia_version or "2026-08-14").strip(),
-                "Content-Type": "application/json",
-            },
-            json={
-                "model_id": model_id,
-                "transcript": clean,
-                "voice": {"mode": "id", "id": voice_id},
-                "output_format": {"container": "wav", "encoding": "pcm_s16le", "sample_rate": 44100},
-                "language": "hi" if lang_code == "hi" else "en",
-            },
-            timeout=35.0,
-        )
-    except Exception as exc:
-        log.warning("longform.voiceover: Cartesia request error: %s", _scrub(str(exc)))
-        return None
+    resp = _post_tts(
+        _CARTESIA_TTS_URL,
+        headers={
+            "X-API-Key": api_key,
+            "Cartesia-Version": (settings.cartesia_version or "2026-08-14").strip(),
+            "Content-Type": "application/json",
+        },
+        payload={
+            "model_id": model_id,
+            "transcript": clean,
+            "voice": {"mode": "id", "id": voice_id},
+            "output_format": {"container": "wav", "encoding": "pcm_s16le", "sample_rate": 44100},
+            "language": "hi" if lang_code == "hi" else "en",
+        },
+        provider_name="Cartesia",
+    )
     if resp.status_code != 200:
         excerpt = _scrub(resp.text[:240])
         if _is_quota_or_auth_failure(resp.status_code, resp.text):
@@ -354,16 +357,12 @@ def _synth_sarvam(clean: str, lang_code: str, api_key: str) -> Optional[tuple[by
         "speech_sample_rate": 24000,
         "output_audio_codec": "wav",
     }
-    try:
-        resp = httpx.post(
-            _SARVAM_TTS_URL,
-            headers={"api-subscription-key": api_key, "Content-Type": "application/json"},
-            json=payload,
-            timeout=35.0,
-        )
-    except Exception as exc:
-        log.warning("longform.voiceover: Sarvam TTS request error: %s", _scrub(str(exc)))
-        return None
+    resp = _post_tts(
+        _SARVAM_TTS_URL,
+        headers={"api-subscription-key": api_key, "Content-Type": "application/json"},
+        payload=payload,
+        provider_name="Sarvam TTS",
+    )
     if resp.status_code != 200:
         excerpt = _scrub(resp.text[:240])
         if _is_quota_or_auth_failure(resp.status_code, resp.text):
@@ -425,18 +424,13 @@ def synthesize_wav(
                     return cdur
 
     quota_errors: list[str] = []
+    transient_provs: list[str] = []
 
-    for prov in chain:
+    def _attempt_provider(prov: str) -> Optional[float]:
         cfile = _cache_file(prov, code, clean)
-        try:
-            res = _SYNTH_FN[prov](clean, code, _provider_key(prov))
-        except _ProviderQuotaError as exc:
-            err_clean = _scrub(str(exc))
-            log.warning("longform.voiceover: %s quota/auth failover: %s", prov, err_clean)
-            quota_errors.append(err_clean)
-            continue
+        res = _SYNTH_FN[prov](clean, code, _provider_key(prov))
         if not res:
-            continue
+            return None
 
         raw_bytes, ext = res
         with tempfile.TemporaryDirectory(prefix="longform-tts-", ignore_cleanup_errors=True) as td:
@@ -458,7 +452,7 @@ def synthesize_wav(
                 )
             except Exception as exc:
                 log.warning("longform.voiceover: WAV normalization failed (%s): %s", prov, exc)
-                continue
+                return None
 
         dur = _wav_duration(out_wav)
         if dur >= 0.4:
@@ -471,6 +465,36 @@ def synthesize_wav(
                 except Exception:
                     pass
             return dur
+        return None
+
+    for prov in chain:
+        try:
+            dur = _attempt_provider(prov)
+        except _ProviderQuotaError as exc:
+            err_clean = _scrub(str(exc))
+            log.warning("longform.voiceover: %s quota/auth failover: %s", prov, err_clean)
+            quota_errors.append(err_clean)
+            continue
+        except _ProviderTransientError:
+            transient_provs.append(prov)
+            continue
+        if dur is not None:
+            return dur
+
+    if transient_provs:
+        time.sleep(0.6)
+        for prov in transient_provs:
+            try:
+                dur = _attempt_provider(prov)
+            except _ProviderQuotaError as exc:
+                err_clean = _scrub(str(exc))
+                log.warning("longform.voiceover: %s quota/auth failover: %s", prov, err_clean)
+                quota_errors.append(err_clean)
+                continue
+            except _ProviderTransientError:
+                continue
+            if dur is not None:
+                return dur
 
     if quota_errors:
         joined = "; ".join(quota_errors)

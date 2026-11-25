@@ -397,3 +397,56 @@ def test_longform_ass_uses_real_font_family_and_multi_keep_segment_splits_with_a
     assert "[0:v]split=2" in fc
     assert "[0:a]asplit=2" in fc
     assert "afade=t=in" in fc and "afade=t=out" in fc
+
+
+def test_voiceover_retries_transient_503_once_and_fails_fast_on_429(tmp_path, monkeypatch):
+    valid = _valid_wav_bytes(1.0)
+    b64 = base64.b64encode(valid).decode("ascii")
+    monkeypatch.setattr(settings, "content_dir", str(tmp_path / "content"))
+    monkeypatch.setattr(settings, "elevenlabs_api_key", "")
+    monkeypatch.setattr(settings, "eleven_labs_api_key", "")
+    monkeypatch.setattr(settings, "cartesia_api_key", "")
+    monkeypatch.setattr(settings, "sarvam_api_key", "sk_sarvam_retry_test")
+    monkeypatch.setattr(settings, "longform_tts_provider", "sarvam")
+    monkeypatch.setattr(voiceover.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(
+        voiceover,
+        "run_ffmpeg",
+        lambda args, **kw: Path(args[-1]).write_bytes(valid),
+    )
+
+    attempts = 0
+
+    class Resp:
+        def __init__(self, code: int, body: dict | None = None, text: str = ""):
+            self.status_code = code
+            self._body = body or {}
+            self.text = text
+
+        def json(self):
+            return self._body
+
+    def post_503_then_200(*a, **kw):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return Resp(503, text="upstream temporarily unavailable")
+        return Resp(200, body={"audios": [b64]})
+
+    monkeypatch.setattr(voiceover.httpx, "post", post_503_then_200)
+    dur = voiceover.synthesize_wav("Transient retry line", tmp_path / "out1.wav", language="hi")
+    assert dur and dur >= 0.4
+    assert attempts == 2
+
+    attempts_429 = 0
+
+    def post_429(*a, **kw):
+        nonlocal attempts_429
+        attempts_429 += 1
+        return Resp(429, text="quota exceeded for sk_sarvam_retry_test")
+
+    monkeypatch.setattr(voiceover.httpx, "post", post_429)
+    with pytest.raises(voiceover.SarvamTTSQuotaError) as exc_info:
+        voiceover.synthesize_wav("Rate limit fail fast line", tmp_path / "out2.wav", language="hi")
+    assert attempts_429 == 1
+    assert "sk_sarvam_retry_test" not in str(exc_info.value)

@@ -504,3 +504,38 @@ def test_clean_vlog_meme_times_and_attach_memes_fallback_times(tmp_path, monkeyp
     assert len(plan.meme_overlays) == 2
     assert len({ov.clip.meme_id for ov in plan.meme_overlays}) == 2
 
+
+def test_giphy_parses_downsized_small_and_original_mp4_and_playable_loops_short_clips(tmp_path, monkeypatch):
+    payload = {
+        "data": [
+            {
+                "id": "g1",
+                "title": "Reaction 1",
+                "images": {
+                    "downsized_small": {"mp4": "https://media.giphy.com/ds.mp4"},
+                    "original": {"url": "https://media.giphy.com/ds.gif"},
+                },
+            },
+            {
+                "id": "g2",
+                "title": "Reaction 2",
+                "images": {
+                    "original": {"mp4": "https://media.giphy.com/orig.mp4", "url": "https://media.giphy.com/orig.gif"},
+                },
+            },
+        ]
+    }
+    found = memes._giphy_memes(payload["data"])
+    assert [c.link for c in found] == ["https://media.giphy.com/ds.mp4", "https://media.giphy.com/orig.mp4"]
+
+    seen_args: list[list[str]] = []
+    monkeypatch.setattr(memes, "probe", lambda path: None)
+
+    def fake_read(args):
+        seen_args.append(list(args))
+        return b"\x80" * 64 * 8
+
+    monkeypatch.setattr(memes, "read_ffmpeg", fake_read)
+    assert memes._playable(tmp_path / "short.mp4", 1.5) is True
+    assert seen_args and "-stream_loop" in seen_args[0] and "-1" in seen_args[0]
+

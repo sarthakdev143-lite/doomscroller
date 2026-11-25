@@ -156,7 +156,7 @@ def _giphy_memes(data: object) -> list[Candidate]:
             continue
         images = item.get("images") if isinstance(item.get("images"), dict) else {}
         link = ""
-        for name in ("original_mp4", "downsized_small_mp4"):
+        for name in ("original_mp4", "downsized_small", "downsized_small_mp4", "original", "fixed_height"):
             entry = images.get(name)
             if isinstance(entry, dict) and entry.get("mp4"):
                 link = str(entry["mp4"])
@@ -349,7 +349,7 @@ def _playable(path: Path, seconds: float) -> bool:
                                "-f", "rawvideo", "-"])
             return len(raw) // 64 >= 1
         probe(str(path))
-        raw = read_ffmpeg(["-xerror", "-t", f"{seconds + 0.2:.3f}", "-i", str(path),
+        raw = read_ffmpeg(["-xerror", "-stream_loop", "-1", "-t", f"{seconds + 0.2:.3f}", "-i", str(path),
                            "-map", "0:v:0", "-an", "-vf", "fps=4,scale=8:8,format=gray",
                            "-f", "rawvideo", "-"])
     except MediaError as exc:
