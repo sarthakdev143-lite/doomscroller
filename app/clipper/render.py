@@ -920,7 +920,7 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
         plan.duration += plan.tail
         plan.has_sfx = True
     if not captions and not clip_words and not (source_captioned and not crop_bottom):
-        summary_cues = _clean_vlog_summary_cues(moment, plan.duration, moment.hook)
+        summary_cues = _clean_vlog_summary_cues(moment, plan.duration, moment.hook, language=language)
 
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     # A row may already point at out_path, so a half-written file must never appear there.

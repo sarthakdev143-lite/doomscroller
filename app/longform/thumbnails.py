@@ -5,6 +5,7 @@ import base64
 import io
 import logging
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Optional, Sequence
@@ -24,6 +25,7 @@ log = logging.getLogger(__name__)
 THUMB_W, THUMB_H = 1280, 720
 _MAX_THUMB_BYTES = 1_900_000
 _MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+_EMOJI_RE = re.compile(r"[\U00010000-\U0010ffff\u2600-\u27bf\ufe0e\ufe0f\u200d]+")
 
 
 def _load_pil_font(size: int, sample: str = ""):
@@ -181,7 +183,7 @@ _DANGLING_HEADLINE_WORDS = frozenset({
 
 
 def _headline_words(title: str, max_words: int = 4) -> str:
-    clean = str(title or "").replace("#Shorts", "").replace("#shorts", "")
+    clean = _EMOJI_RE.sub(" ", str(title or "").replace("#Shorts", "").replace("#shorts", ""))
     for sep in (" | ", " — ", " - ", ": "):
         if sep in clean:
             head = clean.split(sep)[0].strip()
@@ -247,7 +249,8 @@ def _render_variant_hero(hero_path: str, dest: Path, *, title: str, badge: str) 
     draw = ImageDraw.Draw(img)
     headline = _headline_words(title, max_words=3)
     font = _fit_text_font(draw, headline, THUMB_W - 112, start_size=96)
-    _draw_outlined_text(draw, (56, THUMB_H - 165), headline, font, fill=(255, 232, 36), stroke=7)
+    _l, _t, _r, b = draw.textbbox((0, 0), headline, font=font, stroke_width=7)
+    _draw_outlined_text(draw, (56, max(120, THUMB_H - 54 - b)), headline, font, fill=(255, 232, 36), stroke=7)
     if badge:
         _draw_pill_badge(draw, 54, 44, badge, _load_pil_font(34, badge), fill=(220, 38, 38))
     return _save_under_2mb(img, dest)
@@ -266,11 +269,17 @@ def _render_variant_split(left_path: str, right_path: str, dest: Path, *, format
     if format_kind == "vs":
         vfont = _load_pil_font(66, "VS")
         draw.rounded_rectangle([half_w - 72, THUMB_H // 2 - 52, half_w + 72, THUMB_H // 2 + 52], radius=22, fill=(235, 38, 38), outline=(255, 255, 255), width=4)
-        _draw_outlined_text(draw, (half_w - 46, THUMB_H // 2 - 38), "VS", vfont, fill=(255, 255, 255), stroke=3)
+        vl, vt, vr, vb = draw.textbbox((0, 0), "VS", font=vfont, stroke_width=3)
+        _draw_outlined_text(draw, (half_w - (vr - vl) // 2 - vl, THUMB_H // 2 - (vb - vt) // 2 - vt), "VS", vfont, fill=(255, 255, 255), stroke=3)
     if len(creators) >= 2:
-        cfont = _load_pil_font(38, " ".join(creators[:2]))
-        _draw_outlined_text(draw, (38, THUMB_H - 92), str(creators[0])[:22], cfont, stroke=5)
-        _draw_outlined_text(draw, (half_w + 38, THUMB_H - 92), str(creators[1])[:22], cfont, stroke=5)
+        for idx, base_x in ((0, 0), (1, half_w)):
+            lbl = _EMOJI_RE.sub(" ", str(creators[idx] or "")).strip()[:28].strip()
+            if not lbl:
+                continue
+            cfont = _fit_text_font(draw, lbl, half_w - 72, start_size=40, min_size=24)
+            cl, _ct, cr, cb = draw.textbbox((0, 0), lbl, font=cfont, stroke_width=5)
+            cx = base_x + max(24, (half_w - (cr - cl)) // 2) - cl
+            _draw_outlined_text(draw, (cx, max(120, THUMB_H - 44 - cb)), lbl, cfont, stroke=5)
     return _save_under_2mb(canvas, dest)
 
 

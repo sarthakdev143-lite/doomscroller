@@ -176,3 +176,19 @@ def test_headline_words_no_dangling_hindi_suffix_and_hero_no_corner_crop(tmp_pat
     with Image.open(out) as rendered:
         r, g, b = rendered.getpixel((1272, 8))
         assert r > 180 and g > 180 and b > 180
+
+
+def test_headline_strips_emojis_split_fits_long_labels_and_job_uses_clean_names(tmp_path):
+    assert thumbnails._headline_words("First Anniversary Gift 😍 Rolex ❤️🔥", max_words=4) == "FIRST ANNIVERSARY GIFT ROLEX"
+
+    f1 = _make_jpg(tmp_path / "f1.jpg", (210, 40, 40))
+    f2 = _make_jpg(tmp_path / "f2.jpg", (40, 120, 230))
+    v1 = Path(thumbnails._render_variant_hero(f1, tmp_path / "hero_emoji.jpg", title="Sourav Joshi Crazy Trip 🔥❤️ Part 1", badge="PART 1"))
+    v2 = Path(thumbnails._render_variant_split(f1, f2, tmp_path / "split_long.jpg", format_kind="vs", creators=("Mr. Indian Hacker Official Vlog", "Sourav Joshi Vlogs Daily")))
+    for p in (v1, v2):
+        assert p.is_file() and 0 < p.stat().st_size < 2_000_000
+        with Image.open(p) as im:
+            assert im.format == "JPEG" and im.size == (1280, 720)
+
+    job_src = (Path(__file__).resolve().parent.parent / "app" / "longform" / "job.py").read_text(encoding="utf-8")
+    assert "creator_labels=[planner.display_creator_name(t) for t in plan.targets]" in job_src

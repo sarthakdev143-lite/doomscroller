@@ -2106,3 +2106,31 @@ def test_report_events_carry_channel_slug_best_has_url_and_ui_wiring(tmp_path, m
     assert "p.channel_slug||'default')===reportPick" in PAGE
     assert "'/5000B'" in PAGE
     assert "'/100'" in PAGE
+
+
+def test_queue_reports_daily_target_and_panel_ux_fixes(tmp_path, monkeypatch):
+    from app.review_ui import PAGE
+
+    monkeypatch.setattr(settings, "growth_uploads_per_day", 5)
+    _write(
+        tmp_path,
+        monkeypatch,
+        {
+            "channels": [
+                {"slug": "default", "name": "Default"},
+                {"slug": "indianvlogs", "name": "Indian Vlogs", "enabled": True, "uploads_per_day": 3},
+            ]
+        },
+    )
+    with session_scope() as db:
+        channels.sync_channels(db)
+
+    q = _client().get("/api/queue").json()
+    assert q["daily_target"] == 8
+    assert {c["slug"]: c["uploads_per_day"] for c in q["channels"]} == {"default": 5, "indianvlogs": 3}
+
+    assert "pauseBtn(c,loaders.channels)" in PAGE
+    assert "nextSlotLabel" in PAGE
+    assert "'done for today'" in PAGE
+    assert "item.selected_thumbnail_id=t.id" in PAGE
+    assert "renderPosted(postedAll,channels)" in PAGE

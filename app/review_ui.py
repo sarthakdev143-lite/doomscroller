@@ -397,34 +397,46 @@ function renderChips(channels){
   $('chips').append(mk('all','All',total,false));
   for(const c of channels)$('chips').append(mk(c.slug,c.name,countFor(c),reviewMode!=='posted'&&!!c.attention));
 }
-function pauseBtn(c){
-  const needsSecond=c.paused&&!c.owner_paused,armed=armedResume===c.slug&&needsSecond;
+function pauseBtn(c,onRefresh){
+  const needsSecond=c.paused&&!c.owner_paused;
+  let armed=armedResume===c.slug&&needsSecond;
   const b=el('button',{className:'cbtn'+(armed?' arm':c.paused?' go':'')},armed?'Tap again to resume':c.paused?'Resume posting':'Pause posting');
   b.onclick=async()=>{
-    if(needsSecond&&!armed){armedResume=c.slug;renderReview();setTimeout(()=>{if(armedResume===c.slug){armedResume=null;renderReview()}},6000);return}
-    armedResume=null;b.disabled=true;
-    try{await api.post('/api/channels/'+encodeURIComponent(c.slug)+'/'+(c.paused?'resume':'pause'));loaders.review()}
+    if(needsSecond&&!armed){
+      armed=true;armedResume=c.slug;
+      b.textContent='Tap again to resume';b.className='cbtn arm';
+      setTimeout(()=>{if(armedResume===c.slug){armedResume=null;armed=false;b.textContent='Resume posting';b.className='cbtn go'}},6000);
+      return;
+    }
+    armed=false;armedResume=null;b.disabled=true;
+    try{await api.post('/api/channels/'+encodeURIComponent(c.slug)+'/'+(c.paused?'resume':'pause'));(onRefresh||loaders.review)()}
     catch(e){b.disabled=false;alert(e.message)}
   };return b;
 }
+function nextSlotLabel(posted,target,nextIso){return nextIso?('next '+fmt(nextIso)):(target>0&&posted>=target?'done for today':'next not planned')}
 function renderStrip(channels){
   const box=$('strip');if(!channels.length){box.hidden=true;return}box.hidden=false;box.replaceChildren();
   for(const c of channels){const card=el('div',{className:'cc'+(c.attention?' att':'')});
+    const dayTxt=c.uploads_per_day?(c.posted_today+'/'+c.uploads_per_day):String(c.posted_today);
+    const nextTxt=c.next_post?('next '+fmt(c.next_post)):(c.uploads_per_day>0&&c.posted_today>=c.uploads_per_day?'done today':'next —');
     card.append(el('h3',{},c.name),el('div',{className:'s'},c.waiting+' to review · '+c.approved+' queued'),
-      el('div',{className:'s'},c.posted_today+' today · next '+fmt(c.next_post)));
+      el('div',{className:'s'},dayTxt+' today · '+nextTxt));
     if(c.attention)card.append(el('div',{className:'attn'},c.attention));
     card.append(pauseBtn(c));box.append(card)}
 }
 function saveMp4Link(id){
   return el('a',{href:'/api/media/'+encodeURIComponent(id)+'?download=1',download:'short-'+id+'.mp4',className:'srclink'},'Save MP4');
 }
-function renderPosted(items){
+function renderPosted(items,channels){
   const box=$('posted');
   if(reviewMode==='queued'){box.hidden=true;return}
   box.hidden=false;box.replaceChildren(el('h2',{},reviewMode==='posted'?'Posted Shorts':'Recently posted'));
   if(!items.length){box.append(el('div',{className:'empty'},'Nothing posted yet.'));return}
+  const chNames=new Map((channels||[]).map(c=>[c.slug,c.name||c.slug]));
+  const showChan=(channels||[]).length>1&&filter==='all';
   for(const p of items){const card=el('div',{className:'post'});
-    card.append(el('a',{href:p.url,target:'_blank',rel:'noopener'},p.title||'Untitled'));
+    if(showChan&&p.channel_slug){const head=el('div',{className:'badges'});head.append(el('span',{className:'pill'},chNames.get(p.channel_slug)||p.channel_slug),el('a',{href:p.url,target:'_blank',rel:'noopener'},p.title||'Untitled'));card.append(head)}
+    else card.append(el('a',{href:p.url,target:'_blank',rel:'noopener'},p.title||'Untitled'));
     const nums=el('div',{className:'nums'});nums.append(el('span',{},p.views.toLocaleString()+' views'),el('span',{},p.likes.toLocaleString()+' likes'));
     if(p.watched!==null)nums.append(el('span',{},p.watched+'% watched'));nums.append(el('span',{},new Date(p.posted).toLocaleDateString()));
     if(p.has_media&&p.id)nums.append(saveMp4Link(p.id));
@@ -678,13 +690,14 @@ function renderReview(){
   if(channels.length&&filter!=='all'&&!channels.some(c=>c.slug===filter))filter='all';
   const totalW=d.total_waiting!=null?d.total_waiting:d.clips.length;
   const reviewTxt=totalW>d.clips.length?(totalW+' to review ('+d.clips.length+' shown)'):(totalW+' to review');
-  $('rv-stats').textContent=reviewTxt+' · '+d.approved_waiting+' queued · '+d.posted_today+' posted today · next '+(d.next_post?fmt(d.next_post):'not planned');
+  const postedTxt=d.daily_target?(d.posted_today+'/'+d.daily_target):String(d.posted_today);
+  $('rv-stats').textContent=reviewTxt+' · '+d.approved_waiting+' queued · '+postedTxt+' posted today · '+nextSlotLabel(d.posted_today,d.daily_target||0,d.next_post);
   const paused=(channels.find(c=>c.attention&&/paused|hold/i.test(c.attention)&&!c.owner_paused)||{}).attention;
   const banner=$('banner');if(paused){banner.hidden=false;banner.replaceChildren(el('div',{className:'banner'},paused+' — some channels are not posting.'))}else banner.hidden=true;
   renderModes(d);renderChips(channels);renderStrip(channels);
   const postedPool=filter==='all'?(d.posted||[]):(d.posted||[]).filter(c=>(c.channel_slug||'default')===filter);
   const postedAll=postedPool.filter(matchesSearch);
-  renderPosted(postedAll);
+  renderPosted(postedAll,channels);
   const sourcePool=reviewMode==='queued'?queuedAll:(reviewMode==='scraped'?scrapedAll:d.clips);
   const byChan=(filter==='all'||reviewMode==='scraped')?sourcePool:sourcePool.filter(c=>(c.channel_slug||'default')===filter);
   renderFlaggedBar(byChan);
@@ -739,7 +752,7 @@ function channelCard(c){
     f.append(d1,l2,saveLong);sx.append(f);w.append(sx);
   }
 
-  if(c.enabled||c.paused)w.append(pauseBtn(c));
+  if(c.enabled||c.paused)w.append(pauseBtn(c,loaders.channels));
 
   if(!c.default){
     if(c.procedural){
@@ -1484,7 +1497,7 @@ async function refreshLongJobs(){
 function longCard(item){
   const card=el('div',{className:'card'});
   const selThumb=(item.thumbnails||[]).find(t=>t.id===item.selected_thumbnail_id)||(item.thumbnails||[])[0];
-  const posterUrl=(selThumb&&selThumb.url)||item.hero_url||'';
+  let posterUrl=(selThumb&&selThumb.url)||item.hero_url||'';
   const durStr=Math.floor((item.duration_sec||0)/60)+'m '+(item.duration_sec||0)%60+'s'+(item.size_mb?(' · '+item.size_mb+' MB'):'');
   const stage=el('div',{className:'vstage'});
   const paintPoster=()=>{
@@ -1533,6 +1546,18 @@ function longCard(item){
   syncLongDescCnt();
   descInp.addEventListener('input',syncLongDescCnt);
   const tagsInp=el('input',{value:(item.tags||[]).join(', ')});
+  titleInp.addEventListener('keydown',async e=>{
+    if(e.key==='Escape'){titleInp.blur();return}
+    if(e.key==='Enter'&&(item.status==='pending'||item.status==='transformed')){
+      e.preventDefault();const v=titleInp.value.trim();if(!v)return;
+      try{
+        await api.post('/api/long/'+encodeURIComponent(item.id)+'/metadata',{
+          title:v,description:descInp.value,tags:tagsInp.value.split(',').map(s=>s.trim()).filter(Boolean)
+        });
+        item.title=v;titleInp.blur();toast('Title saved');
+      }catch(err){alert(err.message)}
+    }
+  });
   body.append(mk('Title (no #Shorts)',titleRow));
 
   if(item.status==='pending'||item.status==='transformed'){
@@ -1574,7 +1599,17 @@ function longCard(item){
     for(const t of item.thumbnails){
       const b=el('button',{className:'thumb-opt'+(t.id===item.selected_thumbnail_id?' sel':''),type:'button'});
       b.append(el('img',{src:t.url,alt:t.label}),el('span',{},t.label));
-      b.onclick=async()=>{try{await api.post('/api/long/'+encodeURIComponent(item.id)+'/thumbnail',{variant_id:t.id});toast('Selected thumbnail '+t.id);loadLong()}catch(e){alert(e.message)}};
+      b.onclick=async()=>{
+        b.disabled=true;
+        try{
+          await api.post('/api/long/'+encodeURIComponent(item.id)+'/thumbnail',{variant_id:t.id});
+          item.selected_thumbnail_id=t.id;posterUrl=t.url;
+          for(const opt of grid.querySelectorAll('.thumb-opt'))opt.classList.toggle('sel',opt===b);
+          if(!stage.querySelector('video'))paintPoster();
+          toast('Selected thumbnail '+t.id);
+        }catch(e){alert(e.message)}
+        b.disabled=false;
+      };
       grid.append(b);
     }
     thumbWrap.append(grid);

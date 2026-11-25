@@ -384,7 +384,7 @@ def run_next_long_job(*, now: Optional[datetime] = None) -> Optional[dict]:
                 chapters=rendered.chapters,
                 timestamps=rendered.timestamps_for_thumbs,
                 part_number=plan.part_number,
-                creator_labels=plan.targets,
+                creator_labels=[planner.display_creator_name(t) for t in plan.targets],
             )
 
             full_desc = youtube_description(

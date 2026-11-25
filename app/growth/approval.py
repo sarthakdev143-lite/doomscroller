@@ -309,6 +309,7 @@ def _channel_status(db, channel) -> dict:
         "waiting": waiting,
         "approved": approved,
         "posted_today": posted_today,
+        "uploads_per_day": channels.uploads_per_day(channel),
         "next_post": min((p["due"] for p in waiting_posts), default=""),
         "attention": _attention(db, channel, waiting, approved, now),
         # For the page's pause button: lifting a takedown takes a second tap, lifting your own does not.
@@ -344,6 +345,7 @@ def queue(channel_slug: str = "") -> dict:
         "channels": per if multi else [],
         "approved_waiting": sum(c["approved"] for c in per),
         "posted_today": sum(c["posted_today"] for c in per),
+        "daily_target": sum(c["uploads_per_day"] for c in per),
         "next_post": min((c["next_post"] for c in per if c["next_post"]), default=""),
         "posted": posted,
     }

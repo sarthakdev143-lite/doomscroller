@@ -797,3 +797,58 @@ def test_clean_vlog_summary_cues_blocks_english_description_leak_for_hindi():
     texts = [t for _, _, t in cues]
     assert not any("emotional goodbye" in t.lower() for t in texts)
     assert "END TAK DEKHO" in texts
+
+
+def test_render_moment_passes_language_to_final_clean_vlog_summary_cues(tmp_path, monkeypatch):
+    src = tmp_path / "src.mp4"
+    src.write_bytes(b"0" * 20000)
+    font = tmp_path / "font.ttf"
+    font.write_bytes(b"ttf")
+    out = tmp_path / "out.mp4"
+
+    info = MediaInfo(duration=20.0, width=1920, height=1080, fps=30.0, has_audio=True)
+    signals = Signals(
+        duration=20.0,
+        motion=np.zeros(20),
+        loudness=np.zeros(20),
+        brightness=np.full(20, 0.5),
+        centroid=np.full(20, 0.5),
+        centroid_weight=np.ones(20),
+        cuts=[],
+    )
+    captured = []
+
+    monkeypatch.setattr(render, "resolve_font", lambda *a, **k: str(font))
+    monkeypatch.setattr(render, "font_family", lambda *a, **k: "Arial")
+    monkeypatch.setattr(render, "speaker_pieces", lambda *a, **k: [])
+    monkeypatch.setattr(render, "_bright_sharp_opening_offset", lambda *a, **k: 0.0)
+    monkeypatch.setattr(render, "probe", lambda *a, **k: info)
+    monkeypatch.setattr(render, "run_ffmpeg", lambda args, **k: Path(args[-1]).write_bytes(b"0" * 2048))
+
+    def fake_build_ass(*a, **k):
+        captured.append(list(k.get("summary_cues") or []))
+        return "[Script Info]\n"
+
+    monkeypatch.setattr(render, "build_ass", fake_build_ass)
+
+    render.render_moment(
+        str(src),
+        info,
+        signals,
+        Moment(
+            0.0,
+            20.0,
+            kind="speech",
+            title="Piyush Ka Surprise",
+            description="An emotional goodbye to their first home.",
+        ),
+        [],
+        str(out),
+        captions=False,
+        language="hi",
+    )
+
+    assert captured
+    texts = [t for _, _, t in captured[0]]
+    assert "END TAK DEKHO" in texts
+    assert not any("emotional goodbye" in t.lower() for t in texts)
