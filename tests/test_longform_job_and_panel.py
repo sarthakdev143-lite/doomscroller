@@ -1117,3 +1117,307 @@ def test_wave18_long_build_maps_lookup_error_to_400_and_ui_preserves_state_and_u
     assert "wireDrop(ambientTrackWrap" in PAGE
     assert "wireDrop(upBtn" in PAGE
     assert "wireDrop(portBtn" in PAGE
+
+
+def test_wave18_longcard_metadata_save_syncs_item_and_vstage_stops_propagation(tmp_path):
+    import re
+    import shutil
+    import subprocess
+    from app.review_ui import PAGE
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not on PATH")
+
+    script_match = re.search(r"<script>([\s\S]*?)</script>", PAGE)
+    assert script_match is not None
+
+    harness = (
+        r"""
+const vm = require('vm');
+const assert = require('assert');
+
+const byId = new Map();
+const docListeners = [];
+function matchOne(node, sel) {
+  sel = sel.trim();
+  if (!sel) return false;
+  if (sel.startsWith('#')) return node.id === sel.slice(1);
+  const attrM = sel.match(/^([a-z0-9_-]*)\[([a-z0-9_-]+)(?:=([^\]]+))?\]$/i);
+  if (attrM) {
+    if (attrM[1] && node.tagName !== attrM[1].toUpperCase()) return false;
+    const val = node.getAttribute(attrM[2]);
+    if (val === null) return false;
+    if (attrM[3] !== undefined) return val === attrM[3].replace(/^['"]|['"]$/g, '');
+    return true;
+  }
+  const parts = sel.split('.');
+  const tag = parts[0];
+  if (tag && node.tagName !== tag.toUpperCase()) return false;
+  for (let i = 1; i < parts.length; i++) if (!node.classList.contains(parts[i])) return false;
+  return true;
+}
+function matches(node, sel) { return sel.split(',').some(s => matchOne(node, s)); }
+class Elem {
+  constructor(tag, id) {
+    this.tagName = tag.toUpperCase();
+    this.attributes = new Map();
+    this._classes = new Set();
+    this._listeners = [];
+    this.childNodes = [];
+    this.parentNode = null;
+    this.style = {};
+    this.dataset = {};
+    this._text = '';
+    this.value = '';
+    this.hidden = false;
+    this.disabled = false;
+    this.open = false;
+    this.paused = false;
+    this.ended = false;
+    this.currentTime = 0;
+    this._id = '';
+    if (id) this.id = id;
+  }
+  set id(v) { this._id = v; if (v) byId.set(v, this); this.attributes.set('id', v); }
+  get id() { return this._id; }
+  set className(v) { this._classes = new Set(String(v || '').split(/\s+/).filter(Boolean)); }
+  get className() { return [...this._classes].join(' '); }
+  set tabIndex(v) { this.setAttribute('tabindex', String(v)); }
+  get tabIndex() { return Number(this.getAttribute('tabindex') || -1); }
+  set autoplay(v) { this._autoplay = !!v; if (v) this.paused = false; }
+  get autoplay() { return !!this._autoplay; }
+  set textContent(v) { this._text = v == null ? '' : String(v); this.childNodes = []; }
+  get textContent() { return this._text + this.childNodes.map(c => c.textContent || '').join(''); }
+  get children() { return this.childNodes.filter(c => c instanceof Elem); }
+  get firstChild() { return this.childNodes[0] || null; }
+  get nextSibling() {
+    if (!this.parentNode) return null;
+    const i = this.parentNode.childNodes.indexOf(this);
+    return i >= 0 ? (this.parentNode.childNodes[i + 1] || null) : null;
+  }
+  get offsetParent() { return this.hidden ? null : {}; }
+  get classList() {
+    const s = this._classes;
+    return {
+      add: (...a) => a.forEach(x => s.add(x)),
+      remove: (...a) => a.forEach(x => s.delete(x)),
+      toggle: (x, f) => (f === undefined ? (s.has(x) ? (s.delete(x), false) : (s.add(x), true)) : (f ? (s.add(x), true) : (s.delete(x), false))),
+      contains: x => s.has(x),
+    };
+  }
+  setAttribute(k, v) {
+    const s = String(v);
+    this.attributes.set(k, s);
+    if (k === 'id') { this._id = s; byId.set(s, this); }
+    if (k.startsWith('data-')) {
+      const ck = k.slice(5).replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+      this.dataset[ck] = s;
+    }
+  }
+  getAttribute(k) {
+    if (k.startsWith('data-')) {
+      const ck = k.slice(5).replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+      if (ck in this.dataset) return this.dataset[ck];
+    }
+    return this.attributes.has(k) ? this.attributes.get(k) : null;
+  }
+  removeAttribute(k) { this.attributes.delete(k); }
+  hasAttribute(k) { return this.attributes.has(k); }
+  _attach(n) {
+    if (typeof n === 'string') n = { textContent: n, nodeType: 3, parentNode: null };
+    if (n.parentNode) {
+      const i = n.parentNode.childNodes.indexOf(n);
+      if (i >= 0) n.parentNode.childNodes.splice(i, 1);
+    }
+    n.parentNode = this;
+    return n;
+  }
+  append(...nodes) { for (const n of nodes) this.childNodes.push(this._attach(n)); }
+  appendChild(n) { this.append(n); return n; }
+  replaceChildren(...nodes) { this._text = ''; this.childNodes = []; this.append(...nodes); }
+  remove() {
+    if (!this.parentNode) return;
+    const i = this.parentNode.childNodes.indexOf(this);
+    if (i >= 0) this.parentNode.childNodes.splice(i, 1);
+    this.parentNode = null;
+  }
+  querySelectorAll(sel) {
+    const out = [];
+    const walk = n => { for (const c of n.children || []) { if (matches(c, sel)) out.push(c); walk(c); } };
+    walk(this);
+    return out;
+  }
+  querySelector(sel) { return this.querySelectorAll(sel)[0] || null; }
+  closest(sel) {
+    let cur = this;
+    while (cur && cur instanceof Elem) { if (matches(cur, sel)) return cur; cur = cur.parentNode; }
+    return null;
+  }
+  addEventListener(type, fn, cap) { this._listeners.push({ type, fn, cap: !!cap }); }
+  dispatchEvent(evt) {
+    evt.target = evt.target || this;
+    let stopped = false, defPrev = false;
+    evt.stopPropagation = () => { stopped = true; };
+    evt.preventDefault = () => { defPrev = true; evt.defaultPrevented = true; };
+    const chain = [];
+    let cur = this;
+    while (cur) { chain.push(cur); cur = cur.parentNode; }
+    for (const l of docListeners.filter(x => x.cap && x.type === evt.type)) l.fn(evt);
+    for (let i = 0; i < chain.length && !stopped; i++) {
+      const n = chain[i];
+      if (n === this && evt.type === 'click' && typeof n.onclick === 'function') n.onclick(evt);
+      for (const l of (n._listeners || [])) if (!l.cap && l.type === evt.type) l.fn(evt);
+      if (!evt.bubbles) break;
+    }
+    if (!stopped && evt.bubbles) for (const l of docListeners.filter(x => !x.cap && x.type === evt.type)) l.fn(evt);
+    return !defPrev;
+  }
+  click() { if (typeof this.onclick === 'function') this.onclick({ target: this, preventDefault() {}, stopPropagation() {} }); }
+  focus() { doc.activeElement = this; }
+  blur() { if (doc.activeElement === this) doc.activeElement = doc.body; }
+  select() {}
+  scrollIntoView() {}
+  play() { this.paused = false; }
+  pause() { this.paused = true; }
+  load() {}
+}
+const body = new Elem('body');
+body.append(new Elem('nav', 'nav'));
+for (const pid of ['review', 'clip', 'long', 'channels', 'status', 'report', 'controls']) {
+  const sec = new Elem('section', 'tab-' + pid);
+  sec.className = 'tabpane';
+  body.append(sec);
+}
+const parentMap = {
+  'rv-stats': 'tab-review', 'banner': 'tab-review', 'strip': 'tab-review', 'rv-modes': 'tab-review',
+  'rv-tools': 'tab-review', 'rv-search': 'tab-review', 'rv-sort': 'tab-review', 'rv-speed': 'tab-review',
+  'chips': 'tab-review', 'rv-flagged': 'tab-review', 'list': 'tab-review', 'posted': 'tab-review',
+  'clip-form': 'tab-clip', 'clip-clear-finished': 'tab-clip', 'clip-jobs': 'tab-clip',
+  'long-build-form': 'tab-long', 'long-clear-finished': 'tab-long', 'long-jobs': 'tab-long',
+  'long-tts': 'tab-long', 'long-modes': 'tab-long', 'long-chips': 'tab-long', 'long-ab': 'tab-long', 'long-list': 'tab-long',
+  'ch-list': 'tab-channels', 'add-form': 'tab-channels', 'import-form': 'tab-channels',
+  'dc-head': 'tab-status', 'dc-body': 'tab-status', 'rp-pick': 'tab-report', 'rp-body': 'tab-report', 'ct-body': 'tab-controls'
+};
+for (const id of ['title', 'conn', 'kbd-help', 'kbd-modal', 'kbd-close', 'snack', ...Object.keys(parentMap)]) {
+  const tag = id === 'rv-search' ? 'input' : (id.endsWith('-sort') || id.endsWith('-speed') || id.endsWith('-finished') || id === 'kbd-help' || id === 'kbd-close' ? 'button' : 'div');
+  const el = new Elem(tag, id);
+  (byId.get(parentMap[id]) || body).append(el);
+}
+const doc = {
+  body, activeElement: body,
+  getElementById: id => byId.get(id) || null,
+  createElement: tag => new Elem(tag),
+  createTextNode: txt => ({ textContent: String(txt), nodeType: 3, parentNode: null }),
+  querySelectorAll: sel => body.querySelectorAll(sel),
+  querySelector: sel => body.querySelector(sel),
+  addEventListener: (type, fn, cap) => docListeners.push({ type, fn, cap: !!cap }),
+};
+class FakeResponse {
+  constructor(status, body) { this.status = status; this.ok = status >= 200 && status < 300; this._body = body; }
+  async json() { return this._body; }
+}
+const postedMeta = [];
+const longPayload = {
+  channels: [{ slug: 'ambient', name: 'After Midnight POV', procedural: true, presets: ['lofi_chill'], default_target_minutes: 30 }],
+  ambient_presets: [{ id: 'lofi_chill', label: 'Lofi Chill' }],
+  ambient_stats: { tracks_count: 0, portraits_count: 0 },
+  ambient_ab: null,
+  jobs: [],
+  pending: [{
+    id: 'lg1', channel_slug: 'ambient', format: 'lofi_chill', status: 'pending', procedural: true,
+    title: 'Orig Long Title', description: 'Orig Desc', tags: ['orig'],
+    duration_sec: 1800, width: 1920, height: 1080, video_url: '/api/long/lg1/video', thumbnails: [], chapters: []
+  }],
+  ready: [], posted: [], tts_ready: false
+};
+const ctx = {
+  document: doc, window: {}, navigator: { clipboard: { writeText: async () => {} } },
+  localStorage: { getItem: () => null, setItem: () => {} },
+  Response: FakeResponse, TextEncoder, URL, console,
+  setTimeout: () => 0, clearTimeout: () => {}, setInterval: () => 0, clearInterval: () => {},
+  fetch: async (url, opts) => {
+    if (url.startsWith('/api/queue')) return new FakeResponse(200, { waiting: 0, approved: 0, rejected: 0, daily_target: 3, scraped: [], posted: [], channels: [], clips: [] });
+    if (url === '/api/long/videos') return new FakeResponse(200, longPayload);
+    if (url === '/api/long/jobs') return new FakeResponse(200, { jobs: [] });
+    if (url === '/api/long/lg1/metadata') { postedMeta.push(JSON.parse(opts.body)); return new FakeResponse(200, { ok: true }); }
+    return new FakeResponse(200, {});
+  }
+};
+ctx.window = ctx;
+vm.createContext(ctx);
+vm.runInContext("""
+        + json.dumps(script_match.group(1))
+        + """, ctx);
+
+(async () => {
+  const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
+  ctx.show('long');
+  await flush();
+
+  // 1. Save metadata button syncs item.title, item.description, item.tags before deleting longEdits
+  const textInputs = cd => cd.querySelectorAll('input').filter(i => i.type !== 'file');
+  let card = byId.get('long-list').children[0];
+  let inputs = textInputs(card);
+  let titleInp = inputs[0];
+  let tagsInp = inputs[1];
+  let descInp = card.querySelector('textarea');
+  titleInp.value = 'Updated Title';
+  titleInp.dispatchEvent({ type: 'input', bubbles: true });
+  descInp.value = 'Updated Desc';
+  descInp.dispatchEvent({ type: 'input', bubbles: true });
+  tagsInp.value = 'alpha, beta';
+  tagsInp.dispatchEvent({ type: 'input', bubbles: true });
+  const saveBtn = card.querySelectorAll('button').find(b => b.textContent === 'Save metadata');
+  assert.ok(saveBtn, 'Save metadata button must exist');
+  saveBtn.click();
+  await flush();
+  assert.strictEqual(postedMeta.length, 1);
+
+  ctx.renderLongList();
+  card = byId.get('long-list').children[0];
+  inputs = textInputs(card);
+  assert.strictEqual(inputs[0].value, 'Updated Title', 'Title must persist across renderLongList after Save metadata');
+  assert.strictEqual(card.querySelector('textarea').value, 'Updated Desc', 'Description must persist across renderLongList after Save metadata');
+  assert.strictEqual(inputs[1].value, 'alpha, beta', 'Tags must persist across renderLongList after Save metadata');
+
+  // 2. titleInp Enter-to-save syncs item.title, item.description, item.tags before deleting longEdits
+  titleInp = inputs[0];
+  tagsInp = inputs[1];
+  descInp = card.querySelector('textarea');
+  titleInp.value = 'Enter Title';
+  titleInp.dispatchEvent({ type: 'input', bubbles: true });
+  descInp.value = 'Enter Desc';
+  descInp.dispatchEvent({ type: 'input', bubbles: true });
+  tagsInp.value = 'gamma, delta';
+  tagsInp.dispatchEvent({ type: 'input', bubbles: true });
+  titleInp.dispatchEvent({ type: 'keydown', key: 'Enter', bubbles: true });
+  await flush();
+  assert.strictEqual(postedMeta.length, 2);
+
+  ctx.renderLongList();
+  card = byId.get('long-list').children[0];
+  inputs = textInputs(card);
+  assert.strictEqual(inputs[0].value, 'Enter Title', 'Title must persist across renderLongList after Enter');
+  assert.strictEqual(card.querySelector('textarea').value, 'Enter Desc', 'Description must persist across renderLongList after Enter');
+  assert.strictEqual(inputs[1].value, 'gamma, delta', 'Tags must persist across renderLongList after Enter');
+
+  // 3. longCard .vstage Space keydown must stopPropagation()
+  let docSawSpace = false;
+  doc.addEventListener('keydown', e => { if (e.key === ' ') docSawSpace = true; });
+  const stage = card.querySelector('.vstage');
+  stage.focus();
+  stage.dispatchEvent({ type: 'keydown', key: ' ', bubbles: true });
+  assert.ok(stage.querySelector('video'), 'Long card video must mount on Space');
+  assert.strictEqual(docSawSpace, false, 'Long card .vstage Space keydown must not bubble to document');
+
+  console.log('ALL_OK');
+})().catch(e => { console.error(e && e.stack || e); process.exit(1); });
+"""
+    )
+    js_file = tmp_path / "long_meta_vstage_probe.js"
+    js_file.write_text(harness, encoding="utf-8")
+    proc = subprocess.run([node, str(js_file)], capture_output=True, text=True)
+    assert proc.returncode == 0, f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+    assert "ALL_OK" in proc.stdout
+

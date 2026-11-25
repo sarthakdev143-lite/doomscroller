@@ -575,7 +575,7 @@ function clipCard(c,isQueued){
   stage._reset=paintIdle;
   paintIdle();
   stage.onclick=mountAndPlay;
-  stage.addEventListener('keydown',e=>{if((e.key==='Enter'||e.key===' ')&&!stage.querySelector('video')){e.preventDefault();mountAndPlay()}});
+  stage.addEventListener('keydown',e=>{if((e.key==='Enter'||e.key===' ')&&!stage.querySelector('video')){e.preventDefault();e.stopPropagation();mountAndPlay()}});
   card.append(stage);
   const b=el('div',{className:'body'});
   if(c.flag&&!isQueued)b.append(el('div',{className:'warnbox'},'Flagged — probably should NOT post: '+c.flag));
@@ -1228,7 +1228,7 @@ function renderControls(d){
       const lines=r.lines||[];
       logPre.textContent=lines.length?lines.join('\n'):(logLevel==='warn'?'No warnings or errors in recent logs.':'No daemon logs recorded yet.');
       logPre.scrollTop=logPre.scrollHeight;
-    }catch(e){logPre.textContent='Could not load logs: '+(e.message||'error')}
+    }catch(e){logPre.textContent='Could not load logs: '+errMsg(e)}
     logRefBtn.disabled=false;
   };
   logAllBtn.onclick=()=>{logLevel='all';syncLogBtns();fetchLogs()};
@@ -1604,7 +1604,7 @@ function longCard(item){
       stage.replaceChildren(vid);
     };
     stage.onclick=()=>stage._mountVideo(0,false);
-    stage.addEventListener('keydown',e=>{if((e.key==='Enter'||e.key===' ')&&!stage.querySelector('video')){e.preventDefault();stage._mountVideo(0,false)}});
+    stage.addEventListener('keydown',e=>{if((e.key==='Enter'||e.key===' ')&&!stage.querySelector('video')){e.preventDefault();e.stopPropagation();stage._mountVideo(0,false)}});
   }
   card.append(stage);
   const body=el('div',{className:'body'});
@@ -1640,11 +1640,12 @@ function longCard(item){
     if(e.key==='Escape'){titleInp.blur();return}
     if(e.key==='Enter'&&(item.status==='pending'||item.status==='transformed')){
       e.preventDefault();const v=titleInp.value.trim();if(!v)return;
+      const tags=tagsInp.value.split(',').map(s=>s.trim()).filter(Boolean);
       try{
         await api.post('/api/long/'+encodeURIComponent(item.id)+'/metadata',{
-          title:v,description:descInp.value,tags:tagsInp.value.split(',').map(s=>s.trim()).filter(Boolean)
+          title:v,description:descInp.value,tags
         });
-        item.title=v;delete longEdits[item.id];titleInp.blur();toast('Title saved');
+        item.title=v;item.description=descInp.value;item.tags=tags;delete longEdits[item.id];titleInp.blur();toast('Title saved');
       }catch(err){toast(errMsg(err),null,true)}
     }
   });
@@ -1760,9 +1761,10 @@ function longCard(item){
     const saveMeta=el('button',{className:'ghost'},'Save metadata');
     saveMeta.onclick=async()=>{
       saveMeta.disabled=true;
+      const v=titleInp.value.trim()||item.title,tags=tagsInp.value.split(',').map(s=>s.trim()).filter(Boolean);
       try{await api.post('/api/long/'+encodeURIComponent(item.id)+'/metadata',{
-        title:titleInp.value,description:descInp.value,tags:tagsInp.value.split(',').map(s=>s.trim()).filter(Boolean)
-      });delete longEdits[item.id];toast('Metadata saved')}catch(e){toast(errMsg(e),null,true)}
+        title:v,description:descInp.value,tags
+      });item.title=v;item.description=descInp.value;item.tags=tags;delete longEdits[item.id];toast('Metadata saved')}catch(e){toast(errMsg(e),null,true)}
       saveMeta.disabled=false;
     };
     metaWrap.append(saveMeta);

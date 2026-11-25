@@ -2318,3 +2318,359 @@ def test_wave18_panel_ux_no_alerts_error_handling_state_and_a11y():
     assert ":focus-visible" in PAGE
     assert "@media(max-width:419px)" in PAGE
     assert "nav{height:52px" in PAGE
+
+
+def test_wave18_vstage_space_does_not_bubble_and_fetch_logs_uses_errmsg(tmp_path):
+    import re
+    import shutil
+    import subprocess
+    from app.review_ui import PAGE
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not on PATH")
+
+    script_match = re.search(r"<script>([\s\S]*?)</script>", PAGE)
+    assert script_match is not None
+
+    harness = (
+        r"""
+const vm = require('vm');
+const assert = require('assert');
+function mkHarness(fetchImpl) {
+  const byId = new Map();
+  const docListeners = [];
+  function matchOne(node, sel) {
+    sel = sel.trim();
+    if (!sel) return false;
+    if (sel.startsWith('#')) return node.id === sel.slice(1);
+    const attrM = sel.match(/^([a-z0-9_-]*)\[([a-z0-9_-]+)(?:=([^\]]+))?\]$/i);
+    if (attrM) {
+      if (attrM[1] && node.tagName !== attrM[1].toUpperCase()) return false;
+      const val = node.getAttribute(attrM[2]);
+      if (val === null) return false;
+      if (attrM[3] !== undefined) return val === attrM[3].replace(/^['"]|['"]$/g, '');
+      return true;
+    }
+    const parts = sel.split('.');
+    const tag = parts[0];
+    if (tag && node.tagName !== tag.toUpperCase()) return false;
+    for (let i = 1; i < parts.length; i++) {
+      if (!node.classList.contains(parts[i])) return false;
+    }
+    return true;
+  }
+  function matches(node, sel) {
+    return sel.split(',').some(s => matchOne(node, s));
+  }
+  class Elem {
+    constructor(tag, id) {
+      this.tagName = tag.toUpperCase();
+      this.attributes = new Map();
+      this._classes = new Set();
+      this._listeners = [];
+      this.childNodes = [];
+      this.parentNode = null;
+      this.style = {};
+      this.dataset = {};
+      this._text = '';
+      this.value = '';
+      this.hidden = false;
+      this.disabled = false;
+      this.open = false;
+      this.paused = false;
+      this.ended = false;
+      this.currentTime = 0;
+      this._id = '';
+      if (id) this.id = id;
+    }
+    set id(v) { this._id = v; if (v) byId.set(v, this); this.attributes.set('id', v); }
+    get id() { return this._id; }
+    set className(v) { this._classes = new Set(String(v || '').split(/\s+/).filter(Boolean)); }
+    get className() { return [...this._classes].join(' '); }
+    set tabIndex(v) { this.setAttribute('tabindex', String(v)); }
+    get tabIndex() { return Number(this.getAttribute('tabindex') || -1); }
+    set autoplay(v) { this._autoplay = !!v; if (v) this.paused = false; }
+    get autoplay() { return !!this._autoplay; }
+    set textContent(v) { this._text = v == null ? '' : String(v); this.childNodes = []; }
+    get textContent() { return this._text + this.childNodes.map(c => c.textContent || '').join(''); }
+    get children() { return this.childNodes.filter(c => c instanceof Elem); }
+    get firstChild() { return this.childNodes[0] || null; }
+    get firstElementChild() { return this.children[0] || null; }
+    get nextSibling() {
+      if (!this.parentNode) return null;
+      const i = this.parentNode.childNodes.indexOf(this);
+      return i >= 0 ? (this.parentNode.childNodes[i + 1] || null) : null;
+    }
+    get nextElementSibling() {
+      if (!this.parentNode) return null;
+      const ch = this.parentNode.children;
+      const i = ch.indexOf(this);
+      return i >= 0 ? (ch[i + 1] || null) : null;
+    }
+    get offsetParent() {
+      let cur = this;
+      while (cur) { if (cur.hidden) return null; cur = cur.parentNode; }
+      return {};
+    }
+    get classList() {
+      const s = this._classes;
+      return {
+        add: (...a) => a.forEach(x => s.add(x)),
+        remove: (...a) => a.forEach(x => s.delete(x)),
+        toggle: (x, f) => (f === undefined ? (s.has(x) ? (s.delete(x), false) : (s.add(x), true)) : (f ? (s.add(x), true) : (s.delete(x), false))),
+        contains: x => s.has(x),
+      };
+    }
+    setAttribute(k, v) {
+      const s = String(v);
+      this.attributes.set(k, s);
+      if (k === 'id') { this._id = s; byId.set(s, this); }
+      if (k.startsWith('data-')) {
+        const ck = k.slice(5).replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+        this.dataset[ck] = s;
+      }
+    }
+    getAttribute(k) {
+      if (k.startsWith('data-')) {
+        const ck = k.slice(5).replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+        if (ck in this.dataset) return this.dataset[ck];
+      }
+      return this.attributes.has(k) ? this.attributes.get(k) : null;
+    }
+    removeAttribute(k) { this.attributes.delete(k); }
+    hasAttribute(k) { return this.attributes.has(k); }
+    _attach(n) {
+      if (typeof n === 'string') n = { textContent: n, nodeType: 3, parentNode: null };
+      if (n.parentNode) {
+        const i = n.parentNode.childNodes.indexOf(n);
+        if (i >= 0) n.parentNode.childNodes.splice(i, 1);
+      }
+      n.parentNode = this;
+      return n;
+    }
+    append(...nodes) { for (const n of nodes) this.childNodes.push(this._attach(n)); }
+    prepend(...nodes) { for (let i = nodes.length - 1; i >= 0; i--) this.childNodes.unshift(this._attach(nodes[i])); }
+    after(...nodes) {
+      if (!this.parentNode) return;
+      const p = this.parentNode;
+      let idx = p.childNodes.indexOf(this) + 1;
+      for (const n of nodes) {
+        const a = p._attach(n);
+        idx = p.childNodes.indexOf(this) + 1;
+        p.childNodes.splice(idx, 0, a);
+      }
+    }
+    appendChild(n) { this.append(n); return n; }
+    insertBefore(n, ref) {
+      n = this._attach(n);
+      const i = ref ? this.childNodes.indexOf(ref) : -1;
+      if (i >= 0) this.childNodes.splice(i, 0, n); else this.childNodes.push(n);
+      return n;
+    }
+    replaceChildren(...nodes) { this._text = ''; this.childNodes = []; this.append(...nodes); }
+    remove() {
+      if (!this.parentNode) return;
+      const i = this.parentNode.childNodes.indexOf(this);
+      if (i >= 0) this.parentNode.childNodes.splice(i, 1);
+      this.parentNode = null;
+    }
+    querySelectorAll(sel) {
+      const out = [];
+      const walk = n => {
+        for (const c of n.children || []) {
+          if (matches(c, sel)) out.push(c);
+          walk(c);
+        }
+      };
+      walk(this);
+      return out;
+    }
+    querySelector(sel) { return this.querySelectorAll(sel)[0] || null; }
+    closest(sel) {
+      let cur = this;
+      while (cur && cur instanceof Elem) { if (matches(cur, sel)) return cur; cur = cur.parentNode; }
+      return null;
+    }
+    addEventListener(type, fn, cap) {
+      this._listeners.push({ type, fn, cap: !!cap });
+      if (type === 'toggle' && this.tagName === 'DETAILS') this._onToggle = fn;
+    }
+    dispatchEvent(evt) {
+      evt.target = evt.target || this;
+      let stopped = false, defPrev = false;
+      evt.stopPropagation = () => { stopped = true; };
+      evt.preventDefault = () => { defPrev = true; evt.defaultPrevented = true; };
+      const chain = [];
+      let cur = this;
+      while (cur) { chain.push(cur); cur = cur.parentNode; }
+      for (const l of docListeners.filter(x => x.cap && x.type === evt.type)) l.fn(evt);
+      for (let i = 0; i < chain.length && !stopped; i++) {
+        const n = chain[i];
+        if (n === this && evt.type === 'click' && typeof n.onclick === 'function') n.onclick(evt);
+        for (const l of (n._listeners || [])) {
+          if (!l.cap && l.type === evt.type) l.fn(evt);
+        }
+        if (!evt.bubbles) break;
+      }
+      if (!stopped && evt.bubbles) {
+        for (const l of docListeners.filter(x => !x.cap && x.type === evt.type)) l.fn(evt);
+      }
+      return !defPrev;
+    }
+    click() { if (typeof this.onclick === 'function') this.onclick({ target: this, preventDefault() {}, stopPropagation() {} }); }
+    focus() { doc.activeElement = this; }
+    blur() { if (doc.activeElement === this) doc.activeElement = doc.body; }
+    select() {}
+    scrollIntoView() {}
+    play() {
+      this.paused = false;
+      this.dispatchEvent({ type: 'play', bubbles: false, target: this });
+    }
+    pause() { this.paused = true; }
+    load() {}
+  }
+  const body = new Elem('body');
+  const nav = new Elem('nav', 'nav');
+  body.append(nav);
+  const paneIds = ['review', 'clip', 'long', 'channels', 'status', 'report', 'controls'];
+  for (const pid of paneIds) {
+    const sec = new Elem('section', 'tab-' + pid);
+    sec.className = 'tabpane';
+    body.append(sec);
+  }
+  const ids = [
+    'title', 'conn', 'kbd-help', 'kbd-modal', 'kbd-close', 'snack',
+    'rv-stats', 'banner', 'strip', 'rv-modes', 'rv-tools', 'rv-search', 'rv-sort', 'rv-speed',
+    'chips', 'rv-flagged', 'list', 'posted',
+    'clip-form', 'clip-clear-finished', 'clip-jobs',
+    'long-build-form', 'long-clear-finished', 'long-jobs', 'long-tts', 'long-modes', 'long-chips', 'long-ab', 'long-list',
+    'ch-list', 'add-form', 'import-form',
+    'dc-head', 'dc-body', 'rp-pick', 'rp-body', 'ct-body'
+  ];
+  const parentMap = {
+    'rv-stats': 'tab-review', 'banner': 'tab-review', 'strip': 'tab-review', 'rv-modes': 'tab-review',
+    'rv-tools': 'tab-review', 'rv-search': 'tab-review', 'rv-sort': 'tab-review', 'rv-speed': 'tab-review',
+    'chips': 'tab-review', 'rv-flagged': 'tab-review', 'list': 'tab-review', 'posted': 'tab-review',
+    'clip-form': 'tab-clip', 'clip-clear-finished': 'tab-clip', 'clip-jobs': 'tab-clip',
+    'long-build-form': 'tab-long', 'long-clear-finished': 'tab-long', 'long-jobs': 'tab-long',
+    'long-tts': 'tab-long', 'long-modes': 'tab-long', 'long-chips': 'tab-long', 'long-ab': 'tab-long', 'long-list': 'tab-long',
+    'ch-list': 'tab-channels', 'add-form': 'tab-channels', 'import-form': 'tab-channels',
+    'dc-head': 'tab-status', 'dc-body': 'tab-status', 'rp-pick': 'tab-report', 'rp-body': 'tab-report', 'ct-body': 'tab-controls'
+  };
+  for (const id of ids) {
+    const tag = id === 'rv-search' ? 'input' : (id.endsWith('-sort') || id.endsWith('-speed') || id.endsWith('-finished') || id === 'kbd-help' || id === 'kbd-close' ? 'button' : 'div');
+    const el = new Elem(tag, id);
+    (byId.get(parentMap[id]) || body).append(el);
+  }
+  const doc = {
+    body,
+    activeElement: body,
+    getElementById: id => byId.get(id) || null,
+    createElement: tag => new Elem(tag),
+    createTextNode: txt => ({ textContent: String(txt), nodeType: 3, parentNode: null }),
+    querySelectorAll: sel => body.querySelectorAll(sel),
+    querySelector: sel => body.querySelector(sel),
+    addEventListener: (type, fn, cap) => docListeners.push({ type, fn, cap: !!cap }),
+  };
+  class FakeResponse {
+    constructor(status, body) { this.status = status; this.ok = status >= 200 && status < 300; this._body = body; }
+    async json() { return this._body; }
+  }
+  const ctx = {
+    document: doc,
+    window: {},
+    navigator: { clipboard: { writeText: async () => {} } },
+    localStorage: { getItem: () => null, setItem: () => {} },
+    Response: FakeResponse,
+    TextEncoder,
+    URL,
+    console,
+    setTimeout: (fn, ms) => 0,
+    clearTimeout: () => {},
+    setInterval: () => 0,
+    clearInterval: () => {},
+    fetch: (url, opts) => fetchImpl(url, opts, FakeResponse),
+  };
+  ctx.window = ctx;
+  vm.createContext(ctx);
+  vm.runInContext("""
+        + json.dumps(script_match.group(1))
+        + """, ctx);
+  return { ctx, doc, byId, FakeResponse };
+}
+
+(async () => {
+  let logsStatus = 200;
+  const queueData = {
+    waiting: 2, approved: 0, rejected: 0, daily_target: 3, scraped: [], posted: [],
+    channels: [{ slug: 'default', name: 'Default', waiting: 2, approved: 0 }],
+    clips: [
+      { id: 'clip1', title: 'First Clip', channel: 'Default', channel_slug: 'default', seconds: 20, tags: [], flag: '' },
+      { id: 'clip2', title: 'Second Clip', channel: 'Default', channel_slug: 'default', seconds: 25, tags: [], flag: '' },
+    ]
+  };
+  const h = mkHarness(async (url, opts, FakeResponse) => {
+    if (url.startsWith('/api/queue')) return new FakeResponse(200, queueData);
+    if (url === '/api/controls') return new FakeResponse(200, {
+      paused_all: false, next_window: null, daily_limit: 3, posted_today: 0,
+      actions: [], status: {}, blocks: [],
+      scheduler: { running: true, health: 'ok', jobs: [], overdue: [], recent: [] },
+      alerts: { email: false, telegram: false }, blocked_urls: [], channels: []
+    });
+    if (url === '/api/system/doctor') return new FakeResponse(200, { ok: true, warnings: [], python: { ok: true, version: '3.12' }, media_tools: { ok: true }, tunnel: { ok: false, provider: 'none' }, directories: { ok: true }, disk: { ok: true, free_gb: 50 }, database: { ok: true, exists: true }, ports: { daemon_running: true }, env: { env_file_exists: true, review_token_set: true } });
+    if (url.startsWith('/api/logs')) return new FakeResponse(logsStatus, {});
+    return new FakeResponse(200, {});
+  });
+
+  const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
+  await flush();
+
+  const cards = h.byId.get('list').children;
+  assert.strictEqual(cards.length, 2, 'Expected 2 review cards');
+  const stage0 = cards[0].querySelector('.vstage');
+  const stage1 = cards[1].querySelector('.vstage');
+
+  // Case A: kbIdx === -1, pressing Space on card #2's focused .vstage must play card #2 and NOT activate card #1
+  stage1.focus();
+  stage1.dispatchEvent({ type: 'keydown', key: ' ', bubbles: true });
+  const vid1A = stage1.querySelector('video');
+  const vid0A = stage0.querySelector('video');
+  assert.ok(vid1A, 'Card 2 video must mount on Space');
+  assert.strictEqual(vid1A.paused, false, 'Card 2 video must remain playing (not paused by document Space handler)');
+  assert.strictEqual(vid0A, null, 'Card 1 must NOT mount video when Space was pressed on Card 2 .vstage');
+
+  // Reset stage1 and focus card #2 via kbIdx=1, then press Space on card #2's .vstage
+  stage1._reset();
+  h.ctx.focusCard(1);
+  stage1.focus();
+  stage1.dispatchEvent({ type: 'keydown', key: ' ', bubbles: true });
+  const vid1B = stage1.querySelector('video');
+  assert.ok(vid1B, 'Card 2 video must mount on Space when kbIdx === 1');
+  assert.strictEqual(vid1B.paused, false, 'Card 2 video must NOT immediately pause when kbIdx === 1');
+
+  // Case C: fetchLogs 401 renders friendly session-expired message via errMsg(e)
+  h.ctx.show('controls');
+  await flush();
+  logsStatus = 401;
+  const logDet = h.byId.get('ct-body').querySelector('details');
+  assert.ok(logDet, 'Daemon logs details element must exist');
+  logDet.open = true;
+  logDet.dispatchEvent({ type: 'toggle', bubbles: false });
+  await flush();
+  const pre = logDet.querySelector('pre');
+  assert.strictEqual(
+    pre.textContent,
+    'Could not load logs: Session expired — reopen your link.',
+    'Expected 401 log error to use errMsg(e), got: ' + pre.textContent
+  );
+  console.log('ALL_OK');
+})().catch(e => { console.error(e && e.stack || e); process.exit(1); });
+"""
+    )
+    js_file = tmp_path / "vstage_logs_probe.js"
+    js_file.write_text(harness, encoding="utf-8")
+    proc = subprocess.run([node, str(js_file)], capture_output=True, text=True)
+    assert proc.returncode == 0, f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+    assert "ALL_OK" in proc.stdout
+
