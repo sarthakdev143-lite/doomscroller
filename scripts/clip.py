@@ -59,6 +59,10 @@ def _resolve_cli_channel(slug: str) -> tuple[Optional[str], bool, str]:
         if ch is None:
             known = ", ".join(c.slug for c in channels.all_channels(db)) or "default"
             raise ValueError(f"unknown channel {cleaned!r} (known: {known})")
+        if channels.is_procedural(ch):
+            raise ValueError(
+                f"channel {ch.slug!r} is a procedural ambient channel and does not accept Shorts clips"
+            )
         return channels.event_channel(ch), channels.require_approval(ch), ch.slug
 
 
@@ -340,14 +344,17 @@ def main(argv: Optional[list[str]] = None) -> int:
                              resolved_slug=resolved_slug, as_json=args.json)
 
     progress_stream = sys.stderr if args.json else sys.stdout
-    result = clip_source(
-        source,
-        count=args.count,
-        auto_queue=auto_queue,
-        progress=lambda stage: print(f"... {stage}", file=progress_stream, flush=True),
-        mine=bool(args.mine),
-        channel_id=channel_id,
-    )
+    try:
+        result = clip_source(
+            source,
+            count=args.count,
+            auto_queue=auto_queue,
+            progress=lambda stage: print(f"... {stage}", file=progress_stream, flush=True),
+            mine=bool(args.mine),
+            channel_id=channel_id,
+        )
+    except Interrupted:
+        return _fail("stopped before it finished", as_json=args.json)
 
     if args.json:
         out_payload = dict(result)

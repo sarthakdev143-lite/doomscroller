@@ -43,6 +43,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
+from ..logging_config import scrub_secrets
 from .base import ScrapedItem, Scraper
 
 log = logging.getLogger(__name__)
@@ -204,7 +205,7 @@ class SnapchatScraper(Scraper):
             except Exception as exc:
                 log.warning(
                     "snapchat: GET %s failed (attempt %d/%d): %s",
-                    url, attempt, attempts, exc,
+                    url, attempt, attempts, scrub_secrets(str(exc)),
                 )
                 if attempt < attempts:
                     time.sleep(min(2.0, 0.3 * attempt))
@@ -287,7 +288,7 @@ class SnapchatScraper(Scraper):
             page.wait_for_timeout(1500)
             return page.content()
         except Exception as exc:
-            log.warning("snapchat: browser fallback failed for %s: %s", url, exc)
+            log.warning("snapchat: browser fallback failed for %s: %s", url, scrub_secrets(str(exc)))
             return None
         finally:
             for closer in (
@@ -645,7 +646,7 @@ class SnapchatScraper(Scraper):
             try:
                 items.extend(self.scrape_profile(username, per_handle))
             except Exception as exc:
-                log.warning("snapchat: profile @%s failed: %s", username, exc)
+                log.warning("snapchat: profile @%s failed: %s", username, scrub_secrets(str(exc)))
         items = self._dedup(items)[:max_per_run]
         if download and items:
             self.download(items)
@@ -761,7 +762,7 @@ class SnapchatScraper(Scraper):
                 except Exception as exc:
                     log.warning(
                         "snapchat: download failed for %s (attempt %d): %s",
-                        lead.source_id[:16], attempt, exc,
+                        lead.source_id[:16], attempt, scrub_secrets(str(exc)),
                     )
                     if attempt == 1:
                         time.sleep(0.3)

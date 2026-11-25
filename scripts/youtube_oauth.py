@@ -74,6 +74,16 @@ def _show_env(secrets: str, token: str) -> None:
     print(f"\nAdd to .env:\n  USE_MOCK=false\n  YOUTUBE_CLIENT_SECRETS={secrets}\n  YOUTUBE_TOKEN_PATH={token}\n")
 
 
+def _show_next_step(secrets: str, token: str, slug: str | None = None) -> None:
+    if slug:
+        print(
+            f"\nChannel {slug!r} is configured in channels.json (no .env change needed).\n"
+            f"Check readiness with: python scripts/growth.py doctor --channel {slug}\n"
+        )
+        return
+    _show_env(secrets, token)
+
+
 def _channel_paths(slug: str) -> tuple[str, str]:
     """A managed channel's client_secret.json and token paths, from channels.json."""
     from app.db import init_db, session_scope
@@ -351,7 +361,7 @@ def main() -> int:
     if os.path.exists(args.token) and not args.force:
         print(f"Token already exists at {args.token}. Use --force to replace it.")
         _show_existing(args.token)
-        _show_env(args.secrets, args.token)
+        _show_next_step(args.secrets, args.token, args.channel)
         return 0
 
     from google_auth_oauthlib.flow import InstalledAppFlow
@@ -375,7 +385,7 @@ def main() -> int:
 
     _show_warnings(token)
     # Before the API call, since a refused call must not cost the owner these lines.
-    _show_env(args.secrets, args.token)
+    _show_next_step(args.secrets, args.token, args.channel)
     return _show_channel(creds, args.channel)
 
 

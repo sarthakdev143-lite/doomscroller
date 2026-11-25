@@ -683,3 +683,105 @@ def test_wave16_main_clip_procedural_guard_env_atomic_and_list_jobs_scrub(tmp_pa
     assert res["running"] is False
     assert "CANARY_MAIN_W16" not in res["error"]
 
+
+def test_wave17_oauth_channel_hint_publisher_scraper_scrub_and_cli_guards(tmp_path, monkeypatch, capsys):
+    from app.clipper import media
+    from app.models import Channel
+    from app.publishers import youtube_publisher as yt_pub
+    from app.scrapers import snapchat_scraper as snap_mod, yt_dlp_scraper as ytdlp_mod
+    from scripts import clip as clip_cli, compile as compile_cli, youtube_oauth as oauth_cli
+
+    # A. youtube_oauth._show_next_step leaves .env untouched for named channels
+    capsys.readouterr()
+    oauth_cli._show_next_step("secrets/ambient_client_secret.json", "secrets/ambient_token.json", "ambient")
+    out_named = capsys.readouterr().out
+    assert "YOUTUBE_TOKEN_PATH=" not in out_named
+    assert "channels.json" in out_named
+    assert "doctor --channel ambient" in out_named
+
+    oauth_cli._show_next_step("secrets/client_secret.json", "secrets/youtube_token.json", None)
+    assert "YOUTUBE_TOKEN_PATH=" in capsys.readouterr().out
+
+    # B. YouTubePublisher, SnapchatScraper, and YtDlpScraper scrub proxy/secret values
+    monkeypatch.setattr(settings, "proxy_url", "http://u:CANARY_PUB_W17@proxy:8080")
+    assert "CANARY_PUB_W17" not in yt_pub.explain_api_error(RuntimeError("proxy http://u:CANARY_PUB_W17@proxy:8080"))
+
+    class _DummyReq:
+        resumable_uri = "https://upload.example"
+
+        def next_chunk(self):
+            raise OSError("via http://u:CANARY_PUB_W17@proxy:8080")
+
+    with pytest.raises(yt_pub.UploadOutcomeUnknown) as exc_info:
+        yt_pub._send(_DummyReq())
+    assert "CANARY_PUB_W17" not in str(exc_info.value)
+
+    import logging
+
+    records: list[str] = []
+
+    class _MemHandler(logging.Handler):
+        def emit(self, record):
+            records.append(self.format(record))
+
+    handler = _MemHandler()
+    snap_mod.log.addHandler(handler)
+    ytdlp_mod.log.addHandler(handler)
+    try:
+        scraper = snap_mod.SnapchatScraper()
+        monkeypatch.setattr(
+            scraper,
+            "_http",
+            lambda: type("_H", (), {"get": lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("proxy http://u:CANARY_PUB_W17@proxy:8080"))})(),
+        )
+        assert scraper._fetch_next_data("https://www.snapchat.com/spotlight", allow_browser=False, retries=0) is None
+
+        class _FakeYdl:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_a):
+                return False
+
+            def extract_info(self, *_a, **_kw):
+                raise RuntimeError("proxy http://u:CANARY_PUB_W17@proxy:8080")
+
+        ydl_scraper = ytdlp_mod.YtDlpScraper()
+        monkeypatch.setattr(
+            ydl_scraper,
+            "_client",
+            lambda: type("_YdlMod", (), {"YoutubeDL": staticmethod(lambda _opts: _FakeYdl())})(),
+        )
+        assert ydl_scraper._enumerate("https://www.youtube.com/@x", 2, "youtube") == []
+    finally:
+        snap_mod.log.removeHandler(handler)
+        ytdlp_mod.log.removeHandler(handler)
+    assert records and all("CANARY_PUB_W17" not in msg for msg in records)
+
+    # C. scripts/clip.py rejects procedural ambient channel & handles Interrupted cleanly
+    init_db()
+    with session_scope() as db:
+        db.add(Channel(slug="amb-w17", name="Ambient W17", meta={"mode": "procedural_ambient"}, enabled=True))
+
+    capsys.readouterr()
+    assert clip_cli.main(["https://youtu.be/abc12345678", "--channel", "amb-w17", "--json"]) == 1
+    clip_err = json.loads(capsys.readouterr().out)
+    assert clip_err["ok"] is False and "procedural" in clip_err["error"].lower()
+
+    monkeypatch.setattr(clip_cli, "clip_source", lambda *_a, **_kw: (_ for _ in ()).throw(media.Interrupted("stopped")))
+    capsys.readouterr()
+    assert clip_cli.main(["https://youtu.be/abc12345678", "--json"]) == 1
+    clip_int = json.loads(capsys.readouterr().out)
+    assert clip_int["ok"] is False and "stopped" in clip_int["error"].lower()
+
+    # D. scripts/compile.py returns clean JSON + exit 1 on unknown channel or unknown retry job
+    capsys.readouterr()
+    assert compile_cli.main(["--channel", "no_such_chan_w17", "--json"]) == 1
+    comp_chan = json.loads(capsys.readouterr().out)
+    assert comp_chan["ok"] is False and "unknown channel" in comp_chan["error"].lower()
+
+    capsys.readouterr()
+    assert compile_cli.main(["--retry", "no_such_job_w17", "--json"]) == 1
+    comp_retry = json.loads(capsys.readouterr().out)
+    assert comp_retry["ok"] is False and comp_retry["error"]
+

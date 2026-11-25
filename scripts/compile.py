@@ -14,6 +14,14 @@ from app.db import init_db  # noqa: E402
 from app.longform import job as long_job  # noqa: E402
 
 
+def _fail(message: str, *, as_json: bool) -> int:
+    if as_json:
+        print(json.dumps({"ok": False, "error": message}, indent=2))
+    else:
+        print(f"Error: {message}", file=sys.stderr)
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--channel", default="", help="Managed channel slug (default when omitted)")
@@ -52,8 +60,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             res = long_job.retry_long_job(args.retry)
         except (LookupError, ValueError) as exc:
-            print(f"Error: {exc}", file=sys.stderr)
-            return 1
+            return _fail(str(exc), as_json=args.as_json)
         if args.run_now:
             res = long_job.run_next_long_job() or res
         print(json.dumps(res, indent=2) if args.as_json else f"Retried {args.retry}: {res}")
@@ -63,14 +70,17 @@ def main(argv: list[str] | None = None) -> int:
     target = args.vs.strip()
     if args.format_kind == "vs" and not target and len(targets) >= 2:
         target = f"{targets[0]} vs {targets[1]}"
-    job_id = long_job.enqueue_long_job(
-        args.channel,
-        format_kind=args.format_kind,
-        target=target,
-        targets=targets,
-        theme=args.theme,
-        target_minutes=args.minutes,
-    )
+    try:
+        job_id = long_job.enqueue_long_job(
+            args.channel,
+            format_kind=args.format_kind,
+            target=target,
+            targets=targets,
+            theme=args.theme,
+            target_minutes=args.minutes,
+        )
+    except (LookupError, ValueError) as exc:
+        return _fail(str(exc), as_json=args.as_json)
     if args.run_now:
         out = long_job.run_next_long_job() or {"ok": False, "job_id": job_id, "error": "worker returned None"}
         if args.as_json:

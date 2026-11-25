@@ -13,6 +13,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any, List
 
+from ..logging_config import scrub_secrets
 from .base import ScrapedItem, Scraper
 
 log = logging.getLogger(__name__)
@@ -287,7 +288,7 @@ class YtDlpScraper(Scraper):
                         elif collect(e):
                             break
         except Exception as e:
-            log.error("yt-dlp enumerate failed for %r: %s", url, e)
+            log.error("yt-dlp enumerate failed for %r: %s", url, scrub_secrets(str(e)))
         return self._dedup(items)[:max_results]
 
     @staticmethod
@@ -340,7 +341,7 @@ class YtDlpScraper(Scraper):
                     return None
                 return path
         except Exception as e:
-            log.error("yt-dlp download failed for %r: %s", item.source_url, e)
+            log.error("yt-dlp download failed for %r: %s", item.source_url, scrub_secrets(str(e)))
             return None
 
     # ---------- Public scraper interface ----------

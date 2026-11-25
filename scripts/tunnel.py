@@ -22,7 +22,7 @@ IS_WINDOWS = os.name == "nt"
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.logging_config import LOG_DIR  # noqa: E402
+from app.logging_config import LOG_DIR, scrub_secrets  # noqa: E402
 from app.winproc import background_subprocess_kwargs, trim_working_set  # noqa: E402
 
 def _env_port(name: str, default: int) -> int:
@@ -157,9 +157,12 @@ class TunnelSupervisor:
             return
         target = notify.TUNNEL_URL_FILE
         target.parent.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_name(f"{target.name}.{os.getpid()}.tmp")
-        tmp.write_text(clean_url + "\n", encoding="utf-8")
-        os.replace(tmp, target)
+        tmp = target.with_name(f"{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        try:
+            tmp.write_text(clean_url + "\n", encoding="utf-8")
+            os.replace(tmp, target)
+        finally:
+            tmp.unlink(missing_ok=True)
         if clean_url != self._last_url:
             self._last_url = clean_url
             if notify.configured():
@@ -203,7 +206,7 @@ class TunnelSupervisor:
                 )
             except OSError as exc:
                 with open(log_path, "a", encoding="utf-8", errors="replace") as log_file:
-                    log_file.write(f"[supervisor] {name} start failed: {exc}\n")
+                    log_file.write(f"[supervisor] {name} start failed: {scrub_secrets(str(exc))}\n")
                 provider_idx += 1
                 self._stop.wait(2.0)
                 continue
@@ -227,7 +230,11 @@ class TunnelSupervisor:
                     url = extract_tunnel_url(line)
                     if url:
                         announced = True
-                        self._announce(url)
+                        try:
+                            self._announce(url)
+                        except Exception as exc:
+                            log_file.write(f"[supervisor] announce failed: {scrub_secrets(str(exc))}\n")
+                            log_file.flush()
                         if not trimmed:
                             trimmed = True
                             timer = threading.Timer(3.0, trim_working_set, kwargs={"pid": proc.pid})

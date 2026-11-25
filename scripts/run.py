@@ -26,6 +26,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
 from pathlib import Path
@@ -151,13 +152,16 @@ def ensure_env_and_review_token(
 
 def _atomic_write_private(path: Path, contents: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(contents, encoding="utf-8")
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
-        os.chmod(tmp, 0o600)
-    except OSError:
-        pass
-    os.replace(tmp, path)
+        tmp.write_text(contents, encoding="utf-8")
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def local_panel_url(env_path: Path | None = None, port: int | None = None) -> str:
@@ -287,7 +291,7 @@ def _read_pids() -> dict[str, int]:
     if not PID_FILE.exists():
         return {}
     try:
-        data = json.loads(PID_FILE.read_text())
+        data = json.loads(PID_FILE.read_text(encoding="utf-8"))
         return {k: int(v) for k, v in data.items()}
     except Exception:
         return {}

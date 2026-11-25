@@ -18,6 +18,7 @@ import argparse
 import json
 import os
 import sys
+import threading
 from collections import Counter
 from pathlib import Path
 
@@ -255,7 +256,7 @@ def _show_learning(state: dict) -> None:
 def _write_atomic(path: Path, text: str) -> None:
     """Whole file or nothing: a half-written weekly digest is worse than none."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(path.name + ".tmp")
+    temp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
         temp.write_text(text, encoding="utf-8")
         os.replace(temp, path)

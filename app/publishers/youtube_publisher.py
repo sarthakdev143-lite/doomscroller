@@ -9,6 +9,7 @@ import re
 import tempfile
 from typing import Any, Optional
 
+from ..logging_config import scrub_secrets
 from .base import PublishResult, Publisher, TokenProblem, UploadOutcomeUnknown
 
 
@@ -72,7 +73,7 @@ def explain_api_error(exc: Exception, api: str = "YouTube Data API v3") -> str:
     from googleapiclient.errors import HttpError
     from httplib2 import HttpLib2Error
 
-    text = str(exc)
+    text = scrub_secrets(str(exc))
     if "invalid_grant" in text:
         return (
             "Google refused the token (invalid_grant): it was revoked, or it expired, because tokens die after "
@@ -84,9 +85,12 @@ def explain_api_error(exc: Exception, api: str = "YouTube Data API v3") -> str:
     cause = exc.__cause__ or exc
     # A refresh also saves the token, and sockets raise plain OSError too, so the errno is what tells them apart.
     if isinstance(cause, OSError) and cause.errno in _LOCAL_ERRNOS:
-        return f"a problem on this machine, not at Google: {cause}. Check the disk space and the folder's permissions."
+        return (
+            f"a problem on this machine, not at Google: {scrub_secrets(str(cause))}. "
+            "Check the disk space and the folder's permissions."
+        )
     if isinstance(cause, (OSError, HttpLib2Error, TransportError)):
-        return f"could not reach Google: {cause}. Check the connection and try again."
+        return f"could not reach Google: {scrub_secrets(str(cause))}. Check the connection and try again."
     if not isinstance(exc, HttpError):
         return text
     # Not str(exc), which carries the URL and so can match a video id.
@@ -111,7 +115,7 @@ def explain_api_error(exc: Exception, api: str = "YouTube Data API v3") -> str:
     reason = exc.reason
     if not reason or str(reason).strip().lower() == "ok":
         reason = oauth_extra or f"HTTP {exc.resp.status}"
-    return f"Google refused the {api} request: {reason}.{owner}"
+    return f"Google refused the {api} request: {scrub_secrets(str(reason))}.{owner}"
 
 
 def write_token_file(path: str, contents: str) -> None:
@@ -143,7 +147,7 @@ def _send(request):
         refused = isinstance(exc, HttpError) and exc.resp.status < 500
         if request.resumable_uri is None or refused:
             raise
-        raise UploadOutcomeUnknown(f"upload outcome unknown: {exc}") from exc
+        raise UploadOutcomeUnknown(f"upload outcome unknown: {scrub_secrets(str(exc))}") from exc
 
 
 def _safe_stat_int(value: Any) -> int:
@@ -249,12 +253,14 @@ class YouTubePublisher(Publisher):
             creds.refresh(Request())
         except RefreshError as e:
             raise TokenProblem(
-                f"YouTube token refresh failed: {e}. Tokens die after 7 days while the OAuth consent screen "
+                f"YouTube token refresh failed: {scrub_secrets(str(e))}. Tokens die after 7 days while the OAuth consent screen "
                 "is in Testing, so publish it to production, then re-auth via: python scripts/youtube_oauth.py --force"
             ) from e
         except Exception as e:
             # A dropped connection says nothing about the token, so no re-auth: the next run tries again.
-            raise RuntimeError(f"YouTube token refresh failed: could not reach Google ({type(e).__name__}): {e}") from e
+            raise RuntimeError(
+                f"YouTube token refresh failed: could not reach Google ({type(e).__name__}): {scrub_secrets(str(e))}"
+            ) from e
         write_token_file(self.token_path, creds.to_json())
         return creds
 

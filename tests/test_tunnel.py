@@ -146,3 +146,62 @@ def test_windows_daemon_starts_tunnel_when_cloudflared_exists_and_posix_leaves_i
     assert run._read_pids() == {"slim": 102}
 
 
+def test_wave17_tunnel_announce_error_does_not_kill_supervisor_and_atomic_tmp_cleanup(tmp_path, monkeypatch):
+    from app.config import settings
+    from scripts import run as run_cli, tunnel
+
+    # A. TunnelSupervisor.run_forever survives _announce errors and logs scrubbed messages
+    fake_cf = tmp_path / "fake_cf_w17.py"
+    fake_cf.write_text(
+        textwrap.dedent("""
+            import time
+            print("INF |  https://first-w17.trycloudflare.com  |", flush=True)
+            print("INF |  https://second-w17.trycloudflare.com  |", flush=True)
+            time.sleep(0.3)
+        """),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(tunnel, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(tunnel, "LOG_DIR", "logs")
+    monkeypatch.setattr(tunnel, "tunnel_command", lambda binary, port: [sys.executable, str(fake_cf)])
+    monkeypatch.setattr(settings, "proxy_url", "http://u:CANARY_TUN_W17@proxy:8080")
+
+    class NoWait(threading.Event):
+        def wait(self, timeout=None):
+            return self.is_set()
+
+    sup = tunnel.TunnelSupervisor(binary="cloudflared", ssh_bin=None)
+    sup._stop = NoWait()
+    seen: list[str] = []
+    calls = 0
+
+    def flaky_announce(url: str) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("locked http://u:CANARY_TUN_W17@proxy:8080")
+        seen.append(url)
+        sup._stop.set()
+
+    monkeypatch.setattr(sup, "_announce", flaky_announce)
+    try:
+        sup.run_forever()
+    finally:
+        sup.stop()
+
+    assert seen == ["https://second-w17.trycloudflare.com"]
+    tunnel_log = (tmp_path / "logs" / "tunnel.log").read_text(encoding="utf-8")
+    assert "announce failed" in tunnel_log
+    assert "CANARY_TUN_W17" not in tunnel_log
+
+    # B. run._atomic_write_private cleans up its temp file on os.replace failure
+    monkeypatch.setattr(
+        run_cli.os,
+        "replace",
+        lambda *_a, **_kw: (_ for _ in ()).throw(OSError("simulated replace fail")),
+    )
+    with pytest.raises(OSError):
+        run_cli._atomic_write_private(tmp_path / "p.txt", "hi")
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
