@@ -776,10 +776,17 @@ def _short_cue_line(raw: object, limit: int = 44) -> str:
     return clipped or text[:limit].strip()
 
 
-def _clean_vlog_summary_cues(moment: Moment, duration: float, hook: str) -> list[tuple[float, float, str]]:
+def _clean_vlog_summary_cues(
+    moment: Moment,
+    duration: float,
+    hook: str,
+    *,
+    language: str = "",
+) -> list[tuple[float, float, str]]:
     """Build up to 2 crisp setup->reveal cues for clean_vlog speech clips without word captions."""
     if moment.kind != "speech" or not math.isfinite(duration) or duration <= 3.5:
         return []
+    from app.metadata import has_devanagari, is_hinglish_text
     from app.transformers.ffmpeg_transformer import is_renderable
 
     hook_key = " ".join((hook or "").lower().split())
@@ -788,6 +795,8 @@ def _clean_vlog_summary_cues(moment: Moment, duration: float, hook: str) -> list
         setup = ""
     raw_payoff = moment.reveal or (moment.description.split(".", 1)[0] if moment.description else "")
     payoff = _short_cue_line(raw_payoff)
+    if str(language or "").strip().lower().startswith("hi") and payoff and not has_devanagari(payoff) and not is_hinglish_text(payoff):
+        payoff = ""
     if not payoff or payoff.lower() in (hook_key, setup.lower()) or not is_renderable(payoff):
         payoff = "END TAK DEKHO" if setup and duration >= 8.0 else ""
 
@@ -880,7 +889,7 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
     speed_est = edit.speed if edit and math.isfinite(edit.speed) and edit.speed > 0 else 1.0
     est_dur = total_duration(segments) / speed_est
     summary_cues = (
-        _clean_vlog_summary_cues(moment, est_dur, moment.hook)
+        _clean_vlog_summary_cues(moment, est_dur, moment.hook, language=language)
         if (not captions and not clip_words and not (source_captioned and not crop_bottom))
         else []
     )

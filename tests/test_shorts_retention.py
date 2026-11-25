@@ -779,3 +779,21 @@ def test_clean_hook_and_description_sanitize_risky_words_and_dangling_tail():
     words = [Word("Hello", 0.0, 0.5), Word("world.", 0.5, 1.0)]
     en_prompt = moments._speech_prompt(moments.build_sentences(words), 1, "Challenge", language="en")
     assert "advertiser-friendly" in en_prompt.lower()
+
+
+def test_clean_vlog_summary_cues_blocks_english_description_leak_for_hindi():
+    cues = render._clean_vlog_summary_cues(
+        Moment(
+            0.0,
+            20.0,
+            kind="speech",
+            title="Piyush Ka Surprise",
+            description="An emotional goodbye to their first home.",
+        ),
+        20.0,
+        "Kya Hua Dekho",
+        language="hi",
+    )
+    texts = [t for _, _, t in cues]
+    assert not any("emotional goodbye" in t.lower() for t in texts)
+    assert "END TAK DEKHO" in texts

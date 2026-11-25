@@ -1867,3 +1867,77 @@ def test_unsafe_burned_in_hook_is_flagged_blocked_from_approve_clean_and_rejecte
     assert res_rej["ids"] == [id_unsafe]
     with session_scope() as db:
         assert db.get(Video, id_unsafe).status == VideoStatus.REJECTED
+
+
+def test_queue_balances_active_channels_and_posted_carries_channel_slug(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from app.growth import approval
+    from app.models import VideoStatus
+    from app.review_ui import PAGE
+
+    assert "c.channel_slug||'default')===filter" in PAGE
+    _write(
+        tmp_path,
+        monkeypatch,
+        {
+            "channels": [
+                {"slug": "default", "name": "Default"},
+                {"slug": "indianvlogs", "name": "Indian Vlogs", "enabled": True},
+            ]
+        },
+    )
+    mp4 = tmp_path / "clip.mp4"
+    mp4.write_bytes(b"mp4")
+    now = datetime.now(timezone.utc)
+    with session_scope() as db:
+        channels.sync_channels(db)
+        ch_def = channels.channel_by_slug(db, "default")
+        ch_hi = channels.channel_by_slug(db, "indianvlogs")
+        for i in range(42):
+            db.add(
+                Video(
+                    source="youtube",
+                    source_id=f"def_{i}",
+                    source_url=f"https://youtu.be/d{i}",
+                    title=f"Def {i}",
+                    status=VideoStatus.PENDING,
+                    channel_id=ch_def.id,
+                    transformed_path=str(mp4),
+                    scraped_at=now - timedelta(minutes=i),
+                    meta={"clip_rendered": True},
+                )
+            )
+        for i in range(3):
+            db.add(
+                Video(
+                    source="youtube",
+                    source_id=f"hi_{i}",
+                    source_url=f"https://youtu.be/h{i}",
+                    title=f"Hi {i}",
+                    status=VideoStatus.PENDING,
+                    channel_id=ch_hi.id,
+                    transformed_path=str(mp4),
+                    scraped_at=now - timedelta(hours=5, minutes=i),
+                    meta={"clip_rendered": True},
+                )
+            )
+        db.add(
+            Video(
+                source="youtube",
+                source_id="hi_pub",
+                source_url="https://youtu.be/hp",
+                title="Hi Pub",
+                status=VideoStatus.PUBLISHED,
+                youtube_video_id="YTHIPUB1",
+                published_at=now,
+                channel_id=ch_hi.id,
+                transformed_path=str(mp4),
+                meta={"clip_rendered": True},
+            )
+        )
+
+    q = approval.queue()
+    hi_clips = [c for c in q["clips"] if c["channel_slug"] == "indianvlogs"]
+    assert len(hi_clips) == 3
+    assert len(q["clips"]) == approval._QUEUE_LIMIT
+    assert q["posted"][0]["channel_slug"] == "indianvlogs"

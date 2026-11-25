@@ -36,16 +36,42 @@ class ReviewError(ValueError):
     pass
 
 
-def awaiting_review(db, scope=None) -> list[Video]:
+def awaiting_review(db, scope=None, limit: int = _QUEUE_LIMIT) -> list[Video]:
     conds = [Video.status == VideoStatus.PENDING]
     if scope is not None:
         conds.append(scope)
+    cap = max(1, int(limit))
     rows = db.execute(select(Video).where(*conds)
-                      .order_by(Video.scraped_at.desc()).limit(_QUEUE_LIMIT * 3)).scalars().all()
+                      .order_by(Video.scraped_at.desc()).limit(cap * 3)).scalars().all()
     return [v for v in rows if (v.meta or {}).get("clip_rendered")
             and not (v.meta or {}).get("long_form")
             and v.transformed_path
-            and os.path.exists(v.transformed_path)][:_QUEUE_LIMIT]
+            and os.path.exists(v.transformed_path)][:cap]
+
+
+def _balanced_awaiting_review(db, active: Sequence) -> list[Video]:
+    """Pull review clips fairly across active channels so one busy channel never hides another."""
+    from . import channels
+
+    if len(active) <= 1:
+        return awaiting_review(db)
+    per_chan = max(1, _QUEUE_LIMIT // len(active))
+    picked: list[Video] = []
+    seen: set[str] = set()
+    for ch in active:
+        for v in awaiting_review(db, channels.video_scope(ch), limit=per_chan):
+            if v.id not in seen:
+                picked.append(v)
+                seen.add(v.id)
+    if len(picked) < _QUEUE_LIMIT:
+        for v in awaiting_review(db, limit=_QUEUE_LIMIT):
+            if v.id not in seen:
+                picked.append(v)
+                seen.add(v.id)
+                if len(picked) >= _QUEUE_LIMIT:
+                    break
+    picked.sort(key=lambda v: v.scraped_at.timestamp() if v.scraped_at else 0.0, reverse=True)
+    return picked[:_QUEUE_LIMIT]
 
 
 def awaiting_scraped(db) -> list[Video]:
@@ -196,7 +222,7 @@ def _audio_line(earshot: Optional[dict]) -> str:
 _POSTED_LIMIT = 20
 
 
-def _result(video: Video) -> dict:
+def _result(video: Video, channel_slug: str = "default") -> dict:
     meta = video.meta or {}
     analytics = meta.get("yt_analytics") or {}
     diagnosis = meta.get("growth_diagnosis") or {}
@@ -211,6 +237,7 @@ def _result(video: Video) -> dict:
         "watched": round(float(percent)) if percent is not None else None,
         "verdict": diagnosis.get("code", ""),
         "why": diagnosis.get("reason", ""),
+        "channel_slug": channel_slug or "default",
         "has_media": any(bool(p and os.path.isfile(p)) for p in (video.transformed_path, video.local_path)),
     }
 
@@ -219,8 +246,15 @@ def recent_posts(db) -> list[dict]:
     """The latest real uploads with how they did, and the loop's reading of why."""
     rows = db.execute(select(Video).where(Video.status == VideoStatus.PUBLISHED, Video.youtube_video_id.isnot(None))
                       .order_by(Video.published_at.desc()).limit(_POSTED_LIMIT * 2)).scalars().all()
-    return [_result(v) for v in rows if not v.youtube_video_id.startswith("MOCK_")
-            and not (v.meta or {}).get("long_form")][:_POSTED_LIMIT]
+    out: list[dict] = []
+    for v in rows:
+        if v.youtube_video_id.startswith("MOCK_") or (v.meta or {}).get("long_form"):
+            continue
+        _, slug = _channel_of(db, v.channel_id)
+        out.append(_result(v, channel_slug=slug))
+        if len(out) >= _POSTED_LIMIT:
+            break
+    return out
 
 
 def _attention(db, channel, waiting: int, approved: int, now: datetime) -> str:
@@ -281,7 +315,7 @@ def queue() -> dict:
 
     with session_scope() as db:
         active = channels.active_channels(db)
-        cards = [_card(v, db) for v in awaiting_review(db)]
+        cards = [_card(v, db) for v in _balanced_awaiting_review(db, active)]
         scraped = [_card(v, db) for v in awaiting_scraped(db)]
         queued = [_card(v, db) for v in ready_clips(db)][:_QUEUE_LIMIT]
         per = [_channel_status(db, c) for c in active]

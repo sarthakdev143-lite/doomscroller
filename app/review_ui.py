@@ -674,7 +674,8 @@ function renderReview(){
   const paused=(channels.find(c=>c.attention&&/paused|hold/i.test(c.attention)&&!c.owner_paused)||{}).attention;
   const banner=$('banner');if(paused){banner.hidden=false;banner.replaceChildren(el('div',{className:'banner'},paused+' — some channels are not posting.'))}else banner.hidden=true;
   renderModes(d);renderChips(channels);renderStrip(channels);
-  const postedAll=(d.posted||[]).filter(matchesSearch);
+  const postedPool=filter==='all'?(d.posted||[]):(d.posted||[]).filter(c=>(c.channel_slug||'default')===filter);
+  const postedAll=postedPool.filter(matchesSearch);
   renderPosted(postedAll);
   const sourcePool=reviewMode==='queued'?queuedAll:(reviewMode==='scraped'?scrapedAll:d.clips);
   const byChan=(filter==='all'||reviewMode==='scraped')?sourcePool:sourcePool.filter(c=>(c.channel_slug||'default')===filter);
@@ -1675,7 +1676,10 @@ function visibleCards(){return[...$('list').querySelectorAll('.card')]}
 function focusCard(idx){
   const arr=visibleCards();if(!arr.length){kbIdx=-1;return null}
   kbIdx=Math.max(0,Math.min(arr.length-1,idx));
-  arr.forEach((c,i)=>c.classList.toggle('kb-focus',i===kbIdx));
+  arr.forEach((c,i)=>{
+    c.classList.toggle('kb-focus',i===kbIdx);
+    if(i!==kbIdx){const st=c.querySelector('.vstage.short');if(st&&st._reset&&st.querySelector('video'))st._reset()}
+  });
   arr[kbIdx].scrollIntoView({behavior:'smooth',block:'nearest'});
   return arr[kbIdx];
 }
