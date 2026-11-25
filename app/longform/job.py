@@ -11,7 +11,7 @@ from typing import Optional, Sequence
 
 from sqlalchemy import desc, func, or_, select, update
 
-from app import quota
+from app import logging_config, quota
 from app.config import settings
 from app.db import session_scope
 from app.growth import channels, notify, safety
@@ -26,6 +26,8 @@ log = logging.getLogger(__name__)
 
 _worker_lock = threading.Lock()
 _worker_thread: Optional[threading.Thread] = None
+_active_long_job_id: Optional[str] = None
+_MAX_ATTEMPTS = 3
 _TERMINAL_STATUSES = ("done", "succeeded", "failed", "cancelled", "canceled")
 _FORMAT_ROTATION = ("best_of", "vs", "theme")
 _AMBIENT_FORMATS = ("lofi_chill", "rain_focus", "night_ambient", "deep_study")
@@ -197,15 +199,54 @@ def _set_stage(job_id: str, stage: str) -> None:
             job.stage = stage[:160]
 
 
+def _recover_orphaned_locked() -> int:
+    """Reset any orphaned ``running`` LongJob rows while holding ``RENDER_LOCK``."""
+    with session_scope() as db:
+        stmt = select(LongJob).where(LongJob.status == "running")
+        if _active_long_job_id is not None:
+            stmt = stmt.where(LongJob.id != _active_long_job_id)
+        stale = db.execute(stmt).scalars().all()
+        now = datetime.now(timezone.utc)
+        for row in stale:
+            if (row.attempts or 0) >= _MAX_ATTEMPTS:
+                row.status = "failed"
+                row.stage = "failed"
+                row.error = "interrupted too many times"
+                row.finished_at = now
+            else:
+                row.status = "queued"
+                row.stage = ""
+                row.started_at = None
+        return len(stale)
+
+
+def recover_interrupted_long_jobs() -> int:
+    """Recover orphaned ``status='running'`` long-form jobs left behind by a crashed process."""
+    from app.clipper import job as clip_job
+
+    if not clip_job.RENDER_LOCK.acquire(blocking=False):
+        return 0
+    try:
+        recovered = _recover_orphaned_locked()
+    finally:
+        clip_job.RENDER_LOCK.release()
+    if recovered:
+        log.info("longform.job: recovered %d interrupted long job(s)", recovered)
+    return recovered
+
+
 def run_next_long_job(*, now: Optional[datetime] = None) -> Optional[dict]:
     """Claim and build the oldest queued LongJob under the shared CPU RENDER_LOCK."""
     from app.clipper import job as clip_job
+    from app.clipper.media import Interrupted
 
+    global _active_long_job_id
     if not clip_job.RENDER_LOCK.acquire(blocking=False):
         return {"busy": True}
     now = now or datetime.now(timezone.utc)
     job_id = None
     try:
+        _recover_orphaned_locked()
         with session_scope() as db:
             job = db.execute(
                 select(LongJob).where(LongJob.status == "queued").order_by(LongJob.created_at, LongJob.id).limit(1)
@@ -217,6 +258,7 @@ def run_next_long_job(*, now: Optional[datetime] = None) -> Optional[dict]:
             job.attempts = (job.attempts or 0) + 1
             job.started_at = now
             job_id = job.id
+            _active_long_job_id = job_id
             channel = channels.get_channel(db, job.channel_id) or channels.default_channel(db)
             if channel is None:
                 raise ValueError("no managed channel found")
@@ -482,18 +524,35 @@ def run_next_long_job(*, now: Optional[datetime] = None) -> Optional[dict]:
         except Exception as exc:
             log.warning("longform.job: phone alert failed: %s", exc)
         return result_payload
+    except Interrupted:
+        if job_id is not None:
+            with session_scope() as db:
+                job_row = db.get(LongJob, job_id)
+                if job_row is not None:
+                    if (job_row.attempts or 0) >= _MAX_ATTEMPTS:
+                        job_row.status = "failed"
+                        job_row.stage = "failed"
+                        job_row.error = "interrupted too many times"
+                        job_row.finished_at = datetime.now(timezone.utc)
+                    else:
+                        job_row.status = "queued"
+                        job_row.stage = ""
+                        job_row.started_at = None
+        return {"ok": False, "interrupted": True, "job_id": job_id}
     except Exception as exc:
         log.exception("longform.job: failed job %s", job_id)
+        safe_exc = logging_config.scrub_secrets(f"{type(exc).__name__}: {exc}")[:1000]
         if job_id is not None:
             with session_scope() as db:
                 job_row = db.get(LongJob, job_id)
                 if job_row is not None:
                     job_row.status = "failed"
                     job_row.stage = "failed"
-                    job_row.error = f"{type(exc).__name__}: {exc}"[:1000]
+                    job_row.error = safe_exc
                     job_row.finished_at = datetime.now(timezone.utc)
-        return {"ok": False, "job_id": job_id, "error": str(exc)}
+        return {"ok": False, "job_id": job_id, "error": logging_config.scrub_secrets(str(exc))}
     finally:
+        _active_long_job_id = None
         clip_job.RENDER_LOCK.release()
         reclaim_memory()
 
@@ -501,12 +560,16 @@ def run_next_long_job(*, now: Optional[datetime] = None) -> Optional[dict]:
 def _worker_loop() -> None:
     while True:
         res = run_next_long_job()
-        if res is None or res.get("busy"):
+        if res is None or res.get("busy") or res.get("interrupted"):
             return
 
 
 def start_long_worker() -> bool:
     global _worker_thread
+    try:
+        recover_interrupted_long_jobs()
+    except Exception as exc:
+        log.warning("longform.job: startup recovery failed: %s", exc)
     with _worker_lock:
         if _worker_thread is not None and _worker_thread.is_alive():
             return False
@@ -540,6 +603,10 @@ def _pick_auto_format(db, channel: Channel) -> tuple[str, list[str], str]:
 def long_supply_job(*, now: Optional[datetime] = None) -> dict:
     """Keep 16:9 stock queued ahead per eligible channel (including paused procedural channels into PENDING)."""
     now = now or datetime.now(timezone.utc)
+    try:
+        recover_interrupted_long_jobs()
+    except Exception:
+        pass
     with session_scope() as db:
         active = channels.long_supply_channels(db)
         if not active:

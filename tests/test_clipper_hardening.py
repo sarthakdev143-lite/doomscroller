@@ -802,3 +802,60 @@ def test_render_moment_clamps_opening_frame_skip_before_first_word(tmp_path, mon
     render_mod.render_moment(str(src), info, sig, Moment(0.0, 15.0, kind="speech"), words, str(tmp_path / "out.mp4"), edit=ed)
     # Since words[0].start == 0.25, allowed_skip < 0.5, so _bright_sharp_opening_offset is not even invoked to clip speech.
     assert seen_skip_max == []
+
+
+def test_ai_per_model_cooldown_and_ask_json_claude_fallback(monkeypatch):
+    import subprocess
+
+    monkeypatch.setattr(ai, "_model_down_until", {})
+    monkeypatch.setattr(ai, "_opencode_down_until", 0.0)
+    monkeypatch.setattr(ai, "opencode_path", lambda: "opencode")
+    monkeypatch.setattr(ai, "claude_path", lambda: None)
+    monkeypatch.setattr(ai, "_command_prefix", lambda b: [b])
+    monkeypatch.setattr(settings, "opencode_model", "rate/limited, ok/second")
+
+    seen_models: list[str] = []
+
+    def fake_run(command, **kwargs):
+        model = command[command.index("--model") + 1]
+        seen_models.append(model)
+        if model == "rate/limited":
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout='{"type":"error","error":{"name":"FreeUsageLimitError","data":{"message":"429 Too Many Requests"}}}',
+                stderr="",
+            )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout='{"type":"text","part":{"text":"{\\"ok\\": true}"}}',
+            stderr="",
+        )
+
+    monkeypatch.setattr(ai.subprocess, "run", fake_run)
+    assert ai.ask("first call") == '{"ok": true}'
+    assert seen_models == ["rate/limited", "ok/second"]
+
+    seen_models.clear()
+    assert ai.ask("second call") == '{"ok": true}'
+    # rate/limited must be skipped while cooled down.
+    assert seen_models == ["ok/second"]
+
+    # When OpenCode replies with prose twice on ask_json and Claude is available, ask_json rescues via Claude.
+    monkeypatch.setattr(ai, "claude_path", lambda: "claude")
+    claude_calls: list[str] = []
+    monkeypatch.setattr(
+        ai,
+        "_ask_opencode",
+        lambda prompt, **kw: "I see 8 frames showing various scenes...",
+    )
+    monkeypatch.setattr(
+        ai,
+        "_ask_claude",
+        lambda prompt, **kw: claude_calls.append(prompt) or '{"shots": [1, 3], "search": ""}',
+    )
+    parsed = ai.ask_json("pick shots", files=["dummy.jpg"])
+    assert parsed == {"shots": [1, 3], "search": ""}
+    assert len(claude_calls) == 1
+    assert "valid raw JSON object" in claude_calls[0]

@@ -590,3 +590,54 @@ def test_ambient_engagement_comment_and_controls_cleanup_summary(monkeypatch):
     assert "renders removed" in summary
     assert "cache files removed" in summary
 
+
+def test_watch_skips_permanently_unavailable_video_and_youtube_scrubs_tts_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    import yt_dlp
+
+    def fake_ydl_cls(opts):
+        class _YDL:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def extract_info(self, url, **kw):
+                if "DEAD_EMBED" in url:
+                    raise RuntimeError("ERROR: [youtube] DEAD_EMBED: Video unavailable. Playback on other websites has been disabled by the video owner")
+                if "UPCOMING" in url:
+                    raise RuntimeError("ERROR: [youtube] UPCOMING: Premieres in 30 minutes")
+                raise RuntimeError("Connection timed out")
+
+        return _YDL()
+
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", fake_ydl_cls)
+
+    p_dead = watch._probe("https://www.youtube.com/watch?v=DEAD_EMBED")
+    assert p_dead == {"unavailable": True}
+    assert watch._verdict(p_dead) == "skip"
+    assert watch._verdict(watch._probe("https://www.youtube.com/watch?v=UPCOMING")) == "later"
+    assert watch._verdict(watch._probe("https://www.youtube.com/watch?v=NET_ERR")) == "later"
+
+    ch_file = tmp_path / "channels.json"
+    feed_url = "https://www.youtube.com/channel/UCbbbbbbbbbbbbbbbbbbbbbb"
+    ch_file.write_text(json.dumps({"channels": [{"slug": "vlogs", "feeds": [feed_url]}]}), encoding="utf-8")
+    monkeypatch.setattr(settings, "channels_file", str(ch_file))
+    monkeypatch.setattr(watch, "_fetch", lambda url: _atom(("SEED1", "2026-11-09T08:00:00+00:00")))
+    watch.watch_job(now=START)
+
+    monkeypatch.setattr(watch, "_fetch", lambda url: _atom(("DEAD_EMBED", "2026-11-09T09:20:00+00:00")))
+    res = watch.watch_job(now=START + timedelta(minutes=25))
+    assert res == {"feeds": 1, "queued": 0}
+    with session_scope() as db:
+        st = db.get(GrowthState, watch._state_key(feed_url))
+        assert "DEAD_EMBED" in (st.value or {}).get("seen", [])
+        assert "DEAD_EMBED" not in (st.value or {}).get("rechecks", {})
+
+    monkeypatch.setattr(settings, "sarvam_api_key", "sk_sarvam_w10_111")
+    monkeypatch.setattr(settings, "elevenlabs_api_key", "el_key_w10_222")
+    monkeypatch.setattr(settings, "deepgram_api_key", "dg_key_w10_333")
+    scrubbed = youtube.scrub_secrets("err sk_sarvam_w10_111 and el_key_w10_222 and dg_key_w10_333")
+    for s in ("sk_sarvam_w10_111", "el_key_w10_222", "dg_key_w10_333"):
+        assert s not in scrubbed
+

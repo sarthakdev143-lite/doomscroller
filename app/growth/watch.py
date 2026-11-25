@@ -61,6 +61,24 @@ _MAX_FEED_BYTES = 2 * 1024 * 1024
 _PER_POLL = 3  # at most this many fresh uploads queued per feed per poll, so a burst cannot flood the shelf
 _STREAMS = ("was_live", "post_live")
 _NOT_AIRED = ("is_live", "is_upcoming")
+_UNAVAILABLE_MARKS = (
+    "private video",
+    "video is private",
+    "video unavailable",
+    "video is unavailable",
+    "has been removed",
+    "no longer available",
+    "been terminated",
+    "members-only",
+    "join this channel to get access",
+    "playback on other websites has been disabled",
+)
+_TRANSIENT_MARKS = ("try again later", "in your country", "premieres in", "will begin in")
+
+
+def _is_permanently_unavailable(detail: str) -> bool:
+    lowered = (detail or "").lower()
+    return any(m in lowered for m in _UNAVAILABLE_MARKS) and not any(m in lowered for m in _TRANSIENT_MARKS)
 
 
 def _safe_url_for_log(url: str) -> str:
@@ -233,7 +251,7 @@ def _probe(link: str) -> Optional[dict]:
             info = ydl.extract_info(link, download=False, process=False) or {}
     except Exception as exc:
         log.info("watch: could not look at %s: %s", link, exc)
-        return None
+        return {"unavailable": True} if _is_permanently_unavailable(str(exc)) else None
     live = info.get("live_status") or ("is_live" if info.get("is_live") else "not_live")
     raw_dur = info.get("duration")
     dur = raw_dur if isinstance(raw_dur, (int, float)) and not isinstance(raw_dur, bool) and math.isfinite(raw_dur) and raw_dur > 0 else 0
@@ -248,6 +266,8 @@ def _verdict(probe: Optional[dict], barred: frozenset[str] = frozenset()) -> str
     """
     if probe is None:
         return "later"
+    if probe.get("unavailable"):
+        return "skip"
     if barred & set(probe.get("authors") or ()):
         return "skip"
     if probe["live_status"] in _NOT_AIRED:

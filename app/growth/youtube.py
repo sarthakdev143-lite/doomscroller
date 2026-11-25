@@ -7,6 +7,7 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Iterable, Optional
 
+from app import logging_config
 from app.config import settings
 from app.publishers import MockPublisher, YouTubePublisher, get_publisher
 
@@ -73,16 +74,7 @@ def scrub_secrets(text: str) -> str:
     out = _JSON_SECRET_RE.sub(r"\1[REDACTED]\2", out)
     out = _KV_SECRET_RE.sub(r"\1[REDACTED]", out)
     out = _BOT_TOKEN_RE.sub("bot[REDACTED]", out)
-    for secret in (
-        settings.review_token,
-        settings.telegram_bot_token,
-        settings.openai_api_key,
-        settings.gemini_api_key,
-    ):
-        clean = (secret or "").strip()
-        if clean:
-            out = out.replace(clean, "[REDACTED]")
-    return out
+    return logging_config.scrub_secrets(out)
 
 
 def _scrub_exception(exc: BaseException, _depth: int = 0) -> None:

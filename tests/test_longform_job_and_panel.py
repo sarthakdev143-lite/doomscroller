@@ -1035,3 +1035,57 @@ def test_long_panel_data_exposes_ambient_presets_matching_ui_labels():
         assert preset["label"] in PAGE
     assert "Bedroom Glow · One Last Time" not in PAGE
     assert "ambientPresetLabels" in PAGE
+
+
+def test_long_job_recover_orphans_handles_interrupted_and_scrubs_errors(tmp_path, monkeypatch):
+    from app.clipper.media import Interrupted
+    from app.longform import ambient
+
+    with session_scope() as db:
+        channels._ensure_seeded(db)
+        ch = channels.default_channel(db)
+        orphan = LongJob(channel_id=ch.id, format="best_of", target_minutes=8, status="running", stage="rendering", attempts=1)
+        maxed = LongJob(channel_id=ch.id, format="best_of", target_minutes=8, status="running", stage="rendering", attempts=3)
+        done_job = LongJob(channel_id=ch.id, format="best_of", target_minutes=8, status="done", stage="ready", attempts=1)
+        failed_job = LongJob(channel_id=ch.id, format="best_of", target_minutes=8, status="failed", error="bad", attempts=1)
+        db.add_all([orphan, maxed, done_job, failed_job])
+        db.flush()
+        orphan_id, maxed_id, done_id, failed_id = orphan.id, maxed.id, done_job.id, failed_job.id
+
+    recovered = long_job.recover_interrupted_long_jobs()
+    assert recovered == 2
+    with session_scope() as db:
+        r_orphan = db.get(LongJob, orphan_id)
+        r_maxed = db.get(LongJob, maxed_id)
+        assert r_orphan.status == "queued" and r_orphan.stage == "" and r_orphan.started_at is None
+        assert r_maxed.status == "failed" and r_maxed.error == "interrupted too many times"
+        assert db.get(LongJob, done_id).status == "done"
+        assert db.get(LongJob, failed_id).status == "failed"
+
+    # Interrupted during run_next_long_job re-queues when attempts < 3 rather than failing permanently.
+    with session_scope() as db:
+        j_int = db.get(LongJob, orphan_id)
+        j_int.format = "lofi_chill"
+        j_int.target_minutes = 30
+    monkeypatch.setattr(ambient, "list_ambient_portraits", lambda: [])
+    monkeypatch.setattr(ambient, "generate_ambient_video", lambda **kw: (_ for _ in ()).throw(Interrupted("shutdown")))
+    res_int = long_job.run_next_long_job()
+    assert res_int and res_int.get("interrupted") is True
+    with session_scope() as db:
+        row = db.get(LongJob, orphan_id)
+        assert row.status == "queued" and row.stage == "" and row.started_at is None
+
+    # Exception error containing configured secret is scrubbed before persisting to LongJob.error.
+    monkeypatch.setattr(settings, "sarvam_api_key", "sk_sarvam_secret_wave10")
+    monkeypatch.setattr(
+        ambient,
+        "generate_ambient_video",
+        lambda **kw: (_ for _ in ()).throw(RuntimeError("TTS fail with key=sk_sarvam_secret_wave10")),
+    )
+    res_err = long_job.run_next_long_job()
+    assert res_err["ok"] is False
+    assert "sk_sarvam_secret_wave10" not in res_err["error"]
+    with session_scope() as db:
+        row = db.get(LongJob, orphan_id)
+        assert row.status == "failed"
+        assert "sk_sarvam_secret_wave10" not in (row.error or "")

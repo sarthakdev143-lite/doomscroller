@@ -31,6 +31,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Optional, Sequence
@@ -47,6 +48,13 @@ _CLAUDE_SYSTEM = ("You answer requests from a video-editing program. You have no
 _IMAGE_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
 _OPENCODE_REST_SEC = 30 * 60
 _opencode_down_until = 0.0
+_state_lock = threading.Lock()
+_model_down_until: dict[str, float] = {}
+_last_provider = threading.local()
+_COOLDOWN_ERROR_RE = re.compile(
+    r"freeusagelimiterror|rate[_ -]?limit|too many requests|\b429\b|quota|provider\.no-route|model[_ -]?not[_ -]?found|model unavailable",
+    re.IGNORECASE,
+)
 
 
 def _safe_utf8(raw: object) -> str:
@@ -161,8 +169,9 @@ def available() -> bool:
     return opencode_path() is not None or claude_path() is not None
 
 
-def _text_from_events(stdout: str | bytes) -> str:
-    parts = []
+def _events_text_and_error(stdout: str | bytes) -> tuple[str, str]:
+    parts: list[str] = []
+    errors: list[str] = []
     for line in _safe_utf8(stdout).splitlines():
         try:
             event = json.loads(line)
@@ -176,22 +185,36 @@ def _text_from_events(stdout: str | bytes) -> str:
             if isinstance(text, str):
                 parts.append(text)
         elif event.get("type") == "error":
-            log.warning("opencode reported an error: %s", str(event)[:400])
-    return "".join(parts).strip()
+            err_msg = str(event)[:400]
+            log.warning("opencode reported an error: %s", err_msg)
+            errors.append(err_msg)
+    return "".join(parts).strip(), "\n".join(errors)
+
+
+def _text_from_events(stdout: str | bytes) -> str:
+    return _events_text_and_error(stdout)[0]
 
 
 def ask(prompt: str, *, files: Sequence[str] = (), model: str = "") -> Optional[str]:
     """Return the model's reply, or None when every route fails."""
     global _opencode_down_until
-    if opencode_path() and time.monotonic() >= _opencode_down_until:
+    _last_provider.name = None
+    with _state_lock:
+        opencode_down_until = _opencode_down_until
+    if opencode_path() and time.monotonic() >= opencode_down_until:
         reply = _ask_opencode(prompt, files=files, model=model)
         if reply is not None:
+            _last_provider.name = "opencode"
             return reply
         if claude_path():
-            _opencode_down_until = time.monotonic() + _OPENCODE_REST_SEC
+            with _state_lock:
+                _opencode_down_until = time.monotonic() + _OPENCODE_REST_SEC
             log.warning("opencode failed; using Claude for the next %d minutes", _OPENCODE_REST_SEC // 60)
     if claude_path():
-        return _ask_claude(prompt, files=files)
+        reply = _ask_claude(prompt, files=files)
+        if reply is not None:
+            _last_provider.name = "claude"
+        return reply
     if not opencode_path():
         log.info("no AI CLI found; skipping AI")
     return None
@@ -276,8 +299,13 @@ def _ask_opencode(prompt: str, *, files: Sequence[str] = (), model: str = "") ->
     clean_prompt = _safe_utf8(prompt)
     prefix = _command_prefix(binary)
     candidates = _model_candidates(model)
+    now = time.monotonic()
+    with _state_lock:
+        active = [cand for cand in candidates if not cand or _model_down_until.get(cand, 0.0) <= now]
+    if not active:
+        return None
 
-    for cand in candidates:
+    for cand in active:
         command = [*prefix, "run", "--standalone", "--format", "json"]
         if cand:
             command += ["--model", cand]
@@ -313,10 +341,16 @@ def _ask_opencode(prompt: str, *, files: Sequence[str] = (), model: str = "") ->
             # --format json writes structured errors to stdout while stderr is often empty.
             err_text = (_safe_utf8(proc.stderr) or _safe_utf8(proc.stdout)).strip()
             log.warning("opencode failed (%s): %s", cand or "default", err_text[-400:])
+            if cand and _COOLDOWN_ERROR_RE.search(err_text):
+                with _state_lock:
+                    _model_down_until[cand] = time.monotonic() + _OPENCODE_REST_SEC
             continue
-        reply = _text_from_events(proc.stdout) or None
+        reply, event_err = _events_text_and_error(proc.stdout)
         if reply:
             return reply
+        if cand and event_err and _COOLDOWN_ERROR_RE.search(event_err):
+            with _state_lock:
+                _model_down_until[cand] = time.monotonic() + _OPENCODE_REST_SEC
     return None
 
 
@@ -328,6 +362,7 @@ _STRICT_JSON_SUFFIX = (
 
 def ask_json(prompt: str, *, files: Sequence[str] = (), model: str = "") -> Optional[dict]:
     """Like :func:`ask`, for a JSON object. Retries once with strict raw-JSON enforcement."""
+    _last_provider.name = None
     for attempt in range(2):
         req_prompt = prompt if attempt == 0 else f"{prompt.rstrip()}{_STRICT_JSON_SUFFIX}"
         reply = ask(req_prompt, files=files, model=model)
@@ -337,4 +372,10 @@ def ask_json(prompt: str, *, files: Sequence[str] = (), model: str = "") -> Opti
         if isinstance(parsed, dict):
             return parsed
         log.info("AI reply was not a JSON object: %s", reply[:200])
+    if getattr(_last_provider, "name", None) == "opencode" and claude_path():
+        fallback = _ask_claude(f"{prompt.rstrip()}{_STRICT_JSON_SUFFIX}", files=files)
+        if fallback:
+            parsed = _extract_json(fallback)
+            if isinstance(parsed, dict):
+                return parsed
     return None
