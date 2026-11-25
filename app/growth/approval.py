@@ -162,6 +162,18 @@ def _compose_for_video(video: Video, *, title_override: str = ""):
     return generated
 
 
+def _finite_round(raw: object, digits: Optional[int] = None):
+    if isinstance(raw, bool) or raw is None:
+        return None
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(val):
+        return None
+    return round(val) if digits is None else round(val, digits)
+
+
 def _card(video: Video, db) -> dict:
     meta = video.meta or {}
     is_clip = bool(meta.get("clip_rendered"))
@@ -197,9 +209,9 @@ def _card(video: Video, db) -> dict:
         "width": width,
         "height": height,
         "resolution": resolution,
-        "score": round(float(raw_score), 2) if isinstance(raw_score, (int, float)) else None,
-        "start": round(float(raw_start), 1) if isinstance(raw_start, (int, float)) else None,
-        "end": round(float(raw_end), 1) if isinstance(raw_end, (int, float)) else None,
+        "score": _finite_round(raw_score, 2),
+        "start": _finite_round(raw_start, 1),
+        "end": _finite_round(raw_end, 1),
         "creator": video.author_name or video.author or "",
         "source": video.source_url or "",
         "kind": meta.get("clip_kind") or ("" if is_clip else (video.source or "")),
@@ -242,7 +254,7 @@ def _result(video: Video, channel_slug: str = "default") -> dict:
         "posted": video.published_at.isoformat() if video.published_at else "",
         "views": video.views or 0,
         "likes": video.likes or 0,
-        "watched": round(float(percent)) if percent is not None else None,
+        "watched": _finite_round(percent),
         "verdict": diagnosis.get("code", ""),
         "why": diagnosis.get("reason", ""),
         "channel_slug": channel_slug or "default",
@@ -474,7 +486,12 @@ def backstop_approve(channel) -> Optional[str]:
         pending = _trustable(db, channel)
         if not pending:
             return None
-        best = max(pending, key=lambda v: (v.meta or {}).get("clip_score", 0.0))
+
+        def _backstop_score(v: Video) -> float:
+            norm = _normalize_clip_score((v.meta or {}).get("clip_score"))
+            return -1.0 if norm is None else norm
+
+        best = max(pending, key=_backstop_score)
         _grant(db, best, now, "cadence backstop")
         db.add(GrowthEvent(kind="auto_approved", video_id=best.id, channel_id=channels.event_channel(channel),
                            summary=f"Cadence backstop approved the best waiting clip to keep posting: {(best.title or '')[:60]}"))
@@ -1029,7 +1046,7 @@ def prune_stale_shelf(
                 if not is_off and not is_long_clip:
                     continue
                 reason = "off_feed" if is_off else f"over_{max_s}s ({dur}s)"
-                score = float(meta.get("clip_score") or 0.0)
+                score = _normalize_clip_score(meta.get("clip_score")) or 0.0
                 eligible.append(((0 if is_off else 1, -dur, score), v, reason))
 
             eligible.sort(key=lambda item: item[0])

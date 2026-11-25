@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import tempfile
+import threading
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -129,7 +130,8 @@ def pick_hero_frames(
         font = _load_pil_font(22)
         for pos, cand in enumerate(items):
             try:
-                tile = ImageOps.fit(Image.open(cand["path"]).convert("RGB"), (cell_w, cell_h))
+                with Image.open(cand["path"]) as raw_im:
+                    tile = ImageOps.fit(raw_im.convert("RGB"), (cell_w, cell_h))
                 x = (pos % cols) * cell_w
                 y = (pos // cols) * cell_h
                 sheet.paste(tile, (x, y))
@@ -148,8 +150,11 @@ def pick_hero_frames(
         if isinstance(reply, dict):
             chosen_indices: list[int] = []
             for key in ("hero", "alt"):
+                raw_idx = reply.get(key)
+                if isinstance(raw_idx, bool):
+                    continue
                 try:
-                    idx = int(reply.get(key))
+                    idx = int(raw_idx)
                 except (TypeError, ValueError):
                     continue
                 if 0 <= idx < len(items) and idx not in chosen_indices:
@@ -162,18 +167,21 @@ def pick_hero_frames(
 
 def _save_under_2mb(img: Image.Image, dest: Path) -> str:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest.with_name(dest.stem + ".tmp.jpg")
+    tmp = dest.with_name(f"{dest.stem}.{os.getpid()}.{threading.get_ident()}.tmp.jpg")
     rgb = img.convert("RGB")
     if rgb.size != (THUMB_W, THUMB_H):
         rgb = ImageOps.fit(rgb, (THUMB_W, THUMB_H), method=Image.Resampling.LANCZOS)
-    for quality in (92, 86, 80, 74):
-        buf = io.BytesIO()
-        rgb.save(buf, format="JPEG", quality=quality, optimize=True)
-        if buf.tell() <= _MAX_THUMB_BYTES or quality == 74:
-            tmp.write_bytes(buf.getvalue())
-            os.replace(tmp, dest)
-            return str(dest)
-    return str(dest)
+    try:
+        for quality in (92, 86, 80, 74):
+            buf = io.BytesIO()
+            rgb.save(buf, format="JPEG", quality=quality, optimize=True)
+            if buf.tell() <= _MAX_THUMB_BYTES or quality == 74:
+                tmp.write_bytes(buf.getvalue())
+                os.replace(tmp, dest)
+                return str(dest)
+        return str(dest)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 _DANGLING_HEADLINE_WORDS = frozenset({
@@ -243,7 +251,8 @@ def _draw_pill_badge(draw: ImageDraw.ImageDraw, x: int, y: int, text: str, font,
 
 
 def _render_variant_hero(hero_path: str, dest: Path, *, title: str, badge: str) -> str:
-    img = ImageOps.fit(Image.open(hero_path).convert("RGB"), (THUMB_W, THUMB_H), method=Image.Resampling.LANCZOS)
+    with Image.open(hero_path) as raw_im:
+        img = ImageOps.fit(raw_im.convert("RGB"), (THUMB_W, THUMB_H), method=Image.Resampling.LANCZOS)
     img = ImageEnhance.Contrast(ImageEnhance.Color(img).enhance(1.15)).enhance(1.12)
     img = _add_gradient(img)
     draw = ImageDraw.Draw(img)
@@ -258,8 +267,10 @@ def _render_variant_hero(hero_path: str, dest: Path, *, title: str, badge: str) 
 
 def _render_variant_split(left_path: str, right_path: str, dest: Path, *, format_kind: str, creators: Sequence[str]) -> str:
     half_w = THUMB_W // 2
-    left = ImageOps.fit(Image.open(left_path).convert("RGB"), (half_w, THUMB_H), method=Image.Resampling.LANCZOS)
-    right = ImageOps.fit(Image.open(right_path).convert("RGB"), (half_w, THUMB_H), method=Image.Resampling.LANCZOS)
+    with Image.open(left_path) as raw_left:
+        left = ImageOps.fit(raw_left.convert("RGB"), (half_w, THUMB_H), method=Image.Resampling.LANCZOS)
+    with Image.open(right_path) as raw_right:
+        right = ImageOps.fit(raw_right.convert("RGB"), (half_w, THUMB_H), method=Image.Resampling.LANCZOS)
     canvas = Image.new("RGB", (THUMB_W, THUMB_H))
     canvas.paste(ImageEnhance.Color(left).enhance(1.15), (0, 0))
     canvas.paste(ImageEnhance.Color(right).enhance(1.15), (half_w, 0))
@@ -284,7 +295,8 @@ def _render_variant_split(left_path: str, right_path: str, dest: Path, *, format
 
 
 def _render_variant_clean(hero_path: str, dest: Path, *, badge: str) -> str:
-    img = ImageOps.fit(Image.open(hero_path).convert("RGB"), (THUMB_W, THUMB_H), method=Image.Resampling.LANCZOS)
+    with Image.open(hero_path) as raw_im:
+        img = ImageOps.fit(raw_im.convert("RGB"), (THUMB_W, THUMB_H), method=Image.Resampling.LANCZOS)
     img = ImageEnhance.Contrast(ImageEnhance.Color(img).enhance(1.22)).enhance(1.18)
     if badge:
         draw = ImageDraw.Draw(img)
@@ -346,7 +358,8 @@ def generate_ai_thumbnail(hero_path: str, prompt: str, dest: Path) -> Optional[t
                 timeout=90.0,
             )
             if resp.status_code == 200:
-                item = ((resp.json().get("data") or [{}])[0]) if isinstance(resp.json(), dict) else {}
+                body = resp.json()
+                item = ((body.get("data") or [{}])[0]) if isinstance(body, dict) else {}
                 b64 = item.get("b64_json")
                 if b64:
                     return ("ChatGPT AI", save_custom_thumbnail(dest, base64.b64decode(b64)))

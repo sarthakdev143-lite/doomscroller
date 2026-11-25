@@ -9,6 +9,7 @@ import os
 import random
 import subprocess
 import tempfile
+import threading
 import wave
 from dataclasses import dataclass
 from pathlib import Path
@@ -800,13 +801,16 @@ def _synthesize_raw_loop_wav(
     pcm = np.clip(np.round(core * 32767.0), -32767, 32767).astype("<i2")
 
     wav_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_wav = wav_path.with_name(f"{wav_path.name}.tmp.wav")
-    with wave.open(str(tmp_wav), "wb") as wf:
-        wf.setnchannels(2)
-        wf.setsampwidth(2)
-        wf.setframerate(SAMPLE_RATE)
-        wf.writeframes(pcm.tobytes())
-    os.replace(tmp_wav, wav_path)
+    tmp_wav = wav_path.with_name(f"{wav_path.name}.{os.getpid()}.{threading.get_ident()}.tmp.wav")
+    try:
+        with wave.open(str(tmp_wav), "wb") as wf:
+            wf.setnchannels(2)
+            wf.setsampwidth(2)
+            wf.setframerate(SAMPLE_RATE)
+            wf.writeframes(pcm.tobytes())
+        os.replace(tmp_wav, wav_path)
+    finally:
+        tmp_wav.unlink(missing_ok=True)
     del buf, core, pcm
     reclaim_memory()
     return float(m_samples) / float(SAMPLE_RATE)
@@ -828,7 +832,7 @@ def _normalize_loop_wav(raw_wav: Path, norm_wav: Path) -> None:
     ext_pcm = np.concatenate([raw_pcm[-pre_samples:], raw_pcm, raw_pcm[:k_samples]], axis=0)
 
     norm_wav.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="norm_", dir=str(norm_wav.parent)) as td:
+    with tempfile.TemporaryDirectory(prefix="norm_", dir=str(norm_wav.parent), ignore_cleanup_errors=True) as td:
         td_path = Path(td)
         ext_wav = td_path / "ext.wav"
         norm_ext_wav = td_path / "norm_ext.wav"
@@ -866,7 +870,7 @@ def _normalize_loop_wav(raw_wav: Path, norm_wav: Path) -> None:
         core = norm_f[-m_samples:].copy()
 
     pcm_out = np.clip(np.round(np.clip(core, -0.89, 0.89) * 32767.0), -32767, 32767).astype("<i2")
-    tmp_out = norm_wav.with_name(f"{norm_wav.name}.tmp.wav")
+    tmp_out = norm_wav.with_name(f"{norm_wav.name}.{os.getpid()}.{threading.get_ident()}.tmp.wav")
     try:
         with wave.open(str(tmp_out), "wb") as wf:
             wf.setnchannels(2)
@@ -1171,12 +1175,14 @@ def _save_jpeg_under_limit(im: "Image.Image", dest: Path) -> str:
     if rgb.size != (THUMB_W, THUMB_H):
         rgb = rgb.resize((THUMB_W, THUMB_H), Image.Resampling.LANCZOS)
     for q in (92, 86, 78, 70):
-        tmp = dest.with_name(f"{dest.stem}.tmp.jpg")
-        rgb.save(tmp, format="JPEG", quality=q, optimize=True)
-        if tmp.stat().st_size <= _MAX_THUMB_BYTES or q == 70:
-            os.replace(tmp, dest)
-            return str(dest)
-        tmp.unlink(missing_ok=True)
+        tmp = dest.with_name(f"{dest.stem}.{os.getpid()}.{threading.get_ident()}.tmp.jpg")
+        try:
+            rgb.save(tmp, format="JPEG", quality=q, optimize=True)
+            if tmp.stat().st_size <= _MAX_THUMB_BYTES or q == 70:
+                os.replace(tmp, dest)
+                return str(dest)
+        finally:
+            tmp.unlink(missing_ok=True)
     return str(dest)
 
 
@@ -1320,7 +1326,7 @@ def generate_ambient_video(
 
     chapters_override: Optional[tuple[tuple[float, str], ...]] = None
     try:
-        with tempfile.TemporaryDirectory(prefix="ambient_") as td:
+        with tempfile.TemporaryDirectory(prefix="ambient_", ignore_cleanup_errors=True) as td:
             tmp = Path(td)
             raw_wav = tmp / "raw_loop.wav"
             norm_wav = tmp / "norm_loop.wav"

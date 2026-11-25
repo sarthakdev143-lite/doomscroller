@@ -1111,3 +1111,95 @@ def test_undo_gives_way_to_an_upload_that_took_the_clip_first(tmp_path, monkeypa
         approval.undo(clip)
     with session_scope() as db:
         assert db.get(Video, clip).status == VideoStatus.PUBLISHING  # still the upload's, not back in review
+
+
+def test_wave14_approval_backstop_nan_safe_cards_and_channel_scoped_clip_held_events(
+    tmp_path, monkeypatch
+):
+    from pathlib import Path
+    from app.clipper import job as clip_job
+    from app.clipper.ingest import SourceVideo
+    from app.clipper.moments import Moment
+    from app.growth import approval
+    from app.models import MetadataDraft
+
+    # A. backstop_approve handles None clip_score and normalizes mixed 0..1 vs 0..100 scales
+    _write(tmp_path, monkeypatch, {"channels": [{"slug": "tech", "name": "Tech", "cadence_backstop": True}]})
+    with session_scope() as db:
+        db.execute(delete(MetadataDraft))
+        channels.sync_channels(db)
+        tech = channels.channel_by_slug(db, "tech")
+        tech_id = tech.id
+        ids: dict[str, str] = {}
+        for key, raw_score in (("none", None), ("75", 75.0), ("09", 0.90)):
+            mp4 = tmp_path / f"backstop_{key}.mp4"
+            mp4.write_bytes(b"mp4")
+            v = Video(
+                source="youtube",
+                source_id=f"bs_{key}",
+                source_url=f"https://youtu.be/{key}",
+                title=f"Title {key}",
+                transformed_path=str(mp4),
+                local_path=str(mp4),
+                duration_sec=25,
+                status=VideoStatus.PENDING,
+                channel_id=tech_id,
+                meta={"clip_rendered": True, "clip_ai_titled": True, "clip_score": raw_score},
+            )
+            db.add(v)
+            db.flush()
+            ids[key] = v.id
+    with session_scope() as db:
+        tech_row = channels.channel_by_slug(db, "tech")
+        picked = approval.backstop_approve(tech_row)
+    assert picked == ids["09"]
+
+    # B. _card and _result stay JSON-safe on NaN/Inf/bool values
+    with session_scope() as db:
+        weird_mp4 = tmp_path / "weird.mp4"
+        weird_mp4.write_bytes(b"mp4")
+        vw = Video(
+            source="youtube",
+            source_id="weird_w14",
+            source_url="https://youtu.be/weird",
+            title="Weird",
+            transformed_path=str(weird_mp4),
+            local_path=str(weird_mp4),
+            duration_sec=25,
+            youtube_video_id="YT123",
+            status=VideoStatus.PUBLISHED,
+            channel_id=tech_id,
+            meta={
+                "clip_rendered": True,
+                "clip_score": float("nan"),
+                "clip_start": float("inf"),
+                "clip_end": True,
+                "yt_analytics": {"averageViewPercentage": float("nan")},
+            },
+        )
+        db.add(vw)
+        db.flush()
+        card = approval._card(vw, db)
+        res = approval._result(vw)
+    assert card["score"] is None and card["start"] is None and card["end"] is None
+    assert res["watched"] is None
+    json.dumps({"card": card, "res": res}, allow_nan=False)
+
+    # C. _save_clip attaches channel_id to clip_held GrowthEvent and _finish_job scrubs secrets
+    monkeypatch.setattr(settings, "proxy_url", "http://u:CANARY_JOB_W14@10.0.0.1:8080")
+    held_mp4 = tmp_path / "held.mp4"
+    held_mp4.write_bytes(b"mp4")
+    src = SourceVideo(path=str(held_mp4), title="Src Title", source="youtube", source_id="src_held_w14")
+    moment = Moment(start=0.0, end=20.0, title="Raw Title", ai_title=False)
+    clip_job._save_clip(src, moment, str(held_mp4), 20.0, language="en", auto_queue=True, channel_id=tech_id)
+    with session_scope() as db:
+        ev = db.execute(select(GrowthEvent).where(GrowthEvent.kind == "clip_held")).scalar_one()
+        assert ev.channel_id == tech_id
+
+    jid = clip_job.enqueue("https://youtu.be/abc", channel_id=tech_id)
+    clip_job._finish_job(jid, {"ok": False, "error": "failed via http://u:CANARY_JOB_W14@10.0.0.1:8080"})
+    with session_scope() as db:
+        jrow = db.get(ClipJob, jid)
+        assert "CANARY_JOB_W14" not in (jrow.error or "")
+        assert "CANARY_JOB_W14" not in str((jrow.result or {}).get("error", ""))
+

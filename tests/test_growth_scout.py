@@ -247,3 +247,15 @@ def test_the_scout_enforces_english_spoken_language_rule(tmp_path, monkeypatch):
     out = scout.scout_job()
     assert out["default"]["added"] is None
     assert "English ONLY" in seen_prompts[-1]
+
+
+def test_wave14_scout_vet_rejects_boolean_pick(monkeypatch):
+    candidates = [
+        {"handle": "@TvNet", "name": "TV Net", "views": 999999, "titles": ["Episode 1"]},
+        {"handle": "@RealVlogger", "name": "Real", "views": 50000, "titles": ["Vlog"]},
+    ]
+    monkeypatch.setattr(scout.ai, "ask_json", lambda _prompt: {"pick": False, "why": "none fit"})
+    assert scout._vet("vlogs", [], candidates) == (None, "none fit")
+    monkeypatch.setattr(scout.ai, "ask_json", lambda _prompt: {"pick": True, "why": "bad"})
+    assert scout._vet("vlogs", [], candidates)[0] is None
+

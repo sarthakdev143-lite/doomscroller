@@ -690,3 +690,55 @@ def test_steady_multi_scene_dissolve_and_rgb24_screen_overlay_and_credits(tmp_pa
     assert "0:00 Midnight Track" in res.chapter_text
     assert "Music Credits:\nMidnight Track by Test Artist | CC BY 4.0\nSibling Track by Sibling Artist | CC BY-SA 3.0" in res.description
 
+
+def test_wave14_thumbnails_boolean_guard_closes_handles_and_ambient_tempdir_cleanup(
+    tmp_path, monkeypatch
+):
+    import inspect
+    from PIL import Image
+    from app.longform import ambient, thumbnails
+
+    # A. pick_hero_frames rejects bool indices rather than treating False -> 0
+    c0 = tmp_path / "c0.jpg"
+    c1 = tmp_path / "c1.jpg"
+    Image.new("RGB", (64, 36), (50, 80, 120)).save(c0)
+    Image.new("RGB", (64, 36), (90, 40, 100)).save(c1)
+    cands = [
+        {"index": 0, "path": str(c0), "score": 10.0},
+        {"index": 1, "path": str(c1), "score": 99.0},
+    ]
+    monkeypatch.setattr(thumbnails.ai, "available", lambda: True)
+    monkeypatch.setattr(thumbnails.ai, "ask_json", lambda *a, **kw: {"hero": False, "alt": True})
+    ordered = thumbnails.pick_hero_frames(cands, title="Test Title")
+    assert ordered[0]["index"] == 1
+
+    # B. generate_thumbnails_with_prompt closes PIL handles so _candidates dir is removed cleanly
+    out_dir = tmp_path / "thumbs"
+
+    def fake_extract(_video_path, _stamps, cand_dir):
+        cand_dir.mkdir(parents=True, exist_ok=True)
+        p0 = cand_dir / "cand_00.jpg"
+        p1 = cand_dir / "cand_01.jpg"
+        Image.new("RGB", (128, 72), (30, 50, 80)).save(p0)
+        Image.new("RGB", (128, 72), (70, 30, 90)).save(p1)
+        return [
+            {"index": 0, "path": str(p0), "score": 20.0},
+            {"index": 1, "path": str(p1), "score": 50.0},
+        ]
+
+    monkeypatch.setattr(thumbnails, "extract_candidate_frames", fake_extract)
+    monkeypatch.setattr(thumbnails.ai, "available", lambda: False)
+    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr(settings, "gemini_api_key", "")
+    variants, _prompt = thumbnails.generate_thumbnails_with_prompt(
+        "dummy.mp4", out_dir=out_dir, title="Best Moments"
+    )
+    assert len(variants) == 3
+    assert not (out_dir / "_candidates").exists()
+    assert not list(out_dir.glob("*.tmp.jpg"))
+
+    # C. ambient TemporaryDirectory calls pass ignore_cleanup_errors=True
+    assert "ignore_cleanup_errors=True" in inspect.getsource(ambient._normalize_loop_wav)
+    assert "ignore_cleanup_errors=True" in inspect.getsource(ambient.generate_ambient_video)
+
+

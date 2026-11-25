@@ -16,6 +16,7 @@ from sqlalchemy.exc import OperationalError
 
 from app.config import settings
 from app.db import session_scope
+from app.logging_config import scrub_secrets
 from app.models import ClipJob, Video, VideoStatus
 
 from app.growth import learn, recipes
@@ -189,7 +190,13 @@ def _save_clip(src: SourceVideo, moment: Moment, path: str, duration: float, *, 
         video.status = VideoStatus.TRANSFORMED if stocked else VideoStatus.PENDING
         video.transformed_at = now if stocked else None
         if flagged:
-            learn.note_once(db, "clip_held", f"A clip is waiting for review, not going on the shelf: {flagged}.", key=flagged)
+            learn.note_once(
+                db,
+                "clip_held",
+                f"A clip is waiting for review, not going on the shelf: {flagged}.",
+                key=f"{channel_id or 'default'}:{flagged}",
+                channel_id=channel_id,
+            )
         db.flush()
         return video.id, video.status
 
@@ -290,14 +297,15 @@ def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
             "queued": VideoStatus.TRANSFORMED in statuses, "clips": clips, "warnings": warnings,
         }
         if error:
-            result["error"] = error
+            result["error"] = scrub_secrets(str(error))
         if permanent:
             result["permanent"] = True
         return result
 
     def warn(message: str) -> None:
-        warnings.append(message)
-        log.warning("clipper: %s", message)
+        cleaned = scrub_secrets(str(message))
+        warnings.append(cleaned)
+        log.warning("clipper: %s", cleaned)
 
     try:
         require_tools()
@@ -318,14 +326,16 @@ def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
         try:
             transcript = transcribe(src.path, info)
         except TranscribeError as exc:
+            err_text = scrub_secrets(str(exc))
             # Unattended, cutting a talking video without its words would post the outage.
             if auto_queue and settings.deepgram_api_key:
                 with session_scope() as db:
                     learn.note_once(db, "transcribe_failed", (
-                        f"A clip job stopped rather than cut without its words: {exc}. "
-                        "The loop retries its own sources later; a link added by hand has to be added again."))
-                return outcome(bool(clips), f"transcription failed: {exc}")
-            warn(f"transcription failed, so no captions: {exc}")
+                        f"A clip job stopped rather than cut without its words: {err_text}. "
+                        "The loop retries its own sources later; a link added by hand has to be added again."),
+                        channel_id=channel_id)
+                return outcome(bool(clips), f"transcription failed: {err_text}")
+            warn(f"transcription failed, so no captions: {err_text}")
         except MediaError as exc:
             warn(f"transcription failed, so no captions: {exc}")
         # English comes from Deepgram, Hindi from Sarvam; both drive the same speech path from here.
@@ -928,16 +938,19 @@ def _next_job() -> Optional[tuple[str, str, Optional[int], Optional[bool], bool,
 
 def _finish_job(job_id: str, result: dict) -> None:
     """Record the outcome, waiting out a briefly locked database."""
+    raw_err = result.get("error")
+    clean_err = scrub_secrets(str(raw_err)) if raw_err else None
+    clean_result = {**result, "error": clean_err} if raw_err else result
     for delay in (*_FINISH_RETRY_SECONDS, None):
         try:
             with session_scope() as db:
                 job = db.get(ClipJob, job_id)
                 if job is None:
                     return
-                job.status = "done" if result.get("ok") else "failed"
+                job.status = "done" if clean_result.get("ok") else "failed"
                 job.stage = ""
-                job.result = {**(job.result or {}), **result}
-                job.error = result.get("error")
+                job.result = {**(job.result or {}), **clean_result}
+                job.error = clean_err
                 job.finished_at = datetime.now(timezone.utc)
             return
         except OperationalError:
@@ -972,7 +985,7 @@ def clip_queue_job() -> dict:
                 break
             except Exception as exc:
                 log.exception("clip job %s crashed", job_id)
-                result = {"ok": False, "error": str(exc)}
+                result = {"ok": False, "error": scrub_secrets(str(exc))}
             finally:
                 _active_job_id = None
             _finish_job(job_id, result)
