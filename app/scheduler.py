@@ -26,7 +26,7 @@ from sqlalchemy import desc, func, or_, select
 from .logging_config import last_run_times, record_job_run
 from .config import settings
 from .db import session_scope, init_db
-from .models import ClipJob, Creator, Video, VideoStatus
+from .models import ClipJob, Creator, LongJob, Video, VideoStatus
 from . import discovery, quota
 from .analytics import recompute_scores
 
@@ -570,6 +570,9 @@ def cleanup_job(dry_run: bool = False) -> dict:
                 select(ClipJob.source).where(ClipJob.status.in_(("queued", "running")))
             ).scalars().all()
             clip_jobs_active = len(active_jobs)
+            long_jobs_active = db.scalar(
+                select(func.count(LongJob.id)).where(LongJob.status.in_(("queued", "running")))
+            ) or 0
             for src in active_jobs:
                 raw_src = (src or "").strip()
                 if raw_src and not raw_src.lower().startswith(("http://", "https://")):
@@ -632,8 +635,8 @@ def cleanup_job(dry_run: bool = False) -> dict:
                     else:
                         referenced.add(local_norm)
 
-                # A published video no longer needs its rendered output either.
-                if video.status == VideoStatus.PUBLISHED and video.transformed_path:
+                # A published or rejected video no longer needs its rendered output either.
+                if video.status in (VideoStatus.PUBLISHED, VideoStatus.REJECTED) and video.transformed_path:
                     trans_norm = _norm_path(video.transformed_path)
                     can_drop = (
                         trans_norm not in protected_paths
@@ -692,7 +695,7 @@ def cleanup_job(dry_run: bool = False) -> dict:
         # transcript and could delete a file mid-render. They carry no job id, so
         # leave them all alone while any clip job is waiting or running.
         removed_cache = 0
-        if not clip_jobs_active:
+        if not clip_jobs_active and not long_jobs_active:
             cache_age = max(timedelta(days=max_age_days), _ORPHAN_GRACE)
             files = _source_cache_files()
             gone: set[str] = set()
@@ -743,6 +746,13 @@ def storage_report() -> dict:
             for path in (video.local_path, video.transformed_path):
                 if path:
                     referenced.add(os.path.normcase(os.path.abspath(path)))
+            vmeta = video.meta or {}
+            for extra in (vmeta.get("selected_thumbnail"), vmeta.get("hero_frame")):
+                if extra:
+                    referenced.add(os.path.normcase(os.path.abspath(extra)))
+            for thumb in vmeta.get("thumbnails") or []:
+                if isinstance(thumb, dict) and thumb.get("path"):
+                    referenced.add(os.path.normcase(os.path.abspath(thumb["path"])))
 
     total = orphan_bytes = 0
     files = orphans = 0

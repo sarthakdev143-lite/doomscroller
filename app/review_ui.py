@@ -389,11 +389,13 @@ function renderModes(d){
   }
 }
 function renderChips(channels){
-  $('chips').replaceChildren();if(!channels.length||reviewMode==='posted'||reviewMode==='scraped')return;
-  const countFor=c=>reviewMode==='queued'?(c.approved||0):(c.waiting||0);
+  $('chips').replaceChildren();if(!channels.length||reviewMode==='scraped')return;
+  const postedArr=(lastQ&&lastQ.posted)||[];
+  const countFor=c=>reviewMode==='posted'?postedArr.filter(p=>(p.channel_slug||'default')===c.slug).length:(reviewMode==='queued'?(c.approved||0):(c.waiting||0));
+  const total=reviewMode==='posted'?postedArr.length:channels.reduce((n,c)=>n+countFor(c),0);
   const mk=(slug,label,n,att)=>{const c=el('div',{className:'chip'+(filter===slug?' on':'')+(att?' att':'')});c.append(el('span',{},label));if(n)c.append(el('span',{className:'n'},n));c.onclick=()=>setFilter(slug);return c};
-  $('chips').append(mk('all','All',channels.reduce((n,c)=>n+countFor(c),0),false));
-  for(const c of channels)$('chips').append(mk(c.slug,c.name,countFor(c),!!c.attention));
+  $('chips').append(mk('all','All',total,false));
+  for(const c of channels)$('chips').append(mk(c.slug,c.name,countFor(c),reviewMode!=='posted'&&!!c.attention));
 }
 function pauseBtn(c){
   const needsSecond=c.paused&&!c.owner_paused,armed=armedResume===c.slug&&needsSecond;
@@ -604,7 +606,7 @@ function clipCard(c,isQueued){
   async function decide(path,body,msg,allowUndo){
     yes.disabled=no.disabled=true;errLine.hidden=true;
     try{await api.post(baseRoute+encodeURIComponent(c.id)+'/'+path,body||{});
-      delete edits[c.id];cards.delete(c.id);card.remove();toast(msg,allowUndo?c.id:null);loaders.review();return}
+      delete edits[c.id];cards.delete(c.id);card.remove();if(kbIdx>=0)focusCard(kbIdx);toast(msg,allowUndo?c.id:null);loaders.review();return}
     catch(e){errLine.textContent=e.message;errLine.hidden=false}
     card.style.transform='';card.style.opacity='';yes.disabled=no.disabled=false;
   }

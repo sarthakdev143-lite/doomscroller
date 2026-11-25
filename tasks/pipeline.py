@@ -1131,6 +1131,7 @@ def publish_task(video_id: str, meta: dict | None = None) -> dict:
         privacy = meta.get("privacy") or settings.youtube_default_privacy
         vmeta = dict(video.meta or {})
         is_long = bool(vmeta.get("long_form"))
+        is_ambient = bool(vmeta.get("procedural_ambient"))
         thumb_path = vmeta.get("selected_thumbnail") if is_long else None
         channel_langs = _channel_languages(video)
         title_lang, audio_lang = _upload_languages(video, draft, title, channel_langs)
@@ -1145,7 +1146,7 @@ def publish_task(video_id: str, meta: dict | None = None) -> dict:
         upload_kw: dict = {
             "file_path": file_path,
             "title": title, "description": description, "tags": tags,
-            "category": settings.youtube_default_category,
+            "category": 10 if is_ambient else settings.youtube_default_category,
             "privacy": privacy,
         }
         if title_lang:
@@ -1181,6 +1182,7 @@ def publish_task(video_id: str, meta: dict | None = None) -> dict:
                 context=str(vmeta.get("clip_reason") or ""),
                 language=title_lang or audio_lang or "en",
                 is_long=is_long,
+                is_ambient=is_ambient,
             )
             cid = pub.post_comment(result.video_id, comment_text)
             if cid:

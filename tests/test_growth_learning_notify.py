@@ -550,3 +550,50 @@ def test_send_long_ready_delivers_chatgpt_prompt_and_redacts_secrets(monkeypatch
     tg_text = posts[1]["data"]["text"]
     assert "ChatGPT" in tg_text and "Create a bold 16:9 thumbnail" in tg_text
     assert review_secret not in tg_text and bot_secret not in tg_text
+
+
+def test_notify_digest_includes_long_posted_watch_url_and_ambient_ready_steps(tmp_path, monkeypatch):
+    with session_scope() as db:
+        v = Video(
+            source="longform",
+            source_id="lf_post_1",
+            source_url="",
+            title="Night Lofi Session",
+            status=VideoStatus.PUBLISHED,
+            youtube_video_id="LF_YT_123",
+            published_at=START,
+            meta={"long_form": True},
+        )
+        db.add(v)
+        db.flush()
+        db.add(
+            GrowthEvent(
+                kind="long_posted",
+                video_id=v.id,
+                data={"youtube_id": "LF_YT_123"},
+                summary="Published 16:9 compilation: Night Lofi Session",
+                created_at=START + timedelta(seconds=10),
+            )
+        )
+        db.flush()
+        lines = notify.digest(db, START - timedelta(minutes=1))
+
+    joined = "\n".join(lines)
+    assert "Posted 16:9:" in joined
+    assert "https://youtube.com/watch?v=LF_YT_123" in joined
+    assert "/shorts/LF_YT_123" not in joined
+
+    sent: list[str] = []
+    monkeypatch.setattr(settings, "ntfy_topic", "ops-alerts")
+    monkeypatch.setattr(notify, "send", lambda msg, **kw: sent.append(msg) or True)
+    ok = notify.send_long_ready(
+        "i still think about her",
+        channel_name="After Midnight POV",
+        duration_sec=3600,
+        format_kind="lofi_chill",
+        prompt="",
+    )
+    assert ok is True
+    assert "ambient mix ready" in sent[0].lower()
+    assert "Save Raw Frame" not in sent[0]
+    assert "pick thumbnail" in sent[0].lower()

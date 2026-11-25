@@ -45,6 +45,7 @@ _COUNT_WORDS = {
     "created": "scraped", "transformed": "transformed",
     "rejected": "filtered out", "kept": "kept",
     "mb_reclaimed": "MB reclaimed", "sources_deleted": "sources removed", "orphans_deleted": "orphans removed",
+    "transforms_deleted": "renders removed", "cache_deleted": "cache files removed",
 }
 _NOTE_KEYS = ("skipped", "starved", "waiting", "queued", "mined")
 

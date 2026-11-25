@@ -146,26 +146,40 @@ def styled_title(
     return finished_title(sanitize_shorts_title(title, language=effective_lang), max_chars=_YOUTUBE_TITLE_MAX), "plain"
 
 
-def engagement_comment(title: str, *, context: str = "", language: str = "en", is_long: bool = False) -> str:
+def engagement_comment(
+    title: str, *, context: str = "", language: str = "en", is_long: bool = False, is_ambient: bool = False
+) -> str:
     """Write one short, scroll-worthy question comment to spark comments under a fresh upload."""
     hi = str(language or "en").strip().lower().startswith("hi")
-    fallback = (
-        ("Sabse crazy moment kaunsa tha? Apna fav comment me batao!" if is_long
-         else "Sach batao, is par aapka kya reaction hota?")
-        if hi else
-        ("Which moment was #1 for you? Drop it below!" if is_long
-         else "Be honest — what would you have done here?")
-    )
+    if is_ambient:
+        fallback = "What time is it where you are right now? Drop your city below."
+    elif hi:
+        fallback = (
+            "Sabse crazy moment kaunsa tha? Apna fav comment me batao!"
+            if is_long else "Sach batao, is par aapka kya reaction hota?"
+        )
+    else:
+        fallback = (
+            "Which moment was #1 for you? Drop it below!"
+            if is_long else "Be honest — what would you have done here?"
+        )
     if not ai.available():
         return fallback
     lang_note = "Hinglish (casual Hindi in Latin script)" if hi else "natural conversational English"
     clean_ctx = " ".join(_CTRL_RE.sub("", context or "").split())[:200]
     ctx_part = f"\nContext: {clean_ctx}" if clean_ctx else ""
-    prompt = (
-        f"Write ONE short YouTube creator question comment in {lang_note} (under 110 characters, NO hashtags) "
-        f"to spark replies on a video titled {title!r}.{ctx_part}\n"
-        'Reply with JSON only: {"comment": "..."}'
-    )
+    if is_ambient:
+        prompt = (
+            f"Write ONE gentle, atmospheric late-night community check-in question in {lang_note} "
+            f"(under 110 characters, NO hashtags, NO countdown/ranking language) for a cozy ambient/lofi music video titled {title!r}.{ctx_part}\n"
+            'Reply with JSON only: {"comment": "..."}'
+        )
+    else:
+        prompt = (
+            f"Write ONE short YouTube creator question comment in {lang_note} (under 110 characters, NO hashtags) "
+            f"to spark replies on a video titled {title!r}.{ctx_part}\n"
+            'Reply with JSON only: {"comment": "..."}'
+        )
     try:
         reply = ai.ask_json(prompt)
     except Exception:

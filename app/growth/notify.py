@@ -32,6 +32,7 @@ TUNNEL_URL_FILE = PROJECT_ROOT / "logs" / "tunnel_url.txt"
 _ALERT_KINDS = ("strike", "paused", "account_hold", "publish_failed", "publish_stuck", "missing", "starved", "missed")
 _MAX_LINES = 12
 _MAX_BODY_CHARS = 3500
+_AMBIENT_FORMATS = frozenset({"lofi_chill", "rain_focus", "night_ambient", "deep_study"})
 _BOT_TOKEN_RE = re.compile(r"bot\d+:[A-Za-z0-9_-]+")
 _QUERY_SECRET_RE = re.compile(r"([?&](?:key|token|password|secret)=)[^&#\s]+", re.IGNORECASE)
 _CTRL_RE = re.compile(r"[\r\n\x00-\x1f\x7f]+")
@@ -167,10 +168,17 @@ def send_long_ready(
         "deep_study": "Deep Study",
     }.get(str(format_kind or "").strip().lower(), str(format_kind or "16:9").upper())
     clean_title = " ".join(str(title or "Untitled").split()).strip()[:120] or "Untitled"
+    fmt_key = str(format_kind or "").strip().lower()
+    if fmt_key in _AMBIENT_FORMATS:
+        kind_label = "ambient mix ready"
+        steps_line = "Steps: Open Long tab -> pick thumbnail (or upload custom) -> Approve\n"
+    else:
+        kind_label = "compilation ready"
+        steps_line = "Steps: Open Long tab -> 1. Save Raw Frame -> 2. Paste prompt into ChatGPT -> 3. Upload thumbnail\n"
     head = (
-        f"[{clean_channel}] {fmt} compilation ready ({mins}m {secs:02d}s)\n"
+        f"[{clean_channel}] {fmt} {kind_label} ({mins}m {secs:02d}s)\n"
         f"Title: {clean_title}\n"
-        "Steps: Open Long tab -> 1. Save Raw Frame -> 2. Paste prompt into ChatGPT -> 3. Upload thumbnail\n"
+        + steps_line
     )
     clean_prompt = " ".join(str(prompt or "").split()).strip()
     if clean_prompt:
@@ -225,7 +233,7 @@ def digest(db, since: datetime) -> list[str]:
         waiting_lines.append(_redact(f"{len(fresh)} new clip{'s' if len(fresh) != 1 else ''} waiting for your approval{where}"))
     events = db.execute(
         select(GrowthEvent)
-        .where(GrowthEvent.created_at > since, GrowthEvent.kind.in_(("posted", *_ALERT_KINDS)))
+        .where(GrowthEvent.created_at > since, GrowthEvent.kind.in_(("posted", "long_posted", *_ALERT_KINDS)))
         .order_by(GrowthEvent.created_at, GrowthEvent.id)
     ).scalars().all()
     chronological: list[tuple[str, str]] = []
@@ -238,6 +246,15 @@ def digest(db, since: datetime) -> list[str]:
                 chronological.append((
                     "posted",
                     _redact(f"{tag(event)}Posted: {clean_title} https://youtube.com/shorts/{yt_id}"),
+                ))
+        elif event.kind == "long_posted":
+            video = db.get(Video, event.video_id) if event.video_id else None
+            yt_id = ((video.youtube_video_id or "").strip() if video else "") or str((event.data or {}).get("youtube_id") or "").strip()
+            if yt_id:
+                clean_title = " ".join(((video.title if video else "") or event.summary or "16:9 video").split())[:70]
+                chronological.append((
+                    "posted",
+                    _redact(f"{tag(event)}Posted 16:9: {clean_title} https://youtube.com/watch?v={yt_id}"),
                 ))
         elif event.kind in _ALERT_KINDS:
             clean_summary = " ".join((event.summary or "").split())[:200]

@@ -569,3 +569,24 @@ def test_wave10_owned_modules_preserve_numpy_free_idle_import():
     )
     assert proc.returncode == 0, proc.stderr
 
+
+def test_ambient_engagement_comment_and_controls_cleanup_summary(monkeypatch):
+    monkeypatch.setattr(titles.ai, "available", lambda: False)
+    off = titles.engagement_comment("it's late, go to bed.", is_long=True, is_ambient=True)
+    assert "#1" not in off and ("time" in off.lower() or "tonight" in off.lower())
+
+    seen_prompts: list[str] = []
+    monkeypatch.setattr(titles.ai, "available", lambda: True)
+    monkeypatch.setattr(
+        titles.ai,
+        "ask_json",
+        lambda p: seen_prompts.append(p) or {"comment": "1:30 AM here, raining outside and studying."},
+    )
+    on = titles.engagement_comment("it's late, go to bed.", is_long=True, is_ambient=True)
+    assert "1:30 AM" in on
+    assert "ambient" in seen_prompts[0].lower() or "lofi" in seen_prompts[0].lower()
+
+    summary = controls._summarise({"transforms_deleted": 3, "cache_deleted": 5, "mb_reclaimed": 12.5})
+    assert "renders removed" in summary
+    assert "cache files removed" in summary
+

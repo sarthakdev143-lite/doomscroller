@@ -970,3 +970,55 @@ def test_long_unapprove_clear_finished_and_block_procedural_clip_panel(tmp_path,
         assert (db.get(LongJob, jid_done).result or {}).get("dismissed") is True
         assert (db.get(LongJob, jid_fail).result or {}).get("dismissed") is True
         assert db.get(LongJob, jid_wait).status == "queued"
+
+
+def test_publish_task_uses_music_category_and_ambient_comment_for_procedural_ambient(tmp_path, monkeypatch):
+    from tasks import pipeline
+    from app.publishers.base import PublishResult
+    from app.growth import titles
+
+    mp4 = tmp_path / "amb_pub.mp4"
+    mp4.write_bytes(b"MP4" * 200)
+    with session_scope() as db:
+        channels.sync_channels(db)
+        v = Video(
+            source="longform",
+            source_id="amb_pub_1",
+            source_url="",
+            title="i wish you stayed",
+            description="100% original procedural music",
+            transformed_path=str(mp4),
+            status=VideoStatus.TRANSFORMED,
+            width=1920,
+            height=1080,
+            duration_sec=1800,
+            meta={"long_form": True, "procedural_ambient": True},
+        )
+        db.add(v)
+        db.flush()
+        vid = v.id
+
+    uploads: list[dict] = []
+    comments: list[tuple[str, str]] = []
+
+    class FakePub:
+        def upload(self, **kw):
+            uploads.append(kw)
+            return PublishResult(video_id="AMB_YT_99", status="uploaded", raw={})
+
+        def set_thumbnail(self, video_id, path):
+            return False
+
+        def post_comment(self, video_id, text):
+            comments.append((video_id, text))
+            return "c1"
+
+    monkeypatch.setattr(pipeline, "_publisher_for", lambda cid: FakePub())
+    monkeypatch.setattr(settings, "enable_publish", True)
+    monkeypatch.setattr(settings, "youtube_auto_comment", True)
+    monkeypatch.setattr(titles.ai, "available", lambda: False)
+
+    res = pipeline.publish_task(vid)
+    assert res["ok"] is True and res["youtube_id"] == "AMB_YT_99"
+    assert uploads[0]["category"] == 10
+    assert len(comments) == 1 and "#1" not in comments[0][1]

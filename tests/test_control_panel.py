@@ -1953,3 +1953,10 @@ def test_long_and_clip_panel_ux_wiring():
     assert "function refreshLongJobs()" in PAGE
     assert "function longBusy()" in PAGE
     assert "item.thumbnails.length" in PAGE
+
+
+def test_review_ui_keeps_channel_chips_on_posted_and_refocuses_keyboard_after_decide():
+    from app.review_ui import PAGE
+
+    assert "reviewMode==='posted'||reviewMode==='scraped'" not in PAGE
+    assert "if(kbIdx>=0)focusCard(kbIdx)" in PAGE
