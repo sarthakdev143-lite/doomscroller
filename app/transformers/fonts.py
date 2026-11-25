@@ -50,7 +50,12 @@ _CANDIDATES: dict[str, tuple[str, ...]] = {
 # Devanagari (Hindi) needs its own font: the Latin faces above draw empty boxes for it. Bold first.
 # Install one with e.g. `apt install fonts-noto-devanagari` (Debian) and it is picked up automatically.
 _DEVANAGARI_CANDIDATES: dict[str, tuple[str, ...]] = {
-    "Windows": (r"C:\Windows\Fonts\Nirmala.ttf", r"C:\Windows\Fonts\mangal.ttf"),
+    "Windows": (
+        r"C:\Windows\Fonts\NirmalaB.ttf",
+        r"C:\Windows\Fonts\Nirmala.ttf",
+        r"C:\Windows\Fonts\mangalb.ttf",
+        r"C:\Windows\Fonts\mangal.ttf",
+    ),
     "Darwin": ("/System/Library/Fonts/Supplemental/Devanagari Sangam MN.ttc",
                "/Library/Fonts/Kohinoor.ttc"),
     "Linux": ("/usr/share/fonts/truetype/noto/NotoSansDevanagari-Bold.ttf",

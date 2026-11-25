@@ -329,7 +329,7 @@ def _mine_winner(db, result: Result, *, scope=None, channel_id: Optional[str] = 
         return None
     active = db.scalar(select(func.count(ClipJob.id)).where(
         ClipJob.source == result.source_url, ClipJob.status.in_(("queued", "running")), cj_scope))
-    pending_stock = len(awaiting_review(db, scope)) if approval else 0
+    pending_stock = len(awaiting_review(db, scope, limit=None)) if approval else 0
     if active or len(ready_clips(db, scope)) + pending_stock + _coming_clips(db, cj_scope) >= settings.growth_min_inventory:
         return None
     mined = db.execute(select(ClipJob).where(

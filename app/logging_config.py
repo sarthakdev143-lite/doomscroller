@@ -22,6 +22,8 @@ import logging.handlers
 import math
 import os
 import re
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -37,6 +39,7 @@ MAX_HISTORY_LINES = 4000
 _CLEAN_EXIT = "clean_exit"
 
 _configured = False
+_history_lock = threading.Lock()
 
 _SECRET_SETTINGS_ATTRS = (
     "review_token",
@@ -48,6 +51,11 @@ _SECRET_SETTINGS_ATTRS = (
     "freesound_api_key",
     "deepgram_api_key",
     "sarvam_api_key",
+    "elevenlabs_api_key",
+    "eleven_labs_api_key",
+    "cartesia_api_key",
+    "openai_api_key",
+    "gemini_api_key",
 )
 _SECRET_DICT_KEYS = frozenset({
     *_SECRET_SETTINGS_ATTRS,
@@ -58,12 +66,13 @@ _SECRET_DICT_KEYS = frozenset({
 _BOT_TOKEN_RE = re.compile(r"bot\d+:[A-Za-z0-9_-]{4,}")
 _ENV_SECRET_RE = re.compile(
     r"(\b(?:REVIEW_TOKEN|TELEGRAM_BOT_TOKEN|PIXABAY_API_KEY|PEXELS_API_KEY|TENOR_API_KEY|GIPHY_API_KEY|FREESOUND_API_KEY|"
-    r"DEEPGRAM_API_KEY|SARVAM_API_KEY)\s*[=:]\s*)([^\s,;'\">&]+)",
+    r"DEEPGRAM_API_KEY|SARVAM_API_KEY|ELEVENLABS_API_KEY|ELEVEN_LABS_API_KEY|CARTESIA_API_KEY|OPENAI_API_KEY|GEMINI_API_KEY)\s*[=:]\s*)([^\s,;'\">&]+)",
     re.IGNORECASE,
 )
 _JSON_SECRET_RE = re.compile(
     r'("(?:review_token|telegram_bot_token|pixabay_api_key|pexels_api_key|tenor_api_key|giphy_api_key|freesound_api_key|'
-    r'deepgram_api_key|sarvam_api_key|access_token|refresh_token|client_secret)"\s*:\s*")([^"]*)(")',
+    r'deepgram_api_key|sarvam_api_key|elevenlabs_api_key|eleven_labs_api_key|cartesia_api_key|openai_api_key|gemini_api_key|'
+    r'access_token|refresh_token|client_secret)"\s*:\s*")([^"]*)(")',
     re.IGNORECASE,
 )
 _URL_PARAM_SECRET_RE = re.compile(
@@ -276,9 +285,18 @@ def record_job_run(job_id: str, result: Any, *, duration_sec: float = 0.0,
         entry["error"] = scrub_secrets(str(error))
     try:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
-        with open(get_job_history_path(), "a", encoding="utf-8") as handle:
-            handle.write(json.dumps(entry, default=str, allow_nan=False) + "\n")
-        _trim_history()
+        payload = json.dumps(entry, default=str, allow_nan=False) + "\n"
+        with _history_lock:
+            for attempt in range(3):
+                try:
+                    with open(get_job_history_path(), "a", encoding="utf-8") as handle:
+                        handle.write(payload)
+                    _trim_history()
+                    break
+                except PermissionError:
+                    if attempt == 2:
+                        raise
+                    time.sleep(0.05 * (attempt + 1))
     except Exception as exc:  # pragma: no cover - history must never break a job
         logging.getLogger(__name__).warning("could not record job history: %s", scrub_secrets(str(exc)))
     return entry
@@ -309,7 +327,8 @@ def read_job_history(limit: int = 100, job_id: str | None = None) -> list[dict]:
     if not path.exists():
         return []
     try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        with _history_lock:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return []
     entries: list[dict] = []

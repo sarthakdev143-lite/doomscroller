@@ -568,9 +568,11 @@ def api_logs(request: Request, limit: int = 80, level: str = "all") -> JSONRespo
     if mode not in ("all", "warn", "warning", "warnings", "error", "errors"):
         raise HTTPException(400, "level must be 'all' or 'warn'")
     norm_level = "all" if mode == "all" else "warn"
-    lines = [logging_config.scrub_secrets(ln) for ln in logging_config.read_recent_logs(limit=clamped)]
     if norm_level == "warn":
-        lines = [ln for ln in lines if _WARN_LOG_RE.search(ln)]
+        raw_lines = logging_config.read_recent_logs(limit=max(clamped * 25, 2000))
+        lines = [logging_config.scrub_secrets(ln) for ln in raw_lines if _WARN_LOG_RE.search(ln)][-clamped:]
+    else:
+        lines = [logging_config.scrub_secrets(ln) for ln in logging_config.read_recent_logs(limit=clamped)]
     return JSONResponse(
         {"lines": lines, "count": len(lines), "level": norm_level},
         headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"},

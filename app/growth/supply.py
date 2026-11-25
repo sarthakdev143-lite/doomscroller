@@ -414,7 +414,7 @@ def _supply_one(channel, now: Optional[datetime] = None) -> dict:
     now = aware(now) if now is not None else datetime.now(timezone.utc)
     with session_scope() as db:
         # Clips waiting for the owner count as stock, or supply would keep cutting while they sit unreviewed.
-        stock = len(ready_clips(db, scope)) + (len(awaiting_review(db, scope)) if approval else 0)
+        stock = len(ready_clips(db, scope)) + (len(awaiting_review(db, scope, limit=None)) if approval else 0)
         active = db.scalar(select(func.count(ClipJob.id)).where(
             ClipJob.status.in_(("queued", "running")), _clipjob_scope(channel_id))) or 0
     if stock >= settings.growth_min_inventory:

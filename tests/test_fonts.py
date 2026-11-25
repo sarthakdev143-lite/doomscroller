@@ -37,3 +37,9 @@ def test_is_renderable_follows_the_devanagari_font(monkeypatch):
     assert is_renderable(HINDI) is True              # with a Devanagari font, Hindi renders
     monkeypatch.setattr(fonts, "devanagari_font", lambda: None)
     assert is_renderable(HINDI) is False             # without one, it is dropped as before
+
+
+def test_windows_devanagari_candidates_prefer_bold_first():
+    win = fonts._DEVANAGARI_CANDIDATES["Windows"]
+    assert win[0].lower().endswith("nirmalab.ttf")
+    assert win.index(r"C:\Windows\Fonts\NirmalaB.ttf") < win.index(r"C:\Windows\Fonts\Nirmala.ttf")

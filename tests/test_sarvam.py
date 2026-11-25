@@ -191,3 +191,45 @@ def test_voiceover_quota_errors_scrub_secret_and_propagate_in_render(monkeypatch
     monkeypatch.setattr(lf_render, "run_ffmpeg", lambda *a, **kw: None)
     with pytest.raises(voiceover.SarvamTTSQuotaError):
         lf_render.render_compilation(plan, str(tmp_path / "out.mp4"), include_voiceover=True)
+
+
+def test_call_retries_transient_502_and_fails_fast_on_401(tmp_path, monkeypatch):
+    wav = tmp_path / "seg.wav"
+    wav.write_bytes(b"RIFFdata")
+    monkeypatch.setattr(settings, "sarvam_api_key", "sk_test")
+    monkeypatch.setattr(sarvam.time, "sleep", lambda *_: None)
+
+    class FakeResp:
+        def __init__(self, status_code, payload=None, text=""):
+            self.status_code = status_code
+            self._payload = payload or {}
+            self.text = text
+
+        def json(self):
+            return self._payload
+
+    attempts = 0
+
+    def post_502_then_200(*a, **kw):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return FakeResp(502, text="bad gateway")
+        return FakeResp(200, payload=_payload(("नमस्ते", 0.0, 2.0)))
+
+    monkeypatch.setattr(sarvam.httpx, "post", post_502_then_200)
+    out = sarvam._call(str(wav), "hi-IN")
+    assert out["transcript"] == "नमस्ते"
+    assert attempts == 2
+
+    attempts = 0
+
+    def post_401(*a, **kw):
+        nonlocal attempts
+        attempts += 1
+        return FakeResp(401, text="unauthorized")
+
+    monkeypatch.setattr(sarvam.httpx, "post", post_401)
+    with pytest.raises(RuntimeError):
+        sarvam._call(str(wav), "hi-IN")
+    assert attempts == 1

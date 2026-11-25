@@ -134,7 +134,7 @@ def _held_reasons(db, scope=None) -> Counter:
 
 
 def _held_note(held: Counter) -> str:
-    return (f"{held.total()} clips will not post until someone approves them on the Pending tab. "
+    return (f"{held.total()} clips will not post until someone approves them on the Review tab. "
             f"Most often: {held.most_common(1)[0][0]}")
 
 
@@ -326,7 +326,7 @@ def _stock_warning(db, stock: int, channel=None) -> Optional[str]:
         jobs.append(ClipJob.channel_id.is_(None) if cid is None else ClipJob.channel_id == cid)
     active = db.scalar(select(func.count(ClipJob.id)).where(*jobs)) or 0
     held = _held_reasons(db, scope)
-    waiting = sum(1 for v in approval.awaiting_review(db, scope) if not (v.meta or {}).get("growth_flagged"))
+    waiting = sum(1 for v in approval.awaiting_review(db, scope, limit=None) if not (v.meta or {}).get("growth_flagged"))
     steps = [f"{active} clip jobs are being cut."] if active else []
     if held:
         steps.append(f"{_held_note(held)}.")
@@ -648,7 +648,7 @@ def build_status(*, now: Optional[datetime] = None, channel_slug: Optional[str] 
             cid = channels.event_channel(ch)
             job_scope = ClipJob.channel_id.is_(None) if cid is None else ClipJob.channel_id == cid
             stock = len(ready_clips(db, scope))
-            waiting_review = len(approval.awaiting_review(db, scope))
+            waiting_review = len(approval.awaiting_review(db, scope, limit=None))
             active_jobs = db.scalar(select(func.count(ClipJob.id)).where(
                 ClipJob.status.in_(("queued", "running")), job_scope)) or 0
             paused = safety.pause_state(db, None if legacy_single else ch)

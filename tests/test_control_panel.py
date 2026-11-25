@@ -2134,3 +2134,50 @@ def test_queue_reports_daily_target_and_panel_ux_fixes(tmp_path, monkeypatch):
     assert "'done for today'" in PAGE
     assert "item.selected_thumbnail_id=t.id" in PAGE
     assert "renderPosted(postedAll,channels)" in PAGE
+
+
+def test_logs_warn_scans_past_recent_info_and_redacts_tts_ai_keys(tmp_path, monkeypatch):
+    from collections import Counter
+    import threading
+    from app import logging_config
+    from app.growth import report
+
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(logging_config, "LOG_DIR", log_dir)
+    monkeypatch.setattr(settings, "elevenlabs_api_key", "sk_el_secret123")
+    monkeypatch.setattr(settings, "cartesia_api_key", "sk_cart_secret456")
+
+    lines = [
+        "2026-11-25 10:00:01 [WARNING] test: el=sk_el_secret123 cart=sk_cart_secret456",
+        "2026-11-25 10:00:02 [WARNING] test: OPENAI_API_KEY=sk-proj-secret789",
+        "2026-11-25 10:00:03 [WARNING] test: GEMINI_API_KEY=AIzaSecret000",
+    ] + [f"2026-11-25 10:01:{i % 60:02d} [INFO] test: routine heartbeat {i}" for i in range(120)]
+    logging_config.get_log_file_path().write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    resp = _client().get("/api/logs?limit=20&level=warn")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["lines"]) == 3
+    joined = "\n".join(body["lines"])
+    for secret in ("sk_el_secret123", "sk_cart_secret456", "sk-proj-secret789", "AIzaSecret000"):
+        assert secret not in joined
+
+    note = report._held_note(Counter({"unsafe hook": 2}))
+    assert "Review tab" in note and "Pending tab" not in note
+
+    errs = []
+
+    def worker(idx: int) -> None:
+        try:
+            logging_config.record_job_run("test_job", {"i": idx})
+        except Exception as exc:
+            errs.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errs
+    assert len(logging_config.read_job_history(limit=20)) == 8

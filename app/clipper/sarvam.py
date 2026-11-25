@@ -17,6 +17,7 @@ import logging
 import math
 import os
 import tempfile
+import time
 from typing import Optional
 
 import httpx
@@ -32,6 +33,8 @@ _STT_URL = "https://api.sarvam.ai/speech-to-text"
 _MODEL = "saaras:v4"
 _CHUNK_SEC = 25.0  # the REST endpoint is intended for audio under 30s; stay under that
 _TIMEOUT = httpx.Timeout(120, connect=30)
+_MAX_RETRIES = 3
+_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 
 
 def _segment(audio_path: str, out_path: str, start: float, length: float) -> None:
@@ -48,18 +51,32 @@ def _basename(path: str) -> str:
 
 def _call(path: str, language_code: str) -> dict:
     filename = _basename(path)
-    with open(path, "rb") as audio:
-        response = httpx.post(
-            _STT_URL,
-            headers={"api-subscription-key": (settings.sarvam_api_key or "").strip()},
-            data={"model": _MODEL, "language_code": language_code, "with_timestamps": "true"},
-            files={"file": (filename, audio, "audio/wav")},
-            timeout=_TIMEOUT,
-        )
-    if response.status_code != 200:
+    last_exc: Optional[Exception] = None
+    for attempt in range(_MAX_RETRIES):
+        try:
+            with open(path, "rb") as audio:
+                response = httpx.post(
+                    _STT_URL,
+                    headers={"api-subscription-key": (settings.sarvam_api_key or "").strip()},
+                    data={"model": _MODEL, "language_code": language_code, "with_timestamps": "true"},
+                    files={"file": (filename, audio, "audio/wav")},
+                    timeout=_TIMEOUT,
+                )
+        except httpx.HTTPError as exc:
+            last_exc = exc
+            if attempt + 1 < _MAX_RETRIES:
+                time.sleep(0.5 * (attempt + 1))
+                continue
+            raise
+        if response.status_code == 200:
+            return response.json()
+        if response.status_code in _RETRYABLE_STATUS and attempt + 1 < _MAX_RETRIES:
+            time.sleep(0.5 * (attempt + 1))
+            continue
         # The body carries no key; status plus a short excerpt is safe and tells the real cause (quota, etc.).
         raise RuntimeError(f"Sarvam returned {response.status_code}: {response.text[:200]}")
-    return response.json()
+    assert last_exc is not None
+    raise last_exc
 
 
 def _split_chunk(text: str, start: float, end: float) -> list[Word]:
