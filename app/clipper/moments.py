@@ -49,7 +49,7 @@ _HOOK_WORDS = {
     "why", "how", "never", "always", "secret", "mistake", "truth", "worst", "best",
     "stop", "wrong", "nobody", "everyone", "actually", "imagine", "you", "your",
     "kya", "kyu", "kyon", "kaise", "sach", "dekho", "bhai", "gaya", "gayi",
-    "lakh", "crore", "paisa", "dar", "bhoot", "raaz", "matlab",
+    "lakh", "crore", "paisa", "dar", "raaz", "matlab",
 }
 _MAX_TITLE_CHARS = 70
 _MAX_HOOK_WORDS = 7
@@ -587,7 +587,7 @@ def _frame_strip(path: str, moment: Moment, out_path: str) -> None:
 def _ai_rank_visual(path: str, candidates: list[Moment], title: str, used: Sequence[Moment] = ()) -> dict | None:
     taken = ", ".join(f"{int(m.start)}-{int(m.end)}s" for m in used)
     used_note = f" These parts of the video are already clips, and no candidate repeats them: {taken}." if taken else ""
-    with tempfile.TemporaryDirectory(prefix="clipper-frames-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="clipper-frames-", ignore_cleanup_errors=True) as tmp:
         strips = []
         try:
             for index, moment in enumerate(candidates, 1):

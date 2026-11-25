@@ -31,6 +31,7 @@ _MAX_GROUP_GAP_SEC = 0.5
 _MAX_HOLD_SEC = 0.35
 _CAPTION_SIZE, _CAPTION_PAD, _HIGHLIGHT_GROW = 92, 24, 1.12
 _HOOK_SIZE, _HOOK_PAD = 72, 40
+_MIN_FONT_SIZE = 24
 _BEAT_SIZES = {"stat": 240, "card": 170}
 _BEAT_PAD = 60
 # Short lines let a graphic fill the width instead of shrinking to one long row.
@@ -161,7 +162,7 @@ def _fitted_size(lines: Sequence[str], base: int, pad: int, grow: float, font_pa
     Wrapping is off, so an over-long line would otherwise run off both edges. libass
     sizes a face by ascender plus descender, so that is the unit measured here.
     """
-    if not font_path:
+    if not font_path or not lines:
         return base
     try:
         face = _measuring_face(font_path)
@@ -169,10 +170,12 @@ def _fitted_size(lines: Sequence[str], base: int, pad: int, grow: float, font_pa
         log.warning("could not measure font %s: %s", font_path, exc)
         return base
     height = sum(face.getmetrics())
+    if height <= 0:
+        return base
     widest = max(face.getlength(line) / height for line in lines)
     if widest <= 0:
         return base
-    return min(base, int((_WIDTH - 2 * pad) / (widest * grow)))
+    return max(min(base, _MIN_FONT_SIZE), min(base, int((_WIDTH - 2 * pad) / (widest * grow))))
 
 
 def _caption_events(words: Sequence[Word], font_path: Optional[str] = None, y: int = Layout.caption_y) -> list[str]:
@@ -319,6 +322,7 @@ def font_family(path: str) -> str:
         with open(path, "rb") as handle:
             data = handle.read()
         base = struct.unpack(">I", data[12:16])[0] if data[:4] == b"ttcf" else 0
+        fallback_name = ""
         for index in range(struct.unpack(">H", data[base + 4:base + 6])[0]):
             record = base + 12 + index * 16
             if data[record:record + 4] != b"name":
@@ -326,11 +330,24 @@ def font_family(path: str) -> str:
             table = struct.unpack(">I", data[record + 8:record + 12])[0]
             count, strings = struct.unpack(">HH", data[table + 2:table + 6])
             for row in range(count):
-                platform, _enc, _lang, name_id, length, offset = struct.unpack(
+                platform, _enc, lang, name_id, length, offset = struct.unpack(
                     ">6H", data[table + 6 + row * 12:table + 18 + row * 12])
-                if name_id == 1 and platform in (0, 3):
-                    raw = data[table + strings + offset:table + strings + offset + length]
-                    return _safe_style_token(raw.decode("utf-16-be").strip(), fallback)
+                if name_id != 1 or platform not in (0, 3):
+                    continue
+                raw = data[table + strings + offset:table + strings + offset + length]
+                try:
+                    decoded = raw.decode("utf-16-be").strip()
+                except UnicodeDecodeError:
+                    continue
+                cleaned = _safe_style_token(decoded, "")
+                if not cleaned:
+                    continue
+                if platform == 3 and lang == 0x0409:
+                    return cleaned
+                if not fallback_name:
+                    fallback_name = cleaned
+        if fallback_name:
+            return fallback_name
     except (OSError, struct.error, UnicodeDecodeError) as exc:
         log.debug("could not read font name from %s: %s", path, exc)
     return fallback

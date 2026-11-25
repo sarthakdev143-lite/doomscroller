@@ -1014,14 +1014,14 @@ function renderReport(){
       for(const r of rows){const line=el('div',{className:'rowline'});line.append(el('span',{},r.arm),el('span',{className:'r'},r.multiplier+'x views · '+Math.round(r.p_best*100)+'% best · n='+r.n));card.append(line)}}body.append(card)}
   let bestList=view.best||[],worstList=view.worst||[];
   if(!bestList.length&&!reportPick&&chans){
-    bestList=Object.entries(chans).flatMap(([slug,s])=>(s.best||[]).map(r=>({...r,title:'['+(s.name||slug)+'] '+(r.title||'—')}))).sort((a,b)=>(b.views||0)-(a.views||0)).slice(0,5);
+    bestList=Object.entries(chans).flatMap(([slug,s])=>(s.best||[]).map(r=>({...r,channel:r.channel||s.name||slug}))).sort((a,b)=>(b.views||0)-(a.views||0)).slice(0,5);
   }
   if(!worstList.length&&!reportPick&&chans){
-    worstList=Object.entries(chans).flatMap(([slug,s])=>(s.worst||[]).map(r=>({...r,title:'['+(s.name||slug)+'] '+(r.title||'—')}))).sort((a,b)=>(a.views||0)-(b.views||0)).slice(0,5);
+    worstList=Object.entries(chans).flatMap(([slug,s])=>(s.worst||[]).map(r=>({...r,channel:r.channel||s.name||slug}))).sort((a,b)=>(a.views||0)-(b.views||0)).slice(0,5);
   }
   for(const [label,arr] of [['Best videos',bestList],['Worst videos',worstList]]){if(!arr.length)continue;
     const card=el('div',{className:'card',style:'padding:12px'});card.append(el('h2',{},label));
-    for(const r of arr){const line=el('div',{className:'rowline'});const titleNode=r.url?el('a',{href:r.url,target:'_blank',rel:'noopener',className:'srclink',style:'overflow:hidden;text-overflow:ellipsis;white-space:nowrap'},r.title||'—'):el('span',{style:'overflow:hidden;text-overflow:ellipsis;white-space:nowrap'},r.title||'—');line.append(titleNode,el('span',{className:'r'},(r.views||0).toLocaleString()+(r.diagnosis?(' · '+r.diagnosis):'')));card.append(line)}body.append(card)}
+    for(const r of arr){const line=el('div',{className:'rowline'});const rowTitle=(!reportPick&&r.channel?('['+r.channel+'] '):'')+(r.title||'—');const titleNode=r.url?el('a',{href:r.url,target:'_blank',rel:'noopener',className:'srclink',style:'overflow:hidden;text-overflow:ellipsis;white-space:nowrap'},rowTitle):el('span',{style:'overflow:hidden;text-overflow:ellipsis;white-space:nowrap'},rowTitle);line.append(titleNode,el('span',{className:'r'},(r.views||0).toLocaleString()+(r.diagnosis?(' · '+r.diagnosis):'')));card.append(line)}body.append(card)}
   const allProbs=d.problems||[];
   const probs=reportPick?allProbs.filter(p=>(p.channel_slug||'default')===reportPick):allProbs;
   if(probs.length){const card=el('div',{className:'card',style:'padding:12px'});card.append(el('h2',{},'Problems (30 days)'));

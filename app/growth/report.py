@@ -168,6 +168,7 @@ def _channel_rows(live: bool, only: Optional[str] = None) -> list[dict]:
     Disabled channels are listed but never gate overall readiness. `only` limits it to one slug, so
     connecting a channel does not wait on Google for every other one.
     """
+    now = datetime.now(timezone.utc)
     with session_scope() as db:
         named = [c for c in channels.all_channels(db) if not channels.is_default(c) and only in (None, c.slug)]
         info = []
@@ -175,20 +176,29 @@ def _channel_rows(live: bool, only: Optional[str] = None) -> list[dict]:
             feeds = channels.feeds_for(db, c)
             stock = len(ready_clips(db, channels.video_scope(c)))
             gap = db.get(GrowthState, channels.state_key(c, supply.SUPPLY_GAP))
+            paused_reason = safety.pause_reason(db, c) if c.enabled else None
+            hold = safety.active_hold(db, now, c) if c.enabled else None
             info.append((c, feeds, stock, (gap.value or {}).get("cause") if gap else None,
+                         paused_reason, hold,
                          insights_for(c) if (live and c.enabled) else None))
     rows = []
-    for channel, feeds, stock, gap_cause, insights in info:
+    for channel, feeds, stock, gap_cause, paused_reason, hold, insights in info:
         has_creds, secret_detail = _secret_detail(
             channel.client_secrets,
             fallback="not set, so this channel's uploads would be fake",
         )
         if not channel.enabled:
-            rows.append(_disabled_row(channel, has_creds and os.path.exists(channel.token_path)))
+            rows.append(_disabled_row(channel, has_creds and bool(channel.token_path) and os.path.exists(channel.token_path)))
             continue
         is_proc = channels.is_procedural(channel)
-        shorts_paused = channels.uploads_per_day(channel) <= 0
+        shorts_up = channels.uploads_per_day(channel)
+        long_up = channels.long_uploads_per_day(channel)
+        total_up = shorts_up + long_up
+        shorts_paused = shorts_up <= 0
         checks = [
+            _check(paused_reason is None, "pause",
+                   f"{paused_reason}. Check the channel, then clear it with: scripts/growth.py resume {channel.slug}"
+                   if paused_reason else "not paused"),
             _check(has_creds, "client_secrets", secret_detail),
             *_token_checks(channel.token_path, slug=channel.slug),
             (
@@ -197,15 +207,23 @@ def _channel_rows(live: bool, only: Optional[str] = None) -> list[dict]:
                 else _check(bool(feeds), "feeds", f"{len(feeds)} feeds" if feeds else "none set for this channel")
             ),
         ]
+        if hold:
+            checks.append(
+                _check(False, "account hold",
+                       f"on hold until {hold.get('until', '')}: {hold.get('reason') or 'temporarily held'}",
+                       required=False)
+            )
         if not is_proc and not shorts_paused:
             checks.append(
                 _check(not gap_cause, "stock",
                        f"{stock} clips ready" + (f"; supply gap: {gap_cause[:80]}" if gap_cause else ""), required=False)
             )
+        pace_label = (f"{total_up} a day ({shorts_up} shorts + {long_up} long)"
+                      if long_up > 0 else f"{shorts_up} a day")
         checks.append(
-            _check(channel.uploads_per_day <= _PROJECT_UPLOADS, "pace",
-                   f"{channel.uploads_per_day} a day" + (
-                       "" if channel.uploads_per_day <= _PROJECT_UPLOADS else
+            _check(total_up <= _PROJECT_UPLOADS, "pace",
+                   pace_label + (
+                       "" if total_up <= _PROJECT_UPLOADS else
                        f": a Cloud project's default quota covers about {_PROJECT_UPLOADS} uploads a day, so the "
                        "rest will be refused unless this project has a raised quota"), required=False)
         )
@@ -253,6 +271,7 @@ def doctor(*, live: bool = False) -> dict:
         active = channels.active_channels(db)
         # Every enabled channel's feeds. For a single legacy channel this is just GROWTH_FEEDS.
         all_feeds = [f for c in active for f in channels.feeds_for(db, c)]
+        proc_count = sum(1 for c in active if channels.is_procedural(c))
     # With named channels (and no active legacy default), each has its own token below; global YOUTUBE_* creds are unused.
     named_only = has_named and not legacy_active
     has_global_creds, global_secret_detail = _secret_detail(
@@ -291,8 +310,9 @@ def doctor(*, live: bool = False) -> dict:
                f"{settings.youtube_default_privacy}: only public videos can get views to learn from"),
         _check(shutil.which("ffmpeg") is not None, "ffmpeg", "found" if shutil.which("ffmpeg") else "not on PATH"),
         _check(zone_ok, "GROWTH_TIMEZONE", settings.growth_timezone),
-        _check(stock > 0 or (files > 0 and not needs_ai) or bool(feeds), "content source",
+        _check(stock > 0 or (files > 0 and not needs_ai) or bool(feeds) or proc_count > 0, "content source",
                f"{stock} clips ready; {files} inbox files ready; {len(feeds)} feeds"
+               + (f"; {proc_count} procedural channel(s)" if proc_count else "")
                + (f"; no videos found at {', '.join(no_links)}" if no_links else "")
                + (f"; a takedown block covers {', '.join(sorted(barred))}" if barred else "")
                + ("; clips wait for review without an AI CLI" if needs_ai else "")
@@ -408,6 +428,18 @@ def _fleet(sections: dict[str, dict]) -> dict:
     parts = list(sections.values())
     collects = [s["collect"]["last_success"] for s in parts if s["collect"]["last_success"]]
     all_best = [{**r, "channel": s["name"]} for s in parts for r in s["best"]]
+    best = sorted(all_best, key=lambda r: -r["views"])[:5]
+    best_ids = {r["id"] for r in best}
+    seen_worst: set[str] = set()
+    all_worst = []
+    for s in parts:
+        for r in (*s["worst"], *s["best"]):
+            rid = r["id"]
+            if rid in best_ids or rid in seen_worst:
+                continue
+            seen_worst.add(rid)
+            all_worst.append({**r, "channel": s["name"]})
+    worst = sorted(all_worst, key=lambda r: r["views"])[:5]
     warnings = ([f"{s['name']}: {w}" for s in parts for w in s["warnings"]] if parts
                 else (["No channels are enabled. Run: scripts/channels.py connect <slug>"]
                       if settings.growth_enabled else []))
@@ -424,8 +456,8 @@ def _fleet(sections: dict[str, dict]) -> dict:
                     "analytics_failing_since": None, "analytics_error": None},
         "warnings": warnings,
         "plan": {}, "focus": [], "factors": {},
-        "best": sorted(all_best, key=lambda r: -r["views"])[:5],
-        "worst": [],
+        "best": best,
+        "worst": worst,
     }
 
 

@@ -490,3 +490,127 @@ def test_cli_pause_and_typo_safe_resume(tmp_path, monkeypatch, capsys):
     assert code_res == 0 and "Resumed tech" in out_res
     with session_scope() as db:
         assert safety.pause_reason(db, channels.channel_by_slug(db, "tech")) is None
+
+
+def test_wave12_doctor_named_pause_hold_null_token_combined_pace_procedural_and_fleet_worst(
+    tmp_path, monkeypatch
+):
+    secret = tmp_path / "secret.json"
+    token = tmp_path / "token.json"
+    secret.write_text("{}", encoding="utf-8")
+    token.write_text("{}", encoding="utf-8")
+
+    # Test A: disabled named channel with empty or None token_path does not raise TypeError in doctor()
+    _write_channels(
+        tmp_path,
+        monkeypatch,
+        [{"slug": "offch", "name": "OffCh", "client_secrets": str(secret), "token_path": "", "enabled": False}],
+    )
+    with session_scope() as db:
+        channels.sync_channels(db)
+        ch = channels.channel_by_slug(db, "offch")
+        ch.token_path = ""
+    doc_off = report.doctor(live=False)
+    assert any(r["slug"] == "offch" and r["enabled"] is False for r in doc_off["channels"])
+    from types import SimpleNamespace
+    with monkeypatch.context() as mp:
+        stub = SimpleNamespace(
+            id="offch-id", slug="offch", name="OffCh", enabled=False,
+            client_secrets=str(secret), token_path=None, youtube_channel_id=None,
+        )
+        mp.setattr(channels, "all_channels", lambda _db: [stub])
+        mp.setattr(channels, "is_default", lambda _c: False)
+        mp.setattr(channels, "active_channels", lambda _db: [])
+        mp.setattr(channels, "feeds_for", lambda _db, _c: [])
+        doc_none = report.doctor(live=False)
+        assert any(r["slug"] == "offch" and r["enabled"] is False for r in doc_none["channels"])
+
+    # Test B: enabled named channel surfaces pause (required), account hold (optional), and combined pace
+    _write_channels(
+        tmp_path,
+        monkeypatch,
+        [
+            {
+                "slug": "vlog",
+                "name": "Vlog",
+                "client_secrets": str(secret),
+                "token_path": str(token),
+                "uploads_per_day": 5,
+                "long_uploads_per_day": 2,
+                "enabled": True,
+                "feeds": ["https://www.youtube.com/@mkbhd"],
+            }
+        ],
+    )
+    with session_scope() as db:
+        channels.sync_channels(db)
+        vlog = channels.channel_by_slug(db, "vlog")
+        safety.set_hold(db, datetime.now(timezone.utc), "quotaExceeded", vlog)
+    assert safety.pause("vlog") is True
+    doc_vlog = report.doctor(live=False)
+    assert doc_vlog["ready"] is False
+    vlog_row = next(r for r in doc_vlog["channels"] if r["slug"] == "vlog")
+    assert vlog_row["ready"] is False
+    by_name = {c["name"]: c for c in vlog_row["checks"]}
+    assert by_name["pause"]["ok"] is False and by_name["pause"]["required"] is True
+    assert "scripts/growth.py resume vlog" in by_name["pause"]["detail"]
+    assert by_name["account hold"]["ok"] is False and by_name["account hold"]["required"] is False
+    assert "quotaExceeded" in by_name["account hold"]["detail"]
+    assert by_name["pace"]["ok"] is False
+    assert "7 a day (5 shorts + 2 long)" in by_name["pace"]["detail"]
+
+    # Test C: procedural-only enabled channel passes top-level "content source"
+    with session_scope() as db:
+        safety.resume("vlog")
+        db.execute(delete(Channel))
+        db.execute(delete(Feed))
+        db.execute(delete(GrowthState))
+    _write_channels(
+        tmp_path,
+        monkeypatch,
+        [
+            {
+                "slug": "ambient",
+                "name": "Ambient",
+                "client_secrets": str(secret),
+                "token_path": str(token),
+                "uploads_per_day": 0,
+                "long_uploads_per_day": 1,
+                "enabled": True,
+                "feeds": [],
+                "meta": {"mode": "procedural_ambient"},
+            }
+        ],
+    )
+    with session_scope() as db:
+        channels.sync_channels(db)
+    doc_proc = report.doctor(live=False)
+    top_checks = {c["name"]: c for c in doc_proc["checks"]}
+    assert top_checks["content source"]["ok"] is True
+    assert "procedural" in top_checks["content source"]["detail"]
+
+    # Test D: fleet report populates worst across channels without overlapping best
+    with session_scope() as db:
+        db.execute(delete(Channel))
+        db.execute(delete(Feed))
+        db.execute(delete(GrowthState))
+    _write_channels(
+        tmp_path,
+        monkeypatch,
+        [{"slug": "tech", "name": "Tech"}, {"slug": "comedy", "name": "Comedy"}],
+    )
+    with session_scope() as db:
+        channels.sync_channels(db)
+        tech_id = channels.channel_by_slug(db, "tech").id
+        comedy_id = channels.channel_by_slug(db, "comedy").id
+    for idx, views in enumerate((5000, 4000, 3000, 2000), start=1):
+        _published_matured(tmp_path, idx, views, channel_id=tech_id)
+    for idx, views in enumerate((1500, 800, 200), start=10):
+        _published_matured(tmp_path, idx, views, channel_id=comedy_id)
+
+    rep = report.build_report()
+    assert [r["views"] for r in rep["best"]] == [5000, 4000, 3000, 2000, 1500]
+    assert [r["views"] for r in rep["worst"]] == [200, 800]
+    assert {r["id"] for r in rep["best"]}.isdisjoint({r["id"] for r in rep["worst"]})
+    assert all(r["channel"] == "Comedy" for r in rep["worst"])
+

@@ -859,3 +859,60 @@ def test_ai_per_model_cooldown_and_ask_json_claude_fallback(monkeypatch):
     assert parsed == {"shots": [1, 3], "search": ""}
     assert len(claude_calls) == 1
     assert "valid raw JSON object" in claude_calls[0]
+
+
+def test_wave12_captions_fitted_size_floor_font_family_en_us_and_moments_safe_hooks(
+    tmp_path, monkeypatch
+):
+    # A. _fitted_size empty-lines guard and minimum legible font floor
+    assert captions._fitted_size([], 92, 24, 1.12, "any.ttf") == 92
+
+    class _FakeFace:
+        def getmetrics(self):
+            return (800, 200)
+
+        def getlength(self, s: str) -> float:
+            return len(s) * 1000.0
+
+    monkeypatch.setattr(captions, "_measuring_face", lambda _path: _FakeFace())
+    assert captions._fitted_size(["X" * 200], 92, 24, 1.12, "fake.ttf") == 24
+    assert captions._fitted_size(["X" * 200], 18, 24, 1.12, "fake.ttf") == 18
+
+    # B. font_family skips undecodable records and prefers Windows US-English (0x0409)
+    bad_rec = b"\x00"  # odd length -> UnicodeDecodeError in utf-16-be
+    fr_rec = "PoliceFrancaise".encode("utf-16-be")
+    en_rec = "EnglishFamily".encode("utf-16-be")
+    strings = bad_rec + fr_rec + en_rec
+    str_off = 6 + 3 * 12
+    name_table = (
+        struct.pack(">HHH", 0, 3, str_off)
+        + struct.pack(">6H", 3, 1, 0x0401, 1, len(bad_rec), 0)
+        + struct.pack(">6H", 3, 1, 0x040C, 1, len(fr_rec), len(bad_rec))
+        + struct.pack(">6H", 3, 1, 0x0409, 1, len(en_rec), len(bad_rec) + len(fr_rec))
+        + strings
+    )
+    sfnt = (
+        struct.pack(">IHHHH", 0x00010000, 1, 16, 0, 0)
+        + struct.pack(">4sIII", b"name", 0, 28, len(name_table))
+        + name_table
+    )
+    multi = tmp_path / "multi.ttf"
+    multi.write_bytes(sfnt)
+    assert captions.font_family(str(multi)) == "EnglishFamily"
+
+    # C. moments: "bhoot" removed from _HOOK_WORDS and TemporaryDirectory uses ignore_cleanup_errors=True
+    assert "bhoot" not in moments._HOOK_WORDS
+    recorded_kwargs: list[dict] = []
+    real_tmpdir = moments.tempfile.TemporaryDirectory
+
+    def spy_tmpdir(*args, **kwargs):
+        recorded_kwargs.append(kwargs)
+        return real_tmpdir(*args, **kwargs)
+
+    monkeypatch.setattr(moments.tempfile, "TemporaryDirectory", spy_tmpdir)
+    monkeypatch.setattr(moments, "_frame_strip", lambda path, m, out_path: Path(out_path).write_bytes(b"jpg"))
+    monkeypatch.setattr(ai, "ask_json", lambda *a, **kw: {"clips": []})
+    res = moments._ai_rank_visual("dummy.mp4", [Moment(0.0, 10.0)], "Test Title")
+    assert res == {"clips": []}
+    assert recorded_kwargs and recorded_kwargs[0].get("ignore_cleanup_errors") is True
+
