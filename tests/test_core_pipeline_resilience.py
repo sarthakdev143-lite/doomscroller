@@ -571,3 +571,70 @@ def test_cleanup_job_skips_symlinks_junctions_active_inbox_and_rendered_clips(tm
                 os.rmdir(junc_dir)
             else:
                 junc_dir.unlink()
+
+
+def test_wave13_mock_transform_no_unbound_local_and_pipeline_scrubs_errors(tmp_path, monkeypatch):
+    from app.models import GrowthEvent
+
+    init_db()
+    # A. transform_task with use_mock=True must not fail with UnboundLocalError on plain_copy
+    monkeypatch.setattr(settings, "use_mock", True)
+    src = tmp_path / "mock_in.mp4"
+    src.write_bytes(b"x" * 4096)
+    with session_scope() as db:
+        v = Video(
+            source="snapchat",
+            source_id="wave13-mock-tx",
+            source_url="https://snap/w13",
+            title="Mock Test",
+            local_path=str(src),
+            status=VideoStatus.APPROVED,
+        )
+        db.add(v)
+        db.flush()
+        vid = v.id
+
+    out = pipeline.transform_task(vid)
+    assert out["ok"] is True
+    assert out["action"] == "copy (mock/no-ffmpeg)"
+    with session_scope() as db:
+        reloaded = db.get(Video, vid)
+        assert reloaded.status == VideoStatus.TRANSFORMED
+        assert reloaded.error is None
+        assert (reloaded.meta or {}).get("variation") == "copied"
+
+    # B. Secret scrubbing in _publish_failed and _note_stuck_once
+    monkeypatch.setattr(settings, "proxy_url", "socks5://u:CANARY_PROXY_W13@10.0.0.1:1080")
+    monkeypatch.setattr(settings, "deepgram_api_key", "CANARY_DG_W13")
+    with session_scope() as db:
+        v2 = Video(
+            source="youtube",
+            source_id="wave13-pub-fail",
+            source_url="https://youtu.be/w13",
+            title="Pub Fail Test",
+            local_path=str(src),
+            status=VideoStatus.PUBLISHING,
+        )
+        db.add(v2)
+        db.flush()
+        vid2 = v2.id
+
+    res = pipeline._publish_failed(
+        vid2,
+        RuntimeError("connect via socks5://u:CANARY_PROXY_W13@10.0.0.1:1080 key=CANARY_DG_W13"),
+    )
+    assert "CANARY_PROXY_W13" not in res["error"]
+    assert "CANARY_DG_W13" not in res["error"]
+    with session_scope() as db:
+        v2_row = db.get(Video, vid2)
+        assert "CANARY_PROXY_W13" not in (v2_row.error or "")
+        assert "CANARY_DG_W13" not in (v2_row.error or "")
+
+    pipeline._note_stuck_once(vid2, "proxy socks5://u:CANARY_PROXY_W13@10.0.0.1:1080 failed")
+    with session_scope() as db:
+        ev = db.execute(
+            select(GrowthEvent).where(GrowthEvent.video_id == vid2, GrowthEvent.kind == "publish_stuck")
+        ).scalar_one()
+        assert "CANARY_PROXY_W13" not in ev.summary
+        assert "CANARY_PROXY_W13" not in (ev.data or {}).get("reason", "")
+

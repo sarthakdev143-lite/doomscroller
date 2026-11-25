@@ -916,3 +916,101 @@ def test_wave12_captions_fitted_size_floor_font_family_en_us_and_moments_safe_ho
     assert res == {"clips": []}
     assert recorded_kwargs and recorded_kwargs[0].get("ignore_cleanup_errors") is True
 
+
+def test_wave13_transcribe_sarvam_cleanup_interrupted_unified_scrub_and_atomic_caches(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+    from app import logging_config
+    from app.clipper.media import Interrupted
+
+    # A. transcribe.transcribe: ignore_cleanup_errors=True, scrubbed _request error, atomic cache write
+    monkeypatch.setattr(settings, "deepgram_api_key", "CANARY_DG_KEY_W13")
+    monkeypatch.setattr(settings, "content_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "sarvam_api_key", "")
+    audio_tmp = tmp_path / "dummy_audio.mp3"
+    audio_tmp.write_bytes(b"mp3")
+    monkeypatch.setattr(
+        transcribe.httpx,
+        "post",
+        lambda *a, **kw: SimpleNamespace(status_code=500, text="bad token CANARY_DG_KEY_W13"),
+    )
+    with pytest.raises(transcribe.TranscribeError) as exc_info:
+        transcribe._request(str(audio_tmp))
+    assert "CANARY_DG_KEY_W13" not in str(exc_info.value)
+
+    recorded_tx_tmp: list[dict] = []
+    real_tx_tmpdir = transcribe.tempfile.TemporaryDirectory
+
+    def spy_tx_tmpdir(*args, **kwargs):
+        recorded_tx_tmp.append(kwargs)
+        return real_tx_tmpdir(*args, **kwargs)
+
+    monkeypatch.setattr(transcribe.tempfile, "TemporaryDirectory", spy_tx_tmpdir)
+    monkeypatch.setattr(transcribe, "run_ffmpeg", lambda args: Path(args[-1]).write_bytes(b"mp3"))
+    monkeypatch.setattr(
+        transcribe,
+        "_request",
+        lambda _p: {
+            "results": {
+                "channels": [
+                    {
+                        "detected_language": "en",
+                        "alternatives": [
+                            {"words": [{"word": "hello", "start": 0.1, "end": 0.5, "confidence": 0.99}]}
+                        ],
+                    }
+                ]
+            }
+        },
+    )
+    video_file = tmp_path / "src.mp4"
+    video_file.write_bytes(b"mp4-bytes")
+    info = MediaInfo(duration=15.0, width=1080, height=1920, fps=30.0, has_audio=True)
+    tr = transcribe.transcribe(str(video_file), info)
+    assert tr is not None and len(tr.words) == 1
+    assert recorded_tx_tmp and recorded_tx_tmp[0].get("ignore_cleanup_errors") is True
+    assert not list(tmp_path.rglob("*.tmp"))
+
+    # B. sarvam.transcribe: ignore_cleanup_errors=True and re-raises Interrupted
+    monkeypatch.setattr(settings, "sarvam_api_key", "CANARY_SARVAM_W13")
+    recorded_sv_tmp: list[dict] = []
+    real_sv_tmpdir = sarvam.tempfile.TemporaryDirectory
+
+    def spy_sv_tmpdir(*args, **kwargs):
+        recorded_sv_tmp.append(kwargs)
+        return real_sv_tmpdir(*args, **kwargs)
+
+    monkeypatch.setattr(sarvam.tempfile, "TemporaryDirectory", spy_sv_tmpdir)
+
+    def raise_interrupted(*_a, **_kw):
+        raise Interrupted("cancelled")
+
+    monkeypatch.setattr(sarvam, "_segment", raise_interrupted)
+    with pytest.raises(Interrupted):
+        sarvam.transcribe(str(audio_tmp), 20.0)
+    assert recorded_sv_tmp and recorded_sv_tmp[0].get("ignore_cleanup_errors") is True
+
+    # C. Unified logging_config.scrub_secrets + broll/ingest wrappers + preserves trailing ')'
+    monkeypatch.setattr(settings, "proxy_url", "http://user:PROXY_PASS_W13@proxy:8080")
+    monkeypatch.setattr(settings, "pixabay_api_key", "PIX_KEY_W13")
+    cleaned = logging_config.scrub_secrets(
+        "via http://user:PROXY_PASS_W13@proxy:8080 (https://x.test?key=INLINE_W13)"
+    )
+    assert "PROXY_PASS_W13" not in cleaned
+    assert "INLINE_W13" not in cleaned
+    assert cleaned.endswith(")")
+    assert "PROXY_PASS_W13" not in broll.scrub_secrets("http://user:PROXY_PASS_W13@proxy:8080")
+    assert "PIX_KEY_W13" not in ingest._scrub_secrets("key=PIX_KEY_W13")
+
+    # D. Atomic cache & synth bed writes leave no temp files behind
+    cache_path = tmp_path / "broll_cache" / "search.json"
+    broll._write_search_cache(cache_path, [{"id": 1}])
+    assert cache_path.exists() and not list(cache_path.parent.glob("*.tmp"))
+
+    bed_path = tmp_path / "bed_test.wav"
+    music._write_synth_bed(bed_path, 110.0, (110.0, 165.0), 0.25)
+    assert bed_path.exists() and bed_path.stat().st_size > 0
+    assert not list(tmp_path.glob("*.tmp.wav"))
+
+

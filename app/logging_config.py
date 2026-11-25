@@ -76,13 +76,14 @@ _JSON_SECRET_RE = re.compile(
     re.IGNORECASE,
 )
 _URL_PARAM_SECRET_RE = re.compile(
-    r"([?&](?:key|api_key|apikey|token|access_token|refresh_token)=)([^&\s'\"]+)",
+    r"([?&](?:key|api_key|apikey|token|access_token|refresh_token)=)([^&\s'\")]+)",
     re.IGNORECASE,
 )
 _AUTH_HEADER_RE = re.compile(
     r"(Authorization\s*:\s*(?:Bearer|Token)\s+)([^\s,;'\"]+)",
     re.IGNORECASE,
 )
+_PROXY_CRED_RE = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]*://[^/\s:@]+:)[^@\s/]+@")
 
 
 def _configured_secret_values() -> list[str]:
@@ -110,11 +111,19 @@ def scrub_secrets(text: str) -> str:
     for secret in _configured_secret_values():
         if secret in out:
             out = out.replace(secret, "[REDACTED]")
+    try:
+        from .config import settings
+        proxy_url = getattr(settings, "proxy_url", "") or ""
+    except Exception:
+        proxy_url = ""
+    if proxy_url and proxy_url in out:
+        out = out.replace(proxy_url, _PROXY_CRED_RE.sub(r"\1[REDACTED]@", proxy_url))
     out = _BOT_TOKEN_RE.sub("bot[REDACTED]", out)
     out = _JSON_SECRET_RE.sub(r"\1[REDACTED]\3", out)
     out = _ENV_SECRET_RE.sub(r"\1[REDACTED]", out)
     out = _URL_PARAM_SECRET_RE.sub(r"\1[REDACTED]", out)
     out = _AUTH_HEADER_RE.sub(r"\1[REDACTED]", out)
+    out = _PROXY_CRED_RE.sub(r"\1[REDACTED]@", out)
     return out
 
 

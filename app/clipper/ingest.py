@@ -13,6 +13,7 @@ from typing import Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from app.config import settings
+from app.logging_config import scrub_secrets
 from app.scrapers.yt_dlp_scraper import YtDlpScraper
 
 from .media import content_id
@@ -74,7 +75,6 @@ _PLAYLIST_PARAMS = {"list", "index", "start_radio", "playnext", "pp"}
 _YOUTUBE_HOSTS = {
     "youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be", "www.youtu.be",
 }
-_PROXY_CRED_RE = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]*://[^/\s:@]+:)[^@\s/]+@")
 
 
 def is_url(source: str) -> bool:
@@ -114,10 +114,7 @@ def _normalise_url(url: str) -> str:
 
 
 def _scrub_secrets(message: object) -> str:
-    text = str(message or "")
-    if settings.proxy_url:
-        text = text.replace(settings.proxy_url, _PROXY_CRED_RE.sub(r"\1[REDACTED]@", settings.proxy_url))
-    return _PROXY_CRED_RE.sub(r"\1[REDACTED]@", text)
+    return scrub_secrets(str(message or ""))
 
 
 def _safe_source_name(raw: object) -> str:

@@ -17,6 +17,7 @@ import logging
 import math
 import os
 import re
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +26,7 @@ from typing import Callable, Iterable, Optional
 import httpx
 
 from app.config import settings
+from app.logging_config import scrub_secrets as _scrub_secrets
 
 from .media import MediaError, probe, read_ffmpeg
 
@@ -52,16 +54,11 @@ _MAX_FAILED_DOWNLOADS = 2
 # A hung CDN costs a minute per attempt, so give up across cutaways too. This counts
 # files, because a cutaway may only have one to try once the AI has chosen.
 MAX_FAILED_FILES = 4
-_URL_KEY_RE = re.compile(r"([?&](?:key|api_key|apikey|token)=)[^&\s\"')]+", re.IGNORECASE)
 
 
 def scrub_secrets(text: object) -> str:
     """Redact stock video API keys from any exception or log message."""
-    cleaned = str(text or "")
-    for secret in (settings.pixabay_api_key, settings.pexels_api_key):
-        if secret:
-            cleaned = cleaned.replace(secret, "[REDACTED]")
-    return _URL_KEY_RE.sub(r"\1[REDACTED]", cleaned)
+    return _scrub_secrets(str(text or ""))
 
 
 def _safe_video_id(raw: object) -> str:
@@ -259,10 +256,13 @@ def _read_search_cache(path: Path) -> Optional[object]:
 
 
 def _write_search_cache(path: Path, results: object) -> None:
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"at": time.time(), "results": results}), encoding="utf-8")
+        tmp.write_text(json.dumps({"at": time.time(), "results": results}), encoding="utf-8")
+        os.replace(tmp, path)
     except OSError as exc:
+        tmp.unlink(missing_ok=True)
         log.warning("broll: could not cache a search: %s", exc)
 
 
@@ -340,14 +340,14 @@ def _local_copy(candidate: Candidate, seconds: float) -> Optional[Path]:
     """A checked file for this result, downloading it if needed. None if it will not play."""
     path = settings.content_path / "broll" / f"{_safe_video_id(candidate.video_id)}.mp4"
     if path.exists() and not _playable(path, seconds):
-        path.unlink()
+        path.unlink(missing_ok=True)
     if path.exists():
         os.utime(path, None)  # cleanup ages these by mtime
         return path
     _download(candidate.link, path)
     if _playable(path, seconds):
         return path
-    path.unlink()
+    path.unlink(missing_ok=True)
     return None
 
 

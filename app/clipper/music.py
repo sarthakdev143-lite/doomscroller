@@ -8,7 +8,9 @@ name, and that line goes into the description.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
+import threading
 import wave
 from pathlib import Path
 from typing import Optional, Union
@@ -72,13 +74,17 @@ def _write_synth_bed(path: Path, bass_hz: float, chord_hz: tuple[float, ...], se
     stereo = np.stack([left, right], axis=1)
     pcm = np.clip(np.rint(np.clip(stereo, -0.95, 0.95) * 32767.0), -32768, 32767).astype(np.int16)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp.wav")
-    with wave.open(str(tmp), "wb") as handle:
-        handle.setnchannels(2)
-        handle.setsampwidth(2)
-        handle.setframerate(_SYNTH_RATE)
-        handle.writeframes(pcm.tobytes())
-    tmp.replace(path)
+    tmp = path.with_name(f"{path.stem}.{os.getpid()}.{threading.get_ident()}.tmp.wav")
+    try:
+        with wave.open(str(tmp), "wb") as handle:
+            handle.setnchannels(2)
+            handle.setsampwidth(2)
+            handle.setframerate(_SYNTH_RATE)
+            handle.writeframes(pcm.tobytes())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def _synth_library() -> list[Path]:

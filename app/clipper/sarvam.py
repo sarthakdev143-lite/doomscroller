@@ -23,8 +23,9 @@ from typing import Optional
 import httpx
 
 from app.config import settings
+from app.logging_config import scrub_secrets
 
-from .media import run_ffmpeg
+from .media import Interrupted, run_ffmpeg
 from .transcribe import Transcript, Word
 
 log = logging.getLogger(__name__)
@@ -74,7 +75,7 @@ def _call(path: str, language_code: str) -> dict:
             time.sleep(0.5 * (attempt + 1))
             continue
         # The body carries no key; status plus a short excerpt is safe and tells the real cause (quota, etc.).
-        raise RuntimeError(f"Sarvam returned {response.status_code}: {response.text[:200]}")
+        raise RuntimeError(f"Sarvam returned {response.status_code}: {scrub_secrets(response.text[:200])}")
     assert last_exc is not None
     raise last_exc
 
@@ -135,7 +136,7 @@ def transcribe(audio_path: str, duration: float, *, language_code: str = "hi-IN"
 
     words: list[Word] = []
     try:
-        with tempfile.TemporaryDirectory(prefix="clipper-sarvam-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="clipper-sarvam-", ignore_cleanup_errors=True) as tmp:
             start = 0.0
             index = 0
             while start < duration - 0.05:
@@ -145,6 +146,8 @@ def transcribe(audio_path: str, duration: float, *, language_code: str = "hi-IN"
                 words += _words_from(_call(seg, language_code), start, seg_len)
                 start += seg_len
                 index += 1
+    except Interrupted:
+        raise
     except Exception as exc:  # fail-safe: never break the clip job over the captioner
         log.warning("sarvam: Hindi transcription failed, using the no-speech path: %s", type(exc).__name__)
         return None

@@ -16,6 +16,7 @@ import logging
 import math
 import os
 import tempfile
+import threading
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -23,6 +24,7 @@ from typing import Optional
 import httpx
 
 from app.config import settings
+from app.logging_config import scrub_secrets
 
 from .media import MediaInfo, content_id, run_ffmpeg
 
@@ -159,13 +161,13 @@ def _request(audio_path: str) -> dict:
                 timeout=httpx.Timeout(900, connect=30),
             )
     except httpx.HTTPError as exc:
-        raise TranscribeError(f"could not reach Deepgram: {exc}") from exc
+        raise TranscribeError(f"could not reach Deepgram: {scrub_secrets(str(exc))}") from exc
     if response.status_code != 200:
-        raise TranscribeError(f"Deepgram returned {response.status_code}: {response.text[:300]}")
+        raise TranscribeError(f"Deepgram returned {response.status_code}: {scrub_secrets(response.text[:300])}")
     try:
         return response.json()
     except ValueError as exc:
-        raise TranscribeError(f"Deepgram sent an unreadable reply: {response.text[:200]!r}") from exc
+        raise TranscribeError(f"Deepgram sent an unreadable reply: {scrub_secrets(response.text[:200])!r}") from exc
 
 
 def _fingerprint(video_path: str) -> dict:
@@ -215,12 +217,18 @@ def _write_cache(paths: tuple[str, str], fingerprint: dict, transcript: Transcri
     body = {"source": fingerprint, "language": transcript.language, "engine": transcript.engine,
             "words": [asdict(w) for w in transcript.words]}
     for path in paths:
+        tmp_path = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
         try:
             Path(path).parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "w", encoding="utf-8") as handle:
+            with open(tmp_path, "w", encoding="utf-8") as handle:
                 json.dump(body, handle)
+            os.replace(tmp_path, path)
             return
         except OSError as exc:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
             log.warning("transcribe: could not cache at %s: %s", path, exc)
 
 
@@ -238,7 +246,7 @@ def transcribe(video_path: str, info: MediaInfo) -> Optional[Transcript]:
     if not (settings.deepgram_api_key or "").strip():
         log.warning("DEEPGRAM_API_KEY not set; treating this video as no-speech")
         return None
-    with tempfile.TemporaryDirectory(prefix="clipper-audio-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="clipper-audio-", ignore_cleanup_errors=True) as tmp:
         audio_path = os.path.join(tmp, "audio.mp3")
         run_ffmpeg(["-i", video_path, "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000",
                     "-b:a", "48k", audio_path])

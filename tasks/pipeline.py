@@ -22,6 +22,7 @@ from app import analytics
 from app.analytics import recompute_scores
 from app.config import settings
 from app.db import session_scope
+from app.logging_config import scrub_secrets
 from app.models import Channel, Creator, GrowthEvent, MetadataDraft, TransformJob, Video, VideoStatus
 from app.publishers import get_publisher
 from app.publishers.base import TokenProblem, UploadOutcomeUnknown
@@ -659,6 +660,8 @@ def transform_task(video_id: str, recipe_dict: dict | None = None) -> dict:
     os.makedirs(out_dir, exist_ok=True)
     output_path = os.path.join(out_dir, f"{video_pk}.mp4")
 
+    plain_copy = True
+    variation = None
     try:
         if settings.use_mock or not _ffmpeg_available():
             import shutil
@@ -717,7 +720,7 @@ def transform_task(video_id: str, recipe_dict: dict | None = None) -> dict:
             video.meta = {
                 **(video.meta or {}),
                 "transform_action": plan.get("action"),
-                "variation": variation.summary() if not plain_copy else "copied",
+                "variation": variation.summary() if (not plain_copy and variation is not None) else "copied",
             }
             job.status = "done"
             job.output_path = output_path
@@ -735,18 +738,19 @@ def transform_task(video_id: str, recipe_dict: dict | None = None) -> dict:
         }
 
     except Exception as exc:
+        err_msg = scrub_secrets(str(exc))
         log.exception("transform failed for %s", video_pk)
         with session_scope() as db:
             video = db.get(Video, video_pk)
             job = db.get(TransformJob, job_id)
             if video is not None:
                 video.status = VideoStatus.FAILED
-                video.error = f"transform: {exc}"
+                video.error = f"transform: {err_msg}"
             if job is not None:
                 job.status = "failed"
-                job.error = str(exc)
+                job.error = err_msg
                 job.finished_at = datetime.now(timezone.utc)
-        return {"ok": False, "error": str(exc)}
+        return {"ok": False, "error": err_msg}
 
 
 def _ffmpeg_available() -> bool:
@@ -927,7 +931,7 @@ def count_publish_failure(video_pk: str) -> None:
 
 
 def _publish_failed(video_pk: str, exc: Exception) -> dict:
-    message = str(exc)
+    message = scrub_secrets(str(exc))
     verdict = classify_publish_error(exc)
     unknown = isinstance(exc, UploadOutcomeUnknown)
     log.error(
@@ -1265,6 +1269,7 @@ def _settle_stuck(video_id: str, status: VideoStatus, summary: str, **values) ->
 
 def _note_stuck_once(video_id: str, reason: str) -> None:
     """This retries every tick, and one line in the log of events is enough."""
+    reason = scrub_secrets(str(reason or ""))
     with session_scope() as db:
         video = db.get(Video, video_id)
         if video is None or (video.meta or {}).get("publish_stuck_noted"):
