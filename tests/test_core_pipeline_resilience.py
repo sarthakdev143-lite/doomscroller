@@ -638,3 +638,48 @@ def test_wave13_mock_transform_no_unbound_local_and_pipeline_scrubs_errors(tmp_p
         assert "CANARY_PROXY_W13" not in ev.summary
         assert "CANARY_PROXY_W13" not in (ev.data or {}).get("reason", "")
 
+
+def test_wave16_main_clip_procedural_guard_env_atomic_and_list_jobs_scrub(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from app import main as main_mod
+    from app.models import Channel
+
+    init_db()
+    with session_scope() as db:
+        db.add(
+            Channel(
+                slug="amb-w16",
+                name="Ambient W16",
+                meta={"mode": "procedural_ambient"},
+                enabled=True,
+            )
+        )
+
+    client = TestClient(main_mod.app)
+    resp = client.post("/clip", json={"source": "https://youtu.be/abc12345678", "channel": "amb-w16"})
+    assert resp.status_code == 400
+    assert "procedural" in resp.json()["detail"].lower()
+
+    # _persist_env_updates writes backslashes literally and leaves no stray .tmp file
+    env_file = tmp_path / ".env"
+    env_file.write_text("UPLOADS_PER_DAY=3\nOTHER=keep\n", encoding="utf-8")
+    monkeypatch.setenv("DOOMSCROLLER_ENV_FILE", str(env_file))
+    main_mod._persist_env_updates({"UPLOADS_PER_DAY": r"C:\1\n\new", "EXTRA_KEY": r"a\1b"})
+    content = env_file.read_text(encoding="utf-8")
+    assert r"UPLOADS_PER_DAY=C:\1\n\new" in content
+    assert r"EXTRA_KEY=a\1b" in content
+    assert "OTHER=keep" in content
+    assert list(tmp_path.glob("*.tmp")) == []
+
+    # list_jobs() scrubs secrets from exception strings
+    monkeypatch.setattr(settings, "proxy_url", "http://u:CANARY_MAIN_W16@proxy:8080")
+
+    class _ExplodingSched:
+        def get_jobs(self):
+            raise RuntimeError("boom via http://u:CANARY_MAIN_W16@proxy:8080")
+
+    monkeypatch.setattr(scheduler, "_scheduler", _ExplodingSched())
+    res = main_mod.list_jobs()
+    assert res["running"] is False
+    assert "CANARY_MAIN_W16" not in res["error"]
+

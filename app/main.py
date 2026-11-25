@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,7 +18,14 @@ from . import metadata, quota, scheduler
 from .analytics import recompute_scores
 from .config import settings
 from .db import SessionLocal, get_db, init_db
-from .logging_config import configure_logging, job_health, mark_clean_exit, note_previous_exit, read_job_history
+from .logging_config import (
+    configure_logging,
+    job_health,
+    mark_clean_exit,
+    note_previous_exit,
+    read_job_history,
+    scrub_secrets,
+)
 from .models import ClipJob, Creator, MetadataDraft, Video, VideoStatus
 from .schemas import (
     ApproveBody,
@@ -278,7 +286,7 @@ def list_jobs() -> dict:
             )
         return {"running": True, "jobs": jobs}
     except Exception as e:
-        return {"running": False, "error": str(e)}
+        return {"running": False, "error": scrub_secrets(str(e))}
 
 
 @app.post("/scheduler/run/{job_id}", response_model=dict)
@@ -489,6 +497,11 @@ def queue_clip(
 
     if body.channel and body.channel.strip():
         ch, channels = _resolve_channel(db, body.channel)
+        if channels.is_procedural(ch):
+            raise HTTPException(
+                status_code=400,
+                detail=f"channel {ch.slug!r} is a procedural ambient channel and does not accept Shorts clips",
+            )
         channel_id = channels.event_channel(ch)
         auto_queue = (not channels.require_approval(ch)) if body.auto_queue is None else body.auto_queue
         job_id = enqueue(cleaned, count=body.count, auto_queue=auto_queue, channel_id=channel_id)
@@ -641,12 +654,17 @@ def _persist_env_updates(updates: dict[str, str]) -> None:
         for key, val in updates.items():
             pattern = rf"^{re.escape(key)}=.*$"
             if re.search(pattern, txt, flags=re.MULTILINE):
-                txt = re.sub(pattern, f"{key}={val}", txt, flags=re.MULTILINE)
+                txt = re.sub(pattern, lambda _m, k=key, v=val: f"{k}={v}", txt, flags=re.MULTILINE)
             else:
                 if txt and not txt.endswith("\n"):
                     txt += "\n"
                 txt += f"{key}={val}\n"
-        env_path.write_text(txt, encoding="utf-8")
+        tmp = env_path.with_name(f"{env_path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        try:
+            tmp.write_text(txt, encoding="utf-8")
+            os.replace(tmp, env_path)
+        finally:
+            tmp.unlink(missing_ok=True)
     except OSError:
         pass
 

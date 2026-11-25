@@ -8,10 +8,12 @@ from __future__ import annotations
 import html
 import json
 import logging
+import math
 import os
 import re
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 from typing import Optional, Sequence
 from urllib.parse import urljoin
@@ -19,6 +21,7 @@ from urllib.parse import urljoin
 import httpx
 
 from app.config import settings
+from app.logging_config import scrub_secrets
 from app.winproc import background_subprocess_kwargs
 
 log = logging.getLogger(__name__)
@@ -160,7 +163,8 @@ def probe_audio_duration(path: Path) -> Optional[float]:
             cmd,
             stdin=subprocess.DEVNULL,
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=15,
             **background_subprocess_kwargs(low_priority=True),
         )
@@ -180,7 +184,7 @@ def probe_audio_duration(path: Path) -> Optional[float]:
         dur = float(raw_dur)
     except (TypeError, ValueError):
         return None
-    return dur if dur > 0 else None
+    return dur if (math.isfinite(dur) and dur > 0) else None
 
 
 def fetch_page_sounds(
@@ -202,7 +206,7 @@ def fetch_page_sounds(
     except RuntimeError:
         raise
     except httpx.HTTPError as exc:
-        log.warning("myinstants: request error for %s: %s", url, exc)
+        log.warning("myinstants: request error for %s: %s", url, scrub_secrets(str(exc)))
         return []
     finally:
         if owns_client:
@@ -216,7 +220,7 @@ def _sync_copy(src: Path, sync_dir: Optional[Path]) -> None:
     target = sync_dir / src.name
     if target.is_file() and target.stat().st_size == src.stat().st_size:
         return
-    tmp = sync_dir / f".{src.name}.part"
+    tmp = sync_dir / f".{src.name}.{os.getpid()}.{threading.get_ident()}.part"
     try:
         shutil.copyfile(src, tmp)
         os.replace(tmp, target)
@@ -246,7 +250,7 @@ def download_sound(
         return dest
 
     url = sound_path if sound_path.startswith(("http://", "https://")) else urljoin(BASE_URL, sound_path)
-    part = dest_dir / f".{filename}.part"
+    part = dest_dir / f".{filename}.{os.getpid()}.{threading.get_ident()}.part"
     owns_client = client is None
     http = client or httpx.Client(headers=_HEADERS, timeout=_TIMEOUT, follow_redirects=True)
     try:
@@ -279,7 +283,7 @@ def download_sound(
     except RuntimeError:
         raise
     except (httpx.HTTPError, OSError) as exc:
-        log.warning("myinstants: download failed for %s: %s", url, exc)
+        log.warning("myinstants: download failed for %s: %s", url, scrub_secrets(str(exc)))
         return None
     finally:
         if part.exists():

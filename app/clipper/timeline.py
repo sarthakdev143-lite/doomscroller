@@ -15,6 +15,8 @@ from typing import Optional, Sequence
 
 from app.winproc import background_subprocess_kwargs
 
+from .media import Interrupted, _FFMPEG_INTERRUPTED
+
 log = logging.getLogger(__name__)
 _SILENCE_START_RE = re.compile(r"silence_start:\s*([0-9]+(?:\.[0-9]+)?)")
 _SILENCE_END_RE = re.compile(r"silence_end:\s*([0-9]+(?:\.[0-9]+)?)")
@@ -176,6 +178,8 @@ def detect_silences(
     except (OSError, subprocess.SubprocessError) as exc:
         log.debug("timeline: silencedetect failed for %s: %s", source, exc)
         return []
+    if proc.returncode in _FFMPEG_INTERRUPTED:
+        raise Interrupted("ffmpeg silencedetect was stopped")
     stderr = getattr(proc, "stderr", "") or ""
     silences: list[Segment] = []
     open_start: Optional[float] = None

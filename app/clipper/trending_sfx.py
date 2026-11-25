@@ -14,6 +14,7 @@ import logging
 import math
 import os
 import re
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,8 +23,9 @@ from typing import Callable, Iterable, Optional
 import httpx
 
 from app.config import settings
+from app.logging_config import scrub_secrets as _scrub_secrets
 
-from .media import MediaError, probe, read_ffmpeg
+from .media import Interrupted, MediaError, probe, read_ffmpeg
 
 log = logging.getLogger(__name__)
 
@@ -43,11 +45,8 @@ _FILTER = "type:(wav OR mp3 OR ogg OR flac)"
 
 
 def scrub_secrets(text: object) -> str:
-    """Redact the Freesound API key from any exception or log message."""
-    cleaned = str(text or "")
-    if settings.freesound_api_key:
-        cleaned = cleaned.replace(settings.freesound_api_key, "[REDACTED]")
-    return cleaned
+    """Redact credentials and API keys from any exception or log message."""
+    return _scrub_secrets(str(text or ""))
 
 
 def _safe_sfx_id(raw: object) -> str:
@@ -181,9 +180,14 @@ def _read_search_cache(path: Path) -> Optional[object]:
 
 
 def _write_search_cache(path: Path, results: object) -> None:
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"at": time.time(), "results": results}), encoding="utf-8")
+        try:
+            tmp.write_text(json.dumps({"at": time.time(), "results": results}), encoding="utf-8")
+            os.replace(tmp, path)
+        finally:
+            tmp.unlink(missing_ok=True)
     except OSError as exc:
         log.warning("sfx: could not cache a search: %s", exc)
 
@@ -216,7 +220,7 @@ def trending(limit: int = _RESULTS_PER_SEARCH) -> list[Candidate]:
 
 def _download(link: str, path: Path) -> None:
     """Fetch to a temporary name, so a dropped connection never leaves a bad file in the pack."""
-    partial = path.with_name(f"{path.name}.part")
+    partial = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.part")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         written = 0
@@ -247,6 +251,8 @@ def _playable(path: Path, seconds: float) -> bool:
         probe(str(path))
         raw = read_ffmpeg(["-xerror", "-t", f"{seconds + 0.2:.3f}", "-i", str(path),
                            "-map", "0:a:0", "-ac", "1", "-ar", "48000", "-f", "f32le", "-"])
+    except Interrupted:
+        raise
     except MediaError as exc:
         log.warning("sfx: %s is not usable: %s", path.name, exc)
         return False
@@ -259,14 +265,14 @@ def _local_copy(candidate: Candidate, seconds: float) -> Optional[Path]:
     suffix = next((e for e in (".mp3", ".ogg", ".wav", ".flac") if raw.endswith(e)), ".mp3")
     path = settings.content_path / "sfx" / f"{_safe_sfx_id(candidate.sfx_id)}{suffix}"
     if path.exists() and not _playable(path, seconds):
-        path.unlink()
+        path.unlink(missing_ok=True)
     if path.exists():
         os.utime(path, None)  # cleanup ages these by mtime
         return path
     _download(candidate.link, path)
     if _playable(path, seconds):
         return path
-    path.unlink()
+    path.unlink(missing_ok=True)
     return None
 
 

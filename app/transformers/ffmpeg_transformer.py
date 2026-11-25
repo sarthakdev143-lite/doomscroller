@@ -36,6 +36,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 from dataclasses import asdict
 from typing import List, Optional
 
@@ -84,6 +85,8 @@ def _rotation_degrees(stream: dict) -> int:
     if isinstance(tags, dict):
         candidates.append(tags.get("rotate"))
     for raw in candidates:
+        if isinstance(raw, bool):
+            continue
         try:
             value = float(raw)  # type: ignore[arg-type]
         except (TypeError, ValueError):
@@ -108,7 +111,7 @@ def _run_probe(args: List[str], path: str) -> "subprocess.CompletedProcess[str]"
         try:
             return subprocess.run(
                 [*args, path],
-                stdin=subprocess.DEVNULL, capture_output=True, text=True, check=True, timeout=timeout,
+                stdin=subprocess.DEVNULL, capture_output=True, encoding="utf-8", errors="replace", check=True, timeout=timeout,
                 **background_subprocess_kwargs(low_priority=True),
             )
         except subprocess.TimeoutExpired as exc:
@@ -248,7 +251,7 @@ class FFmpegTransformer(Transformer):
         # together once ffmpeg has exited. Render to a sibling .tmp.mp4 first
         # and os.replace atomically so a failed/interrupted encode never leaves
         # a corrupt output file behind or clobbers an existing render.
-        tmp_out = f"{output_path}.tmp.mp4"
+        tmp_out = f"{output_path}.{os.getpid()}.{threading.get_ident()}.tmp.mp4"
         try:
             with tempfile.TemporaryDirectory(
                 prefix="doomscroller_text_", ignore_cleanup_errors=True
@@ -477,10 +480,12 @@ class FFmpegTransformer(Transformer):
     # ------------------------------------------------------------------
     @staticmethod
     def _run(args: List[str]) -> None:
-        from ..clipper.media import MediaError, run_ffmpeg
+        from ..clipper.media import Interrupted, MediaError, run_ffmpeg
 
         try:
             run_ffmpeg(list(args))
+        except Interrupted:
+            raise
         except MediaError as exc:
             raise RuntimeError(str(exc)) from exc
 

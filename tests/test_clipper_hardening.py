@@ -1050,4 +1050,71 @@ def test_wave15_sfx_propagates_interrupted_media_sideways_nan_and_metadata_llm_e
     assert captured_kwargs.get("errors") == "replace"
 
 
+def test_wave16_timeline_trending_sfx_myinstants_and_ffmpeg_probe_hardening(tmp_path, monkeypatch):
+    import subprocess
+    from app.clipper import media, myinstants, timeline, trending_sfx
+    from app.transformers import ffmpeg_transformer as ftx
+
+    # A. timeline.detect_silences propagates media.Interrupted on interrupted returncode
+    monkeypatch.setattr(
+        timeline.subprocess,
+        "run",
+        lambda *_a, **_kw: subprocess.CompletedProcess(["ffmpeg"], 255, stdout="", stderr=""),
+    )
+    with pytest.raises(media.Interrupted):
+        timeline.detect_silences("clip.mp4", 0.0, 10.0)
+
+    # B. trending_sfx.scrub_secrets redacts proxy creds, _write_search_cache is atomic,
+    #    and _playable propagates Interrupted without unlinking cached file
+    monkeypatch.setattr(settings, "proxy_url", "http://u:CANARY_SFX_W16@proxy:8080")
+    assert "CANARY_SFX_W16" not in trending_sfx.scrub_secrets("err http://u:CANARY_SFX_W16@proxy:8080")
+
+    cache_path = tmp_path / "sfx" / "c.json"
+    trending_sfx._write_search_cache(cache_path, [{"id": 1}])
+    assert cache_path.exists()
+    assert list(cache_path.parent.glob("*.tmp")) == []
+
+    cached = tmp_path / "sfx" / "keep.mp3"
+    cached.write_bytes(b"1234")
+    monkeypatch.setattr(trending_sfx, "probe", lambda *_a, **_kw: (_ for _ in ()).throw(media.Interrupted("stopping")))
+    with pytest.raises(media.Interrupted):
+        trending_sfx._playable(cached, 1.0)
+    assert cached.exists()
+
+    # C. myinstants.probe_audio_duration uses UTF-8 + rejects non-finite duration
+    mi_kwargs: dict = {}
+
+    def fake_mi_run(cmd, **kwargs):
+        mi_kwargs.update(kwargs)
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout='{"streams":[{"codec_type":"audio"}],"format":{"duration":"inf"}}',
+            stderr="",
+        )
+
+    monkeypatch.setattr(myinstants.subprocess, "run", fake_mi_run)
+    assert myinstants.probe_audio_duration(tmp_path / "a.mp3") is None
+    assert mi_kwargs.get("encoding") == "utf-8"
+    assert mi_kwargs.get("errors") == "replace"
+
+    # D. ffmpeg_transformer._run_probe uses UTF-8, _rotation_degrees ignores bool, _run preserves Interrupted
+    ftx_kwargs: dict = {}
+
+    def fake_ftx_run(cmd, **kwargs):
+        ftx_kwargs.update(kwargs)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(ftx.subprocess, "run", fake_ftx_run)
+    ftx._run_probe(["ffprobe"], "x.mp4")
+    assert ftx_kwargs.get("encoding") == "utf-8"
+    assert ftx_kwargs.get("errors") == "replace"
+
+    assert ftx._rotation_degrees({"tags": {"rotate": True}}) == 0
+
+    monkeypatch.setattr(media, "run_ffmpeg", lambda *_a, **_kw: (_ for _ in ()).throw(media.Interrupted("stop")))
+    with pytest.raises(media.Interrupted):
+        ftx.FFmpegTransformer._run(["-version"])
+
+
 
