@@ -1072,10 +1072,11 @@ def _upload_languages(
         elif not clip_kind:
             audio_lang = clean_draft
 
-    if has_devanagari(title) or is_hinglish_text(title):
+    single_lang = channel_langs[0] if len(channel_langs) == 1 else None
+    if has_devanagari(title) or (is_hinglish_text(title) and single_lang != "en"):
         title_lang = "hi"
-    elif list(channel_langs) == ["hi"]:
-        title_lang = "hi"
+    elif single_lang in ("hi", "en"):
+        title_lang = single_lang
     elif clean_draft:
         title_lang = clean_draft
     else:

@@ -84,6 +84,20 @@ class Policy:
     rate: float
     focus: frozenset[str]
     rng: random.Random
+    benched_slots: frozenset[str] = frozenset()
+
+
+def _benched_slots(model) -> frozenset[str]:
+    """Bench upload slots with matured evidence of consistently poor performance."""
+    rows = model.summary().get("slot", ())
+    benched = {
+        row["arm"]
+        for row in rows
+        if row["n"] >= 4 and row["high"] < 0.75 and row["p_best"] < 0.05
+    }
+    if len(SLOTS) - len(benched) < 2:
+        return frozenset()
+    return frozenset(benched)
 
 
 def _iso(raw: object) -> Optional[datetime]:
@@ -140,8 +154,9 @@ def policy(now: Optional[datetime] = None, rng: Optional[random.Random] = None, 
                 for factor, arm in published_arms(video, zone).items():
                     tried.setdefault(factor, {}).setdefault(arm, 0)
                     tried[factor][arm] += 1
-    draw = build_model(results).draw(rng.getrandbits(32))
-    return Policy(draw, tried, rate, focus_factors, rng)
+    model = build_model(results)
+    draw = model.draw(rng.getrandbits(32))
+    return Policy(draw, tried, rate, focus_factors, rng, benched_slots=_benched_slots(model))
 
 
 def pick_arm(current: Policy, factor: str, arms: Sequence[str]) -> str:
@@ -170,11 +185,12 @@ def build_plan(current: Policy, now: datetime, channel=None) -> dict:
     uploads = _uploads_per_day(channel)
     if not by_slot or uploads <= 0:
         return {"day": local.date().isoformat(), "posts": []}
-    posts, pool = [], list(by_slot)
+    usable = [slot for slot in by_slot if slot not in current.benched_slots] or list(by_slot)
+    posts, pool = [], list(usable)
     # Started late in the day, the remaining windows get their usual share rather than the whole day's posts.
     per_window = math.ceil(uploads / len(SLOTS))
-    for _ in range(min(uploads, len(by_slot) * per_window)):
-        pool = pool or list(by_slot)
+    for _ in range(min(uploads, len(usable) * per_window)):
+        pool = pool or list(usable)
         slot = pick_arm(current, "slot", pool)
         pool.remove(slot)
         start, end = by_slot[slot]
@@ -319,7 +335,11 @@ def _send_clip(
 ) -> dict:
     from tasks.pipeline import generate_metadata_for_video, publish_task
 
-    style = pick_arm(current, "title_style", titles.available_styles())
+    style = pick_arm(
+        current,
+        "title_style",
+        titles.available_styles(has_opening_line=titles.is_quote_worthy(spoken, language=language)),
+    )
     generate_metadata_for_video(video_id)
     with session_scope() as db:
         draft = db.execute(select(MetadataDraft).where(MetadataDraft.video_id == video_id)).scalar_one_or_none()

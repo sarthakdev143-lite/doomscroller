@@ -154,7 +154,7 @@ def _save_clip(src: SourceVideo, moment: Moment, path: str, duration: float, *, 
         video.title = moment.title or src.title or "Clip"
         video.description = description
         video.language = language
-        video.keywords = list(moment.tags) + list(src.keywords)
+        video.keywords = list(moment.tags) if moment.tags else list(src.keywords)[:6]
         video.local_path = path
         video.transformed_path = path
         video.duration_sec = int(round(duration))

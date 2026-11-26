@@ -852,3 +852,152 @@ def test_render_moment_passes_language_to_final_clean_vlog_summary_cues(tmp_path
     texts = [t for _, _, t in captured[0]]
     assert "END TAK DEKHO" in texts
     assert not any("emotional goodbye" in t.lower() for t in texts)
+
+
+def test_wave22_views_recovery_titles_tags_hooks_slots_and_repair(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from app.clipper import faces
+    from app.clipper.ingest import SourceVideo
+    from app.growth import approval, autopilot
+    from app.growth.model import Model, Observation
+    from app.metadata import build_tags, has_risky_title_words
+
+    init_db()
+
+    # 1. Metadata: risky words ('deaths', 'kkk', 'nazis', '9/11') + build_tags drops risky tags.
+    clean_title = sanitize_shorts_title("13 Deaths Before 9/11 By KKK & Nazis", language="en")
+    low_title = clean_title.lower()
+    assert "deaths" not in low_title and "drama" not in low_title
+    assert "incidents" in low_title
+    assert "kkk" not in low_title and "nazi" not in low_title and "9/11" not in low_title
+
+    tags = build_tags(
+        ["cricket", "ghost videos", "horror videos", "9/11", "kkk", "suicide"],
+        author="SafeCreator",
+        is_short=True,
+    )
+    assert "cricket" in tags
+    assert not any(has_risky_title_words(t) or t in {"911", "kkk", "suicide"} for t in tags)
+
+    # 2. Titles: is_quote_worthy rejects empty/short/stutter/filler lines and guards styled_title('quote').
+    assert titles.is_quote_worthy("It was.") is False
+    assert titles.is_quote_worthy("Wait.") is False
+    assert titles.is_quote_worthy("And I and I...") is False
+    assert titles.is_quote_worthy('"Oh, we used the entire container."') is False
+    assert titles.is_quote_worthy("Nobody told me this") is True
+    assert titles.styled_title("quote", "How this bridge survived", "It was.") == ("How this bridge survived", "plain")
+    assert titles.styled_title("quote", "How this bridge survived", "Wait.") == ("How this bridge survived", "plain")
+
+    # 3. _save_clip: moment.tags replaces noisy src.keywords; fallback caps at 6 src keywords.
+    clip_a = tmp_path / "a.mp4"
+    clip_a.write_bytes(b"mp4")
+    src = SourceVideo(
+        path=str(clip_a),
+        source="youtube",
+        source_id="wave22_src_1",
+        url="https://youtu.be/wave22_src_1",
+        title="Source Video",
+        keywords=["food recipes", "dimples kitchen", "olympics", "k1", "k2", "k3", "k4", "k5"],
+    )
+    vid_a, _ = job._save_clip(
+        src,
+        Moment(0.0, 20.0, title="Clean Bridge Clip", tags=["bridge", "engineering"]),
+        str(clip_a),
+        20.0,
+        language="en",
+        auto_queue=False,
+    )
+    vid_b, _ = job._save_clip(
+        src,
+        Moment(20.0, 40.0, title="Fallback Tags Clip", tags=[]),
+        str(clip_a),
+        20.0,
+        language="en",
+        auto_queue=False,
+    )
+    with session_scope() as db:
+        assert db.get(Video, vid_a).keywords == ["bridge", "engineering"]
+        assert db.get(Video, vid_b).keywords == src.keywords[:6]
+
+    # 4. _upload_languages: single-language ['en'] channel does not mark Hinglish-looking English as 'hi'.
+    v_en = SimpleNamespace(language="en", meta={"clip_kind": "speech"})
+    assert pipeline._upload_languages(v_en, None, "Kitna masala dal diya?", ["en"]) == ("en", "en")
+    assert pipeline._upload_languages(v_en, None, "कुछ नया देखो", ["en"]) == ("hi", "en")
+
+    # 5. clean_hook: stops cleanly at truncated clause boundaries and trailing numbers/prepositions.
+    assert moments.clean_hook("One and a half inches wide, 100") == "One and a half inches wide"
+    assert moments.clean_hook("Five minutes to cross into the most") == "Five minutes to cross"
+
+    # 6. Autopilot: _benched_slots + build_plan skip proven-dead slots; _send_clip omits 'quote' for weak quotes.
+    obs = (
+        [Observation({"slot": "00-04"}, 0.0, i) for i in range(6)]
+        + [Observation({"slot": "12-16"}, 6.0, i) for i in range(6)]
+    )
+    model = Model(obs)
+    benched = autopilot._benched_slots(model)
+    assert "00-04" in benched
+    assert "12-16" not in benched
+    pol = autopilot.Policy(
+        draw=model.draw(0),
+        tried={},
+        rate=1.0,
+        focus=frozenset(),
+        rng=__import__("random").Random(1),
+        benched_slots=benched,
+    )
+    monkeypatch.setattr(settings, "growth_uploads_per_day", 3)
+    plan = autopilot.build_plan(pol, datetime(2026, 11, 26, 0, 1, tzinfo=timezone.utc), channel=None)
+    assert plan["posts"]
+    assert all(p["slot"] != "00-04" for p in plan["posts"])
+
+    seen_arms: list[list[str]] = []
+    monkeypatch.setattr(ai, "available", lambda: True)
+    monkeypatch.setattr(autopilot, "pick_arm", lambda cur, fac, arms: (seen_arms.append(list(arms)), arms[0])[1])
+    monkeypatch.setattr(pipeline, "generate_metadata_for_video", lambda vid: None)
+    monkeypatch.setattr(pipeline, "publish_task", lambda vid, meta=None: {"ok": True, "video_id": vid})
+    res_send = autopilot._send_clip(pol, vid_a, "Clean Bridge Clip", "Wait.", "post_1", language="en")
+    assert res_send["ok"] is True
+    assert seen_arms and "quote" not in seen_arms[0]
+
+    # 7. approval.repair_waiting_drafts cleans risky tags/titles; _result handles non-dict meta; faces bounds guards.
+    with session_scope() as db:
+        v_bad = Video(
+            source="youtube",
+            source_id="wave22_bad_draft",
+            source_url="u",
+            title="Haunted House #Shorts",
+            language="en",
+            keywords=["cricket", "ghost videos", "kkk"],
+            status=VideoStatus.PENDING,
+            meta={},
+        )
+        db.add(v_bad)
+        db.flush()
+        db.add(MetadataDraft(video_id=v_bad.id, title="Haunted House #Shorts", description="D", tags=["cricket", "ghost videos"], edited=False))
+        bad_id = v_bad.id
+
+    rep = approval.repair_waiting_drafts()
+    assert rep["tags_stripped"] >= 1
+    with session_scope() as db:
+        repaired_v = db.get(Video, bad_id)
+        repaired_d = db.query(MetadataDraft).filter_by(video_id=bad_id).one()
+        assert "haunted" not in (repaired_v.title or "").lower()
+        assert not any(has_risky_title_words(t) for t in (repaired_v.keywords or []))
+        assert not any(has_risky_title_words(t) for t in (repaired_d.tags or []))
+
+    malformed = SimpleNamespace(
+        id="m1",
+        title="T",
+        youtube_video_id="YT1",
+        published_at=None,
+        views=10,
+        likes=1,
+        transformed_path=None,
+        local_path=None,
+        meta={"yt_analytics": "corrupt", "growth_diagnosis": ["bad"]},
+    )
+    assert approval._result(malformed)["verdict"] == ""
+    assert faces.speaker_box_in_pair(np.zeros((0, 0, 3), dtype=np.uint8), np.zeros((0, 0, 3), dtype=np.uint8)) is None
+    assert faces.speaker_box_in_pair(np.zeros((1, 4, 4, 3), dtype=np.uint8), np.zeros((1, 4, 4, 3), dtype=np.uint8)) is None

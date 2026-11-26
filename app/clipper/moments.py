@@ -143,7 +143,12 @@ def clean_title(raw: object) -> str:
 _TRAILING_HOOK_STOPS = frozenset({
     "a", "an", "the", "my", "our", "your", "his", "her", "their", "to", "of", "in",
     "on", "at", "for", "with", "and", "or", "but", "just", "that", "this", "is",
-    "are", "was", "were", "so", "if",
+    "are", "was", "were", "so", "if", "into", "from", "most", "more", "very",
+    "about", "as", "by", "than", "then", "through", "around", "under", "over",
+    "between", "after", "before", "since", "until", "while", "when", "where",
+    "which", "who", "how", "what", "why", "it", "its", "he", "she", "they", "we",
+    "you", "me", "him", "them", "us", "can", "will", "would", "could", "should",
+    "did", "do", "does", "has", "have", "had", "am", "been", "being",
 })
 
 
@@ -158,8 +163,14 @@ def clean_hook(raw: object) -> str:
         if kept and any(ch.isalnum() for ch in kept):
             words.append(kept)
     kept_words = words[:_MAX_HOOK_WORDS]
-    while len(kept_words) > 2 and kept_words[-1].strip("?!'\".,-%$").lower() in _TRAILING_HOOK_STOPS:
-        kept_words.pop()
+    while len(kept_words) > 2:
+        last_plain = kept_words[-1].strip("?!'\".,-%$")
+        prev_has_comma = kept_words[-2].endswith((",", ";", ":"))
+        truncated_after_comma = len(words) > _MAX_HOOK_WORDS and prev_has_comma and len(kept_words) >= 4
+        if last_plain.lower() in _TRAILING_HOOK_STOPS or (prev_has_comma and last_plain.isdigit()) or truncated_after_comma:
+            kept_words.pop()
+        else:
+            break
     return " ".join(kept_words).strip().strip('"').rstrip(",;:")
 
 
@@ -318,7 +329,7 @@ A good clip opens on a line that makes people stop scrolling, makes sense withou
 Each clip should run {lo_sec}-{hi_sec} seconds; {pace_note} People speak about 2.5 words per second. Give up to {count * 2} clips ranked best first. Clips must not overlap.
 
 Reply with JSON only:
-{{"clips": [{{"first": <first sentence number>, "last": <last sentence number>, "title": "<plain YouTube title, under 70 characters, no hashtags>", "hook": "<3-5 scroll-stopping words, plain text with no emojis, that creates curiosity>", "reveal": "<3-5 word mid-clip tension or payoff teaser>", "description": "<one or two sentences telling a viewer what this clip is about, no hashtags>", "tags": ["<3-6 lowercase topic keywords>"], "score": <0-100>, "why": "<one short sentence>"{sound_field}}}]}}
+{{"clips": [{{"first": <first sentence number>, "last": <last sentence number>, "title": "<plain YouTube title, under 70 characters, no hashtags>", "hook": "<3-6 complete words, never cut mid-sentence, plain text with no emojis, that creates curiosity>", "reveal": "<3-5 word mid-clip tension or payoff teaser>", "description": "<one or two sentences telling a viewer what this clip is about, no hashtags>", "tags": ["<3-6 lowercase topic keywords>"], "score": <0-100>, "why": "<one short sentence>"{sound_field}}}]}}
 
 Write the title, hook and description in the same language as the transcript: Hinglish (Hindi in Latin script, the way Indian YouTubers title their Shorts) when the speech is Hindi, otherwise English. Tags stay lowercase English.{hindi_rule}
 Keep title, hook, reveal, and description YouTube advertiser-friendly: no profanity, slurs, blood, gore, or crude bathroom jokes — skip moments whose punchline relies on them.
@@ -359,9 +370,13 @@ def _moments_from_reply(reply: dict | None, sentences: Sequence[Sentence], words
         if sound in sounds and sound not in used_sounds:
             chosen_sound = sound
             used_sounds.add(sound)
+        raw_hook = str(clip.get("hook") or "").strip()
+        hook = clean_hook(raw_hook)
+        if raw_hook and len(hook.split()) < 2 and written:
+            hook = fallback_hook(written)
         moments.append(Moment(
             start=start, end=end,
-            title=written, ai_title=bool(written), hook=clean_hook(clip.get("hook")),
+            title=written, ai_title=bool(written), hook=hook,
             description=clean_description(clip.get("description")), tags=clean_tags(clip.get("tags")),
             reason=str(clip.get("why") or "")[:300], score=score, kind="speech",
             sound=chosen_sound,

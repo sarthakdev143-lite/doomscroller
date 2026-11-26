@@ -244,8 +244,10 @@ _POSTED_LIMIT = 20
 
 def _result(video: Video, channel_slug: str = "default") -> dict:
     meta = video.meta or {}
-    analytics = meta.get("yt_analytics") or {}
-    diagnosis = meta.get("growth_diagnosis") or {}
+    raw_analytics = meta.get("yt_analytics")
+    analytics = raw_analytics if isinstance(raw_analytics, dict) else {}
+    raw_diagnosis = meta.get("growth_diagnosis")
+    diagnosis = raw_diagnosis if isinstance(raw_diagnosis, dict) else {}
     percent = analytics.get("averageViewPercentage")
     return {
         "id": video.id,
@@ -933,7 +935,9 @@ def undo(video_id: str) -> dict:
 
 
 def repair_waiting_drafts(*, dry_run: bool = False) -> dict:
-    """Strip stale '#Shorts' tags from waiting Shorts and unlock untouched edited drafts for A/B testing."""
+    """Strip stale '#Shorts' tags, sanitize risky waiting titles/tags, and unlock untouched drafts for A/B testing."""
+    from app.metadata import build_tags, has_risky_title_words, sanitize_shorts_title
+
     checked = tags_stripped = unlocked_ab = 0
     with session_scope() as db:
         rows = (
@@ -949,26 +953,42 @@ def repair_waiting_drafts(*, dry_run: bool = False) -> dict:
             draft = db.execute(select(MetadataDraft).where(MetadataDraft.video_id == video.id)).scalar_one_or_none()
             orig_video_title = video.title or ""
             orig_draft_title = (draft.title or "") if draft is not None else ""
+            lang = video.language or ""
 
-            changed_tag = False
-            if "#shorts" in orig_video_title.lower():
-                clean_v = _norm_title_cmp(orig_video_title)
-                if clean_v and clean_v != orig_video_title:
-                    changed_tag = True
+            changed_title = False
+            v_after = sanitize_shorts_title(_norm_title_cmp(orig_video_title), language=lang) if (
+                "#shorts" in orig_video_title.lower() or has_risky_title_words(orig_video_title)
+            ) else orig_video_title
+            if v_after and v_after != orig_video_title:
+                changed_title = True
+                if not dry_run:
+                    video.title = v_after
+            d_after = sanitize_shorts_title(_norm_title_cmp(orig_draft_title), language=lang) if (
+                draft is not None and ("#shorts" in orig_draft_title.lower() or has_risky_title_words(orig_draft_title))
+            ) else orig_draft_title
+            if draft is not None and d_after and d_after != orig_draft_title:
+                changed_title = True
+                if not dry_run:
+                    draft.title = d_after
+
+            cleaned_any = False
+            raw_kw = list(video.keywords or [])
+            if any(has_risky_title_words(str(k)) for k in raw_kw):
+                cleaned_any = True
+                if not dry_run:
+                    video.keywords = build_tags(raw_kw, is_short=True)
+            if draft is not None:
+                raw_dtags = list(draft.tags or [])
+                if any(has_risky_title_words(str(k)) for k in raw_dtags):
+                    cleaned_any = True
                     if not dry_run:
-                        video.title = clean_v
-            if draft is not None and "#shorts" in orig_draft_title.lower():
-                clean_d = _norm_title_cmp(orig_draft_title)
-                if clean_d and clean_d != orig_draft_title:
-                    changed_tag = True
-                    if not dry_run:
-                        draft.title = clean_d
-            if changed_tag:
+                        draft.tags = build_tags(raw_dtags, is_short=True)
+            if changed_title or cleaned_any:
                 tags_stripped += 1
 
             if draft is not None and draft.edited:
-                draft_cmp = _norm_title_cmp(orig_draft_title)
-                orig_cmp = _norm_title_cmp(orig_video_title)
+                draft_cmp = _norm_title_cmp(d_after)
+                orig_cmp = _norm_title_cmp(v_after)
                 llm_cmp = _norm_title_cmp(meta.get("llm_title"))
                 if draft_cmp and (draft_cmp == orig_cmp or (llm_cmp and draft_cmp == llm_cmp)):
                     unlocked_ab += 1

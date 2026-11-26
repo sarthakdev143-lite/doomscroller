@@ -68,7 +68,9 @@ _RISKY_TITLE_REPLACEMENTS: tuple[tuple[re.Pattern[str], str, str], ...] = (
     (re.compile(r"\baccidents?\b", re.IGNORECASE), "scene", "scene"),
     (re.compile(r"\b(?:bhoot(?:on)?|ghosts?|haunted)\b", re.IGNORECASE), "mystery", "raaz"),
     (re.compile(r"\b(?:khoon|bloods?|bloody)\b", re.IGNORECASE), "shock", "shock"),
-    (re.compile(r"\b(?:murders?|murdered|murdering|kills?|killed|killing|deaths?|dead)\b", re.IGNORECASE), "drama", "drama"),
+    (re.compile(r"\b(?:murders?|murdered|murdering|kills?|killed|killing|dead)\b", re.IGNORECASE), "drama", "drama"),
+    (re.compile(r"\bdeaths?\b", re.IGNORECASE), "incidents", "khatre"),
+    (re.compile(r"\b(?:kkk|nazis?|suicides?|felon(?:y|ies)|9/11)\b", re.IGNORECASE), "dark history", "raaz"),
     (re.compile(r"\b(?:horrors?|darawna|darawni|darawne)\b", re.IGNORECASE), "suspense", "suspense"),
     (re.compile(r"\b(?:gandi|ganda|gande)\b", re.IGNORECASE), "wild", "ajeeb"),
     (re.compile(r"भूत(?:ों)?"), "mystery", "राज़"),
@@ -228,13 +230,14 @@ def build_tags(keywords: Sequence[str] | str | None, author: str = "", *, is_sho
     for keyword in kw_items + list(base):
         if keyword is None:
             continue
-        tag = _slug_tag(str(keyword))
-        if not tag or len(tag) < 2 or tag in _TAG_STOPWORDS:
+        raw_kw = str(keyword)
+        tag = _slug_tag(raw_kw)
+        if not tag or len(tag) < 2 or tag in _TAG_STOPWORDS or has_risky_title_words(raw_kw) or has_risky_title_words(tag):
             continue
         candidates.append(tag)
     if author:
         author_tag = _slug_tag(author)
-        if author_tag and len(author_tag) >= 2:
+        if author_tag and len(author_tag) >= 2 and not has_risky_title_words(author) and not has_risky_title_words(author_tag):
             candidates.append(author_tag)
 
     tags: list[str] = []

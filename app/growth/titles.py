@@ -20,9 +20,14 @@ log = logging.getLogger(__name__)
 _MAX_WRITTEN = _SHORTS_TITLE_MAX
 _YOUTUBE_TITLE_MAX = _SHORTS_TITLE_MAX
 _AI_STYLES = {
-    "question": "Phrase it as a question the clip actually answers.",
-    "curiosity": "Hint at the most interesting point in the clip without giving it away.",
+    "question": "Phrase it as a specific curiosity-gap question (4-9 words) the clip actually answers, never a vague one-liner.",
+    "curiosity": "Hint at the sharpest twist or outcome in the clip (4-9 words) without spoiling the ending.",
 }
+_WEAK_QUOTE_STARTS = ("oh ", "oh,", "well ", "well,", "um ", "uh ", "yeah ", "yeah,", "and i ", "so i ")
+_WEAK_QUOTE_TAILS = frozenset({
+    "and", "or", "but", "the", "a", "an", "to", "of", "in", "on", "at", "for", "with", "so", "if",
+    "is", "are", "was", "were", "my",
+})
 _CTRL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f<>]+")
 _FENCE_RE = re.compile(r"^```(?:[a-zA-Z0-9_-]+)?\s*|\s*```$")
 _HASHTAG_RE = re.compile(r"(?:^|\s)#[\w-]+")
@@ -117,6 +122,31 @@ Current title: {title}{spoken}{ctx_line}"""
     return _sanitize_ai_title(reply.get("title"), language=effective_lang)
 
 
+def _clean_opening_quote(opening_line: str) -> str:
+    raw = " ".join(_HASHTAG_RE.sub("", _CTRL_RE.sub("", str(opening_line or ""))).split())
+    return _strip_wrapping_quotes(raw)
+
+
+def is_quote_worthy(opening_line: str, *, language: str = "") -> bool:
+    """Return True only when an opening line reads as a real hook rather than a tiny or incomplete stub."""
+    clean = _clean_opening_quote(opening_line)
+    if not clean or len(clean) < 18 or len(clean) > _MAX_WRITTEN - 2:
+        return False
+    if clean.endswith(("...", "\u2026")) or has_devanagari(clean) or has_risky_title_words(clean):
+        return False
+    hi = _is_hindi(language, clean)
+    if not hi and is_hinglish_text(clean):
+        return False
+    words = [w for w in clean.split() if any(ch.isalnum() for ch in w)]
+    if len(words) < 4:
+        return False
+    if clean.lower().startswith(_WEAK_QUOTE_STARTS):
+        return False
+    if words[-1].strip(".,!?\"'").lower() in _WEAK_QUOTE_TAILS:
+        return False
+    return True
+
+
 def styled_title(
     style: str, title: str, opening_line: str, *, context: str = "", language: str = ""
 ) -> tuple[str, str]:
@@ -127,18 +157,8 @@ def styled_title(
     hi = _is_hindi(language, title, opening_line, context)
     effective_lang = "hi" if hi else "en"
     written: Optional[str] = None
-    if style == "quote" and opening_line:
-        raw_open = " ".join(_HASHTAG_RE.sub("", _CTRL_RE.sub("", opening_line)).split())
-        clean_open = _strip_wrapping_quotes(raw_open)
-        if (
-            clean_open
-            and len(clean_open) <= _MAX_WRITTEN - 2
-            and not has_devanagari(clean_open)
-            and (hi or not is_hinglish_text(clean_open))
-            and not has_risky_title_words(clean_open)
-            and any(ch.isalnum() for ch in clean_open)
-        ):
-            written = f'"{clean_open}"'
+    if style == "quote" and is_quote_worthy(opening_line, language=effective_lang):
+        written = f'"{_clean_opening_quote(opening_line)}"'
     elif style in _AI_STYLES:
         written = _ask(style, title, opening_line, context=context, language=effective_lang)
     if written:
