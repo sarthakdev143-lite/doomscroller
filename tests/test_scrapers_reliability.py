@@ -571,3 +571,27 @@ def test_mock_ensure_master_dummy_regenerates_zero_byte_file_and_passes_winproc_
     assert seen[0].get("creationflags") == 0x08004000
     assert seen[0].get("timeout") is not None
     assert master.stat().st_size == 1024
+
+
+def test_mock_scraper_hashtags_snapchat_routing_and_ffmpeg_failure_fallback(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "content_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "enabled_platforms", "snapchat")
+
+    # Fallback writes 0-byte master when ffmpeg fails
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(OSError("no ffmpeg")))
+    master = tmp_path / "fail" / "_mock_master.mp4"
+    _ensure_master_dummy(str(tmp_path / "fail"), str(master))
+    assert master.exists() and master.stat().st_size == 0
+
+    scraper = MockScraper()
+    h_items = scraper.scrape_handles(["@user1"], max_per_run=2, download=False)
+    assert len(h_items) == 2 and all(it.source == "snapchat" for it in h_items)
+
+    # Blank / '###' hashtags fall back to default tags and download=True copies files
+    tag_items = scraper.scrape_hashtags(["   ", "###"], max_per_run=2, download=True)
+    assert len(tag_items) == 2
+    assert all(it.source == "snapchat" and it.local_path and Path(it.local_path).exists() for it in tag_items)
+
+    tag_no_dl = scraper.scrape_hashtags(["#comedy"], max_per_run=1, download=False)
+    assert len(tag_no_dl) == 1 and tag_no_dl[0].local_path is None
+

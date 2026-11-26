@@ -706,3 +706,86 @@ def test_wave15_controls_per_channel_errors_safe_engagement_comment_and_scrubbed
             assert "CANARY_COLLECT_W15" not in ev.summary
 
 
+def test_wave21_supply_watch_collect_and_channels_scrub_secrets(tmp_path, monkeypatch, caplog):
+    from app.growth import collect, supply
+
+    canary = "PROXY_CANARY_W21_SECRET"
+    monkeypatch.setattr(settings, "proxy_url", f"http://u:{canary}@10.0.0.1:8080")
+    monkeypatch.setattr(settings, "growth_enabled", True)
+    monkeypatch.setattr(settings, "growth_watch_minutes", 15)
+
+    # 1. supply.next_source, next_source_for, and _supply_one scrub secrets from unread, logs, DB, and return dict
+    monkeypatch.setattr(supply, "open_inbox_files", lambda: [])
+    monkeypatch.setattr(supply, "_hottest", lambda *a, **k: None)
+    monkeypatch.setattr(supply, "_feed_links", lambda feed: (_ for _ in ()).throw(RuntimeError(f"http://u:{canary}@10.0.0.1:8080 down")))
+    monkeypatch.setattr(settings, "growth_feeds", '["https://www.youtube.com/@demo"]')
+
+    ch_file = tmp_path / "channels.json"
+    ch_file.write_text(json.dumps({"channels": [
+        {"slug": "default", "name": "Default"},
+        {"slug": "vlogs", "name": "Vlogs", "enabled": True, "uploads_per_day": 1, "feeds": ["https://www.youtube.com/@vlogs"]},
+    ]}), encoding="utf-8")
+    monkeypatch.setattr(settings, "channels_file", str(ch_file))
+    with session_scope() as db:
+        channels.sync_channels(db)
+        ch_def = channels.channel_by_slug(db, "default")
+        ch_vlogs = channels.channel_by_slug(db, "vlogs")
+        db.add(ClipJob(source="https://x", status="failed", error=f"failed via http://u:{canary}@10.0.0.1:8080",
+                       channel_id=ch_def.id, finished_at=START))
+
+    with caplog.at_level("WARNING"):
+        unread_def: dict[str, str] = {}
+        assert supply.next_source(unread_def) is None
+        assert canary not in next(iter(unread_def.values()))
+        unread_v: dict[str, str] = {}
+        assert supply.next_source_for(ch_vlogs, unread_v) is None
+        assert canary not in next(iter(unread_v.values()))
+
+        res_sup = supply._supply_one(ch_def, now=START)
+        assert canary not in res_sup.get("starved", "")
+        assert "[REDACTED]" in res_sup.get("starved", "")
+    assert canary not in caplog.text
+
+    with session_scope() as db:
+        st = db.get(GrowthState, channels.state_key(ch_def, supply.SUPPLY_GAP))
+        assert canary not in json.dumps(st.value)
+        ev = db.execute(select(GrowthEvent).where(GrowthEvent.kind == "starved")).scalar_one()
+        assert canary not in ev.summary
+
+    # 2. watch._channel_id_via_ytdlp, _probe, watch_job scrub secrets from logs
+    import yt_dlp
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", lambda opts: (_ for _ in ()).throw(RuntimeError(f"ytdlp http://u:{canary}@10.0.0.1:8080")))
+    with caplog.at_level("INFO"):
+        assert watch._channel_id_via_ytdlp("https://www.youtube.com/@demo") is None
+        assert watch._probe("https://www.youtube.com/watch?v=abc") is None
+    monkeypatch.setattr(watch, "_watch_feed", lambda *a, **k: (_ for _ in ()).throw(RuntimeError(f"feed http://u:{canary}@10.0.0.1:8080")))
+    with caplog.at_level("WARNING"):
+        watch.watch_job(now=START)
+    assert canary not in caplog.text
+
+    # 3. collect._record_analytics feed_share warning scrubs secret
+    with session_scope() as db:
+        db.add(Video(
+            source="youtube", source_id="fs_1", source_url="https://youtu.be/fs1",
+            title="FS", status=VideoStatus.PUBLISHED, youtube_video_id="YT_FS_1",
+            published_at=START - timedelta(days=4),
+        ))
+
+    class FakeInsights:
+        def retention(self, ids, s, e):
+            return {"YT_FS_1": {"averageViewPercentage": 80.0}}
+
+        def feed_share(self, yt_id, s, e):
+            raise RuntimeError(f"share err http://u:{canary}@10.0.0.1:8080")
+
+    with caplog.at_level("WARNING"):
+        assert collect._record_analytics(FakeInsights(), START) == 1
+    assert canary not in caplog.text
+
+    # 4. channels.for_each scrubs non-str truthy error values
+    res_fe = channels.for_each([ch_vlogs], lambda c: {"error": RuntimeError(f"boom http://u:{canary}@10.0.0.1:8080")})
+    assert canary not in str(res_fe["vlogs"]["error"])
+    assert canary not in res_fe["error"]
+
+
+

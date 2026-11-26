@@ -318,7 +318,7 @@ def analytics_pull_job() -> dict:
                 for attr, key in (("views", "viewCount"), ("likes", "likeCount"), ("comments", "commentCount")):
                     val = info.get(key)
                     if isinstance(val, (int, float)) and not isinstance(val, bool) and math.isfinite(val):
-                        setattr(v, attr, int(val))
+                        setattr(v, attr, max(0, int(val)))
                         applied = True
                 if not applied:
                     continue

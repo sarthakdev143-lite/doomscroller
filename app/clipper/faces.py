@@ -121,12 +121,13 @@ def face_centre(source: str, start: float, end: float, info: MediaInfo) -> Optio
         or info.height <= 0
         or not math.isfinite(start)
         or not math.isfinite(end)
+        or end <= start
     ):
         return None
     height = _detect_height(info)
     picks = []
     for step in range(1, _SAMPLES_PER_SHOT + 1):
-        when = start + (end - start) * step / (_SAMPLES_PER_SHOT + 1)
+        when = max(0.0, start + (end - start) * step / (_SAMPLES_PER_SHOT + 1))
         try:
             pick = speaker_in_pair(*_frames_at(source, when, height))
         except MediaError as exc:
@@ -146,12 +147,13 @@ def speaker_position(source: str, start: float, end: float, info: MediaInfo) -> 
         or info.height <= 0
         or not math.isfinite(start)
         or not math.isfinite(end)
+        or end <= start
     ):
         return None
     height = _detect_height(info)
     picks = []
     for step in range(1, _SAMPLES_PER_SHOT + 1):
-        when = start + (end - start) * step / (_SAMPLES_PER_SHOT + 1)
+        when = max(0.0, start + (end - start) * step / (_SAMPLES_PER_SHOT + 1))
         try:
             pick = speaker_box_in_pair(*_frames_at(source, when, height))
         except MediaError as exc:

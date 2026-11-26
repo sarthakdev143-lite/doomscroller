@@ -118,7 +118,15 @@ def upload_turned_down(status: Optional[str]) -> bool:
 def _subscriber_rate(analytics: dict) -> Optional[float]:
     """Per 1000 views. A raw count keeps climbing with age, while the views a video is judged on stop at the horizon."""
     views, gained = analytics.get("views"), analytics.get("subscribersGained")
-    return max(0.0, 1000 * gained / views) if views and views > 0 and gained is not None and math.isfinite(gained) else None
+    if isinstance(views, bool) or isinstance(gained, bool) or views is None or gained is None:
+        return None
+    try:
+        v_f, g_f = float(views), float(gained)
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(v_f) and math.isfinite(g_f)) or v_f <= 0:
+        return None
+    return max(0.0, 1000 * g_f / v_f)
 
 
 def matured_results(db, *, include_diagnosed: bool = True, scope=None, zone=None) -> list[Result]:
@@ -143,7 +151,7 @@ def matured_results(db, *, include_diagnosed: bool = True, scope=None, zone=None
     results = []
     for video in rows:
         # A too_early saved by an older version is still waiting for its baseline.
-        diagnosed = (video.meta or {}).get("growth_diagnosis", {}).get("code") not in (None, "too_early")
+        diagnosed = ((video.meta or {}).get("growth_diagnosis") or {}).get("code") not in (None, "too_early")
         if diagnosed and not include_diagnosed:
             continue
         points = db.execute(select(VideoSnapshot.age_hours, VideoSnapshot.views)
@@ -369,7 +377,7 @@ def mine_waiting_winner(db, now: datetime, *, scope=None, channel_id: Optional[s
     recent = [r for r in matured_results(db, scope=scope) if r.published_at >= oldest]
     for result in sorted(recent, key=lambda r: r.published_at, reverse=True):
         video = db.get(Video, result.video_id)
-        diagnosis = (video.meta or {}).get("growth_diagnosis", {})
+        diagnosis = (video.meta or {}).get("growth_diagnosis") or {}
         if diagnosis.get("code") != "winner" or not _mining_due(db, result, diagnosis, now, channel_id=channel_id):
             continue
         job_id = _mine_winner(db, result, scope=scope, channel_id=channel_id, require_approval=require_approval)
@@ -460,7 +468,7 @@ def _learn_one(channel, now: datetime) -> dict:
         recent = db.execute(select(Video).where(*conds)
                             .order_by(Video.published_at.desc()).limit(_FOCUS_WINDOW * 3)).scalars().all()
         judged = [(v.meta or {})["growth_diagnosis"] for v in recent
-                  if (v.meta or {}).get("growth_diagnosis", {}).get("code") not in (None, "too_early")][:_FOCUS_WINDOW]
+                  if ((v.meta or {}).get("growth_diagnosis") or {}).get("code") not in (None, "too_early")][:_FOCUS_WINDOW]
         tally: dict[str, int] = {}
         for item in judged:
             for factor in item.get("focus", []):

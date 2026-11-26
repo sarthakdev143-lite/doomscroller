@@ -27,15 +27,19 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def fetch_packs(limit: int, searches: list[str]) -> dict:
-    if not 1 <= limit <= 50:
+    if isinstance(limit, bool) or not 1 <= limit <= 50:
         raise ValueError(f"limit must be 1..50, got {limit}")
     downloaded: list[str] = []
     skipped = 0
     session = memes.MemeSession()
-    for candidate in memes.trending(limit=limit):
+    try:
+        candidates = memes.trending(limit=limit)
+    except memes.MemeError as exc:
+        raise ValueError(memes.scrub_secrets(exc)) from None
+    for candidate in candidates:
         try:
             clip = memes._local_copy(candidate, 1.5)
-        except memes.MemeError as exc:
+        except (memes.MemeError, OSError) as exc:
             skipped += 1
             session.failed_files += 1
             if session.failed_files >= memes.MAX_FAILED_FILES:
@@ -44,6 +48,7 @@ def fetch_packs(limit: int, searches: list[str]) -> dict:
         if clip is None:
             skipped += 1
             continue
+        session.failed_files = 0
         downloaded.append(clip.name)
     for query in searches:
         try:
@@ -69,10 +74,11 @@ def main(n: int | list[str] | None = None) -> int:
     try:
         summary = fetch_packs(args.limit, args.search or [])
     except ValueError as exc:
+        err = memes.scrub_secrets(exc)
         if args.json:
-            print(json.dumps({"ok": False, "error": str(exc)}, indent=2))
+            print(json.dumps({"ok": False, "error": err}, indent=2))
         else:
-            print(f"error: {exc}", file=sys.stderr)
+            print(f"error: {err}", file=sys.stderr)
         return 1
     if args.json:
         print(json.dumps(summary, indent=2))

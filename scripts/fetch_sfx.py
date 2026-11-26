@@ -30,20 +30,35 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _validate_limit(limit: int) -> None:
+    if isinstance(limit, bool) or not 1 <= limit <= 50:
+        raise ValueError(f"limit must be 1..50, got {limit}")
+
+
+def _call_fetch(query: str, seconds: float, exclude: set[str], session: trending_sfx.SfxSession):
+    try:
+        return trending_sfx.fetch(query, seconds, exclude=exclude, session=session)
+    except TypeError:
+        return trending_sfx.fetch(query, seconds, exclude=exclude)
+
+
 def _fetch_freesound(limit: int, searches: list[str]) -> dict:
+    _validate_limit(limit)
     if not trending_sfx.available():
         raise ValueError("set FREESOUND_API_KEY first (see .env.example)")
-    if not 1 <= limit <= 50:
-        raise ValueError(f"limit must be 1..50, got {limit}")
     downloaded: list[str] = []
     skipped = 0
     session = trending_sfx.SfxSession()
     used: set[str] = set()
-    for _candidate in trending_sfx.trending(limit=limit):
+    try:
+        candidates = trending_sfx.trending(limit=limit)
+    except (trending_sfx.SearchBlocked, trending_sfx.SfxError) as exc:
+        raise ValueError(trending_sfx.scrub_secrets(exc)) from None
+    for _candidate in candidates:
         if session.stopped:
             break
         try:
-            clip = trending_sfx.fetch("", 1.5, exclude=used)
+            clip = _call_fetch("", 1.5, used, session)
         except trending_sfx.SearchBlocked as exc:
             raise ValueError(trending_sfx.scrub_secrets(exc)) from None
         except trending_sfx.DownloadsFailed:
@@ -58,21 +73,29 @@ def _fetch_freesound(limit: int, searches: list[str]) -> dict:
         if clip is None or clip.sfx_id in used:
             skipped += 1
             continue
+        session.failed_files = 0
         used.add(clip.sfx_id)
         downloaded.append(Path(clip.path).name)
     for query in searches:
         if session.stopped:
             break
         try:
-            clip = trending_sfx.fetch(query, 1.5, exclude=used)
+            clip = _call_fetch(query, 1.5, used, session)
         except trending_sfx.SearchBlocked as exc:
             raise ValueError(trending_sfx.scrub_secrets(exc)) from None
+        except trending_sfx.DownloadsFailed:
+            session.failed_files += 1
+            if session.failed_files >= trending_sfx.MAX_FAILED_FILES:
+                session.stopped = True
+            skipped += 1
+            continue
         except trending_sfx.SfxError:
             skipped += 1
             continue
-        if clip is None:
+        if clip is None or clip.sfx_id in used:
             skipped += 1
             continue
+        session.failed_files = 0
         used.add(clip.sfx_id)
         downloaded.append(Path(clip.path).name)
     return {"ok": True, "provider": trending_sfx.provider(), "downloaded": len(downloaded),
@@ -80,6 +103,7 @@ def _fetch_freesound(limit: int, searches: list[str]) -> dict:
 
 
 def fetch_packs(limit: int, searches: list[str], source: str = "auto", lang: str = "both") -> dict:
+    _validate_limit(limit)
     chosen = (source or "auto").strip().lower()
     if chosen == "auto":
         chosen = "freesound" if trending_sfx.available() else "myinstants"
@@ -89,7 +113,7 @@ def fetch_packs(limit: int, searches: list[str], source: str = "auto", lang: str
         try:
             return myinstants.fetch_all(limit=limit, lang=lang, searches=searches)
         except RuntimeError as exc:
-            raise ValueError(str(exc)) from None
+            raise ValueError(trending_sfx.scrub_secrets(exc)) from None
     raise ValueError(f"unsupported source: {source!r}")
 
 
@@ -101,10 +125,11 @@ def main(n: int | list[str] | None = None) -> int:
     try:
         summary = fetch_packs(args.limit, args.search or [], source=args.source, lang=args.lang)
     except ValueError as exc:
+        err = trending_sfx.scrub_secrets(exc)
         if args.json:
-            print(json.dumps({"ok": False, "error": str(exc)}, indent=2))
+            print(json.dumps({"ok": False, "error": err}, indent=2))
         else:
-            print(f"error: {exc}", file=sys.stderr)
+            print(f"error: {err}", file=sys.stderr)
         return 1
     if args.json:
         print(json.dumps(summary, indent=2))

@@ -183,5 +183,5 @@ def boost_creator(db: Session, platform: str, handle: str, amount: float) -> Non
         return
     c = _find_existing_creator(db, plat, bare)
     if c is not None:
-        c.score = _clean_score(c.score) + delta
+        c.score = max(0.0, _clean_score(c.score) + delta)
         db.flush()

@@ -262,9 +262,12 @@ def _result(video: Video, channel_slug: str = "default") -> dict:
     }
 
 
-def recent_posts(db) -> list[dict]:
+def recent_posts(db, scope=None) -> list[dict]:
     """The latest real uploads with how they did, and the loop's reading of why."""
-    rows = db.execute(select(Video).where(Video.status == VideoStatus.PUBLISHED, Video.youtube_video_id.isnot(None))
+    conds = [Video.status == VideoStatus.PUBLISHED, Video.youtube_video_id.isnot(None)]
+    if scope is not None:
+        conds.append(scope)
+    rows = db.execute(select(Video).where(*conds)
                       .order_by(Video.published_at.desc()).limit(_POSTED_LIMIT * 2)).scalars().all()
     out: list[dict] = []
     for v in rows:
@@ -340,13 +343,14 @@ def queue(channel_slug: str = "") -> dict:
         per = [_channel_status(db, c) for c in active]
         total_waiting = sum(c["waiting"] for c in per) if per else len(awaiting_review(db, limit=None))
         target = channels.channel_by_slug(db, slug) if (slug and slug != "all") else None
-        if target is not None:
-            cards = [_card(v, db) for v in awaiting_review(db, channels.video_scope(target))[:_QUEUE_LIMIT]]
+        target_scope = channels.video_scope(target) if target is not None else None
+        if target_scope is not None:
+            cards = [_card(v, db) for v in awaiting_review(db, target_scope)[:_QUEUE_LIMIT]]
         else:
             cards = [_card(v, db) for v in _balanced_awaiting_review(db, active)]
         scraped = [_card(v, db) for v in awaiting_scraped(db)]
-        queued = [_card(v, db) for v in ready_clips(db)][:_QUEUE_LIMIT]
-        posted = recent_posts(db)
+        queued = [_card(v, db) for v in ready_clips(db, target_scope)[:_QUEUE_LIMIT]]
+        posted = recent_posts(db, target_scope)
     # A single legacy channel keeps the flat view; several add a per-channel status strip and filter chips.
     multi = len(active) > 1 or (len(active) == 1 and not channels.is_default(active[0]))
     return {

@@ -359,7 +359,7 @@ def fetch_all(
     client: Optional[httpx.Client] = None,
 ) -> dict:
     """Fetch English and/or Hindi meme SFX from MyInstants into ``content/sfx/``."""
-    if not 1 <= limit <= 50:
+    if isinstance(limit, bool) or not 1 <= limit <= 50:
         raise ValueError(f"limit must be 1..50, got {limit}")
     norm_lang = (lang or "both").strip().lower()
     if norm_lang not in ("en", "hi", "both"):

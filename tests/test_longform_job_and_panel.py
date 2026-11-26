@@ -1626,3 +1626,81 @@ def test_longform_job_scrubs_secrets_in_notify_recovery_and_portrait_errors(tmp_
     assert "[REDACTED]" in boom_res["error"]
 
 
+def test_compile_cli_retry_and_enqueue_run_now_target_specific_job_and_propagate_exit_code(monkeypatch, capsys):
+    from scripts import compile as compile_cli
+
+    with session_scope() as db:
+        channels.sync_channels(db)
+        ch = channels.channel_by_slug(db, "indianvlogs")
+        older = LongJob(
+            channel_id=ch.id,
+            format="best_of",
+            targets=["@souravjvlogs"],
+            target_minutes=7,
+            status="queued",
+            created_at=datetime(2026, 11, 1, 10, 0, tzinfo=timezone.utc),
+        )
+        failed = LongJob(
+            channel_id=ch.id,
+            format="best_of",
+            targets=["@FukraInsaan"],
+            target_minutes=7,
+            status="failed",
+            error="earlier failure",
+            created_at=datetime(2026, 11, 2, 10, 0, tzinfo=timezone.utc),
+        )
+        db.add_all([older, failed])
+        db.flush()
+        older_id, retry_id = older.id, failed.id
+
+    # 1. --retry <retry_id> --run-now when build fails must target retry_id (leaving older_id queued) AND exit 1
+    monkeypatch.setattr(planner, "plan_compilation", lambda **k: (_ for _ in ()).throw(RuntimeError("boom retry")))
+    rc_fail = compile_cli.main(["--retry", retry_id, "--run-now", "--json"])
+    assert rc_fail == 1
+    out_fail = json.loads(capsys.readouterr().out)
+    assert out_fail["ok"] is False
+    assert out_fail["job_id"] == retry_id
+    with session_scope() as db:
+        assert db.get(LongJob, older_id).status == "queued"
+        assert db.get(LongJob, retry_id).status == "failed"
+
+    # 2. --retry <retry_id> --run-now when worker succeeds targets retry_id, exits 0, leaves older_id queued
+    def fake_plan(**kwargs):
+        return planner.CompilationPlan(
+            format_kind="best_of", channel_slug="indianvlogs", part_number=1, targets=("@FukraInsaan",),
+            theme="", title="Best", description="Desc", tags=("vlog",), language="hi",
+            target_seconds=420.0, cold_open=None, segments=(),
+        )
+
+    monkeypatch.setattr(planner, "plan_compilation", fake_plan)
+    monkeypatch.setattr(
+        lf_render,
+        "render_compilation",
+        lambda plan, out_path, **kw: (
+            Path(out_path).parent.mkdir(parents=True, exist_ok=True),
+            Path(out_path).write_bytes(b"MP4"),
+            type("Res", (), {"output_path": str(out_path), "duration": 420.0, "chapter_text": "", "chapters": [], "timestamps_for_thumbs": []})(),
+        )[-1],
+    )
+    monkeypatch.setattr("app.longform.thumbnails.generate_thumbnails_with_prompt", lambda *a, **k: ([], ""))
+
+    rc_ok = compile_cli.main(["--retry", retry_id, "--run-now", "--json"])
+    assert rc_ok == 0
+    out_ok = json.loads(capsys.readouterr().out)
+    assert out_ok["ok"] is True
+    assert out_ok["job_id"] == retry_id
+    with session_scope() as db:
+        assert db.get(LongJob, older_id).status == "queued"
+        assert db.get(LongJob, retry_id).status == "done"
+
+    # 3. --enqueue --run-now targets the newly enqueued job, leaving older_id queued
+    rc_enq = compile_cli.main(["--channel", "indianvlogs", "--format", "best_of", "--creator", "@souravjvlogs", "--minutes", "7", "--enqueue", "--run-now", "--json"])
+    assert rc_enq == 0
+    out_enq = json.loads(capsys.readouterr().out)
+    assert out_enq["ok"] is True
+    assert out_enq["job_id"] != older_id
+    with session_scope() as db:
+        assert db.get(LongJob, older_id).status == "queued"
+
+
+

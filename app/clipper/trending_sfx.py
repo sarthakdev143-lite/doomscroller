@@ -277,18 +277,21 @@ def _local_copy(candidate: Candidate, seconds: float) -> Optional[Path]:
 
 
 def fetch(query: str, seconds: float, *, exclude: Iterable[str] = (),
-          choose: Optional[Callable[[list[Candidate]], list[Candidate]]] = None) -> Optional[SfxClip]:
+          choose: Optional[Callable[[list[Candidate]], list[Candidate]]] = None,
+          session: Optional[SfxSession] = None) -> Optional[SfxClip]:
     """A local CC0 SFX file for this slot, or None if nothing suits.
 
     An empty query means the most-downloaded pack, rotated through `exclude`.
     `choose` gets the results worth trying, best first.
     """
-    if not math.isfinite(seconds) or seconds <= 0:
+    if not math.isfinite(seconds) or seconds <= 0 or (session is not None and session.stopped):
         return None
     skip = set(exclude)
     try:
         found = search(query, _RESULTS_PER_SEARCH) if query else trending()
     except SearchBlocked:
+        if session is not None:
+            session.stopped = True
         raise
     except SfxError:
         return None

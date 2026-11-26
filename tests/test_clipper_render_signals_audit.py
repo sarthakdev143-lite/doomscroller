@@ -259,6 +259,73 @@ def test_faces_nan_boxes_out_of_bounds_and_ultrawide_even_height(monkeypatch):
     assert heights_requested and all(h >= 2 and h % 2 == 0 for h in heights_requested)
 
 
+def test_faces_speaker_position_bounds_frames_at_and_detector_fallbacks(monkeypatch):
+    # 1. speaker_box_in_pair input validation & _detector() is None
+    assert faces.speaker_box_in_pair("bad", np.zeros((10, 10), dtype=np.uint8)) is None  # type: ignore[arg-type]
+    assert faces.speaker_box_in_pair(np.zeros((10,), dtype=np.uint8), np.zeros((10,), dtype=np.uint8)) is None
+    assert faces.speaker_box_in_pair(np.zeros((10, 10), dtype=np.uint8), np.zeros((10, 12), dtype=np.uint8)) is None
+    assert faces.speaker_box_in_pair(np.zeros((1, 10), dtype=np.uint8), np.zeros((1, 10), dtype=np.uint8)) is None
+
+    orig_detector = faces._detector
+    monkeypatch.setattr(faces, "_detector", lambda: None)
+    assert faces.speaker_box_in_pair(np.zeros((20, 20), dtype=np.uint8), np.zeros((20, 20), dtype=np.uint8)) is None
+    info = MediaInfo(duration=10.0, width=1280, height=720, fps=30.0, has_audio=False)
+    assert faces.face_centre("a.mp4", 0.0, 4.0, info) is None
+    assert faces.speaker_position("a.mp4", 0.0, 4.0, info) is None
+
+    # 2. speaker_position picks max-score (x, y), rejects end <= start, and clamps negative start
+    class TwoFaceDetector:
+        def detectMultiScale(self, frame, **kwargs):
+            # Return low-motion left face and high-motion right face depending on frame content
+            if frame[0, 0] == 1:
+                return [(20, 40, 40, 40)]
+            return [(200, 100, 60, 60)]
+
+    monkeypatch.setattr(faces, "_detector", lambda: TwoFaceDetector())
+    seen_when: list[float] = []
+
+    def fake_frames(source, when, height):
+        seen_when.append(when)
+        f1 = np.zeros((200, 320), dtype=np.uint8)
+        f2 = np.zeros((200, 320), dtype=np.uint8)
+        if len(seen_when) == 2:
+            f1[0, 0] = 0
+            f2[100:170, 200:260] = 200  # strong motion on right face
+        else:
+            f1[0, 0] = 1
+            f2[40:90, 20:60] = 5  # weak motion on left face
+        return f1, f2
+
+    orig_frames_at = faces._frames_at
+    monkeypatch.setattr(faces, "_frames_at", fake_frames)
+    assert faces.face_centre("a.mp4", 3.0, 3.0, info) is None
+    assert faces.speaker_position("a.mp4", 5.0, 2.0, info) is None
+    pos = faces.speaker_position("a.mp4", -4.0, 2.0, info)
+    assert pos is not None
+    assert all(w >= 0.0 for w in seen_when)
+    assert pos[0] > 0.5 and pos[1] > 0.5
+
+    # 3. _frames_at short buffer raises MediaError, single frame duplicates first
+    monkeypatch.setattr(faces, "_frames_at", orig_frames_at)
+    monkeypatch.setattr(faces, "read_ffmpeg", lambda args: b"\x00" * 10)
+    with pytest.raises(MediaError):
+        faces._frames_at("a.mp4", 0.0, 2)
+    one_frame_bytes = faces._DETECT_WIDTH * 2
+    monkeypatch.setattr(faces, "read_ffmpeg", lambda args: b"\x7f" * one_frame_bytes)
+    first_f, second_f = faces._frames_at("a.mp4", 0.0, 2)
+    assert np.array_equal(first_f, second_f)
+    assert first_f.shape == (2, faces._DETECT_WIDTH)
+
+    # 4. _detector() returns None when cv2 is missing or classifier.empty()
+    monkeypatch.setattr(faces, "_detector", orig_detector)
+    faces._detector.cache_clear()
+    real_import = __import__
+    monkeypatch.setattr("builtins.__import__", lambda name, *a, **k: (_ for _ in ()).throw(ImportError("no cv2")) if name == "cv2" else real_import(name, *a, **k))
+    assert faces._detector() is None
+    faces._detector.cache_clear()
+
+
+
 # ---------- 5. subtitles.py, audio_qa.py, ai.py, subprocess audit ----------
 
 

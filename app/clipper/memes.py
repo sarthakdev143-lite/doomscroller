@@ -24,6 +24,7 @@ from typing import Callable, Iterable, Optional
 import httpx
 
 from app.config import settings
+from app.logging_config import scrub_secrets as _scrub_secrets
 
 from .media import MediaError, probe, read_ffmpeg
 
@@ -48,16 +49,11 @@ _TIMEOUT = httpx.Timeout(60, connect=15)
 _MAX_FAILED_DOWNLOADS = 2
 # A hung CDN costs a minute per attempt, so give up across overlays too.
 MAX_FAILED_FILES = 4
-_URL_KEY_RE = re.compile(r"([?&](?:key|api_key|apikey|token)=)[^&\s\"')]+", re.IGNORECASE)
 
 
 def scrub_secrets(text: object) -> str:
-    """Redact meme API keys from any exception or log message."""
-    cleaned = str(text or "")
-    for secret in (settings.tenor_api_key, settings.giphy_api_key):
-        if secret:
-            cleaned = cleaned.replace(secret, "[REDACTED]")
-    return _URL_KEY_RE.sub(r"\1[REDACTED]", cleaned)
+    """Redact meme API keys and proxy/token credentials from any exception or log message."""
+    return _scrub_secrets(str(text or ""))
 
 
 def _safe_meme_id(raw: object) -> str:

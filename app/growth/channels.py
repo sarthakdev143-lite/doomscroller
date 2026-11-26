@@ -925,8 +925,8 @@ def for_each(active: list[Channel], run: Callable[[Channel], dict]) -> dict:
     for channel in active:
         try:
             res = run(channel)
-            if isinstance(res, dict) and isinstance(res.get("error"), str):
-                res = {**res, "error": scrub_secrets(res["error"])}
+            if isinstance(res, dict) and res.get("error"):
+                res = {**res, "error": scrub_secrets(str(res["error"]))}
             out[channel.slug] = res
         except Exception as exc:
             safe_err = scrub_secrets(f"{type(exc).__name__}: {exc}")

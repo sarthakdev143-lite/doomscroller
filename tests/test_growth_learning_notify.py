@@ -886,3 +886,64 @@ def test_autopilot_scrubs_publish_task_outcome_errors_before_persisting_and_mult
     assert "[REDACTED]" in multi_res["error"]
     assert_clean(dumped)
     assert_clean(caplog.text)
+
+
+def test_model_rejects_bool_rewards_days_and_non_dict_arms_and_recipes_collect_guards(monkeypatch):
+    # 1. model.py: None obs, bool reward/day, non-dict arms, and Draw.score(None)
+    obs = [
+        None,
+        Observation({"slot": "00-04"}, True, 0.0),       # type: ignore[arg-type]
+        Observation({"slot": "08-12"}, 1.0, False),      # type: ignore[arg-type]
+        Observation(None, 2.0, 0.0),                     # type: ignore[arg-type]
+        Observation(["bad"], 2.0, 0.0),                  # type: ignore[arg-type]
+        Observation({"slot": "00-04"}, 3.0, 1.0),
+    ]
+    m = Model(obs)  # type: ignore[arg-type]
+    assert len(m.observations) == 1
+    assert m.observations[0].reward == 3.0
+    assert m.draw(0).score(None, ["slot"]) == 0.0        # type: ignore[arg-type]
+    assert m.draw(0).score(["bad"], ["slot"]) == 0.0     # type: ignore[arg-type]
+
+    # 2. recipes.py: choose() exception fallback, channel forwarding, applied() defensive no-ops
+    seen_channels: list[object] = []
+    monkeypatch.setattr("app.growth.autopilot.policy", lambda channel=None: seen_channels.append(channel) or None)
+    monkeypatch.setattr("app.growth.autopilot.pick_arm", lambda p, f, a: a[0])
+    monkeypatch.setattr(settings, "growth_enabled", True)
+    ch_token = object()
+    chosen = recipes.choose(channel=ch_token)
+    assert seen_channels == [ch_token] and "pace" in chosen
+
+    monkeypatch.setattr("app.growth.autopilot.policy", lambda channel=None: (_ for _ in ()).throw(RuntimeError("boom")))
+    assert recipes.choose() == {}
+
+    orig_speed = settings.clip_speed
+    for bad_recipe in (None, {}, "bad", {"unknown": "1"}, {"pace": ["unhashable"]}):
+        with recipes.applied(bad_recipe):  # type: ignore[arg-type]
+            assert settings.clip_speed == orig_speed
+
+    # 3. learn._subscriber_rate type safety (str / bool / invalid) + null growth_diagnosis
+    assert learn._subscriber_rate({"views": "100", "subscribersGained": "5"}) == pytest.approx(50.0)
+    assert learn._subscriber_rate({"views": "bad", "subscribersGained": 5}) is None
+    assert learn._subscriber_rate({"views": True, "subscribersGained": 5}) is None
+    assert learn._subscriber_rate({"views": 100, "subscribersGained": True}) is None
+
+    now = START
+    with session_scope() as db:
+        v = Video(
+            source="youtube",
+            source_id="null_diag_1",
+            source_url="https://youtu.be/nd1",
+            title="Null Diag",
+            status=VideoStatus.PUBLISHED,
+            youtube_video_id="YT_ND_1",
+            published_at=now - timedelta(hours=72),
+            meta={"clip_rendered": True, "yt_privacy": "public", "growth_diagnosis": None},
+        )
+        db.add(v)
+        db.flush()
+        db.add(VideoSnapshot(video_id=v.id, taken_at=now, age_hours=72.0, views=100, likes=5, comments=1))
+    with session_scope() as db:
+        assert len(learn.matured_results(db)) == 1
+    out_run = learn._learn_one(None, now)
+    assert out_run["matured"] == 1
+

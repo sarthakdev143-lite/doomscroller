@@ -2674,3 +2674,103 @@ function mkHarness(fetchImpl) {
     assert proc.returncode == 0, f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
     assert "ALL_OK" in proc.stdout
 
+
+def test_queue_channel_slug_scopes_queued_and_posted_slices(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from app.growth import approval
+    from app.models import VideoStatus
+
+    _write(
+        tmp_path,
+        monkeypatch,
+        {
+            "channels": [
+                {"slug": "default", "name": "Default"},
+                {"slug": "indianvlogs", "name": "Indian Vlogs", "enabled": True},
+            ]
+        },
+    )
+    mp4 = tmp_path / "clip.mp4"
+    mp4.write_bytes(b"mp4")
+    now = datetime.now(timezone.utc)
+    with session_scope() as db:
+        channels.sync_channels(db)
+        ch_def = channels.channel_by_slug(db, "default")
+        ch_hi = channels.channel_by_slug(db, "indianvlogs")
+        # Busy default channel: >40 queued (TRANSFORMED) and >20 posted (PUBLISHED) newer than indianvlogs
+        for i in range(42):
+            db.add(
+                Video(
+                    source="youtube",
+                    source_id=f"def_q_{i}",
+                    source_url=f"https://youtu.be/dq{i}",
+                    title=f"Def Q {i}",
+                    status=VideoStatus.TRANSFORMED,
+                    channel_id=ch_def.id,
+                    transformed_path=str(mp4),
+                    scraped_at=now - timedelta(minutes=i),
+                    meta={"clip_rendered": True},
+                )
+            )
+        for i in range(25):
+            db.add(
+                Video(
+                    source="youtube",
+                    source_id=f"def_p_{i}",
+                    source_url=f"https://youtu.be/dp{i}",
+                    title=f"Def P {i}",
+                    status=VideoStatus.PUBLISHED,
+                    youtube_video_id=f"YT_DEF_{i}",
+                    published_at=now - timedelta(days=3, minutes=i),
+                    channel_id=ch_def.id,
+                    transformed_path=str(mp4),
+                    meta={"clip_rendered": True},
+                )
+            )
+        # Smaller indianvlogs channel with older timestamps
+        for i in range(2):
+            db.add(
+                Video(
+                    source="youtube",
+                    source_id=f"hi_q_{i}",
+                    source_url=f"https://youtu.be/hq{i}",
+                    title=f"Hi Q {i}",
+                    status=VideoStatus.TRANSFORMED,
+                    channel_id=ch_hi.id,
+                    transformed_path=str(mp4),
+                    scraped_at=now - timedelta(days=2, minutes=i),
+                    meta={"clip_rendered": True},
+                )
+            )
+            db.add(
+                Video(
+                    source="youtube",
+                    source_id=f"hi_p_{i}",
+                    source_url=f"https://youtu.be/hp{i}",
+                    title=f"Hi P {i}",
+                    status=VideoStatus.PUBLISHED,
+                    youtube_video_id=f"YT_HI_{i}",
+                    published_at=now - timedelta(days=5, minutes=i),
+                    channel_id=ch_hi.id,
+                    transformed_path=str(mp4),
+                    meta={"clip_rendered": True},
+                )
+            )
+
+    try:
+        q_hi = approval.queue("indianvlogs")
+        assert len(q_hi["queued"]) == 2
+        assert all(item["channel_slug"] == "indianvlogs" for item in q_hi["queued"])
+        assert len(q_hi["posted"]) == 2
+        assert all(item["channel_slug"] == "indianvlogs" for item in q_hi["posted"])
+
+        q_all = approval.queue("")
+        assert len(q_all["queued"]) == approval._QUEUE_LIMIT
+        assert len(q_all["posted"]) == approval._POSTED_LIMIT
+        assert len(q_all["channels"]) == 2
+    finally:
+        with session_scope() as db:
+            db.execute(delete(Video))
+            db.execute(delete(Channel))
+
+

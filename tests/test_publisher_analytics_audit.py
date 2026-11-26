@@ -556,3 +556,77 @@ def test_youtube_oauth_status_and_check_flags_run_offline_and_never_leak_secrets
     oauth._show_existing(str(null_token))
     monkeypatch.setattr(sys, "argv", ["youtube_oauth.py", "--token", str(null_token), "--check"])
     assert oauth.main() == 1
+
+
+def test_discovery_negative_clamp_seed_fallback_and_mock_publisher_methods(tmp_path, monkeypatch):
+    init_db()
+    now = datetime.now(timezone.utc)
+    monkeypatch.setattr(settings, "target_handles", '["@SeedFromEnv", "seedfromenv"]')
+    with session_scope() as db:
+        db.query(Creator).delete()
+        db.query(Video).delete()
+        db.flush()
+
+        # ensure_seed_creators(..., []) falls back to settings.handles_list
+        assert discovery.ensure_seed_creators(db, [], platform="tiktok") == 1
+        row = db.query(Creator).filter(Creator.platform == "tiktok").one()
+        assert row.score == pytest.approx(1.0)
+
+        # boost_creator clamps negative deltas to >= 0.0 and ignores bool/None/bad/unknown
+        discovery.boost_creator(db, "tiktok", "SeedFromEnv", -50.0)
+        assert row.score == 0.0
+        row.score = 3.0
+        db.flush()
+        for bad_amt in (True, False, None, "bad", float("inf")):
+            discovery.boost_creator(db, "tiktok", "SeedFromEnv", bad_amt)  # type: ignore[arg-type]
+        discovery.boost_creator(db, "tiktok", "nobody", 5.0)
+        assert row.score == pytest.approx(3.0)
+
+        # discover_creators(days=0 / -1) returns [] and re-discovery preserves higher existing score
+        assert discovery.discover_creators(db, days=0) == []
+        assert discovery.discover_creators(db, days=-3) == []
+        row.score = 10.0
+        db.add(
+            Video(
+                source="tiktok", source_id="low_v", source_url="https://x/low",
+                author="@SeedFromEnv", engagement_score=0.5, scraped_at=now,
+            )
+        )
+        db.flush()
+        discovery.discover_creators(db, days=7, top_n=5)
+        assert row.score == pytest.approx(10.0)
+
+    # MockPublisher full coverage: upload normalization, set_thumbnail, post_comment
+    pub = MockPublisher()
+    res = pub.upload(
+        file_path=str(tmp_path / "missing.mp4"),
+        title="Test",
+        description="Desc",
+        tags=[" a ", "", None, "b"],  # type: ignore[list-item]
+        category=22,
+        privacy="  UNLISTED ",
+        default_language="hi",
+        default_audio_language="hi",
+    )
+    assert res.video_id.startswith("MOCK_")
+    assert res.raw["privacy"] == "unlisted"
+    assert res.raw["tags"] == [" a ", "b"]
+    assert res.raw["defaultLanguage"] == "hi"
+    assert res.raw["defaultAudioLanguage"] == "hi"
+
+    res_default = pub.upload(
+        file_path="x.mp4", title="", description="", tags=[], category=22, privacy="   ",
+    )
+    assert res_default.raw["privacy"] == "public"
+    assert "defaultLanguage" not in res_default.raw
+
+    thumb = tmp_path / "thumb.jpg"
+    thumb.write_bytes(b"JPG")
+    assert pub.set_thumbnail(res.video_id, str(thumb)) is True
+    assert pub.set_thumbnail(res.video_id, str(tmp_path / "nope.jpg")) is False
+    assert pub.set_thumbnail("", str(thumb)) is False
+
+    assert pub.post_comment(res.video_id, "Great!") == "MOCK_COMMENT"
+    assert pub.post_comment(res.video_id, "   ") is None
+    assert pub.post_comment("", "Great!") is None
+

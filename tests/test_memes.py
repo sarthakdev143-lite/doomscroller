@@ -539,3 +539,63 @@ def test_giphy_parses_downsized_small_and_original_mp4_and_playable_loops_short_
     assert memes._playable(tmp_path / "short.mp4", 1.5) is True
     assert seen_args and "-stream_loop" in seen_args[0] and "-1" in seen_args[0]
 
+
+def test_fetch_memes_limits_errors_oserror_bailout_and_secret_scrubbing(tmp_path, monkeypatch, capsys):
+    from scripts import fetch_memes
+
+    canary_proxy = "http://u:CANARY_MEME_W21@10.0.0.1:8080"
+    monkeypatch.setattr(settings, "proxy_url", canary_proxy)
+
+    # 1. Limit bounds + bool rejection
+    for bad in (0, -1, 51, True, False):
+        with pytest.raises(ValueError, match="limit must be 1..50"):
+            fetch_memes.fetch_packs(bad, [])
+
+    # 2. memes.trending() raising SearchBlocked/MemeError is scrubbed & wrapped in ValueError
+    monkeypatch.setattr(
+        memes,
+        "trending",
+        lambda limit=10: (_ for _ in ()).throw(memes.SearchBlocked(f"blocked {canary_proxy}")),
+    )
+    rc_err = fetch_memes.main(["--json"])
+    assert rc_err == 1
+    out_err = capsys.readouterr().out
+    assert "CANARY_MEME_W21" not in out_err
+    assert "[REDACTED]" in out_err
+
+    # 3. _local_copy raising OSError counts toward MAX_FAILED_FILES & scrubs secret on bailout
+    cands = [memes.Candidate(f"m-{i}", f"https://x/{i}.mp4", f"M{i}") for i in range(memes.MAX_FAILED_FILES + 1)]
+    monkeypatch.setattr(memes, "trending", lambda limit=10: cands)
+    monkeypatch.setattr(
+        memes,
+        "_local_copy",
+        lambda c, s: (_ for _ in ()).throw(OSError(f"disk err {canary_proxy}")),
+    )
+    with pytest.raises(ValueError) as exc_info:
+        fetch_memes.fetch_packs(5, [])
+    assert "CANARY_MEME_W21" not in str(exc_info.value)
+    assert "[REDACTED]" in str(exc_info.value)
+
+    # 4. Partial OSError + success resets failed_files; searches MemeError skipped vs SearchBlocked raised; main() exit 0
+    monkeypatch.setattr(memes, "trending", lambda limit=10: cands[:3])
+    calls = {"n": 0}
+
+    def flaky_local(c, s):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("transient")
+        return tmp_path / f"{c.meme_id}.mp4"
+
+    monkeypatch.setattr(memes, "_local_copy", flaky_local)
+    monkeypatch.setattr(memes, "fetch", lambda q, s: (_ for _ in ()).throw(memes.MemeError("miss")) if q == "skip" else None)
+    assert fetch_memes.main(["--limit", "3", "--search", "skip", "--search", "empty", "--json"]) == 0
+    ok_payload = json.loads(capsys.readouterr().out)
+    assert ok_payload["downloaded"] == 2
+    assert ok_payload["skipped"] == 3
+
+    monkeypatch.setattr(memes, "fetch", lambda q, s: (_ for _ in ()).throw(memes.SearchBlocked(f"429 {canary_proxy}")))
+    with pytest.raises(ValueError) as search_exc:
+        fetch_memes.fetch_packs(3, ["blocked"])
+    assert "CANARY_MEME_W21" not in str(search_exc.value)
+
+

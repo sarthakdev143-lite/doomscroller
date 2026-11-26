@@ -235,12 +235,13 @@ def recover_interrupted_long_jobs() -> int:
     return recovered
 
 
-def run_next_long_job(*, now: Optional[datetime] = None) -> Optional[dict]:
-    """Claim and build the oldest queued LongJob under the shared CPU RENDER_LOCK."""
+def run_next_long_job(*, now: Optional[datetime] = None, job_id: Optional[str] = None) -> Optional[dict]:
+    """Claim and build the oldest queued LongJob (or a requested queued job) under the shared CPU RENDER_LOCK."""
     from app.clipper import job as clip_job
     from app.clipper.media import Interrupted
 
     global _active_long_job_id
+    requested_job_id = (job_id or "").strip() or None
     if not clip_job.RENDER_LOCK.acquire(blocking=False):
         return {"busy": True}
     now = now or datetime.now(timezone.utc)
@@ -248,9 +249,10 @@ def run_next_long_job(*, now: Optional[datetime] = None) -> Optional[dict]:
     try:
         _recover_orphaned_locked()
         with session_scope() as db:
-            job = db.execute(
-                select(LongJob).where(LongJob.status == "queued").order_by(LongJob.created_at, LongJob.id).limit(1)
-            ).scalar_one_or_none()
+            stmt = select(LongJob).where(LongJob.status == "queued")
+            if requested_job_id is not None:
+                stmt = stmt.where(LongJob.id == requested_job_id)
+            job = db.execute(stmt.order_by(LongJob.created_at, LongJob.id).limit(1)).scalar_one_or_none()
             if job is None:
                 return None
             job.status = "running"

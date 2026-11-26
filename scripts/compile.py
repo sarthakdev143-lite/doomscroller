@@ -62,7 +62,13 @@ def main(argv: list[str] | None = None) -> int:
         except (LookupError, ValueError) as exc:
             return _fail(str(exc), as_json=args.as_json)
         if args.run_now:
-            res = long_job.run_next_long_job() or res
+            out = long_job.run_next_long_job(job_id=res["id"]) or {
+                "ok": False,
+                "job_id": res["id"],
+                "error": "worker returned None",
+            }
+            print(json.dumps(out, indent=2) if args.as_json else f"Retried {args.retry}: {out}")
+            return 0 if out.get("ok") else 1
         print(json.dumps(res, indent=2) if args.as_json else f"Retried {args.retry}: {res}")
         return 0
 
@@ -82,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
     except (LookupError, ValueError) as exc:
         return _fail(str(exc), as_json=args.as_json)
     if args.run_now:
-        out = long_job.run_next_long_job() or {"ok": False, "job_id": job_id, "error": "worker returned None"}
+        out = long_job.run_next_long_job(job_id=job_id) or {"ok": False, "job_id": job_id, "error": "worker returned None"}
         if args.as_json:
             print(json.dumps(out, indent=2))
         else:

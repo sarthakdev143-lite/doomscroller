@@ -520,3 +520,36 @@ def test_analytics_pull_job_skips_non_dict_and_none_counters_without_crashing(mo
         assert scores["bad"] == 10.0
         assert scores["none"] == 10.0
         assert scores["good"] == 11.0
+
+
+def test_analytics_pull_job_clamps_negative_counts_to_zero(monkeypatch):
+    from datetime import datetime, timezone
+    from sqlalchemy import delete, select
+    from app.db import init_db, session_scope
+    from app.models import ClipJob, Creator, LongJob, Video, VideoStatus
+    import app.publishers.youtube_publisher as yt_pub_mod
+
+    init_db()
+    with session_scope() as db:
+        for tbl in (LongJob, ClipJob, Creator, Video):
+            db.execute(delete(tbl))
+        now = datetime(2026, 11, 20, 12, 0, tzinfo=timezone.utc)
+        db.add(
+            Video(
+                source="youtube", source_id="neg_1", source_url="https://youtu.be/neg_1",
+                title="Neg", author="@neg", status=VideoStatus.PUBLISHED,
+                youtube_video_id="yt_neg", published_at=now, views=5, likes=1, comments=0,
+            )
+        )
+
+    monkeypatch.setattr(
+        yt_pub_mod.YouTubePublisher,
+        "fetch_stats",
+        lambda self, ids: {"yt_neg": {"viewCount": -10, "likeCount": -2, "commentCount": -1}},
+    )
+    assert scheduler.analytics_pull_job() == {"updated": 1}
+
+    with session_scope() as db:
+        v = db.execute(select(Video).where(Video.youtube_video_id == "yt_neg")).scalar_one()
+        assert (v.views, v.likes, v.comments) == (0, 0, 0)
+

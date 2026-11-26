@@ -43,7 +43,7 @@ def applied(recipe: dict[str, str]) -> Iterator[None]:
         # Inside the lock, or these would read another render's temporary values.
         wanted: dict[str, object] = {}
         pace = recipe.get("pace")
-        if pace in PACES:
+        if isinstance(pace, str) and pace in PACES:
             speed, target = PACES[pace]
             wanted["clip_speed"] = speed
             wanted["clip_edit_target_sec"] = target

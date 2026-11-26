@@ -40,7 +40,10 @@ class Model:
     def __init__(self, observations: Sequence[Observation]) -> None:
         self.observations = [
             o for o in observations
-            if isinstance(o.reward, (int, float)) and isinstance(o.day, (int, float))
+            if o is not None
+            and isinstance(getattr(o, "arms", None), dict)
+            and isinstance(o.reward, (int, float)) and not isinstance(o.reward, bool)
+            and isinstance(o.day, (int, float)) and not isinstance(o.day, bool)
             and math.isfinite(o.reward) and math.isfinite(o.day)
         ]
         self.counts: dict[str, dict[str, int]] = {}
@@ -133,4 +136,6 @@ class Draw:
         return float(np.random.default_rng(seed).normal(0.0, _ARM_PRIOR_VARIANCE**0.5))
 
     def score(self, arms: dict[str, str], factors: Iterable[str]) -> float:
+        if not isinstance(arms, dict):
+            return 0.0
         return sum(self.arm(f, arms[f]) for f in factors if f in arms)

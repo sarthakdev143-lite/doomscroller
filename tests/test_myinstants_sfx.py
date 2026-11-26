@@ -240,3 +240,87 @@ def test_longform_planner_and_render_viral_polish_smoke(tmp_path, monkeypatch):
     assert "volume=0.045,lowpass=f=2400" in fc
     assert "amix=inputs=3:" in fc
     assert "alimiter=limit=0.84:attack=2:release=40:level=0:latency=1,aformat=channel_layouts=stereo" in fc
+
+
+def test_fetch_sfx_limits_session_errors_and_secret_scrubbing(tmp_path, monkeypatch, capsys):
+    from app.clipper import trending_sfx
+
+    canary_fs = "fs_CANARY_SFX_W21"
+    canary_proxy = "http://user:PROXY_CANARY_W21@10.0.0.1:8080"
+    monkeypatch.setattr(settings, "freesound_api_key", canary_fs)
+    monkeypatch.setattr(settings, "proxy_url", canary_proxy)
+    monkeypatch.setattr(settings, "clip_trending_sfx", True)
+
+    # 1. Unified 1..50 + bool validation (even without API key for freesound)
+    monkeypatch.setattr(settings, "freesound_api_key", "")
+    for bad in (0, -3, 51, True, False):
+        with pytest.raises(ValueError, match="limit must be 1..50"):
+            fetch_sfx.fetch_packs(bad, [], source="freesound")
+        with pytest.raises(ValueError, match="limit must be 1..50"):
+            fetch_sfx.fetch_packs(bad, [], source="myinstants")
+    with pytest.raises(ValueError, match="limit must be 1..50"):
+        myinstants.fetch_all(limit=True)
+
+    # 2. MyInstants RuntimeError scrubbed in fetch_packs and CLI main()
+    monkeypatch.setattr(
+        fetch_sfx.myinstants,
+        "fetch_all",
+        lambda **k: (_ for _ in ()).throw(RuntimeError(f"blocked via {canary_proxy}")),
+    )
+    rc_mi = fetch_sfx.main(["--source", "myinstants", "--json"])
+    assert rc_mi == 1
+    out_mi = capsys.readouterr().out
+    assert "PROXY_CANARY_W21" not in out_mi
+    assert "[REDACTED]" in out_mi
+
+    # 3. Freesound trending() raising SearchBlocked scrubs key and wraps in ValueError
+    monkeypatch.setattr(settings, "freesound_api_key", canary_fs)
+    monkeypatch.setattr(
+        trending_sfx,
+        "trending",
+        lambda limit=10: (_ for _ in ()).throw(trending_sfx.RateLimited(f"Token {canary_fs} 429")),
+    )
+    rc_fs = fetch_sfx.main(["--source", "freesound", "--json"])
+    assert rc_fs == 1
+    out_fs = capsys.readouterr().out
+    assert canary_fs not in out_fs
+    assert "[REDACTED]" in out_fs
+
+    # 4. SfxSession failure tracking across trending + searches: success resets failed_files,
+    #    repeated DownloadsFailed in searches sets session.stopped and halts further queries,
+    #    and duplicate sfx_id is skipped.
+    cand = trending_sfx.Candidate("fs-1", "https://freesound.org/1.mp3", "Boom")
+    monkeypatch.setattr(trending_sfx, "trending", lambda limit=10: [cand])
+    calls: list[str] = []
+
+    def fake_fetch(query, seconds, *, exclude=(), session=None):
+        calls.append(query)
+        if session is not None and session.stopped:
+            return None
+        if query == "":
+            return trending_sfx.SfxClip("fs-1", str(tmp_path / "one.mp3"))
+        if query in ("q1", "q2", "q3"):
+            raise trending_sfx.DownloadsFailed("dl err", 1)
+        if query == "q4":
+            return trending_sfx.SfxClip("fs-1", str(tmp_path / "one.mp3"))  # duplicate id -> skipped
+        if query == "q5":
+            raise trending_sfx.DownloadsFailed("dl err 4", 1)
+        return trending_sfx.SfxClip("fs-new", str(tmp_path / "should_not_run.mp3"))
+
+    orig_fetch = trending_sfx.fetch
+    monkeypatch.setattr(trending_sfx, "fetch", fake_fetch)
+    res = fetch_sfx._fetch_freesound(1, ["q1", "q2", "q3", "q4", "q5", "q6"])
+    assert res["downloaded"] == 1
+    assert res["files"] == ["one.mp3"]
+    assert "q6" not in calls
+
+    # Direct trending_sfx.fetch(session=...) stops early when stopped and marks stopped on SearchBlocked
+    monkeypatch.setattr(trending_sfx, "fetch", orig_fetch)
+    sess = trending_sfx.SfxSession(stopped=True)
+    assert trending_sfx.fetch("boom", 1.5, session=sess) is None
+    sess2 = trending_sfx.SfxSession()
+    monkeypatch.setattr(trending_sfx, "search", lambda q, l: (_ for _ in ()).throw(trending_sfx.BadKey("bad")))
+    with pytest.raises(trending_sfx.BadKey):
+        trending_sfx.fetch("boom", 1.5, session=sess2)
+    assert sess2.stopped is True
+

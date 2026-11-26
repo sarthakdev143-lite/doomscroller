@@ -162,7 +162,7 @@ def _record_analytics(insights, now: datetime, scope=None) -> int:
             try:
                 shares[yt_id] = insights.feed_share(yt_id, _first_report_day(published), end)
             except Exception as exc:
-                log.warning("growth: no feed share for %s: %s", yt_id, exc)
+                log.warning("growth: no feed share for %s: %s", yt_id, scrub_secrets(str(exc)))
     recorded = 0
     with session_scope() as db:
         for video_id, yt_id, _ in due:

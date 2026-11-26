@@ -18,6 +18,7 @@ from app.clipper.ingest import file_fingerprint, network_options
 from app.clipper.job import enqueue
 from app.config import settings
 from app.db import session_scope
+from app.logging_config import scrub_secrets
 from app.models import ClipJob, GrowthEvent, Video, VideoStatus
 
 from . import channels, learn, safety, watch
@@ -341,9 +342,10 @@ def next_source(unread: Optional[dict[str, str]] = None, channel=None) -> Option
                 if link not in blocked and can_take(history.get(link, ()), now):
                     return link, feed
         except Exception as exc:
-            log.warning("growth: could not read feed %s: %s", feed, exc)
+            err = scrub_secrets(str(exc))
+            log.warning("growth: could not read feed %s: %s", feed, err)
             if unread is not None:
-                unread[feed] = str(exc)
+                unread[feed] = err
     return None
 
 
@@ -368,14 +370,15 @@ def next_source_for(channel, unread: Optional[dict[str, str]] = None) -> Optiona
                 if link not in blocked and can_take(history.get(link, ()), now):
                     return link, feed
         except Exception as exc:
-            log.warning("growth: could not read feed %s: %s", feed, exc)
+            err = scrub_secrets(str(exc))
+            log.warning("growth: could not read feed %s: %s", feed, err)
             if unread is not None:
-                unread[feed] = str(exc)
+                unread[feed] = err
     return None
 
 
 def _brief(error: Optional[str]) -> str:
-    return " ".join((error or "no reason recorded").split())[:_ERROR_LENGTH]
+    return " ".join(scrub_secrets(error or "no reason recorded").split())[:_ERROR_LENGTH]
 
 
 def _failed_in_a_row(db, scope=None) -> list:

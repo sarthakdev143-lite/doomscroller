@@ -29,6 +29,7 @@ from sqlalchemy import func, select
 
 from app.config import settings
 from app.db import session_scope
+from app.logging_config import scrub_secrets
 from app.models import ClipJob, GrowthState, Video
 
 from . import channels, learn, safety
@@ -164,7 +165,7 @@ def _channel_id_via_ytdlp(feed_url: str) -> Optional[str]:
         found = info.get("channel_id") or ""
         return found if found.startswith("UC") else None
     except Exception as exc:
-        log.info("watch: could not resolve %s: %s", feed_url, exc)
+        log.info("watch: could not resolve %s: %s", feed_url, scrub_secrets(str(exc)))
         return None
 
 
@@ -250,7 +251,7 @@ def _probe(link: str) -> Optional[dict]:
         with YoutubeDL(options) as ydl:
             info = ydl.extract_info(link, download=False, process=False) or {}
     except Exception as exc:
-        log.info("watch: could not look at %s: %s", link, exc)
+        log.info("watch: could not look at %s: %s", link, scrub_secrets(str(exc)))
         return {"unavailable": True} if _is_permanently_unavailable(str(exc)) else None
     live = info.get("live_status") or ("is_live" if info.get("is_live") else "not_live")
     raw_dur = info.get("duration")
@@ -396,5 +397,5 @@ def watch_job(now: Optional[datetime] = None) -> dict:
             try:
                 queued += len(_watch_feed(channel, feed_url, now, client=client))
             except Exception as exc:  # one bad feed must not stop the rest
-                log.warning("watch: %s failed: %s", feed_url, exc)
+                log.warning("watch: %s failed: %s", feed_url, scrub_secrets(str(exc)))
     return {"feeds": len(feeds), "queued": queued}
