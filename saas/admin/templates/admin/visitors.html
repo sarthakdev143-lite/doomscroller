@@ -1,0 +1,66 @@
+{% extends "admin/base.html" %}
+{% import "admin/_ui.html" as ui %}
+{% block title %}Visitors{% endblock %}
+{% block heading %}Visitors <span class="adm-count">{{ h.num(total) }}</span>{% endblock %}
+{% block tools %}{{ ui.range_picker(range, qs) }}{% endblock %}
+{% block content %}
+<form class="adm-filters" method="get" action="/admin/visitors">
+  <input type="hidden" name="range" value="{{ range }}">
+  <label class="adm-field adm-field-grow"><span>Search</span>
+    <input type="search" name="q" value="{{ f.q }}" placeholder="email, visitor id, IP or fingerprint"></label>
+  <label class="adm-field"><span>Country</span>
+    <select name="country"><option value="">Any</option>
+      {% for c in facets.countries %}<option value="{{ c }}" {{ 'selected' if f.country == c }}>{{ h.flag(c) }} {{ c }}</option>{% endfor %}
+    </select></label>
+  <label class="adm-field"><span>Device</span>
+    <select name="device"><option value="">Any</option>
+      {% for d in ['desktop', 'mobile', 'tablet', 'bot', 'other'] %}<option {{ 'selected' if f.device == d }}>{{ d }}</option>{% endfor %}
+    </select></label>
+  <label class="adm-field"><span>Source</span>
+    <select name="source"><option value="">Any</option>
+      {% for s in facets.sources %}<option {{ 'selected' if f.source == s }}>{{ s }}</option>{% endfor %}
+    </select></label>
+  <label class="adm-field"><span>Intent</span>
+    <select name="label"><option value="">Any</option>
+      {% for l in ['ready to buy', 'comparing prices', 'developer / API', 'browsing', 'bot'] %}<option {{ 'selected' if f.label == l }}>{{ l }}</option>{% endfor %}
+    </select></label>
+  <label class="adm-field adm-field-sm"><span>Min score</span><input type="number" name="min_score" min="0" max="100" value="{{ f.min_score or '' }}"></label>
+  <label class="adm-field"><span>Consent</span>
+    <select name="consent"><option value="">Any</option>
+      {% for c in ['granted', 'implied', 'denied'] %}<option {{ 'selected' if f.consent == c }}>{{ c }}</option>{% endfor %}
+    </select></label>
+  <label class="adm-field"><span>Bots</span>
+    <select name="bots">{% for v, l in [('no', 'Hide'), ('all', 'Include'), ('only', 'Only bots')] %}<option value="{{ v }}" {{ 'selected' if f.bots == v }}>{{ l }}</option>{% endfor %}</select></label>
+  <label class="adm-field"><span>Sort</span>
+    <select name="sort"><option value="recent" {{ 'selected' if f.sort == 'recent' }}>Recent</option><option value="score" {{ 'selected' if f.sort == 'score' }}>Lead score</option></select></label>
+  <button class="adm-btn" type="submit">Filter</button>
+</form>
+
+<section class="adm-card adm-card-flush">
+  <div class="adm-table-wrap">
+    <table class="adm-table">
+      <thead><tr><th>Lead</th><th>Where</th><th>Device</th><th>First source</th><th class="num">Visits</th><th class="num">Pages</th><th class="num">Engaged</th><th>Probably looking for</th><th>Last seen</th></tr></thead>
+      <tbody>
+      {% for v in rows %}
+        <tr data-href="/admin/visitors/{{ v.id }}">
+          <td><a href="/admin/visitors/{{ v.id }}">{{ ui.score(v.lead_score) }}</a> {{ ui.label_chip(v.lead_label) }}
+            {% if v.waitlist_id %}<span class="chip chip-ok">waitlist</span>{% endif %}{% if v.user_id %}<span class="chip chip-ok">user</span>{% endif %}
+            {% for fl in (v.risk_flags or []) if fl != 'bot' %}<span class="chip chip-bad">{{ fl }}</span>{% endfor %}</td>
+          <td>{{ h.flag(v.country) }} {{ v.city or v.country or '—' }}</td>
+          <td>{{ v.device_type or '' }}<span class="adm-muted"> · {{ v.browser or '' }} / {{ v.os or '' }}</span></td>
+          <td>{{ v.first_source or 'direct' }}{% if v.first_campaign %}<span class="adm-muted"> · {{ v.first_campaign }}</span>{% endif %}</td>
+          <td class="num">{{ v.sessions }}</td>
+          <td class="num">{{ v.pageviews }}</td>
+          <td class="num">{{ h.dur(v.active_ms) }}</td>
+          <td>{% for i in (v.interests or [])[:2] %}<span class="chip chip-plain">{{ i.topic }}</span>{% endfor %}</td>
+          <td class="adm-muted">{{ h.ago(v.last_seen_at) }}</td>
+        </tr>
+      {% else %}
+        <tr class="adm-empty-row"><td colspan="9">No visitors match. Analytics only record people who allowed them.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{{ ui.pager(page, pages, qs) }}
+{% endblock %}

@@ -25,6 +25,7 @@ import httpx
 from app.config import settings
 from app.logging_config import scrub_secrets
 
+from . import metering
 from .media import Interrupted, run_ffmpeg
 from .transcribe import Transcript, Word
 
@@ -144,6 +145,7 @@ def transcribe(audio_path: str, duration: float, *, language_code: str = "hi-IN"
                 seg = os.path.join(tmp, f"seg_{index}.wav")
                 _segment(audio_path, seg, start, seg_len)
                 words += _words_from(_call(seg, language_code), start, seg_len)
+                metering.record("stt", provider="sarvam", model=_MODEL, audio_seconds=round(seg_len, 2))
                 start += seg_len
                 index += 1
     except Interrupted:

@@ -54,11 +54,68 @@ the owner's `.env` (it reads `SAAS_*` / `.env.saas`) and never writes `doomscrol
 ### Auth (core agent) — `saas.auth.deps`
 - `optional_user(request, db) -> User | None` — from the `sid` session cookie.
 - `require_user` → 401 JSON for `/api/*`, redirect to `/login?next=` for pages.
-- `require_admin` → user.role == "admin" **and** TOTP enrolled + verified this session; else 403.
+- `require_verified_user` → as `require_user`, plus 403 `email_unverified` until the email is verified.
+- `require_admin` → user.role == "admin" **and** TOTP enrolled + verified this session; else 403
+  (`mfa_required` when the admin has no TOTP or this session has not passed it).
+- `require_recent_auth` → 403 `reauth_required` unless the session re-authenticated in the last
+  `SAAS_REAUTH_MINUTES` (10). The page then calls `POST /auth/reauth` and retries.
 - `require_api_key(scopes)` → for `/api/v1/*` and `/mcp`; `Authorization: Bearer dsk_live_...`.
+  Returns `ApiPrincipal(user, key)`.
+- `current_session(request) -> AuthSession | None` (set by the deps on `request.state.auth_session`).
 - `User` (`saas.models.core.User`, table `users`): `id` (str), `email`, `email_verified_at`, `name`,
-  `role` ("user"|"admin"), `status` ("active"|"suspended"|"banned"), `plan_slug`, `created_at`,
-  `signup_ip`, `signup_fingerprint`, `signup_country`, `visitor_id`, `referral_code`, `referred_by`.
+  `role` ("user"|"admin"), `status` ("active"|"suspended"|"banned"|"deleted"), `plan_slug`, `created_at`,
+  `signup_ip`, `signup_fingerprint`, `signup_country`, `visitor_id`, `referral_code`, `referred_by`,
+  `billing_hold` (bool: refund/chargeback; blocks new jobs), `flags` (JSON dict, admin-visible notes),
+  `signup_risk` (JSON: the `risk.assess_signup` verdict stored at signup).
+- Core tables (all prefixed so no agent collides): `users`, `auth_sessions`, `auth_email_tokens`,
+  `auth_totp`, `auth_recovery_codes`, `auth_identities` (Google), `auth_oauth_states`,
+  `auth_mfa_challenges`, `api_keys`.
+- Errors from every core route use the envelope `{"error", "message"}`; the core routers carry a route
+  class that also turns 422s into `{"error": "invalid_request", "message", "fields": [...]}`.
+
+**Auth endpoints** (JSON bodies; when a `sid` cookie is present every POST/PATCH/DELETE needs
+`X-CSRF-Token`, per the security middleware). Identity-creating forms also send `fp`, `ts`, `website`,
+`cf_turnstile_response`.
+
+| Method & path | Body / query | Response |
+|---|---|---|
+| `POST /auth/signup` | `{email, password, name?, invite?, ref?, fp, ts, website, cf_turnstile_response?}` | 201 `{ok, user, verify_required: true}` + `sid` cookie. `launch_mode=waitlist` needs `invite` (403 `invite_required`). 400 `weak_password` / `breached_password` with `message`. Duplicate email → same 201 shape, no cookie, and an email to the owner (no enumeration). |
+| `POST /auth/login` | `{email, password, fp, ts, website, cf_turnstile_response?}` | `{ok: true, user}` + `sid`, or `{ok: false, mfa_required: true, mfa_token}` when TOTP is on. 401 `invalid_credentials` (same for unknown email). 429 `rate_limited`. |
+| `POST /auth/login/mfa` | `{mfa_token, code}` (6-digit TOTP or a recovery code) | `{ok: true, user}` + `sid`. 401 `invalid_code`. |
+| `POST /auth/logout` | – | `{ok: true}`, cookie cleared |
+| `GET /auth/verify/{token}` | – | 303 → `/verify-email?status=ok|invalid` |
+| `POST /auth/verify/resend` | – (signed in) | `{ok: true}` |
+| `POST /auth/magic` | `{email, next?, fp, ts, website, cf_turnstile_response?}` | always `{ok: true}` |
+| `GET /auth/magic/{token}` | – | small confirm page with a POST button (mail scanners prefetch GETs) |
+| `POST /auth/magic/{token}` | form post | 303 → `next` or `/app`; with TOTP → 303 `/login?mfa=<mfa_token>` (login page then posts `/auth/login/mfa`) |
+| `POST /auth/forgot` | `{email, fp, ts, website, cf_turnstile_response?}` | always `{ok: true}` |
+| `POST /auth/reset` | `{token, password}` | `{ok: true}`; every session revoked, user signs in again |
+| `GET /auth/google/start?next=/app` | – | 303 → Google (404 `google_disabled` when unconfigured) |
+| `GET /auth/google/callback` | Google's query | 303 → `next`, `/login?mfa=...`, or `/login?error=<code>` |
+| `POST /auth/reauth` | `{password}` or `{code}` | `{ok: true, until}` |
+| `POST /auth/mfa/verify` | `{code}` | step-up for the current session (admins) `{ok: true}` |
+
+**Account endpoints** (signed in):
+
+| Method & path | Body | Response |
+|---|---|---|
+| `GET /api/me` | – | `{id, email, email_verified, name, role, status, plan, balance, mfa_enabled, has_password, google_linked, referral_code, referral_url, created_at, free_credits_granted}` |
+| `PATCH /api/me` | `{name}` | user |
+| `POST /api/me/password` | `{current_password?, new_password}` | `{ok}`; other sessions revoked, this one rotated |
+| `GET /api/me/sessions` | – | `{sessions: [{id, current, ip, user_agent, created_at, last_seen_at}]}` |
+| `DELETE /api/me/sessions/{id}` | – | `{ok}` |
+| `POST /api/me/sessions/revoke-others` | – | `{ok, revoked}` |
+| `POST /api/me/mfa/totp/setup` | – (recent auth) | `{secret, otpauth_uri, qr_svg}` |
+| `POST /api/me/mfa/totp/confirm` | `{code}` | `{ok, recovery_codes: [10]}` (shown once) |
+| `POST /api/me/mfa/totp/disable` | `{code}` (recent auth; admins cannot) | `{ok}` |
+| `POST /api/me/mfa/recovery-codes` | – (recent auth) | `{recovery_codes}` |
+| `GET /api/me/export` | – | JSON attachment of everything we hold about the user |
+| `POST /api/me/delete` | `{confirm: "DELETE"}` (recent auth) | `{ok}`; files deleted, row anonymised, sessions/keys revoked |
+| `GET /api/keys` | – | `{keys: [{id, name, prefix, scopes, created_at, last_used_at, revoked}]}` |
+| `POST /api/keys` | `{name, scopes?}` (verified; plan must include `api`) | 201 `{id, key, prefix, scopes}`; `key` is shown once |
+| `DELETE /api/keys/{id}` | – | `{ok}` |
+
+API key scopes: `jobs:read`, `jobs:write`, `clips:read`, `clips:write`, `billing:read`. Default: all.
 
 ### Security (tracking agent) — `saas.security`
 - `limits.enforce(request, bucket: str, limit: int, window_s: int, key: str | None = None)` — raises
@@ -103,10 +160,33 @@ the owner's `.env` (it reads `SAAS_*` / `.env.saas`) and never writes `doomscrol
   per-currency prices and optional regional (PPP) price tiers.
 - `ledger.balance(db, user_id) -> int`; `ledger.grant/reserve/settle/release(...)` — append-only ledger,
   idempotency keys, never negative.
+  - `ledger.grant(db, user_id, amount, *, kind, idempotency_key, note=None, actor_id=None, payment_id=None,
+    bucket="other") -> CreditEntry | None` (None = that key was already applied). Admin adjustments use
+    `kind="admin_adjust"` with `actor_id`; a negative adjustment goes through `ledger.debit(...)`, which
+    clamps at the balance and records the shortfall in `meta`.
+  - `ledger.reserve(db, user_id, job_id, amount)` raises `ledger.InsufficientCredits`;
+    `ledger.settle(db, job_id, actual)` / `ledger.release(db, job_id)` share one finalisation key per
+    job, so a second settle, a settle after a release, or a release after a settle are no-ops.
+  - Functions flush, never commit: the caller commits, so a webhook's event row, order transition and
+    grant land in one transaction.
+- Tables: `billing_plans`, `billing_packs`, `billing_prices`, `billing_region_tiers`,
+  `billing_subscriptions`, `billing_payments`, `billing_webhook_events`, `credit_accounts`,
+  `credit_ledger`, `billing_promo_codes`, `billing_promo_redemptions`, `billing_referrals`.
 - `GET /api/billing/catalog?country=` (public) → the catalog. `POST /api/billing/checkout
-  {kind: "plan"|"pack", slug, interval?: "month"|"year"}` → `{redirect_url}`.
-  `GET /api/billing/ledger`, `GET /api/billing/subscription`, `POST /api/billing/promo {code}`.
+  {kind: "plan"|"pack", slug, interval?: "month"|"year", promo?}` → `{redirect_url, payment_id}`.
+  The price tier is chosen from the server-side country (Cloudflare header / GeoIP), never from
+  `?country=`, which only changes what the catalog displays.
+  `GET /api/billing/ledger?limit=&before=` → `{balance, entries: [{id, kind, amount, balance_after,
+  note, job_id, created_at}], next}`, `GET /api/billing/subscription` → `{subscription|null}`,
+  `POST /api/billing/subscription/cancel` → `{ok}` (cancels at period end),
+  `POST /api/billing/promo {code}` → `{ok, credits_granted?, percent_off?}`,
+  `GET /api/billing/payments` → `{payments: [...]}`, `GET /api/billing/referrals` → `{code, url, rewarded, pending}`.
+  `GET /billing/return?payment_id=` → 303 `/app/billing?status=paid|pending|failed`.
+  Dev only (`SAAS_ENV=dev`, 404 in prod): `GET /billing/dev/complete/{payment_id}?sig=` credits instantly.
   Webhooks: `POST /webhooks/stripe`, `POST /webhooks/razorpay` (signature-verified, idempotent).
+- Refund/chargeback rule: the credits that payment granted are taken back up to the current balance
+  (never below zero); any shortfall is recorded on the ledger entry, the user gets `billing_hold=true`
+  and a `flags["chargeback"|"refund"]` note, and new jobs are refused until an admin clears the hold.
 
 ### Jobs (core agent) — `saas.jobs`
 - `POST /api/jobs/estimate {url}` → `{ok, title, duration_s, thumbnail, credits, reason?}`.
@@ -114,12 +194,29 @@ the owner's `.env` (it reads `SAAS_*` / `.env.saas`) and never writes `doomscrol
 - `POST /api/jobs {source_url | upload_id, options}` with options
   `{clips: 1-20, language: "auto"|"en"|"hi", layout: "framed"|"fill", captions: bool, broll: bool,
   memes: bool, sfx: bool, music: bool, max_clip_seconds: 15-90}` → job. Reserves credits.
-- `GET /api/jobs`, `GET /api/jobs/{id}` → `{id, status, stage, progress (0-1), source, credits_reserved,
-  credits_charged, created_at, clips: [...], error}`; `POST /api/jobs/{id}/cancel`.
-- Clips: `GET /api/clips`, `GET/PATCH/DELETE /api/clips/{id}` (`title`, `description`, `hashtags`),
+- `GET /api/jobs?status=&limit=&before=`, `GET /api/jobs/{id}` → `{id, status, stage, progress (0-1),
+  source: {kind, url, title, duration_s, thumbnail}, options, credits_reserved, credits_charged,
+  created_at, started_at, finished_at, clips: [...], error: {code, message} | null}`;
+  `POST /api/jobs/{id}/cancel` → job.
+- Job creation errors: 402 `insufficient_credits`, 403 `email_unverified` / `billing_hold`,
+  429 `too_many_active_jobs` / `daily_limit`, 400 `source_not_allowed` / `source_too_long` / `invalid_options`.
+- Clip object: `{id, job_id, index, title, description, hashtags, duration_s, start_s, end_s, score,
+  language, created_at, video_url, download_url, thumbnail_url}`.
+- Clips: `GET /api/clips?job_id=&limit=&before=`, `GET/PATCH/DELETE /api/clips/{id}` (`title`, `description`, `hashtags`),
   `GET /api/clips/{id}/video` (inline, ranged), `GET /api/clips/{id}/download`, `.../thumbnail`.
+- Uploads: `POST /api/uploads` must be multipart with one file field `file`; the body is streamed and
+  aborted at `SAAS_MAX_UPLOAD_MB` (413 `upload_too_large`). **The security middleware's request-size
+  cap must exempt `POST /api/uploads`** (this route enforces its own, larger cap while streaming).
+  `DELETE /api/uploads/{id}` → `{ok}`.
 - `GET/POST/DELETE /api/keys` (API keys; secret shown once).
 - Public API: `/api/v1/*` mirrors jobs/clips/balance with Bearer keys. MCP at `/mcp` (streamable HTTP).
+  - `GET /api/v1/balance` → `{balance, plan}`; `POST /api/v1/estimate {url}`; `POST /api/v1/jobs`;
+    `GET /api/v1/jobs`, `GET /api/v1/jobs/{id}`, `POST /api/v1/jobs/{id}/cancel`; `GET /api/v1/clips`,
+    `GET /api/v1/clips/{id}`, `GET /api/v1/clips/{id}/links` → `{video_url, download_url,
+    thumbnail_url, expires_at}` (signed, no key needed, `SAAS_SIGNED_URL_TTL_S`).
+  - Signed file URLs: `GET /files/clips/{id}/{kind}?exp=&sig=` (`kind` = video|download|thumbnail).
+  - Per-key rate limit `SAAS_API_RATE_PER_MINUTE`; 401 `invalid_api_key`, 403 `insufficient_scope` /
+    `plan_required`.
 - Status machine: `queued → fetching → transcribing → selecting → rendering → done | failed | canceled`.
 - Engine: `saas.jobs.engine.Engine` protocol; `MockEngine` for tests, `ClipperEngine` wraps
   `app.clipper` in a per-job working directory and wraps the run in `app.clipper.metering.metered()`,

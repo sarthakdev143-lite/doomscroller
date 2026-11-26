@@ -26,6 +26,7 @@ import httpx
 from app.config import settings
 from app.logging_config import scrub_secrets as _scrub_secrets
 
+from . import metering
 from .media import MediaError, probe, read_ffmpeg
 
 log = logging.getLogger(__name__)
@@ -50,6 +51,8 @@ _TIMEOUT = httpx.Timeout(60, connect=15)
 _MAX_FAILED_DOWNLOADS = 2
 # A hung CDN costs a minute per attempt, so give up across overlays too.
 MAX_FAILED_FILES = 4
+# Words every reaction search shares; matching an owner file on them would match every file.
+_GENERIC_QUERY_WORDS = frozenset({"reaction", "reactions", "gif", "meme", "indian", "bollywood", "funny"})
 
 
 def scrub_secrets(text: object) -> str:
@@ -88,11 +91,28 @@ class DownloadsFailed(MemeError):
 
 @dataclass
 class MemeSession:
-    """What one job has learned about the meme library so far."""
+    """What one job has learned about the meme library so far.
+
+    ``used`` holds the identity keys of every meme this job placed, and ``recent`` the keys of memes
+    recent clips used (the persistent history, or a SaaS customer's ``recent_memes``). Neither is
+    offered again: a pool too small to avoid them means fewer memes, never a repeat.
+    """
 
     stopped: bool = False
     failed_files: int = 0
     used: set[str] = field(default_factory=set)
+    recent: set[str] = field(default_factory=set)
+    # Identity keys of memes placed, in order, for the caller to persist or return.
+    placed: list[str] = field(default_factory=list)
+
+    def avoid(self) -> set[str]:
+        return self.used | self.recent
+
+    def remember(self, clip: "MemeClip") -> list[str]:
+        keys = identity_keys(clip)
+        self.used.update(keys)
+        self.placed.append(canonical_id(clip.meme_id))
+        return keys
 
 
 @dataclass(frozen=True)
@@ -112,6 +132,83 @@ class MemeClip:
     path: str
     title: str = ""
     provider: str = TENOR
+
+
+def canonical_id(meme_id: object) -> str:
+    """One name per meme, whichever route found it.
+
+    A file the API cached and the same file offered again as a local pack item once went out twice
+    in one clip under two ids (``giphy-X`` and ``local-giphy-X``), so both collapse to ``giphy-X``.
+    """
+    mid = str(meme_id or "").strip()
+    if mid.startswith("local-") and mid[len("local-"):].startswith(_API_CACHE_PREFIXES):
+        return mid[len("local-"):]
+    return mid
+
+
+def content_key(path: object) -> str:
+    """The file's bytes, so a renamed copy of the same GIF is still the same meme. "" if unreadable."""
+    try:
+        digest = hashlib.sha1()
+        with open(str(path), "rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(chunk)
+        return f"sha1:{digest.hexdigest()[:20]}"
+    except OSError:
+        return ""
+
+
+def identity_keys(clip: "MemeClip") -> list[str]:
+    keys = [canonical_id(clip.meme_id)]
+    digest = content_key(clip.path)
+    if digest:
+        keys.append(digest)
+    return [k for k in keys if k]
+
+
+# How many recent memes (across clips and jobs) are never offered again.
+HISTORY_AVOID = 30
+_HISTORY_KEEP = 300
+
+
+def history_path() -> Path:
+    # Kept beside content/, not inside content/memes/: cleanup ages everything in memes/ by mtime.
+    return settings.content_path / "meme_history.json"
+
+
+def load_history(path: Optional[Path] = None, limit: int = HISTORY_AVOID) -> set[str]:
+    """Identity keys of the last ``limit`` memes any clip used. Empty if there is no history yet."""
+    try:
+        data = json.loads((path or history_path()).read_text(encoding="utf-8"))
+        entries = data.get("memes") if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        return set()
+    keys: set[str] = set()
+    for entry in (entries if isinstance(entries, list) else [])[-max(0, int(limit)):]:
+        if isinstance(entry, dict):
+            keys.update(str(k) for k in entry.get("keys", []) if k)
+    return keys
+
+
+def record_history(keys: Iterable[str], path: Optional[Path] = None) -> None:
+    """Append one placed meme's identity keys. Best effort: a lost write only weakens rotation."""
+    keys = [str(k) for k in keys if k]
+    if not keys:
+        return
+    target = path or history_path()
+    try:
+        try:
+            data = json.loads(target.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {}
+        entries = data.get("memes") if isinstance(data, dict) and isinstance(data.get("memes"), list) else []
+        entries.append({"keys": keys, "at": round(time.time())})
+        target.parent.mkdir(parents=True, exist_ok=True)
+        partial = target.with_name(f"{target.name}.{os.getpid()}.tmp")
+        partial.write_text(json.dumps({"memes": entries[-_HISTORY_KEEP:]}), encoding="utf-8")
+        os.replace(partial, target)
+    except OSError as exc:
+        log.warning("memes: could not record history: %s", exc)
 
 
 def provider() -> str:
@@ -174,6 +271,7 @@ def _giphy_memes(data: object) -> list[Candidate]:
 def _request(url: str, params: dict) -> dict:
     """GET a meme library's JSON. Nothing raised from here may contain the key."""
     name = provider() or "the meme library"
+    metering.record("api", provider=str(name).lower(), requests=1)
     try:
         response = httpx.get(url, params=params, timeout=_TIMEOUT)
     except UnicodeEncodeError:
@@ -308,9 +406,10 @@ def trending(limit: int = _RESULTS_PER_SEARCH) -> list[Candidate]:
 def _download(link: str, path: Path) -> None:
     """Fetch to a temporary name, so a dropped connection never leaves a bad file in the cache."""
     partial = path.with_name(f"{path.name}.part")
+    started = time.monotonic()
+    written = 0
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        written = 0
         with httpx.stream("GET", link, timeout=_TIMEOUT, follow_redirects=True) as response:
             if response.status_code != 200:
                 raise MemeError(f"download returned {response.status_code}")
@@ -326,6 +425,7 @@ def _download(link: str, path: Path) -> None:
     except (httpx.HTTPError, httpx.InvalidURL, OSError) as exc:
         raise MemeError(f"download failed: {scrub_secrets(exc)}") from None
     finally:
+        metering.record("download", source="meme", bytes=written, seconds=round(time.monotonic() - started, 2))
         try:
             partial.unlink()
         except OSError:
@@ -417,17 +517,27 @@ def fetch(query: str, seconds: float, *, exclude: Iterable[str] = (),
     """
     if not math.isfinite(seconds) or seconds <= 0:
         return None
+    # Identity keys (canonical ids and content hashes): a meme used recently, or already in this
+    # clip, is skipped whichever id or file name it comes back under.
     skip = set(exclude)
-    local_items = [c for c in local_pack(language) if c.meme_id not in skip]
+
+    def fresh(candidate: Candidate) -> bool:
+        return candidate.meme_id not in skip and canonical_id(candidate.meme_id) not in skip
+
+    def unseen(path: Path) -> bool:
+        digest = content_key(path)
+        return not digest or digest not in skip
+
+    local_items = [c for c in local_pack(language) if fresh(c)]
     if query and local_items:
-        qwords = [w for w in re.split(r"[^a-z0-9]+", query.lower()) if w]
-        matched = [c for c in local_items if any(w in c.title.lower() for w in qwords)]
-        local_items = matched or local_items
+        # Only owner files whose names fit this reaction: an unrelated one would be worse than none.
+        qwords = [w for w in re.split(r"[^a-z0-9]+", query.lower()) if w and w not in _GENERIC_QUERY_WORDS]
+        local_items = [c for c in local_items if any(w in c.title.lower() for w in qwords)]
     if choose is not None and local_items:
         local_items = choose(local_items)
     for cand in local_items:
         p = Path(cand.link)
-        if p.is_file() and _playable(p, seconds):
+        if p.is_file() and unseen(p) and _playable(p, seconds):
             return MemeClip(meme_id=cand.meme_id, path=str(p), title=cand.title, provider=LOCAL)
     try:
         found = search(query) if query else trending()
@@ -435,7 +545,7 @@ def fetch(query: str, seconds: float, *, exclude: Iterable[str] = (),
         raise
     except MemeError:
         return None
-    usable = [c for c in found if c.meme_id not in skip and c.link]
+    usable = [c for c in found if fresh(c) and c.link]
     if choose is not None and usable:
         usable = choose(usable)
     failed = 0
@@ -450,6 +560,8 @@ def fetch(query: str, seconds: float, *, exclude: Iterable[str] = (),
             continue
         if path is None:
             failed += 1
+            continue
+        if not unseen(path):
             continue
         return MemeClip(meme_id=candidate.meme_id, path=str(path),
                         title=candidate.title, provider=candidate.provider)

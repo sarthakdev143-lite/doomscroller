@@ -1,4 +1,4 @@
-﻿"""Per-job cost metering: what one clip job actually consumed, so price is set from measurements.
+"""Per-job cost metering: what one clip job actually consumed, so price is set from measurements.
 
 The clipper records usage at the point it is spent (an STT call, an LLM call, an ffmpeg render, a
 download); whoever runs a job wraps it in `metered()` and reads `meter.summary()` afterwards. With no

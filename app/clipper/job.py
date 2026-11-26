@@ -21,13 +21,14 @@ from app.models import ClipJob, Video, VideoStatus
 
 from app.growth import learn, recipes
 
-from . import ai, audio_qa, music, sfx, subtitles
-from .broll import StockSession, credit_line
-from .edit import attach_memes, attach_stock, build_clean_vlog_edit, build_edit, clean_vlog_meme_times, first_sentence_text, opening_line
-from .memes import MemeSession, credit_line as meme_credit_line
+from . import ai, audio_qa, memes, music, sfx, subtitles
+from .broll import StockSession
+from .edit import attach_memes, attach_stock, build_clean_vlog_edit, build_edit, first_sentence_text, opening_line
+from .memes import MemeSession
 from .ingest import IngestError, SourceVideo, fetch, file_fingerprint, is_url
 from .media import Interrupted, MediaError, probe, require_tools
-from .moments import Moment, clashes, fallback_hook, pick_speech, pick_visual
+from .moments import Moment, clashes, pick_speech, pick_visual
+from .produce import Steps, produce_clip
 from .render import HEIGHT, WIDTH, render_moment
 from .signals import analyse
 from .transcribe import TranscribeError, transcribe
@@ -251,22 +252,12 @@ def _store_audio_qa(video_id: str, path: str) -> None:
         log.warning("clipper: could not store audio QA for %s: %s", video_id, exc)
 
 
-def _call_render(*args, **kwargs):
-    try:
-        return render_moment(*args, **kwargs)
-    except TypeError as exc:
-        if "language" in str(exc) and "language" in kwargs:
-            kwargs.pop("language", None)
-            return render_moment(*args, **kwargs)
-        raise
-
-
 def _trending_stings(language: str) -> dict:
     if not settings.clip_sfx:
         return {}
     try:
         return sfx.trending(language=language)
-    except TypeError:
+    except TypeError:  # an older trending() without the language argument
         return sfx.trending()
 
 
@@ -417,10 +408,10 @@ def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
         out_dir = settings.content_path / "clips" / f"{src.source}_{src.source_id}"
         # Only a managed channel names its own handle; the legacy call is left exactly as it was.
         brand = _channel_brand(channel_id)
-        branding = {} if brand is None else {"brand": brand}
         failed = 0
         stock = StockSession()
-        mstock = MemeSession()
+        # Memes recent clips used are never offered again, so consecutive videos do not share a GIF.
+        mstock = MemeSession(recent=memes.load_history())
         for number, moment in enumerate(fresh, 1):
             status, row_id, saved = _existing_row(src, moment)
             if status in (VideoStatus.REJECTED, VideoStatus.PUBLISHED):
@@ -444,99 +435,23 @@ def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
                 recipe["broll"] = "off"
             track = music.pick(_clip_id(src, moment))
             try:
-                if moment.sound:
-                    sting_path = stings.get(moment.sound)
-                    sound = sfx.sting(str(sting_path)) if sting_path else None
-                    sting_sec = (len(sound) / sfx.RATE) if sound is not None else sfx._STING_MAX_SEC
-                    max_edit_sec = min(31.5, max(15.0, 31.9 - (sting_sec + 0.8)))
-                else:
-                    max_edit_sec = 31.5
+                if moment.sound in stings:
+                    log.info("clipper: clip %d of %s ends on the sound %s", number, label, moment.sound)
                 with recipes.applied(recipe):
-                    if moment.kind == "speech" and timed:
-                        edit = build_edit(moment, words, title=src.title)
-                    elif moment.kind == "speech" and not timed:
-                        edit = build_clean_vlog_edit(
-                            moment, src.path, speed=min(1.12, settings.clip_speed),
-                            max_sec=min(31.0, max_edit_sec),
-                        )
-                    else:
-                        edit = None
-                    if edit and edit.duration > max_edit_sec:
-                        from .timeline import on_grid
-
-                        budget_src = max_edit_sec * edit._effective_speed
-                        trimmed: list[tuple[float, float]] = []
-                        used_src = 0.0
-                        for seg_a, seg_b in edit.segments:
-                            seg_len = seg_b - seg_a
-                            if used_src + seg_len <= budget_src:
-                                trimmed.append((seg_a, seg_b))
-                                used_src += seg_len
-                            else:
-                                rem = budget_src - used_src
-                                if rem > 0.2:
-                                    trimmed.append((seg_a, on_grid(seg_a + rem)))
-                                break
-                        if trimmed:
-                            edit.segments = trimmed
-                            edit.beats = [b for b in edit.beats if edit.to_output(b.at) is not None]
-                    if edit and timed:
-                        for message in attach_stock(edit, stock):
-                            if message not in warnings:
-                                warn(message)
-                    if edit:
-                        fallback_times = () if timed else clean_vlog_meme_times(edit)
-                        try:
-                            meme_msgs = attach_memes(edit, mstock, language=language, fallback_times=fallback_times)
-                        except TypeError:
-                            meme_msgs = attach_memes(edit, mstock)
-                        for message in meme_msgs:
-                            if message not in warnings:
-                                warn(message)
-                    try:
-                        from app.transformers.ffmpeg_transformer import is_renderable
-
-                        if (not moment.hook or not is_renderable(moment.hook)) and moment.title:
-                            moment.hook = fallback_hook(moment.title)
-                        extras = dict(branding)
-                        if language:
-                            extras["language"] = language
-                        if moment.sound in stings:
-                            extras["sting"] = str(stings[moment.sound])
-                            log.info("clipper: clip %d of %s ends on the sound %s", number, label, moment.sound)
-                        if edit is not None and not edit.words and not edit.opening_words and moment.kind == "speech" and words:
-                            edit.opening_words = [w for w in words if w.end > moment.start and w.start < moment.end]
-                        plan = _call_render(src.path, info, signals, moment, words if timed else [], out_path,
-                                            edit=edit, creator=src.author_name or src.author, music=track,
-                                            captions=timed, source_captioned=burned_in, **extras)
-                    except MediaError as exc:
-                        if not (edit and (edit.cutaways or edit.meme_overlays)):
-                            raise
-                        # B-roll and memes are optional, so shots that will not
-                        # render cost only themselves.
-                        lost = [n for n, items in (("B-roll", edit.cutaways),
-                                                  ("meme overlays", edit.meme_overlays)) if items]
-                        warn(f"clip {number} lost its {' and '.join(lost)}, which would not render: {exc}")
-                        edit.cutaways = []
-                        edit.meme_overlays = []
-                        plan = _call_render(src.path, info, signals, moment, words if timed else [], out_path, edit=edit,
-                                            creator=src.author_name or src.author, music=track,
-                                            captions=timed, source_captioned=burned_in, **extras)
+                    made = produce_clip(src, info, signals, moment, words, out_path, timed=timed,
+                                        language=language, burned_in=burned_in, stings=stings,
+                                        stock=stock, mstock=mstock, track=track, brand=brand,
+                                        warn=lambda message: None if message in warnings else warn(message),
+                                        steps=Steps(build_edit=build_edit, build_clean_vlog_edit=build_clean_vlog_edit,
+                                                    attach_stock=attach_stock, attach_memes=attach_memes,
+                                                    render_moment=render_moment))
+                plan, edit, credit = made.plan, made.edit, made.credit
+                for keys in made.meme_keys:
+                    memes.record_history(keys)
                 if recipe:
                     # Record what the clip got: no key or no matches means no B-roll, whatever was asked for.
                     recipe["broll"] = "on" if edit and edit.cutaways else "off"
                     recipe["sfx"] = "on" if plan.has_sfx else "off"
-                if not plan.tail:
-                    moment.sound = ""  # the same goes for a meme sound that did not load
-                credit = ""
-                if edit and edit.cutaways:
-                    credit = credit_line((c.clip.author for c in edit.cutaways), edit.cutaways[0].clip.provider)
-                if edit and edit.meme_overlays:
-                    overlays = [c.clip for c in edit.meme_overlays if c.clip is not None]
-                    if overlays:
-                        credit = f"{credit} {meme_credit_line([c.title for c in overlays], overlays[0].provider)}".strip()
-                if plan.music:
-                    credit = f"{credit} {music.credit(track)}".strip()
                 spoken = (
                     (opening_line(moment, words, edit) or first_sentence_text(moment, words))
                     if moment.kind == "speech"

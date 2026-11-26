@@ -227,6 +227,19 @@ class Settings(BaseSettings):
     clip_auto_queue: bool = False
     clip_font: str = ""
     clip_ai_timeout_sec: int = 240
+    # Where the clipper's AI calls go. "cli" (default) uses the local OpenCode CLI with the Claude CLI as the
+    # fallback, on whatever accounts they are logged in to. "api" calls the Anthropic Messages API over HTTPS
+    # with ANTHROPIC_API_KEY, for hosts with no logged-in CLI (the SaaS); usage is metered per call.
+    clip_ai_backend: str = "cli"
+    anthropic_api_key: str = ""
+    clip_ai_api_model: str = "claude-opus-5-5"
+    # Must accept images (stock-shot judging, frame strips). Empty means clip_ai_api_model.
+    clip_ai_api_vision_model: str = ""
+    # low | medium | high | xhigh | max; empty leaves the model's own default.
+    clip_ai_api_effort: str = ""
+    # Server-side refusal fallback (beta): a declined request is re-run on a fallback model in the same call.
+    clip_ai_api_fallbacks: bool = True
+    clip_ai_api_base_url: str = "https://api.anthropic.com"
     deepgram_api_key: str = ""
     deepgram_model: str = "nova-3"
     # Hindi speech-to-text (Sarvam), wired in app/clipper/sarvam.py. Empty = Hindi speech clips take the
@@ -490,7 +503,7 @@ class Settings(BaseSettings):
         "transform_variation", "caption_enabled", "end_card_enabled",
         "upscale_sharpen", "clip_auto_queue", "clip_sfx", "clip_broll", "clip_music", "clip_memes",
         "clip_memes_allow_stills", "clip_music_synth_fallback", "clip_loop_ending",
-        "clip_trending_sfx",
+        "clip_trending_sfx", "clip_ai_api_fallbacks",
         "growth_enabled", "youtube_made_for_kids", "youtube_auto_comment", "longform_voiceover",
         "longform_auto_supply", "claude_fallback", "growth_require_approval", "earshot_qa", mode="before",
     )

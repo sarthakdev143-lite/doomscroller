@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}You’re on the list | {{ brand_name }}{% endblock %}
+{% block description %}Your place on the {{ brand_name }} waitlist, and your link to move up.{% endblock %}
+{% block robots %}<meta name="robots" content="noindex">{% endblock %}
+{% block scripts %}<script type="module" src="{{ asset('/static/js/thanks.js') }}"></script>{% endblock %}
+
+{% block content %}
+<section class="section thanks" data-track-section="waitlist-thanks" aria-labelledby="thanks-title"
+         data-thanks data-code="{{ code }}" data-brand="{{ brand_name }}">
+  <div class="wrap grid">
+    <p class="rubric">Waitlist</p>
+    <div class="story">
+
+      <div data-thanks-state="loading" aria-busy="true">
+        <span class="skeleton skeleton--title"></span>
+        <span class="skeleton skeleton--text"></span>
+        <span class="skeleton skeleton--text thanks__skel-short"></span>
+      </div>
+
+      <div data-thanks-state="joined" hidden>
+        <p class="thanks__already" data-thanks-already hidden>You were already on the list. Here is where you stand.</p>
+        <h1 id="thanks-title" class="thanks__title" data-thanks-heading>You’re on the list.</h1>
+        <p class="thanks__position" data-thanks-position hidden>
+          <span class="thanks__position-label">Your place in line</span>
+          <span class="thanks__number tabular" data-position></span>
+        </p>
+        <p class="lede">Check your inbox and confirm your email to keep your place. Invites go out in batches, from the top of the list.</p>
+
+        <div class="thanks__share" data-thanks-share hidden>
+          <h2 class="h3">Move up the list</h2>
+          <p class="muted">Every person who joins with your link moves you up.</p>
+          <div class="copy-field">
+            <label class="visually-hidden" for="referral-url">Your referral link</label>
+            <input id="referral-url" type="text" readonly value="" data-referral-url>
+            <button class="btn" type="button" data-copy="#referral-url" data-track="referral-copy">Copy link</button>
+          </div>
+          <div class="cluster thanks__networks">
+            <button class="btn btn--ghost btn--sm" type="button" data-native-share hidden data-track="referral-share-native">Share</button>
+            <a class="btn btn--ghost btn--sm" data-share="x" href="#" target="_blank" rel="noopener" data-track="referral-share-x">Post on X</a>
+            <a class="btn btn--ghost btn--sm" data-share="whatsapp" href="#" target="_blank" rel="noopener" data-track="referral-share-whatsapp">WhatsApp</a>
+            <a class="btn btn--ghost btn--sm" data-share="linkedin" href="#" target="_blank" rel="noopener" data-track="referral-share-linkedin">LinkedIn</a>
+            <a class="btn btn--ghost btn--sm" data-share="email" href="#" data-track="referral-share-email">Email</a>
+          </div>
+          <p class="small muted" data-referrals hidden></p>
+        </div>
+      </div>
+
+      <div data-thanks-state="empty" hidden>
+        <div class="empty">
+          <h1 class="empty__title">Nothing to show here yet.</h1>
+          <p>This page shows your place on the waitlist right after you join. If you joined before, your link is in the confirmation email we sent.</p>
+          <a class="btn btn--accent" href="/#join" data-track="thanks-empty-join">Join the waitlist</a>
+        </div>
+      </div>
+
+      <div data-thanks-state="error" hidden>
+        <div class="empty">
+          <h1 class="empty__title">We couldn’t load your place in line.</h1>
+          <p>You are still on the list. Refresh in a minute, or find your link in the confirmation email.</p>
+          <button class="btn" type="button" data-thanks-retry data-track="thanks-retry">Try again</button>
+        </div>
+      </div>
+
+      <p class="thanks__back"><a href="/" data-track="thanks-back-home">Back to the home page</a></p>
+    </div>
+  </div>
+</section>
+{% endblock %}

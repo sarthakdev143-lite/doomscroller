@@ -23,11 +23,12 @@ from app.config import settings
 from app.transformers.fonts import resolve_font
 
 from .captions import Layout, build_ass, font_family, framed_layout
+from . import metering
 from .edit import BEAT_SECONDS, CARD, EditPlan
 from .faces import face_centre, speaker_position
 from .media import MediaError, MediaInfo, probe, read_ffmpeg, run_ffmpeg
 from .moments import Moment
-from .sfx import IMPACT, POP, RATE, WHOOSH, Cue, build_track, sting as load_sting
+from .sfx import IMPACT, MEME_STING_GAIN, POP, RATE, WHOOSH, Cue, build_track, sting as load_sting
 from .signals import Signals
 from .timeline import FPS, Segment, keep_segments, on_grid, output_time, source_time, total_duration
 from .transcribe import Word
@@ -89,7 +90,15 @@ _PUSH_PER_SEC = 0.012
 _FACE_ANCHOR = 0.16
 _SHAKE_PX = 12
 _SHAKE_SEC = 0.25
-_FLASH_SEC = 0.07
+# There is no white flash on beats any more: a 60% white box over the whole frame on every beat read
+# as a random solid wash (owner, Nov 2026). A punch is the zoom change, the shake and the hit.
+# Two sounds closer than this would land as one muddy hit, so the weaker one is dropped.
+_CUE_GAP_SEC = 0.45
+_CUE_RANK = {WHOOSH: 0, POP: 1, IMPACT: 1}
+# Meme overlays: width on the canvas, and the gap kept above a framed picture.
+_MEME_WIDTH = 300
+_MEME_BAND_GAP = 90
+_MEME_FILL_Y = 230
 
 
 @dataclass
@@ -104,11 +113,10 @@ class ClipPlan:
     has_graphics: bool
     speed: float = 1.0
     shake_expr: str = "0"
-    flash_expr: str = ""
     anchor_y: float = 0.5
     has_sfx: bool = False
     broll: tuple[tuple[float, float, str, float], ...] = ()  # output time, seconds, path, offset
-    memes: tuple[tuple[float, float, str], ...] = ()  # output time, seconds, path (corner overlays)
+    memes: tuple[tuple[float, float, str, str], ...] = ()  # output time, seconds, path, sound
     picture_height: int = 0  # above zero, the whole picture sits centred over its own backdrop
     picture_crop_bottom: float = 0.0  # share of the picture's height cut from the bottom
     music: str = ""  # a track looped under the clip, ducked under speech
@@ -181,12 +189,12 @@ def _broll_shots(edit: EditPlan) -> tuple[tuple[float, float, str, float], ...]:
     return tuple(shots)
 
 
-def _meme_shots(edit: EditPlan) -> tuple[tuple[float, float, str], ...]:
+def _meme_shots(edit: EditPlan) -> tuple[tuple[float, float, str, str], ...]:
     shots = []
     for overlay in edit.meme_overlays:
         when = edit.to_output(overlay.at)
         if when is not None and overlay.clip is not None:
-            shots.append((when, overlay.seconds, overlay.clip.path))
+            shots.append((when, overlay.seconds, overlay.clip.path, overlay.sound or IMPACT))
     return tuple(shots)
 
 
@@ -265,33 +273,52 @@ def _edit_zoom_expression(points: Sequence[float], duration: float) -> str:
     return f"{_SNAP_ZOOM}*max(0,1-t/{_SNAP_SEC})+max(1,min(1.5,{'+'.join(terms)}))"
 
 
-def _edit_effects(edit: EditPlan) -> tuple[str, str]:
-    """Camera shake and a white flash where graphics land."""
-    shakes, flashes = [], []
+def _edit_shake(edit: EditPlan) -> str:
+    """A short camera shake on each punch and number. Nothing washes over the frame."""
+    shakes = []
     for beat in edit.beats:
         when = edit.to_output(beat.at)
-        if when is None:
-            continue
-        flashes.append(f"between(t,{when - _HALF_FRAME:.3f},{when + _FLASH_SEC:.3f})")
-        if beat.style != CARD:
+        if when is not None and beat.style != CARD:
             shakes.append(f"between(t,{when:.3f},{when + _SHAKE_SEC:.3f})")
-    shake = f"{_SHAKE_PX}*sin(t*75)*min(1,{'+'.join(shakes)})" if shakes else "0"
-    return shake, "+".join(flashes)
+    return f"{_SHAKE_PX}*sin(t*75)*min(1,{'+'.join(shakes)})" if shakes else "0"
 
 
-def sound_cues(edit: EditPlan, points: Sequence[float]) -> list[Cue]:
-    cues = [Cue(0.0, IMPACT)]
-    for index, when in enumerate(points[1:], 1):
-        if index % 2 == 0:
-            cues.append(Cue(max(0.0, when - 0.14), WHOOSH))
-    for beat in edit.beats:
-        when = edit.to_output(beat.at)
-        if when is not None:
-            cues.append(Cue(when, POP if beat.style == CARD else IMPACT))
-    for start, seconds, _path, _offset in _broll_shots(edit):
-        cues.append(Cue(max(0.0, start - 0.14), WHOOSH))
-        cues.append(Cue(max(0.0, start + seconds - 0.14), WHOOSH))
-    return cues
+def _destack(cues: Sequence[Cue]) -> list[Cue]:
+    """Keep the strongest sound wherever two would land together: a meme sound beats a hit beats a whoosh."""
+    def rank(cue: Cue) -> int:
+        return _CUE_RANK.get(cue.sound, 2)
+
+    kept: list[Cue] = []
+    for cue in sorted(cues, key=lambda c: (-rank(c), c.at)):
+        if all(abs(cue.at - other.at) >= _CUE_GAP_SEC for other in kept):
+            kept.append(cue)
+    return sorted(kept, key=lambda c: c.at)
+
+
+def sound_cues(edit: EditPlan, points: Sequence[float] = (), *, effects: bool = True) -> list[Cue]:
+    """Sounds on the moments that carry meaning, never on the edit's rhythm.
+
+    ``points`` is accepted for old callers and ignored: a whoosh on every other framing change put a
+    dozen sounds in a 20-second clip. Now there is the opening hit under the hook, a hit or pop on each
+    beat the edit marked (a reveal, a number, a turn, a punchline), one whoosh into each cutaway, and
+    each meme's own sound. ``effects=False`` (SFX switched off) keeps only the meme sounds, because a
+    meme without its sound reads as broken.
+    """
+    cues: list[Cue] = []
+    if effects:
+        cues.append(Cue(0.0, IMPACT))
+        for beat in edit.beats:
+            when = edit.to_output(beat.at)
+            if when is not None:
+                cues.append(Cue(when, POP if beat.style == CARD else IMPACT))
+        for start, _seconds, _path, _offset in _broll_shots(edit):
+            cues.append(Cue(max(0.0, start - 0.14), WHOOSH))
+    for start, seconds, _path, sound in _meme_shots(edit):
+        if sound in (IMPACT, POP, WHOOSH):
+            cues.append(Cue(start, sound))
+        else:
+            cues.append(Cue(start, sound, gain=MEME_STING_GAIN, max_sec=seconds + 0.6))
+    return _destack(cues)
 
 
 def _shot_edges(moment: Moment, signals: Signals) -> list[float]:
@@ -448,9 +475,9 @@ def plan_clip(moment: Moment, words: Sequence[Word], signals: Signals, info: Med
     duration = total_duration(segments) / speed
     if edit:
         zoom = _edit_zoom_expression(rhythm_points(edit, signals=signals, moment=moment), duration)
-        shake, flash = _edit_effects(edit)
+        shake = _edit_shake(edit)
     else:
-        zoom, shake, flash = _zoom_expression(_zoom_windows(moment, segments, signals)), "0", ""
+        zoom, shake = _zoom_expression(_zoom_windows(moment, segments, signals)), "0"
     focus = focus if picture_height else ()
     if focus:
         zoom = f"{_FOCUS_ZOOM:g}+(({zoom})-1)*{_FRAMED_ZOOM_SHARE:g}"
@@ -467,11 +494,10 @@ def plan_clip(moment: Moment, words: Sequence[Word], signals: Signals, info: Med
         has_graphics=has_graphics,
         speed=speed,
         shake_expr=shake,
-        flash_expr=flash,
         anchor_y=_FACE_ANCHOR if edit and not picture_height else 0.5,
-        has_sfx=bool(edit) and info.has_audio and settings.clip_sfx,
+        has_sfx=bool(edit) and info.has_audio and (settings.clip_sfx or bool(edit.meme_overlays)),
         broll=_broll_shots(edit) if edit else (),
-        memes=_meme_shots(edit) if edit else (),
+        memes=_meme_shots(edit) if edit and info.has_audio else (),
         picture_height=picture_height,
         picture_crop_bottom=safe_crop_bottom if picture_height else 0.0,
         focus_x_expr=_piecewise([(t, round(x, 3)) for t, x, _y in focus]) if focus else "",
@@ -573,20 +599,21 @@ def build_filtergraph(plan: ClipPlan, info: MediaInfo, seek: float) -> str:
         parts.append(f"[under{index}][broll{index}]overlay=eof_action=pass:repeatlast=0:"
                      f"enable='between(t,{start - _HALF_FRAME:.3f},{start + seconds - _HALF_FRAME:.3f})'[over{index}]")
         chain = f"[over{index}]null"
-    # Meme clips slide/pop in from the right over 0.14s, under captions and clear of Shorts buttons.
-    meme_base = first_input + len(plan.broll)
-    for index, (start, seconds, _path) in enumerate(plan.memes):
-        parts.append(f"[{meme_base + index}:v]scale=300:-2:flags=lanczos,setsar=1,fps={FPS},"
-                     f"setpts=PTS-STARTPTS+{start:.3f}/TB[meme{index}]")
-        parts.append(chain + f"[munder{index}]")
-        parts.append(f"[munder{index}][meme{index}]overlay=x='W-w-30+max(0,(1-(t-{start:.3f})/0.14))*140':y=180:eof_action=pass:"
-                     f"enable='between(t,{start - _HALF_FRAME:.3f},{start + seconds - _HALF_FRAME:.3f})'[mover{index}]")
-        chain = f"[mover{index}]null"
     if plan.picture_height:
         parts.append(chain + "[framed]")
         chain = f"[backdrop][framed]overlay=x=0:y={top}"
-    if plan.flash_expr:
-        chain += f",drawbox=x=0:y=0:w=iw:h=ih:color=white@0.6:t=fill:enable='{plan.flash_expr}'"
+    # Memes pop in from the right on the canvas, under captions. In the framed layout they sit in the
+    # band above the picture, so they never cover the speaker's face; on a full canvas, under the brand.
+    meme_base = first_input + len(plan.broll)
+    meme_y = f"'max(120,{top - _MEME_BAND_GAP}-h)'" if plan.picture_height else str(_MEME_FILL_Y)
+    for index, (start, seconds, _path, _sound) in enumerate(plan.memes):
+        parts.append(f"[{meme_base + index}:v]scale={_MEME_WIDTH}:-2:flags=lanczos,setsar=1,fps={FPS},"
+                     f"setpts=PTS-STARTPTS+{start:.3f}/TB[meme{index}]")
+        parts.append(chain + f"[munder{index}]")
+        parts.append(f"[munder{index}][meme{index}]overlay=x='W-w-40+max(0,(1-(t-{start:.3f})/0.14))*140':y={meme_y}:"
+                     f"eof_action=pass:enable='between(t,{start - _HALF_FRAME:.3f},{start + seconds - _HALF_FRAME:.3f})'"
+                     f"[mover{index}]")
+        chain = f"[mover{index}]null"
     if plan.has_graphics:
         chain += f",ass={_filter_path_arg(plan.ass_path)}:fontsdir={_filter_path_arg(plan.fonts_dir)}"
     parts.append(chain + "[graphics]")
@@ -815,13 +842,15 @@ def _clean_vlog_summary_cues(
 def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment,
                   words: Sequence[Word], out_path: str, edit: Optional[EditPlan] = None, creator: str = "",
                   music: Optional[str] = None, captions: bool = True, source_captioned: bool = False,
-                  brand: Optional[str] = None, sting: Optional[str] = None, language: str = "") -> ClipPlan:
+                  brand: Optional[str] = None, sting: Optional[str] = None, language: str = "",
+                  watermark: str = "") -> ClipPlan:
     """Write the finished clip to ``out_path`` and return its plan.
 
     ``source_captioned`` means the footage burns in its own captions. In the framed layout their band is cut
     from the bottom of the picture and ours replace them; otherwise ours are left out. ``captions=False``
     always leaves ours out. ``brand`` is the handle shown on screen: a managed channel passes its own, and
-    ``None`` means ``BRAND_NAME``. ``sting`` is a meme sound file, played over the held last frame."""
+    ``None`` means ``BRAND_NAME``. ``sting`` is a meme sound file, played over the held last frame.
+    ``watermark`` is a small line of text kept on screen in the safe band (the SaaS free tier's mark)."""
     # Resolve the font from the clip's own text: a Devanagari clip gets a Devanagari font (if installed)
     # for its captions and overlays, while a Latin clip resolves the same font as before.
     font_words = words or ((edit.words or edit.opening_words) if edit else ())
@@ -894,25 +923,13 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
         else []
     )
     has_text = bool(font and os.path.isfile(font)) and bool(
-        clip_words or summary_cues or moment.hook or creator or brand
+        clip_words or summary_cues or moment.hook or creator or brand or watermark
     )
     plan = plan_clip(moment, cut_on, signals, info, has_graphics=has_text, exact_cuts=exact_cuts, faces=faces,
                      edit=edit, focus=focus, crop_bottom=crop_bottom,
                      end_fade=0.02 if loop_clean else _END_FADE, hold_end=not loop_clean)
     if music and info.has_audio:
         plan.music = os.path.abspath(music)
-    meme_audio_cues: list[Cue] = []
-    if info.has_audio and settings.clip_sfx:
-        for m_start, _m_sec, m_path in plan.memes:
-            if os.path.splitext(m_path)[1].lower() in _STILL_MEME_EXTS or not os.path.isfile(m_path):
-                continue
-            try:
-                if probe(m_path).has_audio:
-                    meme_audio_cues.append(Cue(m_start, os.path.abspath(m_path)))
-            except Exception:
-                pass
-    if meme_audio_cues:
-        plan.has_sfx = True
     sting_at = plan.duration
     if sound is not None:
         # Hold the last frame under the sound, so it lands after the punchline and never over a word.
@@ -937,12 +954,14 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
                         clip_words, moment.hook, plan.duration, font_family(font), font, beats,
                         creator=creator, brand=brand,
                         layout=framed_layout(plan.picture_height) if plan.picture_height else Layout(),
-                        summary_cues=summary_cues,
+                        summary_cues=summary_cues, watermark=watermark,
                     ))
             if plan.has_sfx:
-                cues = sound_cues(edit, rhythm_points(edit, signals=signals, moment=moment)) if edit and settings.clip_sfx else []
-                cues.extend(meme_audio_cues)
+                cues = sound_cues(edit, effects=settings.clip_sfx) if edit else []
                 if plan.tail:
+                    # A meme over the held frame shares this sting: it plays once, at full level, here.
+                    ending = os.path.abspath(str(sting))
+                    cues = [c for c in cues if not (os.path.abspath(c.sound) == ending and abs(c.at - sting_at) < 2.0)]
                     cues.append(Cue(sting_at, str(sting)))
                 build_track(os.path.join(tmp, "sfx.wav"), plan.duration, cues, language=language)
             # The bar needs an end: an endless source keeps ffmpeg running forever if
@@ -952,7 +971,7 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
                     *(["-i", "sfx.wav"] if plan.has_sfx else []),
                     *[item for start, seconds, path, offset in plan.broll
                       for item in ("-ss", f"{offset:.3f}", "-t", f"{seconds + 0.2:.3f}", "-i", os.path.abspath(path))],
-                    *[item for _start, seconds, path in plan.memes
+                    *[item for _start, seconds, path, _sound in plan.memes
                       for item in _meme_input_args(seconds, path)],
                     *(["-stream_loop", "-1", "-i", plan.music] if plan.music else []),
                     "-filter_complex", build_filtergraph(plan, info, seek),
@@ -962,7 +981,8 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
             args += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
                      "-r", str(FPS), "-movflags", "+faststart", "-t", f"{plan.duration:.3f}",
                      os.path.abspath(partial)]
-            run_ffmpeg(args, cwd=tmp)
+            with metering.timed("render", stage="clip", output_seconds=round(plan.duration, 2)):
+                run_ffmpeg(args, cwd=tmp)
         if not os.path.exists(partial) or os.path.getsize(partial) < 1000:
             raise MediaError("render produced no usable output")
         produced = probe(partial).duration

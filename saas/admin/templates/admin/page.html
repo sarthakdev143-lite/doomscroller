@@ -1,0 +1,89 @@
+{% extends "admin/base.html" %}
+{% import "admin/_ui.html" as ui %}
+{% block title %}{{ p.path }}{% endblock %}
+{% block crumbs %}<a class="adm-crumb" href="/admin/pages?range={{ range }}">← Pages</a>{% endblock %}
+{% block heading %}<span class="adm-mono">{{ p.path }}</span>{% endblock %}
+{% block tools %}{{ ui.range_picker(range, qs) }}{% endblock %}
+{% block content %}
+<section class="adm-kpis">
+  {{ ui.stat('Views', h.num(p.views)) }}
+  {{ ui.stat('Visitors', h.num(p.visitors)) }}
+  {{ ui.stat('Avg engaged', p.avg_active_s ~ 's') }}
+  {% for k in ['LCP', 'INP', 'CLS'] %}
+    {% set val = p.vitals.get(k) %}
+    {% set good = (k == 'LCP' and val is not none and val <= 2500) or (k == 'INP' and val is not none and val <= 200) or (k == 'CLS' and val is not none and val <= 0.1) %}
+    {{ ui.stat(k ~ ' p75', ('—' if val is none else (val if k == 'CLS' else h.num(val) ~ 'ms')), ('good' if good else 'needs work') if val is not none else 'no data', 'tone-ok' if good else ('tone-warn' if val is not none else '')) }}
+  {% endfor %}
+</section>
+
+<div class="adm-grid adm-grid-2">
+  <section class="adm-card">
+    <div class="adm-card-head"><h2>How far people scroll</h2><span class="adm-muted">% of views reaching each depth</span></div>
+    {% set c = p.curve %}
+    <figure class="adm-chart">
+      <svg viewBox="0 0 {{ c.width }} {{ c.height }}" role="img" aria-label="Scroll depth curve">
+        {% for f in [0, 50, 100] %}
+          {% set y = c.pad + c.ih - c.ih * f / 100 %}
+          <line class="grid" x1="{{ c.pad }}" x2="{{ c.width - c.pad }}" y1="{{ y }}" y2="{{ y }}"></line>
+          <text class="tick" x="{{ c.pad - 6 }}" y="{{ y + 3 }}" text-anchor="end">{{ f }}%</text>
+        {% endfor %}
+        <path class="area s0" d="{{ c.area }}"></path><path class="line s0" d="{{ c.line }}"></path>
+        {% for pt in c.points %}
+          <circle class="pt s0" cx="{{ pt.x }}" cy="{{ pt.y }}" r="3"><title>{{ pt.pct }}% reached {{ pt.depth }}%</title></circle>
+          <text class="tick" x="{{ pt.x }}" y="{{ c.height - 8 }}" text-anchor="middle">{{ pt.depth }}</text>
+        {% endfor %}
+      </svg>
+    </figure>
+  </section>
+  <section class="adm-card">
+    <div class="adm-card-head"><h2>Where attention goes</h2><span class="adm-muted">avg seconds per view</span></div>
+    {{ ui.bars(p.dwell, h, empty='Add data-track-section to this page\'s sections to see dwell.', unit='s') }}
+  </section>
+</div>
+
+<div class="adm-grid adm-grid-2">
+  <section class="adm-card">
+    <div class="adm-card-head"><h2>Clicks over the page outline</h2>
+      <span class="adm-legend"><span class="key k-click">click</span><span class="key k-rage">rage</span><span class="key k-dead">dead</span><span class="key k-heat">mouse</span></span></div>
+    <div class="adm-heat-wrap">
+      <svg class="adm-heat" viewBox="0 0 100 200" preserveAspectRatio="none" role="img" aria-label="Click map over the page's sections">
+        <rect class="page" x="0" y="0" width="100" height="200"></rect>
+        {% for s in p.layout %}
+          <rect class="sec" x="1" y="{{ s.t * 200 }}" width="98" height="{{ [s.h * 200, 0.5]|max }}"></rect>
+          <text class="sec-label" x="3" y="{{ s.t * 200 + 4 }}">{{ s.n }}</text>
+        {% endfor %}
+        {% for pt in p.heat %}<circle class="heat" cx="{{ pt[0] * 100 }}" cy="{{ pt[1] * 200 }}" r="1.6"></circle>{% endfor %}
+        {% for t, x, y, name, sec in p.clicks %}<circle class="dot dot-{{ t }}" cx="{{ x * 100 }}" cy="{{ y * 200 }}" r="{{ 1.8 if t == 'click' else 2.4 }}"><title>{{ t }}: {{ name }}{{ ' in ' ~ sec if sec }}</title></circle>{% endfor %}
+      </svg>
+      {% if not p.layout %}<p class="adm-note">No section outline yet: it appears once pages carry data-track-section and someone with analytics visits.</p>{% endif %}
+    </div>
+  </section>
+  <section class="adm-card adm-card-flush">
+    <div class="adm-card-head"><h2>Calls to action</h2><span class="adm-muted">seen → clicked</span></div>
+    <div class="adm-table-wrap"><table class="adm-table">
+      <thead><tr><th>Element</th><th class="num">Seen</th><th class="num">Hovered</th><th class="num">Clicked</th><th class="num">CTR</th></tr></thead>
+      <tbody>{% for r in p.ctas %}
+        <tr><td class="adm-mono">{{ r.name }}</td><td class="num">{{ h.num(r.impressions) }}</td><td class="num">{{ h.num(r.hovers) }}</td>
+          <td class="num">{{ h.num(r.clicks) }}</td><td class="num">{{ (r.ctr ~ '%') if r.ctr is not none else '—' }}</td></tr>
+      {% else %}<tr class="adm-empty-row"><td colspan="5">No tracked elements. Add data-track="name" to buttons and links.</td></tr>{% endfor %}
+      </tbody></table></div>
+    {% if p.forms %}
+    <div class="adm-card-head"><h2>Forms</h2></div>
+    <div class="adm-table-wrap"><table class="adm-table">
+      <thead><tr><th>Form</th><th class="num">Started</th><th class="num">Submitted</th><th class="num">Abandoned</th></tr></thead>
+      <tbody>{% for name, f in p.forms.items() %}
+        <tr><td class="adm-mono">{{ name }}</td><td class="num">{{ f.focus }}</td><td class="num">{{ f.submit }}</td><td class="num">{{ f.abandon }}</td></tr>
+      {% endfor %}</tbody></table></div>
+    {% endif %}
+    {% if p.frustration %}
+    <div class="adm-card-head"><h2>Frustration</h2></div>
+    <ul class="adm-list">{% for (t, name, sec), n in p.frustration %}
+      <li><span class="chip {{ 'chip-bad' if t == 'rage' else 'chip-plain' }}">{{ t }}</span> <b>{{ name }}</b> <span class="adm-muted">{{ sec }}</span> ×{{ n }}</li>{% endfor %}</ul>
+    {% endif %}
+    {% if p.errors %}
+    <div class="adm-card-head"><h2>JavaScript errors</h2></div>
+    <ul class="adm-list">{% for msg, n in p.errors %}<li class="adm-warn">{{ msg }} <span class="adm-muted">×{{ n }}</span></li>{% endfor %}</ul>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

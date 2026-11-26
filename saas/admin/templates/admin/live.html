@@ -1,0 +1,33 @@
+{% extends "admin/base.html" %}
+{% import "admin/_ui.html" as ui %}
+{% block title %}Live{% endblock %}
+{% block heading %}<span class="adm-pulse" aria-hidden="true"></span> Live <span class="adm-count" data-live-count>{{ rows|map(attribute='visitor')|unique|list|length }}</span>{% endblock %}
+{% block tools %}
+  <a class="adm-btn adm-btn-quiet" href="{{ qs(bots=0 if bots else 1) }}">{{ 'Hide bots' if bots else 'Show bots' }}</a>
+{% endblock %}
+{% block content %}
+<section class="adm-card adm-card-flush">
+  <p class="adm-note">Everyone who was active in the last 3 minutes and allowed analytics. Refreshes every 5 seconds.</p>
+  <div class="adm-table-wrap">
+    <table class="adm-table" data-live="/admin/api/live{{ '?bots=1' if bots else '' }}">
+      <thead><tr><th>Where</th><th>Page now</th><th>Device</th><th>Source</th><th class="num">Pages</th><th class="num">Engaged</th><th>Lead</th><th>Seen</th></tr></thead>
+      <tbody>
+      {% for r in rows %}
+        <tr data-href="/admin/visitors/{{ r.visitor }}">
+          <td>{{ h.flag(r.country) }} {{ r.city or r.country or '—' }}</td>
+          <td class="adm-mono">{{ r.path or '—' }}</td>
+          <td>{{ r.device or '' }} · {{ r.browser or '' }}</td>
+          <td>{{ r.source or 'direct' }}</td>
+          <td class="num">{{ r.pageviews }}</td>
+          <td class="num">{{ r.active_s }}s</td>
+          <td>{{ ui.score(r.score) }} {{ ui.label_chip(r.label) }}{% if r.waitlist %} <span class="chip chip-ok">waitlist</span>{% endif %}{% if r.user %} <span class="chip chip-ok">user</span>{% endif %}</td>
+          <td class="adm-muted">just now</td>
+        </tr>
+      {% else %}
+        <tr class="adm-empty-row"><td colspan="8">Nobody on the site right now.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

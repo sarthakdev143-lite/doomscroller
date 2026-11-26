@@ -1,0 +1,39 @@
+{# The mark: a 9:16 frame with the caption bar the renderer burns into every clip. Brand-neutral on purpose. #}
+{% macro mark() -%}
+<svg viewBox="0 0 18 32" aria-hidden="true" focusable="false"><rect width="18" height="32" rx="3" fill="#111"/><rect x="3" y="20" width="12" height="4" fill="#ffe500"/><rect x="0" y="0" width="7" height="1.6" fill="#ffe500"/></svg>
+{%- endmacro %}
+
+{# A two-person podcast set, drawn flat so the demo needs no third-party footage.
+   Speaker A sits at 27.5% across the picture, speaker B at 72.5%; the focus zoom pivots on those points. #}
+{% macro scene(cls="") -%}
+<svg class="scene {{ cls }}" viewBox="0 0 160 90" preserveAspectRatio="xMidYMid slice" aria-hidden="true" focusable="false">
+  <rect width="160" height="90" fill="#3a4344"/>
+  <rect x="0" y="0" width="160" height="58" fill="#414b4c"/>
+  <rect x="64" y="8" width="13" height="40" rx="1.5" fill="#4b5658"/>
+  <rect x="80" y="8" width="13" height="40" rx="1.5" fill="#4b5658"/>
+  <rect x="8" y="14" width="30" height="2" fill="#2f3637"/>
+  <rect x="12" y="7" width="5" height="7" fill="#7a6a55"/>
+  <rect x="19" y="9" width="4" height="5" fill="#5d6b5c"/>
+  <rect x="25" y="6" width="6" height="8" fill="#8a7d6b"/>
+  <rect x="124" y="14" width="28" height="2" fill="#2f3637"/>
+  <rect x="128" y="8" width="7" height="6" fill="#6f6250"/>
+  <rect x="139" y="10" width="9" height="4" fill="#556163"/>
+  <!-- speaker A -->
+  <path d="M25 90 V63 a13 13 0 0 1 13 -13 h12 a13 13 0 0 1 13 13 V90 z" fill="#c4b196"/>
+  <rect x="41" y="45" width="6" height="7" fill="#a97c5f"/>
+  <circle cx="44" cy="39" r="9" fill="#b4876a"/>
+  <path d="M35 38 a9 9 0 0 1 18 0 c0 -3 -3 -9 -9 -9 s-9 6 -9 9z" fill="#2b2420"/>
+  <path d="M64 20 L57 44" stroke="#151515" stroke-width="1.6"/>
+  <rect x="53" y="42" width="7" height="11" rx="3.5" fill="#151515"/>
+  <!-- speaker B -->
+  <path d="M97 90 V65 a13 13 0 0 1 13 -13 h12 a13 13 0 0 1 13 13 V90 z" fill="#5d7584"/>
+  <rect x="113" y="47" width="6" height="7" fill="#6f4a35"/>
+  <circle cx="116" cy="41" r="9" fill="#7a523d"/>
+  <path d="M107 40 a9 9 0 0 1 18 0 c0 -6 -4 -10 -9 -10 s-9 4 -9 10z" fill="#1d1a18"/>
+  <path d="M96 20 L103 46" stroke="#151515" stroke-width="1.6"/>
+  <rect x="100" y="44" width="7" height="11" rx="3.5" fill="#151515"/>
+  <!-- desk -->
+  <rect x="0" y="74" width="160" height="16" fill="#1c1d1d"/>
+  <rect x="0" y="74" width="160" height="1.2" fill="#2a2c2c"/>
+</svg>
+{%- endmacro %}

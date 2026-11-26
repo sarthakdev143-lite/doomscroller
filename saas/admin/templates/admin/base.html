@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="referrer" content="same-origin">
+  <meta name="theme-color" content="#141413">
+  <title>{% block title %}Admin{% endblock %} · {{ brand }}</title>
+  {% if tokens_css %}<link rel="stylesheet" href="{{ asset('/static/css/tokens.css') }}">{% endif %}
+  <link rel="stylesheet" href="{{ asset('/admin-static/admin.css') }}">
+  {% block head %}{% endblock %}
+  <script src="{{ asset('/admin-static/admin.js') }}" defer></script>
+</head>
+<body class="adm">
+  <a class="adm-skip" href="#main">Skip to content</a>
+  <header class="adm-side">
+    <div class="adm-brand">
+      <span class="adm-brand-mark" aria-hidden="true"></span>
+      <span>{{ brand }} <em>admin</em></span>
+    </div>
+    <nav class="adm-nav" aria-label="Admin sections">
+      {% for key, href, label in nav %}
+        <a href="{{ href }}" class="{{ 'is-active' if active == key else '' }}"{% if active == key %} aria-current="page"{% endif %}>{{ label }}</a>
+      {% endfor %}
+    </nav>
+    <div class="adm-who">
+      {% if admin %}<span title="{{ admin.email }}">{{ admin.email }}</span>{% endif %}
+      <a href="/app">Exit</a>
+    </div>
+  </header>
+  <main id="main" class="adm-main">
+    <div class="adm-head">
+      <div>
+        {% block crumbs %}{% endblock %}
+        <h1>{% block heading %}{% endblock %}</h1>
+      </div>
+      <div class="adm-head-tools">{% block tools %}{% endblock %}</div>
+    </div>
+    {% block content %}{% endblock %}
+  </main>
+  <div class="adm-toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

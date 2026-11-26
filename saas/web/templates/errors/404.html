@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Page not found | {{ brand_name }}{% endblock %}
+{% block description %}This page does not exist.{% endblock %}
+{% block robots %}<meta name="robots" content="noindex">{% endblock %}
+
+{% block content %}
+<section class="section error-page" data-track-section="error-404" aria-labelledby="error-title">
+  <div class="wrap grid">
+    <p class="rubric">Not found</p>
+    <div class="story">
+      <p class="error-page__code mono" aria-hidden="true">404</p>
+      <h1 id="error-title">This page isn’t here.</h1>
+      <p class="lede">The link may be old, or the address mistyped. Nothing you sent us is affected.</p>
+      <div class="cluster error-page__actions">
+        <a class="btn" href="/" data-track="error-404-home">Go to the home page</a>
+        <a class="btn btn--ghost" href="mailto:{{ support_email }}" data-track="error-404-support">Email support</a>
+      </div>
+    </div>
+  </div>
+</section>
+{% endblock %}

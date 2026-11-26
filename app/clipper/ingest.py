@@ -16,6 +16,7 @@ from app.config import settings
 from app.logging_config import scrub_secrets
 from app.scrapers.yt_dlp_scraper import YtDlpScraper
 
+from . import metering
 from .media import content_id
 
 log = logging.getLogger(__name__)
@@ -228,6 +229,7 @@ def _from_url(url: str) -> SourceVideo:
     # Look before downloading: noplaylist only covers watch?v=...&list= links, so a
     # channel link would otherwise download every video before being refused.
     options = {**_ydl_options(out_dir), "extract_flat": "in_playlist", "playlist_items": "1"}
+    started = time.monotonic()
     try:
         with yt_dlp.YoutubeDL(options) as ydl:
             info = _validate_single_video(ydl.extract_info(url, download=False))
@@ -258,6 +260,11 @@ def _from_url(url: str) -> SourceVideo:
         raise IngestError("download finished but the file is missing")
     # Cleanup ages downloads by mtime, and a reused file keeps its old one.
     os.utime(path, None)
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        size = 0
+    metering.record("download", source="yt-dlp", bytes=size, seconds=round(time.monotonic() - started, 2))
     fallback_id = hashlib.sha1(url.encode()).hexdigest()[:16]
     return SourceVideo(
         path=path,

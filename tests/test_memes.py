@@ -218,19 +218,32 @@ def _landscape_plan():
     return render, plan, info
 
 
-def test_filtergraph_overlays_meme_top_right():
+def test_filtergraph_overlays_meme_in_the_band_above_a_framed_picture(monkeypatch):
+    monkeypatch.setattr(settings, "clip_layout", "framed")
     render, plan, info = _landscape_plan()
-    plan.memes = ((2.0, 1.5, "meme.mp4"),)
+    assert plan.picture_height
+    plan.memes = ((2.0, 1.5, "meme.mp4", "impact"),)
     graph = render.build_filtergraph(plan, info, 0.0)
     assert "[meme0]" in graph
-    assert "overlay=x='W-w-30+max(0,(1-(t-2.000)/0.14))*140':y=180" in graph
+    top = (1920 - plan.picture_height) // 2
+    assert f"overlay=x='W-w-40+max(0,(1-(t-2.000)/0.14))*140':y='max(120,{top - 90}-h)'" in graph
+    # Composited on the canvas after the backdrop, so it never lands on the speaker's face.
+    assert graph.index("[backdrop][framed]overlay") < graph.index("[munder0][meme0]overlay")
     assert "enable='between(t,1.983,3.483)'" in graph  # half-frame adjusted like b-roll
+
+
+def test_filtergraph_meme_on_a_full_canvas_sits_under_the_brand(monkeypatch):
+    monkeypatch.setattr(settings, "clip_layout", "fill")
+    render, plan, info = _landscape_plan()
+    plan.memes = ((2.0, 1.5, "meme.mp4", "impact"),)
+    graph = render.build_filtergraph(plan, info, 0.0)
+    assert "overlay=x='W-w-40+max(0,(1-(t-2.000)/0.14))*140':y=230" in graph
 
 
 def test_filtergraph_meme_input_index_and_music_shift():
     render, plan, info = _landscape_plan()
     plan.broll = ((1.0, 2.0, "b.mp4", 0.0),)
-    plan.memes = ((5.0, 1.5, "meme.mp4"),)
+    plan.memes = ((5.0, 1.5, "meme.mp4", "impact"),)
     plan.music = "m.mp3"
     graph = render.build_filtergraph(plan, info, 0.0)
     # first_input=2 (no sfx): broll=[2:v], meme=[3:v], music=[4:a].
@@ -247,22 +260,28 @@ def test_filtergraph_meme_input_index_and_music_shift():
 # ---------- edit.attach_memes ----------
 
 
-def _speech_plan(monkeypatch):
-    from app.clipper.edit import Beat, EditPlan, PUNCH
+def _speech_plan(monkeypatch, moods=("laugh", "shock", "fail", "awkward", "hype")):
+    from app.clipper.edit import EditPlan, Reaction
     from app.clipper.transcribe import Word
     monkeypatch.setattr(settings, "tenor_api_key", "t")
     monkeypatch.setattr(settings, "clip_memes", True)
-    words = [Word(f"w{i}", float(i), float(i) + 0.4, 1.0) for i in range(40)]
-    beats = [Beat(5.0, "", PUNCH), Beat(6.0, "", PUNCH), Beat(12.0, "", PUNCH),
-             Beat(20.0, "", PUNCH), Beat(21.0, "", PUNCH)]
-    return EditPlan(words=words, segments=[(0.0, 40.0)], beats=beats, speed=1.0)
+    words = [Word(f"w{i}", float(i), float(i) + 0.4, 1.0) for i in range(70)]
+    marks = [Reaction(t, m) for t, m in zip((5.0, 6.0, 20.0, 40.0, 41.0), moods)]
+    return EditPlan(words=words, segments=[(0.0, 70.0)], reactions=marks, speed=1.0)
 
 
-def test_attach_memes_no_beats(monkeypatch):
-    from app.clipper.edit import EditPlan, attach_memes
+def _quiet_sounds(monkeypatch):
+    """No SFX pack and no probe-able files: every meme falls back to a synthesised hit."""
+    from app.clipper import edit as edit_mod
+    monkeypatch.setattr(edit_mod.sfx, "mood_sting", lambda *a, **k: None)
+
+
+def test_attach_memes_no_reactions(monkeypatch):
+    from app.clipper.edit import Beat, EditPlan, PUNCH, attach_memes
     monkeypatch.setattr(settings, "tenor_api_key", "t")
     monkeypatch.setattr(settings, "clip_memes", True)
-    plan = EditPlan(words=[], segments=[(0.0, 40.0)], speed=1.0)
+    # Punch beats are emphasis, not jokes: without a marked reaction there is no meme.
+    plan = EditPlan(words=[], segments=[(0.0, 40.0)], beats=[Beat(5.0, "", PUNCH)], speed=1.0)
     assert attach_memes(plan) == []
     assert plan.meme_overlays == []
 
@@ -270,11 +289,12 @@ def test_attach_memes_no_beats(monkeypatch):
 def test_attach_memes_needs_key(monkeypatch):
     from app.clipper import edit as edit_mod
     from app.clipper import memes as memes_mod
+    _quiet_sounds(monkeypatch)
     plan = _speech_plan(monkeypatch)
     monkeypatch.setattr(settings, "tenor_api_key", "")
     monkeypatch.setattr(settings, "giphy_api_key", "")
     monkeypatch.setattr(edit_mod.memes, "fetch",
-                        lambda q, s, *, exclude=(), choose=None: memes_mod.MemeClip("m1", "/tmp/m1.jpg", "T", "MemeGen"))
+                        lambda q, s, *, exclude=(), language="": memes_mod.MemeClip(f"m-{q}", "/tmp/m1.jpg", "T", "MemeGen"))
     # Default: static MemeGen overlays are skipped unless clip_memes_allow_stills=True.
     assert edit_mod.attach_memes(plan) == []
     assert plan.meme_overlays == []
@@ -282,7 +302,7 @@ def test_attach_memes_needs_key(monkeypatch):
     monkeypatch.setattr(settings, "clip_memes_allow_stills", True)
     plan_opt = _speech_plan(monkeypatch)
     assert edit_mod.attach_memes(plan_opt) == []
-    assert [o.at for o in plan_opt.meme_overlays] == [5.0, 12.0, 20.0]
+    assert [o.at for o in plan_opt.meme_overlays] == [5.0, 20.0, 40.0]
     assert all(o.clip.provider == "MemeGen" for o in plan_opt.meme_overlays)
     # Flag off clears.
     plan2 = _speech_plan(monkeypatch)
@@ -291,25 +311,46 @@ def test_attach_memes_needs_key(monkeypatch):
     assert plan2.meme_overlays == []
 
 
-def test_attach_memes_spaces_and_caps(monkeypatch):
+def test_attach_memes_spaces_caps_and_searches_by_mood(monkeypatch):
     from app.clipper import edit as edit_mod
     from app.clipper import memes as memes_mod
+    _quiet_sounds(monkeypatch)
     plan = _speech_plan(monkeypatch)
     seen = []
 
-    def fake_fetch(query, seconds, *, exclude=(), choose=None):
-        seen.append(set(exclude))
+    def fake_fetch(query, seconds, *, exclude=(), language=""):
+        seen.append((query, set(exclude)))
         tag = f"m{len(seen)}"
         return memes_mod.MemeClip(tag, f"/tmp/{tag}.mp4", "T", "Tenor")
 
     monkeypatch.setattr(edit_mod.memes, "fetch", fake_fetch)
     warnings = edit_mod.attach_memes(plan)
     assert warnings == []
-    # 5.0 kept, 6.0 too close, 12.0 kept, 20.0 kept (max 3), 21.0 dropped.
-    assert [round(o.at, 1) for o in plan.meme_overlays] == [5.0, 12.0, 20.0]
+    # 5.0 kept, 6.0 too close, 20.0 kept, 40.0 kept: a 70s clip allows three (one per 20s), 41.0 too close.
+    assert [round(o.at, 1) for o in plan.meme_overlays] == [5.0, 20.0, 40.0]
+    assert [o.mood for o in plan.meme_overlays] == ["laugh", "fail", "awkward"]
     assert all(o.seconds == 1.5 for o in plan.meme_overlays)
-    # Rotation: each lookup excludes previously used ids.
-    assert seen[0] == set() and seen[1] == {"m1"} and seen[2] == {"m1", "m2"}
+    # Each search is for its reaction's mood, and excludes every meme already placed.
+    from app.clipper import reactions
+    assert [q for q, _ in seen] == [reactions.QUERIES["laugh"][0], reactions.QUERIES["fail"][1],
+                                    reactions.QUERIES["awkward"][2]]
+    assert seen[0][1] == set() and "m1" in seen[1][1] and {"m1", "m2"} <= seen[2][1]
+
+
+def test_a_short_clip_gets_at_most_one_meme(monkeypatch):
+    from app.clipper import edit as edit_mod
+    from app.clipper import memes as memes_mod
+    from app.clipper.edit import EditPlan, Reaction
+    from app.clipper.transcribe import Word
+    _quiet_sounds(monkeypatch)
+    monkeypatch.setattr(settings, "tenor_api_key", "t")
+    monkeypatch.setattr(settings, "clip_memes", True)
+    monkeypatch.setattr(edit_mod.memes, "fetch",
+                        lambda q, s, *, exclude=(), language="": memes_mod.MemeClip(f"x{len(exclude)}", "/tmp/x.mp4", "T", "Tenor"))
+    plan = EditPlan(words=[Word("a", 0.0, 0.3)], segments=[(0.0, 30.0)], speed=1.0,
+                    reactions=[Reaction(4.0, "laugh"), Reaction(16.0, "shock"), Reaction(27.0, "fail")])
+    edit_mod.attach_memes(plan)
+    assert [o.at for o in plan.meme_overlays] == [4.0]
 
 
 def _memegen_templates():
@@ -413,7 +454,7 @@ def test_slow_meme_overlay_renders_through_real_ffmpeg(tmp_path, monkeypatch):
 
 def test_local_meme_pack_language_scoping_and_native_audio_cue(tmp_path, monkeypatch):
     import numpy as np
-    from app.clipper import edit as clip_edit, render as clip_render
+    from app.clipper import edit as clip_edit, media as clip_media, render as clip_render
     from app.clipper.media import MediaInfo
     from app.clipper.moments import Moment
     from app.clipper.signals import Signals
@@ -426,25 +467,25 @@ def test_local_meme_pack_language_scoping_and_native_audio_cue(tmp_path, monkeyp
 
     hi_dir = tmp_path / "memes" / "hi"
     hi_dir.mkdir(parents=True)
-    hi_mp4 = hi_dir / "khatam_tata.mp4"
+    hi_mp4 = hi_dir / "shocked_khatam_tata.mp4"
     hi_mp4.write_bytes(b"FAKE_MP4")
     monkeypatch.setattr(memes, "_playable", lambda p, s: True)
+    monkeypatch.setattr(memes, "search", lambda q: pytest.fail("an owner file fits, so no library search"))
 
     assert memes.has_local_pack("hi") is True
     got = memes.fetch("", 1.5, language="hi")
     assert got is not None and got.provider == memes.LOCAL and got.path == str(hi_mp4)
 
-    plan_e = clip_edit.EditPlan(
-        words=[],
-        segments=[(0.0, 10.0)],
-        beats=[clip_edit.Beat(at=2.0, text="PUNCH", style=clip_edit.PUNCH)],
-        speed=1.0,
-    )
+    plan_e = clip_edit.EditPlan(words=[], segments=[(0.0, 10.0)], speed=1.0,
+                                reactions=[clip_edit.Reaction(4.0, "shock")])
+    # The owner's file has its own audio, so that is its sound.
+    monkeypatch.setattr(clip_media, "probe", lambda p: MediaInfo(duration=2.0, width=320, height=240, fps=30.0, has_audio=True))
     clip_edit.attach_memes(plan_e, language="hi")
     assert len(plan_e.meme_overlays) == 1
     assert plan_e.meme_overlays[0].clip.path == str(hi_mp4)
+    assert plan_e.meme_overlays[0].sound == str(hi_mp4)
 
-    # Confirm render_moment wires a video meme's audio stream into sfx.build_track cues + kinetic pop-in.
+    # render_moment mixes that sound under the voice, cut to the overlay, alongside the kinetic pop-in.
     src_mp4 = tmp_path / "src.mp4"
     src_mp4.write_bytes(b"SRC")
     built_cues = []
@@ -468,41 +509,29 @@ def test_local_meme_pack_language_scoping_and_native_audio_cue(tmp_path, monkeyp
         captions=False,
     )
     assert fg_plan.has_sfx is True
-    assert any(Path(c.sound) == hi_mp4.resolve() for c in built_cues)
+    meme_cues = [c for c in built_cues if Path(c.sound) == hi_mp4]
+    assert len(meme_cues) == 1 and meme_cues[0].gain < 1.0 and 0 < meme_cues[0].max_sec <= 2.5
     fg = clip_render.build_filtergraph(fg_plan, MediaInfo(duration=10.0, width=1080, height=1920, fps=30.0, has_audio=True), 0.0)
     assert "max(0,(1-(t-" in fg
 
 
-def test_clean_vlog_meme_times_and_attach_memes_fallback_times(tmp_path, monkeypatch):
+def test_clean_vlog_edits_get_no_mechanical_memes(tmp_path, monkeypatch):
+    """Hindi clean-vlog edits have no marked reactions, so they get no memes (they once got two at 36%/72%)."""
     from app.clipper import edit as clip_edit
-
-    short_plan = clip_edit.EditPlan(words=[], segments=[(0.0, 8.0)], beats=[], speed=1.0)
-    assert clip_edit.clean_vlog_meme_times(short_plan) == []
-
-    plan = clip_edit.EditPlan(words=[], segments=[(5.0, 17.0), (19.0, 31.0)], beats=[], speed=1.0)
-    times = clip_edit.clean_vlog_meme_times(plan)
-    assert len(times) == 2
-    assert all(plan.to_output(t) is not None for t in times)
 
     monkeypatch.setattr(settings, "content_dir", str(tmp_path))
     monkeypatch.setattr(settings, "tenor_api_key", "")
     monkeypatch.setattr(settings, "giphy_api_key", "")
     monkeypatch.setattr(settings, "clip_memes", True)
-    monkeypatch.setattr(settings, "clip_memes_allow_stills", False)
     hi_dir = tmp_path / "memes" / "hi"
     hi_dir.mkdir(parents=True)
     for idx in range(2):
         (hi_dir / f"meme_{idx}.mp4").write_bytes(b"MP4")
     monkeypatch.setattr(memes, "_playable", lambda p, s: True)
-
-    # Without fallback_times, beats=[] keeps attach_memes a no-op.
+    plan = clip_edit.EditPlan(words=[], segments=[(5.0, 17.0), (19.0, 31.0)], beats=[], speed=1.0)
     assert clip_edit.attach_memes(plan, language="hi") == []
     assert plan.meme_overlays == []
-
-    # With fallback_times, clean_vlog attaches up to 2 overlays.
-    assert clip_edit.attach_memes(plan, language="hi", fallback_times=times) == []
-    assert len(plan.meme_overlays) == 2
-    assert len({ov.clip.meme_id for ov in plan.meme_overlays}) == 2
+    assert not hasattr(clip_edit, "clean_vlog_meme_times")
 
 
 def test_giphy_parses_downsized_small_and_original_mp4_and_playable_loops_short_clips(tmp_path, monkeypatch):
@@ -609,6 +638,7 @@ def test_wave23_local_pack_ignores_api_cache_and_attach_memes_rotates_reaction_q
     monkeypatch.setattr(settings, "giphy_api_key", "g")
     monkeypatch.setattr(settings, "clip_memes", True)
     monkeypatch.setattr(settings, "clip_memes_allow_stills", False)
+    monkeypatch.setattr(edit_mod.sfx, "mood_sting", lambda *a, **k: None)
 
     meme_dir = tmp_path / "memes"
     meme_dir.mkdir(parents=True)
@@ -640,12 +670,12 @@ def test_wave23_local_pack_ignores_api_cache_and_attach_memes_rotates_reaction_q
     assert len(first) == 2
     assert len(second) == 5
 
-    # Without local pack files, attach_memes queries reaction GIFs and excludes session.used across clips.
+    # Without local pack files, attach_memes searches by mood and excludes what the job already used.
     custom.unlink()
     assert memes.has_local_pack("") is False
     seen_calls = []
 
-    def fake_fetch(query, seconds, *, exclude=(), choose=None, language=""):
+    def fake_fetch(query, seconds, *, exclude=(), language=""):
         seen_calls.append({"query": query, "exclude": set(exclude), "language": language})
         for idx in range(1, 10):
             mid = f"giphy-r{idx}"
@@ -656,14 +686,10 @@ def test_wave23_local_pack_ignores_api_cache_and_attach_memes_rotates_reaction_q
     monkeypatch.setattr(edit_mod.memes, "fetch", fake_fetch)
 
     session = memes.MemeSession()
-    p1 = edit_mod.EditPlan(
-        words=[], segments=[(0.0, 22.0)],
-        beats=[edit_mod.Beat(4.0, "A", edit_mod.PUNCH), edit_mod.Beat(12.0, "B", edit_mod.PUNCH)],
-    )
-    p2 = edit_mod.EditPlan(
-        words=[], segments=[(0.0, 22.0)],
-        beats=[edit_mod.Beat(4.0, "C", edit_mod.PUNCH), edit_mod.Beat(12.0, "D", edit_mod.PUNCH)],
-    )
+    p1 = edit_mod.EditPlan(words=[], segments=[(0.0, 45.0)],
+                           reactions=[edit_mod.Reaction(4.0, "laugh"), edit_mod.Reaction(24.0, "shock")])
+    p2 = edit_mod.EditPlan(words=[], segments=[(0.0, 45.0)],
+                           reactions=[edit_mod.Reaction(4.0, "laugh"), edit_mod.Reaction(24.0, "shock")])
     assert edit_mod.attach_memes(p1, session, language="en") == []
     assert edit_mod.attach_memes(p2, session, language="en") == []
     ids1 = {ov.clip.meme_id for ov in p1.meme_overlays}
@@ -673,10 +699,7 @@ def test_wave23_local_pack_ignores_api_cache_and_attach_memes_rotates_reaction_q
     assert ids1.issubset(seen_calls[2]["exclude"])
 
     # Hindi speech uses Hindi/Bollywood reaction queries and Hindi SFX variety guidance in prompt.
-    hi_plan = edit_mod.EditPlan(
-        words=[], segments=[(0.0, 22.0)],
-        beats=[edit_mod.Beat(5.0, "H", edit_mod.PUNCH)],
-    )
+    hi_plan = edit_mod.EditPlan(words=[], segments=[(0.0, 22.0)], reactions=[edit_mod.Reaction(5.0, "laugh")])
     hi_start = len(seen_calls)
     assert edit_mod.attach_memes(hi_plan, memes.MemeSession(), language="hi") == []
     hi_query = seen_calls[hi_start]["query"].lower()

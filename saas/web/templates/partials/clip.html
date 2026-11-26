@@ -1,0 +1,23 @@
+{#
+  A finished clip, drawn to the renderer's own geometry (app/clipper/captions.py framed_layout, 1080x1920):
+  progress bar along the top, hook box at y=356, a 16:9 picture centred over a dimmed copy of itself,
+  credit at y=1298, word captions at y=1434 with the current word in caption yellow.
+  Positions are percentages of the canvas, so the frame can be any width.
+#}
+{% from "partials/marks.html" import scene %}
+{% macro clip_frame(words, active=0, hook="", focus="a", credit="", live=false, meme=false, progress="early") -%}
+<div class="clip clip--focus-{{ focus }}{% if live %} clip--live{% endif %}"{% if live %} data-demo-frame{% endif %}>
+  <div class="clip__backdrop">{{ scene() }}</div>
+  <div class="clip__picture"><div class="clip__cam"{% if live %} data-demo-cam{% endif %}>{{ scene() }}</div></div>
+  <div class="clip__progress"><span class="clip__bar clip__bar--{{ progress }}"{% if live %} data-demo-progress{% endif %}></span></div>
+  {% if hook %}<p class="clip__hook"{% if live %} data-demo-hook{% endif %}><span>{{ hook }}</span></p>{% endif %}
+  {% if meme %}<div class="clip__meme"><span>reaction GIF</span></div>{% endif %}
+  {% if credit %}<p class="clip__credit">Credit: {{ credit }}</p>{% endif %}
+  <p class="clip__caption caption-type"{% if live %} data-demo-caption{% endif %}>
+    {%- for w in words -%}
+    <span class="{% if loop.index0 == active %}is-active{% endif %}">{{ w }}</span>{% if not loop.last %} {% endif %}
+    {%- endfor -%}
+  </p>
+  {{ caller() if caller else "" }}
+</div>
+{%- endmacro %}

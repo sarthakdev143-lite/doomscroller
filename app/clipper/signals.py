@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from . import metering
 from .media import MediaInfo, read_ffmpeg
 
 _WIDTH, _HEIGHT = 64, 36
@@ -187,8 +188,9 @@ def _loudness(path: str, seconds: int, has_audio: bool) -> np.ndarray:
 def analyse(path: str, info: MediaInfo) -> Signals:
     safe_dur = info.duration if math.isfinite(info.duration) and info.duration > 0 else 1.0
     seconds = max(1, int(math.ceil(safe_dur)))
-    return Signals(
-        duration=safe_dur,
-        loudness=_loudness(path, seconds, info.has_audio),
-        **_video_signals(path, seconds),
-    )
+    with metering.timed("render", stage="analyse", output_seconds=0.0):
+        return Signals(
+            duration=safe_dur,
+            loudness=_loudness(path, seconds, info.has_audio),
+            **_video_signals(path, seconds),
+        )

@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ brand_name }}{% endblock %}</title>
+  <meta name="description" content="{% block description %}Turn a long video into finished vertical Shorts: cut on sentence boundaries, captioned word by word, framed on the speaker. Priced per minute of source video.{% endblock %}">
+  <link rel="canonical" href="{{ canonical }}">
+  {% block robots %}{% endblock %}
+  <meta name="theme-color" content="#f4f4f0">
+
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="{{ brand_name }}">
+  <meta property="og:title" content="{{ self.title() }}">
+  <meta property="og:description" content="{{ self.description() }}">
+  <meta property="og:url" content="{{ canonical }}">
+  <meta property="og:image" content="{{ public_url }}/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="{{ brand_name }}: Shorts that end where the sentence ends.">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="{{ self.title() }}">
+  <meta name="twitter:description" content="{{ self.description() }}">
+  <meta name="twitter:image" content="{{ public_url }}/og.png">
+
+  <link rel="icon" href="/favicon.ico" sizes="48x48">
+  <link rel="icon" href="{{ asset('/static/icons/icon.svg') }}" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="{{ asset('/static/icons/apple-touch-icon.png') }}">
+  <link rel="manifest" href="/site.webmanifest">
+
+  {# CSS url() cannot carry ?v=, so preload the same plain path or the font downloads twice. #}
+  <link rel="preload" href="/static/fonts/archivo-latin-wdth-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/static/fonts/ibm-plex-mono-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="{{ asset('/static/css/tokens.css') }}">
+  <link rel="stylesheet" href="{{ asset('/static/css/base.css') }}">
+  <link rel="stylesheet" href="{{ asset('/static/css/components.css') }}">
+  {% block styles %}<link rel="stylesheet" href="{{ asset('/static/css/pages.css') }}">{% endblock %}
+  {% block head_extra %}{% endblock %}
+
+  <script src="{{ asset('/ts/t.js') }}" defer></script>
+  <script type="module" src="{{ asset('/static/js/site.js') }}"></script>
+  {% block scripts %}{% endblock %}
+</head>
+<body class="{% block body_class %}{% endblock %}">
+  <a class="skip-link" href="#main" data-track="skip-to-content">Skip to content</a>
+  {% include "partials/header.html" %}
+  <main id="main" tabindex="-1">
+    {% block content %}{% endblock %}
+  </main>
+  {% include "partials/footer.html" %}
+  <div class="toasts" data-toasts role="status" aria-live="polite"></div>
+</body>
+</html>

@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Something broke | {{ brand_name }}{% endblock %}
+{% block description %}An error on our side.{% endblock %}
+{% block robots %}<meta name="robots" content="noindex">{% endblock %}
+
+{% block content %}
+<section class="section error-page" data-track-section="error-500" aria-labelledby="error-title">
+  <div class="wrap grid">
+    <p class="rubric">Server error</p>
+    <div class="story">
+      <p class="error-page__code mono" aria-hidden="true">500</p>
+      <h1 id="error-title">Something broke on our side.</h1>
+      <p class="lede">It’s not something you did. We log every error like this one. Try again in a minute; if it keeps happening, tell us what you were doing.</p>
+      <div class="cluster error-page__actions">
+        <a class="btn" href="" data-track="error-500-retry">Try again</a>
+        <a class="btn btn--ghost" href="/" data-track="error-500-home">Go to the home page</a>
+        <a class="btn btn--ghost" href="mailto:{{ support_email }}" data-track="error-500-support">Email support</a>
+      </div>
+    </div>
+  </div>
+</section>
+{% endblock %}

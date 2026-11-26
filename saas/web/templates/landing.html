@@ -1,0 +1,415 @@
+{% extends "base.html" %}
+{% from "partials/waitlist_form.html" import waitlist_form with context %}
+{% from "partials/clip.html" import clip_frame %}
+
+{% block title %}{{ brand_name }}: long videos into finished Shorts, priced by the minute{% endblock %}
+{% block styles %}<link rel="stylesheet" href="{{ asset('/static/css/landing.css') }}">{% endblock %}
+{% block head_extra %}
+{% if turnstile_site_key %}<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>{% endif %}
+{% endblock %}
+{% block scripts %}
+<script type="module" src="{{ asset('/static/js/waitlist.js') }}"></script>
+<script type="module" src="{{ asset('/static/js/landing.js') }}"></script>
+{% endblock %}
+{% block body_class %}page-landing{% endblock %}
+
+{% block content %}
+
+{# ---------------------------------------------------------------- hero ---------------------------------------- #}
+<section class="hero" data-track-section="hero" aria-labelledby="hero-title">
+  <div class="wrap hero__grid">
+    <div class="hero__copy">
+      <h1 id="hero-title">Shorts that end where the <span class="mark">sentence&nbsp;ends.</span></h1>
+      <p class="lede hero__lede">Paste a link to a long video, or upload one. {{ brand_name }} picks the moments worth posting,
+        cuts them on sentence boundaries and hands back finished vertical clips: word-by-word captions,
+        framing that follows the speaker, sound, and a title ready to go.</p>
+      {% if launch_mode == "waitlist" %}
+      <div class="hero__form">{{ waitlist_form("hero") }}</div>
+      {% else %}
+      <p class="hero__form"><a class="btn btn--accent btn--lg" href="/signup" data-track="hero-cta-signup">Start with {{ free_credits }} free minutes</a></p>
+      {% endif %}
+      <p class="hero__fine">{% if launch_mode == "waitlist" %}Opening in batches from the waitlist. {% endif %}You pay per minute of source video: a 40-minute podcast costs 40 credits, whether you take one clip from it or twenty.</p>
+    </div>
+
+    <figure class="hero__demo" data-demo>
+      <div class="hero__demo-head">
+        <span>Clip 1 of 3</span>
+        <span class="mono tabular"><span data-demo-clock>0:00.0</span> / 0:15.6</span>
+      </div>
+      {{ clip_frame(["Nobody", "tells", "you"], active=0, hook="The first 100 videos are practice", focus="a", credit="@yourchannel", live=true) }}
+      <div class="hero__demo-foot">
+        <span class="mono tabular" aria-label="Cut from 14:02.3 to 14:17.9 of the source">14:02.3 &rarr; 14:17.9</span>
+        <button class="btn btn--ghost btn--sm" type="button" data-demo-toggle hidden data-track="demo-toggle">Pause</button>
+      </div>
+      <figcaption class="visually-hidden">A finished clip playing: the hook title shows for the first seconds, captions light up one word at a time, and the picture moves in on whichever person is speaking.</figcaption>
+    </figure>
+  </div>
+
+  {# The source the clip above was cut from. #}
+  <div class="wrap">
+    <div class="source" data-demo-source>
+      <div class="source__head">
+        <p class="source__file"><span class="source__label">Source</span> <span class="mono">episode-41-final.mp4</span></p>
+        <dl class="source__facts">
+          <div><dt>Length</dt><dd class="mono tabular">{{ demo.duration_label }}</dd></div>
+          <div><dt>Clips</dt><dd class="mono tabular">{{ demo.clips|length }}</dd></div>
+          <div><dt>Cost</dt><dd class="mono tabular"><strong>{{ demo.credits }} credits</strong></dd></div>
+        </dl>
+      </div>
+
+      <div class="source__scale mono" aria-hidden="true"><span>0:00</span><span>18:10</span><span>36:20</span><span>54:30</span><span>1:12:40</span></div>
+      <div class="source__track">
+        <svg class="source__wave" viewBox="0 0 {{ demo.width }} 60" preserveAspectRatio="none" aria-hidden="true" focusable="false">
+          {% for c in demo.clips %}<rect class="source__seg" x="{{ c.x }}" y="0" width="{{ c.w }}" height="60"/>{% endfor %}
+          <g class="source__bars">{% for b in demo.waveform %}<rect x="{{ b.x }}" y="{{ b.y }}" width="3" height="{{ b.h }}"/>{% endfor %}</g>
+        </svg>
+        {% for c in demo.clips %}<span class="source__pin" data-pos-x="{{ c.x_pct }}" data-pos-w="{{ c.w_pct }}" aria-hidden="true">{{ c.n }}</span>{% endfor %}
+      </div>
+
+      <div class="zoom" data-zoom data-pos-x="{{ demo.clips[0].x_pct }}" data-pos-w="{{ demo.clips[0].w_pct }}" aria-hidden="true"></div>
+
+      <div class="sentences-wrap">
+        <ol class="sentences" role="list" aria-label="Clip 1, sentence by sentence">
+          <li class="sentence is-out"><span class="sentence__meta mono">213 &middot; Guest</span><p>&hellip;which was most of year two, honestly.</p></li>
+          <li class="sentence__cut" aria-hidden="true"><span class="mono">IN 14:02.3</span></li>
+          <li class="sentence is-in" data-demo-sentence data-speaker="a"><span class="sentence__meta mono">214 &middot; Host</span><p>Nobody tells you the first hundred videos are practice.</p></li>
+          <li class="sentence is-in" data-demo-sentence data-speaker="b"><span class="sentence__meta mono">215 &middot; Guest</span><p>So what changed at video one hundred and one?</p></li>
+          <li class="sentence is-in" data-demo-sentence data-speaker="a"><span class="sentence__meta mono">216 &middot; Host</span><p>I stopped guessing what people wanted,</p></li>
+          <li class="sentence is-in" data-demo-sentence data-speaker="a"><span class="sentence__meta mono">217 &middot; Host</span><p>and started reading where they stopped watching.</p></li>
+          <li class="sentence__cut" aria-hidden="true"><span class="mono">OUT 14:17.9</span></li>
+          <li class="sentence is-out"><span class="sentence__meta mono">218 &middot; Guest</span><p>Wait, where do they stop?</p></li>
+        </ol>
+      </div>
+
+      <div class="source__foot">
+        <p class="sentences__note"><strong>Clip 1, sentence by sentence.</strong> The model answers with sentence numbers, not timestamps, so a cut can only fall between two sentences.</p>
+        <ol class="source__clips" role="list" aria-label="Clips cut from this source">
+          {% for c in demo.clips %}
+          <li><span class="badge badge--accent">{{ c.n }}</span>
+            <span class="mono tabular">{{ c.start_label }} &rarr; {{ c.end_label }}</span>
+            <span class="mono tabular muted">{{ c.length }}</span></li>
+          {% endfor %}
+        </ol>
+      </div>
+    </div>
+  </div>
+</section>
+
+{# ---------------------------------------------------------------- how it works -------------------------------- #}
+<section class="section" id="how" data-track-section="how-it-works" aria-labelledby="how-title">
+  <div class="wrap grid">
+    <p class="rubric">How it works</p>
+    <div class="story">
+      <h2 id="how-title">From a link to clips you can post.</h2>
+      <ol class="steps" role="list">
+        <li class="step">
+          <span class="step__n mono">01</span>
+          <h3 class="step__title">Paste a link, or upload the file.</h3>
+          <div class="step__body">
+            <p>Links from {{ sources[:-1]|join(", ") }} and {{ sources[-1] }}, or a file up to {{ max_upload }}.
+              Before anything runs you see the length and what it will cost.</p>
+            <p class="step__detail">Only send video you made or have permission to use.</p>
+          </div>
+        </li>
+        <li class="step">
+          <span class="step__n mono">02</span>
+          <h3 class="step__title">It is transcribed, word by word.</h3>
+          <div class="step__body">
+            <p>Every word gets its own timestamp. English and Hindi are captioned. When nobody is talking,
+              the video is read for motion, loudness and scene changes instead.</p>
+          </div>
+        </li>
+        <li class="step">
+          <span class="step__n mono">03</span>
+          <h3 class="step__title">The moments are chosen by sentence.</h3>
+          <div class="step__body">
+            <p>The transcript goes to the model as numbered sentences and comes back as sentence numbers,
+              so no clip starts or stops halfway through one.</p>
+            <p class="step__detail">You set how many clips (1 to {{ max_clips }}) and the longest a clip may run ({{ clip_seconds[0] }} to {{ clip_seconds[1] }} seconds).</p>
+          </div>
+        </li>
+        <li class="step">
+          <span class="step__n mono">04</span>
+          <h3 class="step__title">Each one is edited, not just trimmed.</h3>
+          <div class="step__body">
+            <p>Weak sentences are dropped. Stutters, filler words and long pauses are cut. The framing changes every
+              1 to 2.4 seconds and stays on whoever is speaking. Emphasis gets a flash, a shake and a thud.</p>
+          </div>
+        </li>
+        <li class="step">
+          <span class="step__n mono">05</span>
+          <h3 class="step__title">You review, edit the text, and download.</h3>
+          <div class="step__body">
+            <p>Each clip arrives with a title, a description and hashtags. Change any of them, then download the MP4.</p>
+            <p class="step__detail">Scheduled posting to your own YouTube channel comes after launch.</p>
+          </div>
+        </li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+{# ---------------------------------------------------------------- anatomy ------------------------------------- #}
+<section class="section anatomy" id="clip" data-track-section="clip-anatomy" aria-labelledby="clip-title">
+  <div class="wrap grid">
+    <p class="rubric">What you get</p>
+    <div class="story">
+      <h2 id="clip-title">Every clip comes back finished, not as a rough cut.</h2>
+      <p class="lede">1080&times;1920 MP4, stereo sound, ready for Shorts, Reels or TikTok. This is what is in one.</p>
+
+      <div class="anatomy__body">
+        <figure class="anatomy__figure">
+          {% call clip_frame(["started", "reading", "where"], active=1, hook="The first 100 videos are practice", focus="b", credit="@yourchannel", meme=true, progress="mid") %}
+            <span class="pin pin--bar" aria-hidden="true">1</span>
+            <span class="pin pin--hook" aria-hidden="true">2</span>
+            <span class="pin pin--picture" aria-hidden="true">3</span>
+            <span class="pin pin--meme" aria-hidden="true">4</span>
+            <span class="pin pin--credit" aria-hidden="true">5</span>
+            <span class="pin pin--caption" aria-hidden="true">6</span>
+          {% endcall %}
+          <figcaption class="visually-hidden">A finished clip with its parts numbered: progress bar, hook, picture, reaction GIF, credit line and captions.</figcaption>
+        </figure>
+
+        <div class="anatomy__side">
+        <ol class="legend" role="list">
+          <li><span class="legend__n">1</span><div><h3 class="h4">Progress bar</h3><p>A thin yellow bar fills across the top as the clip plays.</p></div></li>
+          <li><span class="legend__n">2</span><div><h3 class="h4">Hook</h3><p>A title for the first 2.5 seconds, written from what is actually said.</p></div></li>
+          <li><span class="legend__n">3</span><div><h3 class="h4">Framing on the speaker</h3><p>Wide footage sits full width over a dimmed copy of itself. The picture moves in on whoever is talking, and only switches on a cut or a beat, so it reads as an edit.</p></div></li>
+          <li><span class="legend__n">4</span><div><h3 class="h4">Reaction memes</h3><p>Up to three per clip, on the strongest beats. One switch turns them off.</p></div></li>
+          <li><span class="legend__n">5</span><div><h3 class="h4">Credit line</h3><p>The creator’s name stays on screen for the whole clip.</p></div></li>
+          <li><span class="legend__n">6</span><div><h3 class="h4">Word captions</h3><p>One word lights up at a time, timed to the voice. If the source already has captions burned in, ours are left off so nothing shows twice.</p></div></li>
+          <li class="legend__plain"><span class="legend__n">+</span><div><h3 class="h4">B-roll, only where it fits</h3><p>Stock footage replaces the picture when a vision check agrees it matches the words being said. Credited in the description.</p></div></li>
+          <li class="legend__plain"><span class="legend__n">+</span><div><h3 class="h4">Sound</h3><p>Effects are synthesised, so there is nothing to license. Music is optional and ducks under the voice.</p></div></li>
+        </ol>
+
+      <div class="meta-card" aria-labelledby="meta-title">
+        <div class="meta-card__head">
+          <h3 class="h4" id="meta-title">The text comes with it</h3>
+          <span class="badge">editable before download</span>
+        </div>
+        <dl class="meta-card__fields">
+          <div><dt>Title</dt><dd>The first 100 videos are practice</dd></div>
+          <div><dt>Description</dt><dd>Why the first hundred uploads matter less than what you learn from them.<br><span class="muted">Credit: @yourchannel &middot; B-roll: Pexels</span></dd></div>
+          <div><dt>Hashtags</dt><dd class="mono">#shorts #podcast #creator #youtubegrowth</dd></div>
+        </dl>
+      </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+{# ---------------------------------------------------------------- languages ----------------------------------- #}
+<section class="section" id="languages" data-track-section="languages" aria-labelledby="lang-title">
+  <div class="wrap grid">
+    <p class="rubric">Languages</p>
+    <div class="story">
+      <h2 id="lang-title">Captions in English and Hindi.</h2>
+      <div class="lang">
+        <figure class="spec">
+          <div class="spec__screen"><p class="caption-type spec__caption"><span>Nobody</span> <span class="is-active">tells</span> <span>you</span></p></div>
+          <figcaption><strong>English</strong> <span class="muted">Word timings from the speech model.</span></figcaption>
+        </figure>
+        <figure class="spec">
+          <div class="spec__screen"><p class="caption-type spec__caption" lang="hi"><span>पहले</span> <span class="is-active">सौ</span> <span>वीडियो</span></p></div>
+          <figcaption><strong>Hindi</strong> <span class="muted">A Hindi speech model, captioned in Devanagari.</span></figcaption>
+        </figure>
+        <div class="lang__text">
+          <p>Leave the language on auto, or set it per job. Hindi speech goes to a model built for Hindi and is
+            captioned in Devanagari, in the same typeface the renderer uses.</p>
+          <p>Other languages still get clips. They are cut on motion, loudness and scene changes instead of speech,
+            and come without word captions for now.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+{# ---------------------------------------------------------------- pricing ------------------------------------- #}
+<section class="section pricing" id="pricing" data-track-section="pricing" aria-labelledby="pricing-title">
+  <div class="wrap grid">
+    <p class="rubric">Pricing</p>
+    <div class="story">
+      <h2 id="pricing-title">You pay for minutes of source video. Nothing else.</h2>
+      <p class="lede">One credit is one minute of the video you send, rounded up per job. Taking {{ max_clips }} clips from it
+        costs the same as taking one. If a job fails, its credits go back to your balance.</p>
+
+      {% if pricing %}
+      <div class="price-tables">
+        {% if pricing.packs %}
+        <div class="price-table">
+          <h3 class="h4">Credit packs <span class="muted">pay once</span></h3>
+          <div class="table-wrap">
+            <table class="table">
+              <thead><tr><th scope="col">Pack</th><th scope="col" class="num">Price</th><th scope="col" class="num">Per minute</th></tr></thead>
+              <tbody>
+                {% for p in pricing.packs %}
+                <tr><th scope="row">{{ p.name }}{% if p.description %}<span class="table__note">{{ p.description }}</span>{% endif %}</th>
+                  <td class="num">{{ p.price_label }}</td><td class="num">{{ p.per_minute or "" }}</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        {% endif %}
+        {% if pricing.plans %}
+        <div class="price-table">
+          <h3 class="h4">Plans <span class="muted">billed monthly</span></h3>
+          <div class="table-wrap">
+            <table class="table">
+              <thead><tr><th scope="col">Plan</th><th scope="col" class="num">Minutes a month</th><th scope="col" class="num">Price</th><th scope="col" class="num">Per minute</th></tr></thead>
+              <tbody>
+                {% for p in pricing.plans %}
+                <tr><th scope="row">{{ p.name }}{% if p.description %}<span class="table__note">{{ p.description }}</span>{% endif %}</th>
+                  <td class="num">{{ p.credits }}</td><td class="num">{{ p.price_label }}</td><td class="num">{{ p.per_minute or "" }}</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% set rollover = pricing.plans|map(attribute="rollover_months")|max %}
+          {% if rollover %}<p class="price-table__foot">Unused plan minutes carry over for {{ rollover }} month{{ "s" if rollover != 1 }}.</p>{% endif %}
+        </div>
+        {% endif %}
+      </div>
+      {% else %}
+      <div class="price-pending">
+        <p class="price-pending__title">Prices are announced at launch.</p>
+        <p class="muted">Everyone on the waitlist hears them first.</p>
+      </div>
+      {% endif %}
+
+      <table class="receipt">
+        <caption>How credits are counted</caption>
+        <thead><tr><th scope="col">Source</th><th scope="col" class="num">Length</th><th scope="col" class="num">Credits</th></tr></thead>
+        <tbody>
+          {% for row in credit_examples %}
+          <tr><th scope="row">{{ row.label }}</th><td class="num">{{ row.length }}</td><td class="num"><strong>{{ row.credits }}</strong></td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+      <p class="pricing__free">New accounts get <strong>{{ free_credits }} free credits</strong>, once per person. Clips made with free credits carry a small watermark.</p>
+    </div>
+  </div>
+</section>
+
+{# ---------------------------------------------------------------- API / MCP ----------------------------------- #}
+<section class="section api on-dark" id="api" data-track-section="api" aria-labelledby="api-title">
+  <div class="wrap grid">
+    <p class="rubric">API and MCP</p>
+    <div class="story api__story">
+      <div class="api__text">
+        <h2 id="api-title">Make clips from code, or from your AI assistant.</h2>
+        <p>Everything the web app does is in the HTTP API: estimate a link, start a job, check on it, fetch the clips
+          and signed download links. The same actions are an MCP server, so Claude, ChatGPT or Cursor can make clips
+          when you ask in plain words.</p>
+        <p class="api__note">Keys are created in your account and shown once.
+          {%- if pricing and pricing.api_plans %} API and MCP access come with the {{ pricing.api_plans|join(" and ") }} plan{{ "s" if pricing.api_plans|length > 1 }}.
+          {%- else %} Which plans include API access is listed with the prices at launch.{% endif %}</p>
+      </div>
+      <div class="tabs api__tabs" data-tabs>
+        <div class="tabs__list" role="tablist" aria-label="Ways to connect">
+          <button class="tabs__tab" role="tab" type="button" id="tab-http" aria-controls="panel-http" aria-selected="true" data-track="api-tab-http">HTTP</button>
+          <button class="tabs__tab" role="tab" type="button" id="tab-mcp" aria-controls="panel-mcp" aria-selected="false" tabindex="-1" data-track="api-tab-mcp">MCP</button>
+        </div>
+        <div class="tabs__panel" role="tabpanel" id="panel-http" aria-labelledby="tab-http" tabindex="0">
+          <div class="code">
+            <div class="code__bar"><span>Start a job</span><button class="btn btn--ghost btn--sm" type="button" data-copy="#code-http" data-track="api-copy-http">Copy</button></div>
+<pre id="code-http"><code>curl {{ public_url }}/api/v1/jobs \
+  -H <span class="c-str">"Authorization: Bearer dsk_live_…"</span> \
+  -H <span class="c-str">"Content-Type: application/json"</span> \
+  -d <span class="c-str">'{"source_url": "https://www.youtube.com/watch?v=…",
+       "options": {"clips": 5, "language": "auto",
+                   "max_clip_seconds": 45}}'</span></code></pre>
+          </div>
+          <p class="api__flow mono"><span>POST /api/v1/estimate</span><span>POST /api/v1/jobs</span><span>GET /api/v1/jobs/{id}</span><span>GET /api/v1/clips/{id}/links</span></p>
+        </div>
+        <div class="tabs__panel" role="tabpanel" id="panel-mcp" aria-labelledby="tab-mcp" tabindex="0" hidden>
+          <div class="code">
+            <div class="code__bar"><span>MCP client config</span><button class="btn btn--ghost btn--sm" type="button" data-copy="#code-mcp" data-track="api-copy-mcp">Copy</button></div>
+<pre id="code-mcp"><code>{
+  <span class="c-key">"mcpServers"</span>: {
+    <span class="c-key">"{{ brand_name|lower|replace(' ', '-') }}"</span>: {
+      <span class="c-key">"url"</span>: <span class="c-str">"{{ public_url }}/mcp"</span>,
+      <span class="c-key">"headers"</span>: {
+        <span class="c-key">"Authorization"</span>: <span class="c-str">"Bearer dsk_live_…"</span>
+      }
+    }
+  }
+}</code></pre>
+          </div>
+          <p class="api__flow"><span class="c-dim">Then ask:</span> &ldquo;Cut five Shorts from this interview and give me the download links.&rdquo;</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+{# ---------------------------------------------------------------- FAQ ----------------------------------------- #}
+<section class="section" id="faq" data-track-section="faq" aria-labelledby="faq-title">
+  <div class="wrap grid">
+    <p class="rubric">Questions</p>
+    <div class="story">
+      <h2 id="faq-title">Before you ask.</h2>
+      <div class="faq">
+        <details class="disclosure">
+          <summary data-track="faq-credit">What counts as a credit?</summary>
+          <div class="disclosure__body"><p>One minute of source video, rounded up per job. A 72-minute-40-second video is 73 credits. The number of clips you take from it does not change the price.</p></div>
+        </details>
+        <details class="disclosure">
+          <summary data-track="faq-failed">What happens if a job fails?</summary>
+          <div class="disclosure__body"><p>Credits are set aside when a job starts. If it fails or you cancel it, they go back to your balance.</p></div>
+        </details>
+        <details class="disclosure">
+          <summary data-track="faq-sources">Which links work?</summary>
+          <div class="disclosure__body"><p>{{ sources|join(", ") }}. Or upload the file directly, up to {{ max_upload }}. Private videos need to be uploaded.</p></div>
+        </details>
+        <details class="disclosure">
+          <summary data-track="faq-languages">Which languages are captioned?</summary>
+          <div class="disclosure__body"><p>English and Hindi (in Devanagari). Videos in other languages are still clipped, using motion, loudness and scene changes, but without word captions for now.</p></div>
+        </details>
+        <details class="disclosure">
+          <summary data-track="faq-rights">Can I clip someone else’s video?</summary>
+          <div class="disclosure__body"><p>Only if you have their permission. You need the rights to anything you send. Each clip carries a credit line, but a credit is not permission.</p></div>
+        </details>
+        <details class="disclosure">
+          <summary data-track="faq-edit">Can I change what the clip says?</summary>
+          <div class="disclosure__body"><p>You can edit every title, description and hashtag before you download. The captions follow what was said in the video.</p></div>
+        </details>
+        <details class="disclosure">
+          <summary data-track="faq-free">Is there a free tier?</summary>
+          <div class="disclosure__body"><p>New accounts get {{ free_credits }} free credits, once per person. Clips made with free credits carry a small watermark.</p></div>
+        </details>
+        <details class="disclosure">
+          <summary data-track="faq-retention">How long are my clips kept?</summary>
+          <div class="disclosure__body"><p>{{ retention_days }} days after they are made, then they are deleted. Download what you want to keep.</p></div>
+        </details>
+        <details class="disclosure">
+          <summary data-track="faq-youtube">Can it post to YouTube for me?</summary>
+          <div class="disclosure__body"><p>Not yet. Scheduled posting to your own channel comes after launch. For now you download the MP4s.</p></div>
+        </details>
+        <details class="disclosure">
+          <summary data-track="faq-when">When can I use it?</summary>
+          <div class="disclosure__body"><p>Invites go out from the waitlist in batches. Every person who joins with your link moves you up the list.</p></div>
+        </details>
+      </div>
+    </div>
+  </div>
+</section>
+
+{# ---------------------------------------------------------------- join ---------------------------------------- #}
+{% if launch_mode == "waitlist" %}
+<section class="section join" id="join" data-track-section="join" aria-labelledby="join-title">
+  <div class="wrap grid">
+    <div class="join__copy">
+      <h2 id="join-title">Get in early.</h2>
+      <p class="lede">We let people in from the waitlist in batches. Your place moves up for every person who joins with your link.</p>
+      <p class="muted small">We email you to confirm your address, and again when your invite is ready.</p>
+    </div>
+    <div class="join__form">
+      {{ waitlist_form("footer", full=true) }}
+    </div>
+  </div>
+</section>
+{% endif %}
+{% endblock %}

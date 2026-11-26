@@ -349,7 +349,7 @@ def test_next_choice_is_tried_when_the_best_will_not_download(monkeypatch):
 def test_ai_is_told_the_words_around_the_cutaway(monkeypatch):
     _search_returns(monkeypatch, rain=[_candidate(1)])
     told = []
-    monkeypatch.setattr(shots, "judge", lambda found, spoken: told.append(spoken) or shots.Verdict(list(found)))
+    monkeypatch.setattr(shots, "judge", lambda found, spoken, subject="": told.append(spoken) or shots.Verdict(list(found)))
     attach_stock(_plan((15.0, "rain")))
     words = told[0].split()
     # Shot runs 15-17, plus a second either side, and words are half a second apart.
@@ -359,7 +359,7 @@ def test_ai_is_told_the_words_around_the_cutaway(monkeypatch):
 def test_words_after_a_cut_inside_the_shot_are_included(monkeypatch):
     _search_returns(monkeypatch, rain=[_candidate(1)])
     told = []
-    monkeypatch.setattr(shots, "judge", lambda found, spoken: told.append(spoken) or shots.Verdict(list(found)))
+    monkeypatch.setattr(shots, "judge", lambda found, spoken, subject="": told.append(spoken) or shots.Verdict(list(found)))
     first = [Word(f"a{i}", 10 + i * 0.4, 10.3 + i * 0.4, 0.99) for i in range(15)]
     second = [Word(f"c{i}", 34 + i * 0.4, 34.3 + i * 0.4, 0.99) for i in range(15)]
     plan = EditPlan(words=first + second, segments=[(10.0, 16.0), (34.0, 40.0)], speed=1.12,
@@ -374,101 +374,91 @@ def test_words_after_a_cut_inside_the_shot_are_included(monkeypatch):
 def test_a_shot_with_no_position_in_the_edit_skips_the_ai(monkeypatch):
     _search_returns(monkeypatch, rain=[_candidate(1)])
     calls = []
-    monkeypatch.setattr(shots, "judge", lambda found, spoken: calls.append(spoken))
+    monkeypatch.setattr(shots, "judge", lambda found, spoken, subject="": calls.append(spoken))
     plan = _plan((99.0, "rain"))
     attach_stock(plan)
-    assert not calls and plan.cutaways[0].clip.video_id == "pixabay-1"
+    # Nothing to judge it against means it is never used: an unjudged stock result is a guess.
+    assert not calls and plan.cutaways == []
 
 
 def test_chosen_shot_goes_on_the_cutaway(monkeypatch):
     _search_returns(monkeypatch, rain=[_candidate(1), _candidate(2)])
-    monkeypatch.setattr(shots, "judge", lambda found, spoken: shots.Verdict([found[1]]))
+    monkeypatch.setattr(shots, "judge", lambda found, spoken, subject="": shots.Verdict([found[1]]))
     plan = _plan((15.0, "rain"))
     assert attach_stock(plan) == [] and plan.cutaways[0].clip.video_id == "pixabay-2"
 
 
-def test_better_search_is_tried_once_and_recorded(monkeypatch):
+def test_a_rejection_is_final_and_no_broader_search_is_tried(monkeypatch):
+    """A second, looser search is how a duck came to illustrate a wet ball: rejected means no cutaway."""
     searches = _search_returns(monkeypatch, rain=[_candidate(1)], hot_sun=[_candidate(2)])
-
-    def judge(found, spoken):
-        if found[0].video_id == "pixabay-1":
-            return shots.Verdict([], "hot sun")
-        return shots.Verdict(list(found))
-
-    monkeypatch.setattr(shots, "judge", judge)
-    plan = _plan((15.0, "rain"))
-    attach_stock(plan)
-    assert searches == ["rain", "hot sun"]
-    assert plan.cutaways[0].clip.video_id == "pixabay-2" and plan.cutaways[0].query == "hot sun"
-
-
-def test_second_rejection_drops_the_cutaway_without_a_third_search(monkeypatch):
-    searches = _search_returns(monkeypatch, rain=[_candidate(1)], hot_sun=[_candidate(2)], snow=[_candidate(3)])
-    replies = iter(["hot sun", "snow"])
-    monkeypatch.setattr(shots, "judge", lambda found, spoken: shots.Verdict([], next(replies)))
+    monkeypatch.setattr(shots, "judge", lambda found, spoken, subject="": shots.Verdict([], "hot sun"))
     plan = _plan((15.0, "rain"))
     assert attach_stock(plan) == [] and plan.cutaways == []
-    assert searches == ["rain", "hot sun"]
-
-
-def test_suggesting_the_same_search_again_is_not_retried(monkeypatch):
-    searches = _search_returns(monkeypatch, rain=[_candidate(1)])
-    monkeypatch.setattr(shots, "judge", lambda found, spoken: shots.Verdict([], "RAIN"))
-    plan = _plan((15.0, "rain"))
-    attach_stock(plan)
-    assert searches == ["rain"] and plan.cutaways == []
+    assert searches == ["rain"]
 
 
 def test_rejection_without_a_suggestion_drops_the_cutaway(monkeypatch):
     searches = _search_returns(monkeypatch, rain=[_candidate(1)])
-    monkeypatch.setattr(shots, "judge", lambda found, spoken: shots.Verdict([]))
+    monkeypatch.setattr(shots, "judge", lambda found, spoken, subject="": shots.Verdict([]))
     plan = _plan((15.0, "rain"))
     assert attach_stock(plan) == [] and plan.cutaways == [] and searches == ["rain"]
 
 
-def test_a_suggestion_from_one_cutaway_never_leaks_into_the_next(monkeypatch):
+def test_each_cutaway_gets_one_search_only(monkeypatch):
     searches = _search_returns(monkeypatch, rain=[_candidate(1)], sun=[_candidate(2)], hot=[_candidate(3)])
     replies = iter([shots.Verdict([], "hot"), shots.Verdict([]), shots.Verdict([])])
-    monkeypatch.setattr(shots, "judge", lambda found, spoken: next(replies))
+    monkeypatch.setattr(shots, "judge", lambda found, spoken, subject="": next(replies))
     attach_stock(_plan((12.0, "rain"), (18.0, "sun")))
-    assert searches == ["rain", "hot", "sun"]
+    assert searches == ["rain", "sun"]
 
 
-def test_better_search_that_is_rate_limited_stops_the_job_cleanly(monkeypatch):
-    def search(query):
-        if query == "hot":
-            raise broll.RateLimited("Pixabay rate limit reached")
-        return [_candidate(1)]
-
-    monkeypatch.setattr(broll, "search", search)
-    monkeypatch.setattr(shots, "judge", lambda found, spoken: shots.Verdict([], "hot"))
-    session = broll.StockSession()
-    plan = _plan((12.0, "rain"), (18.0, "sun"))
-    warnings = attach_stock(plan, session)
-    assert session.stopped and plan.cutaways == [] and "rate limit" in warnings[0]
+def test_only_the_judges_first_choice_is_used(monkeypatch):
+    _search_returns(monkeypatch, rain=[_candidate(1), _candidate(2), _candidate(3)])
+    monkeypatch.setattr(shots, "judge", lambda found, spoken, subject="": shots.Verdict([found[2], found[0]]))
+    downloads = []
+    monkeypatch.setattr(broll, "_download", lambda link, path: downloads.append(link) or path.parent.mkdir(
+        parents=True, exist_ok=True) or path.write_bytes(b"v" * 2000))
+    plan = _plan((15.0, "rain"))
+    attach_stock(plan)
+    assert plan.cutaways[0].clip.video_id == "pixabay-3" and len(downloads) == 1
 
 
-def test_used_shot_is_not_offered_again_on_the_better_search(monkeypatch):
-    _search_returns(monkeypatch, rain=[_candidate(1)], sun=[_candidate(2)], hot=[_candidate(1), _candidate(3)])
+def test_the_subject_reaches_the_judge(monkeypatch):
+    _search_returns(monkeypatch, rain=[_candidate(1)])
+    told = []
+    monkeypatch.setattr(shots, "judge",
+                        lambda found, spoken, subject="": told.append(subject) or shots.Verdict(list(found)))
+    plan = _plan((15.0, "rain"))
+    plan.cutaways[0].subject = "rain"
+    attach_stock(plan)
+    assert told == ["rain"]
+
+
+def test_the_judge_prompt_names_the_subject_and_says_when_in_doubt_none():
+    prompt = shots._prompt("the ball is wet", 3, subject="wet ball")
+    assert 'has to show: "wet ball"' in prompt and "When in doubt, choose none" in prompt
+    assert '"search"' not in prompt
+
+
+def test_used_shot_is_not_offered_to_the_next_cutaway(monkeypatch):
+    _search_returns(monkeypatch, rain=[_candidate(1)], sun=[_candidate(1), _candidate(3)])
     offered = []
 
-    def judge(found, spoken):
+    def judge(found, spoken, subject=""):
         offered.append([c.video_id for c in found])
-        if found[0].video_id == "pixabay-2":
-            return shots.Verdict([], "hot")
         return shots.Verdict(list(found))
 
     monkeypatch.setattr(shots, "judge", judge)
     plan = _plan((12.0, "rain"), (18.0, "sun"))
     attach_stock(plan)
-    assert offered == [["pixabay-1"], ["pixabay-2"], ["pixabay-3"]]
+    assert offered == [["pixabay-1"], ["pixabay-3"]]
     assert [c.clip.video_id for c in plan.cutaways] == ["pixabay-1", "pixabay-3"]
 
 
 def test_when_the_ai_fails_no_unjudged_stock_is_used_and_it_is_not_asked_again(monkeypatch):
     _search_returns(monkeypatch, rain=[_candidate(1)], sun=[_candidate(2)])
     calls = []
-    monkeypatch.setattr(shots, "judge", lambda found, spoken: calls.append(spoken))
+    monkeypatch.setattr(shots, "judge", lambda found, spoken, subject="": calls.append(spoken))
     session = broll.StockSession()
     plan = _plan((12.0, "rain"), (18.0, "sun"))
     warnings = attach_stock(plan, session)
@@ -480,12 +470,14 @@ def test_when_the_ai_fails_no_unjudged_stock_is_used_and_it_is_not_asked_again(m
     assert attach_stock(later, session) == [] and later.cutaways == [] and len(calls) == 1
 
 
-def test_without_ai_the_first_match_is_used_and_nothing_extra_is_downloaded(monkeypatch):
-    _search_returns(monkeypatch, rain=[_candidate(1), _candidate(2)])
+def test_without_ai_there_is_no_stock_and_nothing_is_searched(monkeypatch):
+    searches = _search_returns(monkeypatch, rain=[_candidate(1), _candidate(2)])
     monkeypatch.setattr(ai, "available", lambda: False)
     asked = _stub_thumbnails(monkeypatch)
     plan = _plan((15.0, "rain"))
-    assert attach_stock(plan) == [] and plan.cutaways[0].clip.video_id == "pixabay-1" and not asked
+    warnings = attach_stock(plan)
+    assert plan.cutaways == [] and not asked and searches == []
+    assert warnings and "no AI" in warnings[0]
 
 
 def test_dead_thumbnails_cost_one_search_and_leave_the_ai_on(monkeypatch):
@@ -502,34 +494,8 @@ def test_dead_thumbnails_cost_one_search_and_leave_the_ai_on(monkeypatch):
     plan = _plan((12.0, "rain"), (18.0, "sun"))
     assert attach_stock(plan, session) == []
     assert not session.picking_failed and len(asks) == 1
-    assert [c.clip.video_id for c in plan.cutaways] == ["pixabay-1", "pixabay-3"]
-
-
-def test_better_search_never_offers_a_shot_already_rejected(monkeypatch):
-    searches = _search_returns(monkeypatch, rain=[_candidate(1), _candidate(2)], hot=[_candidate(1), _candidate(5)])
-    _stub_thumbnails(monkeypatch)
-    offered = []
-    replies = iter([{"shots": [], "search": "hot"}, {"shots": [1]}])
-
-    def ask(prompt, *, files=(), model=""):
-        offered.append(prompt.split(" stock video shots")[0])
-        return next(replies)
-
-    monkeypatch.setattr(ai, "ask_json", ask)
-    plan = _plan((15.0, "rain"))
-    attach_stock(plan)
-    assert searches == ["rain", "hot"] and offered[1].endswith("shows 1")
-    assert plan.cutaways[0].clip.video_id == "pixabay-5"
-
-
-def test_ai_failing_on_the_better_search_does_not_bring_back_a_rejected_shot(monkeypatch):
-    _search_returns(monkeypatch, rain=[_candidate(1)], hot=[_candidate(1), _candidate(5)])
-    _stub_thumbnails(monkeypatch)
-    replies = iter([{"shots": [], "search": "hot"}, None])
-    monkeypatch.setattr(ai, "ask_json", lambda *a, **k: next(replies))
-    plan = _plan((15.0, "rain"))
-    attach_stock(plan)
-    assert plan.cutaways == []  # neither the rejected shot nor an unjudged one
+    # The rain shot could not be shown to the judge, so it is not used unjudged.
+    assert [c.clip.video_id for c in plan.cutaways] == ["pixabay-3"]
 
 
 def _failing_downloads(monkeypatch, bad):
@@ -544,7 +510,7 @@ def _failing_downloads(monkeypatch, bad):
 
 def test_one_bad_file_chosen_by_the_ai_costs_only_that_cutaway(monkeypatch):
     _search_returns(monkeypatch, a=[_candidate(1)], b=[_candidate(2)], c=[_candidate(3)])
-    monkeypatch.setattr(shots, "judge", lambda found, spoken: shots.Verdict(list(found)))
+    monkeypatch.setattr(shots, "judge", lambda found, spoken, subject="": shots.Verdict(list(found)))
     _failing_downloads(monkeypatch, {1, 2})
     session = broll.StockSession()
     plan = _plan((11.0, "a"), (15.0, "b"), (19.0, "c"))
@@ -556,7 +522,7 @@ def test_one_bad_file_chosen_by_the_ai_costs_only_that_cutaway(monkeypatch):
 def test_four_bad_files_in_a_row_still_mean_a_dead_cdn(monkeypatch):
     searches = _search_returns(monkeypatch, a=[_candidate(1)], b=[_candidate(2)], c=[_candidate(3)],
                                d=[_candidate(4)], e=[_candidate(5)])
-    monkeypatch.setattr(shots, "judge", lambda found, spoken: shots.Verdict(list(found)))
+    monkeypatch.setattr(shots, "judge", lambda found, spoken, subject="": shots.Verdict(list(found)))
     _failing_downloads(monkeypatch, {1, 2, 3, 4, 5})
     session = broll.StockSession()
     plan = _plan((11.0, "a"), (13.0, "b"), (15.0, "c"), (17.0, "d"), (19.0, "e"))
@@ -567,7 +533,7 @@ def test_four_bad_files_in_a_row_still_mean_a_dead_cdn(monkeypatch):
 def test_a_crash_while_judging_costs_the_shot_but_not_the_clip(monkeypatch):
     _search_returns(monkeypatch, rain=[_candidate(1)])
 
-    def boom(found, spoken):
+    def boom(found, spoken, subject=""):
         raise RuntimeError("sheet went wrong")
 
     monkeypatch.setattr(shots, "judge", boom)

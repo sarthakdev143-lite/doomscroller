@@ -1,0 +1,20 @@
+{% extends "admin/base.html" %}
+{% import "admin/_ui.html" as ui %}
+{% block title %}Pages{% endblock %}
+{% block heading %}Pages{% endblock %}
+{% block tools %}{{ ui.range_picker(range, qs) }}{% endblock %}
+{% block content %}
+<section class="adm-card adm-card-flush">
+  <div class="adm-table-wrap"><table class="adm-table">
+    <thead><tr><th>Page</th><th class="num">Views</th><th class="num">Visitors</th><th class="num">Avg engaged</th><th class="num">Avg scroll</th><th class="num">Clicks</th></tr></thead>
+    <tbody>
+    {% for r in rows %}
+      <tr data-href="/admin/pages/view?path={{ r.path|urlencode }}&range={{ range }}">
+        <td><span class="adm-inline-bar" style="--w: {{ r.pct }}%"></span><a class="adm-mono" href="/admin/pages/view?path={{ r.path|urlencode }}&range={{ range }}">{{ r.path }}</a></td>
+        <td class="num">{{ h.num(r.views) }}</td><td class="num">{{ h.num(r.visitors) }}</td>
+        <td class="num">{{ r.avg_active_s }}s</td><td class="num">{{ r.avg_scroll }}%</td><td class="num">{{ h.num(r.clicks) }}</td>
+      </tr>
+    {% else %}<tr class="adm-empty-row"><td colspan="6">No page views in this range.</td></tr>{% endfor %}
+    </tbody></table></div>
+</section>
+{% endblock %}

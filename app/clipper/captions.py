@@ -38,7 +38,9 @@ _BEAT_PAD = 60
 _BEAT_LINE_CHARS = 10
 _COUNT_STEPS = 10
 _COUNT_SECONDS = 0.45
-_DIM_SHAPE = f"m 0 0 l {_WIDTH} 0 l {_WIDTH} {_HEIGHT} l 0 {_HEIGHT}"
+# Graphics never fill or dim the whole frame. A full-screen yellow card and a half-black dim behind
+# every number read as random solid colour washes over the video (owner, Nov 2026), so beat text
+# stands on its own thick outline instead, over the untouched picture.
 # A whole quantity, so "40°C" and "$5 BILLION" count up. "B2B", "COVID-19", "24/7" and bare
 # years stay still: counting them would show readings nobody said.
 COUNTABLE = re.compile(r"^(?!(?:19|20)\d\d(?:\s|$))([$€£₹]?)(\d[\d,]*(?:\.\d+)?)((?:%|°[CF]?|[KMBX])?(?:\s+[^\d\s]+)*)$")
@@ -276,7 +278,7 @@ def _beat_lines(text: str) -> list[str]:
 
 
 def _beat_events(beats: Sequence[tuple], font_path: Optional[str], y: int = Layout.beat_y) -> list[str]:
-    """Graphics for (output_time, text, style, label, seconds). Layer 0 sits under captions."""
+    """Graphics for (output_time, text, style, label, seconds): outlined text only, never a fill."""
     events: list[str] = []
     centre = _WIDTH // 2
     for when, text, style, label, seconds in beats:
@@ -291,14 +293,11 @@ def _beat_events(beats: Sequence[tuple], font_path: Optional[str], y: int = Layo
         size = _fitted_size(broken, _BEAT_SIZES[style], _BEAT_PAD, 1.0, font_path)
         lines = "\\N".join(broken)
         if style == "card":
-            # A full-screen card replaces the picture while the voice carries on.
-            events.append(f"Dialogue: 0,{start},{end},Beat,,0,0,0,,{{\\an7\\pos(0,0)\\p1\\bord0\\shad0\\1c{_YELLOW}}}{_DIM_SHAPE}{{\\p0}}")
+            # The turning point pops up over the picture; the footage and the voice carry on behind it.
             events.append(f"Dialogue: 3,{start},{end},Beat,,0,0,0,,"
-                          f"{{\\an5\\move({centre},{_HEIGHT // 2 + 160},{centre},{_HEIGHT // 2},0,120)\\fs{size}"
-                          f"\\bord0\\shad0\\1c&H111111&}}{lines}")
+                          f"{{\\an5\\move({centre},{y + 90},{centre},{y},0,120)\\fs{size}"
+                          f"\\1c{_YELLOW}\\fscx80\\fscy80\\t(0,120,\\fscx100\\fscy100)\\fad(40,120)}}{lines}")
             continue
-        # Dim the footage behind the text so the graphic reads at a glance.
-        events.append(f"Dialogue: 0,{start},{end},Beat,,0,0,0,,{{\\an7\\pos(0,0)\\p1\\bord0\\shad0\\1c&H000000&\\1a&H78&\\fad(50,120)}}{_DIM_SHAPE}{{\\p0}}")
         frames = _count_frames(text)
         step = _COUNT_SECONDS / len(frames)
         for index, reading in enumerate(frames):
@@ -391,10 +390,16 @@ def _summary_cue_events(
 
 def build_ass(words: Sequence[Word], hook: str, duration: float, font: str,
               font_path: Optional[str] = None, beats: Sequence[tuple] = (), creator: str = "", brand: str = "",
-              layout: Layout = Layout(), summary_cues: Sequence[tuple[float, float, str]] = ()) -> str:
-    """Full ASS document. ``words`` and ``beats`` must already be in output time."""
+              layout: Layout = Layout(), summary_cues: Sequence[tuple[float, float, str]] = (),
+              watermark: str = "") -> str:
+    """Full ASS document. ``words`` and ``beats`` must already be in output time.
+
+    ``watermark`` is a small, semi-transparent line kept on screen above the brand, inside the safe band.
+    """
     font = _safe_style_token(font, "Arial")
     creator = _safe(creator)
+    mark = _steady_text("Watermark", _safe(watermark), duration,
+                        max(110, layout.brand_y - (52 if _safe(brand) else 0)))
     caption_lines = (
         _caption_events(words, font_path, layout.caption_y)
         if words
@@ -402,6 +407,7 @@ def build_ass(words: Sequence[Word], hook: str, duration: float, font: str,
     )
     events = (_steady_text("Credit", f"Credit: {creator}" if creator else "", duration, layout.credit_y)
               + _steady_text("Brand", _safe(brand), duration, layout.brand_y)
+              + mark
               + _beat_events(beats, font_path, layout.beat_y)
               + _hook_event(hook, duration, font_path, layout.hook_y)
               + caption_lines)
@@ -421,6 +427,7 @@ def build_ass(words: Sequence[Word], hook: str, duration: float, font: str,
         f"Style: Hook,{font},72,&H00111111,&H000000FF,&H0000E5FF,&H0000E5FF,-1,0,0,0,100,100,0,0,3,20,0,8,60,60,0,1",
         f"Style: Brand,{font},48,&H00FFFFFF,&H000000FF,&H66000000,&H00000000,-1,0,0,0,100,100,0,0,1,4,0,5,40,40,0,1",
         f"Style: Credit,{font},40,&H30FFFFFF,&H000000FF,&H99000000,&H00000000,-1,0,0,0,100,100,0,0,1,3,0,5,40,40,0,1",
+        f"Style: Watermark,{font},36,&H50FFFFFF,&H000000FF,&HA0000000,&H00000000,-1,0,0,0,100,100,0,0,1,2,0,5,40,40,0,1",
         f"Style: Beat,{font},190,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,12,4,5,40,40,0,1",
         "",
         "[Events]",

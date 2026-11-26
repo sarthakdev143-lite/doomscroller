@@ -1,0 +1,18 @@
+{% extends "admin/base.html" %}
+{% block title %}Replay{% endblock %}
+{% block head %}
+  <link rel="stylesheet" href="{{ asset(player_css) }}">
+  <script src="{{ asset(player_js) }}" defer></script>
+  <script src="{{ asset('/admin-static/replay.js') }}" defer></script>
+{% endblock %}
+{% block crumbs %}<a class="adm-crumb" href="/admin/visitors/{{ pv.visitor_id }}">← Visitor</a>{% endblock %}
+{% block heading %}Replay <span class="adm-mono adm-muted">{{ pv.path }}</span>{% endblock %}
+{% block content %}
+<section class="adm-card">
+  <p class="adm-note">{{ pv.started_at.strftime('%a %d %b %Y, %H:%M') }} UTC · {{ h.dur(pv.active_ms) }} engaged · scrolled {{ pv.max_scroll }}%.
+    Everything the visitor typed is masked. Viewing is recorded in the audit log.</p>
+  <div id="replay" class="adm-replay" data-src="/admin/api/replay/{{ pv.id }}">
+    <p class="adm-muted">Loading recording…</p>
+  </div>
+</section>
+{% endblock %}

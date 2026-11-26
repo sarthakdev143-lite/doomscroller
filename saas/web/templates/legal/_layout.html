@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}{{ page_title }} | {{ brand_name }}{% endblock %}
+{% block description %}{{ page_description }}{% endblock %}
+
+{% block content %}
+<article class="section legal" data-track-section="legal-{{ legal_slug }}" aria-labelledby="legal-title">
+  <div class="wrap grid">
+    <aside class="rubric legal__nav" aria-label="Legal pages">
+      <p>Legal</p>
+      <ul role="list">
+        {% for slug, (title, _desc) in legal_pages.items() %}
+        <li><a href="/{{ slug }}" data-track="legal-nav-{{ slug }}"{% if slug == legal_slug %} aria-current="page"{% endif %}>{{ title }}</a></li>
+        {% endfor %}
+      </ul>
+      {% block toc %}{% endblock %}
+    </aside>
+    <div class="story">
+      <header class="legal__head">
+        <h1 id="legal-title">{{ page_title }}</h1>
+        <p class="lede">{{ page_description }}</p>
+        <p class="legal__dates mono">Last updated: <span class="todo">[LAWYER REVIEW: date]</span> &middot; Effective: <span class="todo">[LAWYER REVIEW: date]</span></p>
+        <p class="review-note" role="note">DRAFT. Text marked [LAWYER REVIEW] must be written or approved by a qualified lawyer for every country we sell in before launch. The structure below reflects what the product actually does.</p>
+      </header>
+      <div class="prose legal__body">
+        {% block legal %}{% endblock %}
+      </div>
+    </div>
+  </div>
+</article>
+{% endblock %}

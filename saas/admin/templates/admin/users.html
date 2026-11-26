@@ -1,0 +1,36 @@
+{% extends "admin/base.html" %}
+{% import "admin/_ui.html" as ui %}
+{% block title %}Users{% endblock %}
+{% block heading %}Users {% if total is not none %}<span class="adm-count">{{ h.num(total) }}</span>{% endif %}{% endblock %}
+{% block content %}
+{% if not available %}
+  <section class="adm-card"><p class="adm-empty">Accounts are not live on this server yet (the users table is not available).</p></section>
+{% else %}
+<form class="adm-filters" method="get" action="/admin/users">
+  <label class="adm-field adm-field-grow"><span>Search</span><input type="search" name="q" value="{{ f.q }}" placeholder="email or user id"></label>
+  <label class="adm-field"><span>Status</span><select name="status"><option value="">Any</option>
+    {% for s in ['active', 'suspended', 'banned', 'deleted'] %}<option {{ 'selected' if f.status == s }}>{{ s }}</option>{% endfor %}</select></label>
+  <label class="adm-field"><span>Plan</span><input type="text" name="plan" value="{{ f.plan }}" placeholder="free, starter…"></label>
+  <button class="adm-btn" type="submit">Filter</button>
+</form>
+<section class="adm-card adm-card-flush">
+  <div class="adm-table-wrap"><table class="adm-table">
+    <thead><tr><th>Email</th><th>Plan</th><th>Status</th><th class="num">Credits</th><th>Signup risk</th><th>From</th><th>Joined</th><th>Last login</th></tr></thead>
+    <tbody>{% for u in rows %}
+      <tr data-href="/admin/users/{{ u.id }}">
+        <td><a class="adm-mono" href="/admin/users/{{ u.id }}">{{ u.email }}</a>{% if u.role == 'admin' %} <span class="chip chip-dev">admin</span>{% endif %}
+          {% if not u.email_verified_at %} <span class="chip chip-plain">unverified</span>{% endif %}</td>
+        <td>{{ u.plan_slug }}</td>
+        <td><span class="chip {{ 'chip-bad' if u.status in ('suspended', 'banned') else 'chip-plain' }}">{{ u.status }}</span>{% if u.billing_hold %} <span class="chip chip-bad">billing hold</span>{% endif %}</td>
+        <td class="num">{{ h.num(balances.get(u.id)) }}</td>
+        <td>{% set r = u.signup_risk or {} %}{% if r %}<span class="adm-small" title="{{ (r.get('reasons') or [])|join(', ') }}">{{ r.get('score', 0) }}{{ ' · no free credits' if r.get('grant_free_credits') == false }}</span>{% endif %}</td>
+        <td>{{ h.flag(u.signup_country) }} {{ u.signup_country or '' }}</td>
+        <td class="adm-muted">{{ h.ago(u.created_at) }}</td>
+        <td class="adm-muted">{{ h.ago(u.last_login_at) }}</td>
+      </tr>
+    {% else %}<tr class="adm-empty-row"><td colspan="8">No users match.</td></tr>{% endfor %}
+    </tbody></table></div>
+</section>
+{{ ui.pager(page, 1000 if rows|length == 50 else page, qs) }}
+{% endif %}
+{% endblock %}

@@ -1,0 +1,28 @@
+{% extends "admin/base.html" %}
+{% import "admin/_ui.html" as ui %}
+{% block title %}Sources{% endblock %}
+{% block heading %}Sources{% endblock %}
+{% block tools %}{{ ui.range_picker(range, qs) }}{% endblock %}
+{% block content %}
+<section class="adm-card adm-card-flush">
+  <div class="adm-table-wrap"><table class="adm-table">
+    <thead><tr><th>Source / medium</th><th class="num">Sessions</th><th class="num">Visitors</th><th class="num">Joined waitlist</th><th class="num">Conv.</th><th class="num">Signed up</th><th class="num">Avg lead</th><th class="num">Avg engaged</th></tr></thead>
+    <tbody>{% for r in s.table %}
+      <tr data-href="/admin/visitors?source={{ r.source|urlencode }}">
+        <td><span class="adm-inline-bar" style="--w: {{ r.pct }}%"></span><b>{{ r.source }}</b> <span class="adm-muted">/ {{ r.medium }}</span></td>
+        <td class="num">{{ h.num(r.sessions) }}</td><td class="num">{{ h.num(r.visitors) }}</td><td class="num">{{ h.num(r.joins) }}</td>
+        <td class="num">{{ r.conv }}%</td><td class="num">{{ h.num(r.signups) }}</td><td class="num">{{ r.avg_score }}</td><td class="num">{{ r.avg_active_s }}s</td></tr>
+    {% else %}<tr class="adm-empty-row"><td colspan="8">No sessions in this range.</td></tr>{% endfor %}
+    </tbody></table></div>
+</section>
+<div class="adm-grid adm-grid-2">
+  <section class="adm-card"><div class="adm-card-head"><h2>Referring sites</h2></div>{{ ui.bars(s.referrers, h) }}</section>
+  <section class="adm-card adm-card-flush"><div class="adm-card-head"><h2>Campaigns (UTM)</h2></div>
+    <div class="adm-table-wrap"><table class="adm-table">
+      <thead><tr><th>Campaign</th><th>Source</th><th class="num">Sessions</th><th class="num">Visitors</th><th class="num">Joins</th></tr></thead>
+      <tbody>{% for c in s.campaigns %}
+        <tr><td>{{ c.campaign }}</td><td>{{ c.source }}</td><td class="num">{{ c.sessions }}</td><td class="num">{{ c.visitors }}</td><td class="num">{{ c.joins }}</td></tr>
+      {% else %}<tr class="adm-empty-row"><td colspan="5">No tagged links yet. Add ?utm_source=&amp;utm_campaign= to links you share.</td></tr>{% endfor %}
+      </tbody></table></div></section>
+</div>
+{% endblock %}

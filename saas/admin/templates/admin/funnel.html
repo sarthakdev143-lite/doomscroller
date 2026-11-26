@@ -1,0 +1,20 @@
+{% extends "admin/base.html" %}
+{% import "admin/_ui.html" as ui %}
+{% block title %}Funnel{% endblock %}
+{% block heading %}Funnel{% endblock %}
+{% block tools %}{{ ui.range_picker(range, qs) }}{% endblock %}
+{% block content %}
+<section class="adm-card">
+  <p class="adm-note">Visitors who started a visit in this range and how far they got. Only people who allowed analytics are counted;
+    {{ h.num(f.untracked_joins) }} of {{ h.num(f.all_joins) }} waitlist joins in this range came from browsers we could not track.</p>
+  <ol class="adm-funnel">
+    {% for s in f.steps %}
+      <li>
+        <div class="adm-funnel-label"><b>{{ s.label }}</b>
+          <span class="adm-muted">{% if s.pct_of_prev is not none %}{{ s.pct_of_prev }}% of previous · {% endif %}{{ s.pct_of_first }}% of visitors</span></div>
+        <div class="adm-funnel-bar"><span style="--w: {{ s.width }}%"></span><em>{{ h.num(s.n) }}</em></div>
+      </li>
+    {% endfor %}
+  </ol>
+</section>
+{% endblock %}

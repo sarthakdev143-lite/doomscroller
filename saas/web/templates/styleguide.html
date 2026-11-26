@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block title %}Styleguide | {{ brand_name }}{% endblock %}
+{% block robots %}<meta name="robots" content="noindex, nofollow">{% endblock %}
+
+{% block content %}
+<section class="section styleguide" data-track-section="styleguide">
+  <div class="wrap grid">
+    <p class="rubric">Styleguide <span class="mono">dev only</span></p>
+    <div class="story sg">
+      <h1>Components</h1>
+      <p class="lede">Every component in components.css, in every state. Build screens from these; add a component here before using it twice.</p>
+
+      <h2 class="h3 sg__h">Colour</h2>
+      <ul class="sg__swatches" role="list">
+        <li><span class="sg__chip sg__chip--paper"></span><code>--paper</code></li>
+        <li><span class="sg__chip sg__chip--surface"></span><code>--surface</code></li>
+        <li><span class="sg__chip sg__chip--ink"></span><code>--ink</code></li>
+        <li><span class="sg__chip sg__chip--ink2"></span><code>--ink-2</code></li>
+        <li><span class="sg__chip sg__chip--ink3"></span><code>--ink-3</code></li>
+        <li><span class="sg__chip sg__chip--rule"></span><code>--rule</code></li>
+        <li><span class="sg__chip sg__chip--accent"></span><code>--accent</code></li>
+        <li><span class="sg__chip sg__chip--danger"></span><code>--danger</code></li>
+        <li><span class="sg__chip sg__chip--ok"></span><code>--ok</code></li>
+        <li><span class="sg__chip sg__chip--night"></span><code>--night</code></li>
+      </ul>
+
+      <h2 class="h3 sg__h">Type</h2>
+      <div class="stack">
+        <p class="display">Display 800, 72% wide</p>
+        <p class="h2">Heading two, 82% wide</p>
+        <p class="h3">Heading three</p>
+        <p class="lede">Lede. Paste a link to a long video, or upload one.</p>
+        <p>Body. Every word gets its own timestamp, so captions light up in time with the voice.</p>
+        <p class="small muted">Small muted text for hints and fine print.</p>
+        <p class="mono">14:02.3 &rarr; 14:17.9 &middot; 73 credits</p>
+        <p lang="hi">हिन्दी: पहले सौ वीडियो सिर्फ़ प्रैक्टिस होते हैं।</p>
+      </div>
+
+      <h2 class="h3 sg__h">Buttons</h2>
+      <div class="cluster">
+        <button class="btn btn--accent" type="button" data-track="sg-btn-accent">Primary action</button>
+        <button class="btn" type="button" data-track="sg-btn">Default</button>
+        <button class="btn btn--ghost" type="button" data-track="sg-btn-ghost">Ghost</button>
+        <button class="btn btn--danger" type="button" data-track="sg-btn-danger">Delete</button>
+        <button class="btn" type="button" disabled data-track="sg-btn-disabled">Disabled</button>
+        <button class="btn" type="button" aria-busy="true" data-track="sg-btn-busy"><span class="spinner" aria-hidden="true"></span>Working</button>
+        <button class="btn btn--sm" type="button" data-track="sg-btn-sm">Small</button>
+        <button class="btn btn--lg" type="button" data-track="sg-btn-lg">Large</button>
+        <button class="link-btn" type="button" data-track="sg-link-btn">Text button</button>
+      </div>
+
+      <h2 class="h3 sg__h">Fields</h2>
+      <div class="sg__fields">
+        <div class="field">
+          <label class="label" for="sg-email">Email</label>
+          <input class="input" id="sg-email" type="email" placeholder="you@example.com">
+          <p class="hint">We never share it.</p>
+        </div>
+        <div class="field">
+          <label class="label" for="sg-bad">Video link</label>
+          <input class="input" id="sg-bad" type="url" value="not a link" aria-invalid="true" aria-describedby="sg-bad-err">
+          <p class="error-text" id="sg-bad-err">Paste a full link, starting with https://</p>
+        </div>
+        <div class="field">
+          <label class="label" for="sg-select">Language <span class="optional">(optional)</span></label>
+          <select class="select" id="sg-select" data-track="sg-select"><option>Auto</option><option>English</option><option>Hindi</option></select>
+        </div>
+        <div class="field">
+          <label class="label" for="sg-text">Description</label>
+          <textarea class="textarea" id="sg-text">Why the first hundred uploads matter less than what you learn from them.</textarea>
+        </div>
+        <label class="check"><input type="checkbox" checked data-track="sg-check"> <span>Burn in word captions</span></label>
+        <div class="copy-field">
+          <label class="visually-hidden" for="sg-copy">API key</label>
+          <input id="sg-copy" type="text" readonly value="dsk_live_example_not_a_real_key">
+          <button class="btn" type="button" data-copy="#sg-copy" data-track="sg-copy">Copy</button>
+        </div>
+      </div>
+
+      <h2 class="h3 sg__h">Badges and notices</h2>
+      <div class="cluster">
+        <span class="badge">queued</span>
+        <span class="badge badge--ink"><span class="dot" aria-hidden="true"></span>rendering</span>
+        <span class="badge badge--ok">done</span>
+        <span class="badge badge--danger">failed</span>
+        <span class="badge badge--accent">clip 1</span>
+      </div>
+      <div class="stack sg__notices">
+        <p class="notice">Your job is queued. You can close this tab.</p>
+        <p class="notice notice--ok">Saved. The new title will be in the download.</p>
+        <p class="notice notice--error">The link is private. Upload the file instead.</p>
+        <p class="review-note">[LAWYER REVIEW] placeholder style.</p>
+      </div>
+
+      <h2 class="h3 sg__h">Cards</h2>
+      <div class="sg__cards">
+        <div class="card"><p class="card__title">Surface card</p><p class="muted">For grouped content on paper.</p></div>
+        <div class="card card--flat"><p class="card__title">Flat card</p><p class="muted">A bordered region without fill.</p></div>
+        <div class="card card--dark on-dark"><p class="card__title">Dark card</p><p>For media and code.</p></div>
+      </div>
+
+      <h2 class="h3 sg__h">Tabs</h2>
+      <div class="tabs" data-tabs>
+        <div class="tabs__list" role="tablist" aria-label="Example tabs">
+          <button class="tabs__tab" role="tab" type="button" id="sg-t1" aria-controls="sg-p1" aria-selected="true" data-track="sg-tab-1">Clips</button>
+          <button class="tabs__tab" role="tab" type="button" id="sg-t2" aria-controls="sg-p2" aria-selected="false" tabindex="-1" data-track="sg-tab-2">Settings</button>
+        </div>
+        <div class="tabs__panel" role="tabpanel" id="sg-p1" aria-labelledby="sg-t1" tabindex="0">First panel.</div>
+        <div class="tabs__panel" role="tabpanel" id="sg-p2" aria-labelledby="sg-t2" tabindex="0" hidden>Second panel.</div>
+      </div>
+
+      <h2 class="h3 sg__h">Table</h2>
+      <div class="table-wrap">
+        <table class="table">
+          <thead><tr><th scope="col">Job</th><th scope="col">Status</th><th scope="col" class="num">Credits</th></tr></thead>
+          <tbody>
+            <tr><td>episode-41-final.mp4</td><td><span class="badge badge--ok">done</span></td><td class="num">73</td></tr>
+            <tr><td>youtube.com/watch?v=…</td><td><span class="badge badge--ink">rendering</span></td><td class="num">41</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2 class="h3 sg__h">Empty state</h2>
+      <div class="empty">
+        <p class="empty__title">No clips yet.</p>
+        <p>Paste a link to a long video and your clips will show up here.</p>
+        <a class="btn btn--accent" href="/" data-track="sg-empty-cta">Make your first clips</a>
+      </div>
+
+      <h2 class="h3 sg__h">Skeletons</h2>
+      <div class="sg__skeletons">
+        <span class="skeleton skeleton--clip"></span>
+        <div><span class="skeleton skeleton--title"></span><span class="skeleton skeleton--text"></span><span class="skeleton skeleton--text"></span></div>
+      </div>
+
+      <h2 class="h3 sg__h">Disclosure</h2>
+      <div>
+        <details class="disclosure"><summary data-track="sg-disclosure">What counts as a credit?</summary><div class="disclosure__body"><p>One minute of source video, rounded up per job.</p></div></details>
+      </div>
+
+      <h2 class="h3 sg__h">Code</h2>
+      <div class="code"><div class="code__bar"><span>Shell</span></div><pre><code>curl {{ public_url }}/api/v1/balance -H <span class="c-str">"Authorization: Bearer dsk_live_…"</span></code></pre></div>
+
+      <h2 class="h3 sg__h">Toast and modal</h2>
+      <div class="cluster">
+        <button class="btn btn--ghost" type="button" data-copy="#sg-copy" data-track="sg-toast">Show a toast</button>
+        <button class="btn btn--ghost" type="button" data-modal-open="#sg-modal" data-track="sg-modal-open">Open a modal</button>
+      </div>
+      <dialog class="modal" id="sg-modal" aria-labelledby="sg-modal-title">
+        <div class="modal__head"><p class="modal__title" id="sg-modal-title">Delete this clip?</p>
+          <button class="icon-btn" type="button" data-modal-close data-track="sg-modal-x"><span class="visually-hidden">Close</span><svg viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 5l10 10M15 5L5 15"/></svg></button></div>
+        <div class="modal__body"><p>The MP4 and its text are removed for good. Credits are not returned.</p></div>
+        <div class="modal__foot">
+          <button class="btn btn--ghost" type="button" data-modal-close data-track="sg-modal-cancel">Keep it</button>
+          <button class="btn btn--danger" type="button" data-modal-close data-track="sg-modal-confirm">Delete clip</button>
+        </div>
+      </dialog>
+    </div>
+  </div>
+</section>
+{% endblock %}

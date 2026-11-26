@@ -559,11 +559,12 @@ def test_short_tightened_clip_keeps_the_ais_graphics_and_broll(monkeypatch):
     from app.clipper.edit import build_edit
     _edit_reply(monkeypatch, {"keep": [0], "beats": [
         {"sentence": 5, "phrase": "useful words", "text": "USEFUL", "style": "card"}],
-        "broll": [{"sentence": 8, "phrase": "useful words", "query": "rain", "seconds": 2.5}]})
+        "broll": [{"sentence": 8, "phrase": "useful words", "subject": "words", "query": "rain words",
+                   "seconds": 2.5}]})
     words = _talk()
     edit = build_edit(Moment(10.0, words[-1].end), words)
     assert len(edit.words) == len(words)
-    assert [b.text for b in edit.beats] == ["USEFUL"] and [c.query for c in edit.cutaways] == ["rain"]
+    assert [b.text for b in edit.beats] == ["USEFUL"] and [c.query for c in edit.cutaways] == ["rain words"]
 
 
 def test_padding_stays_inside_the_moment():
@@ -673,13 +674,15 @@ def test_a_punch_draws_nothing_at_all(text):
     assert "Dialogue" not in ass, "no text and no dimming"
 
 
-def test_a_punch_still_flashes_shakes_thuds_and_changes_the_framing():
+def test_a_punch_shakes_thuds_and_changes_the_framing_but_never_washes_the_frame():
     from app.clipper.edit import Beat, EditPlan, PUNCH
     edit = EditPlan(words=_words("a b c d", start=11.0), segments=[(11.0, 19.0)], beats=[Beat(15.0, "", PUNCH)])
-    shake, flash = render._edit_effects(edit)
-    assert "between(t,4.000" in shake and "between(t,3.983" in flash
+    assert "between(t,4.000" in render._edit_shake(edit)
     assert 4.0 in render.rhythm_points(edit)
     assert any(c.at == 4.0 and c.sound is render.IMPACT for c in render.sound_cues(edit, [0.0]))
+    plan = render.plan_clip(Moment(10, 40), [], _signals(), INFO, has_graphics=True, edit=edit)
+    graph = render.build_filtergraph(plan, INFO, 1.0)
+    assert "drawbox" not in graph and "color=white" not in graph
 
 
 def test_graphics_keep_clear_of_the_hook_and_each_other(monkeypatch):
@@ -1105,8 +1108,12 @@ def test_interrupted_download_leaves_nothing_in_the_cache(tmp_path, monkeypatch)
 
 
 def _broll_reply(*shots):
-    return {"keep": list(range(12)), "beats": [], "broll": [
-        {"sentence": s, "phrase": "useful words", "query": q, "seconds": 2.5} for s, q in shots]}
+    # Every shot names a concrete thing from its sentence ("words") and searches for it: an ungrounded
+    # query is dropped before any search (see test_broll_must_name_a_concrete_thing_the_speaker_said).
+    # One punch on the payoff, so the rule-based numbers ("40") do not become beats the shots must avoid.
+    return {"keep": list(range(12)), "beats": [{"sentence": 11, "phrase": "useful words", "style": "punch"}], "broll": [
+        {"sentence": s, "phrase": "useful words", "subject": "useful words", "query": f"{q} words", "seconds": 2.5}
+        for s, q in shots]}
 
 
 def test_ai_broll_lands_on_kept_words_inside_the_limits(monkeypatch):
@@ -1138,6 +1145,8 @@ def test_bad_broll_items_are_dropped(monkeypatch, item):
 
 def _planned(monkeypatch, *shots):
     from app.clipper.edit import build_edit
+    # Stock is only ever used once an AI has judged it, so these tests run with one available.
+    monkeypatch.setattr(ai, "available", lambda: True)
     _edit_reply(monkeypatch, _broll_reply(*shots))
     words = _talk()
     return build_edit(Moment(10.0, words[-1].end), words)
@@ -1238,13 +1247,13 @@ def test_one_failed_search_keeps_the_other_shots(monkeypatch):
     edit = _planned(monkeypatch, (3, "rain"), (6, "sun"))
 
     def mixed(query, seconds, exclude=(), choose=None):
-        if query == "rain":
+        if query == "rain words":
             raise broll.StockError("Pexels returned 500")
         return broll.StockClip("5", "/x/5.mp4", 10.0, "Ana", offset=0.4)
 
     monkeypatch.setattr(broll, "fetch", mixed)
     warnings = attach_stock(edit)
-    assert [c.query for c in edit.cutaways] == ["sun"] and "500" in warnings[0]
+    assert [c.query for c in edit.cutaways] == ["sun words"] and "500" in warnings[0]
 
 
 def test_same_stock_clip_is_not_used_twice_in_a_clip(monkeypatch):
@@ -1260,7 +1269,7 @@ def test_same_stock_clip_is_not_used_twice_in_a_clip(monkeypatch):
 
     monkeypatch.setattr(broll, "fetch", fetch)
     attach_stock(edit)
-    assert seen == [set(), {"rain"}]
+    assert seen == [set(), {"rain words"}]
 
 
 def test_broll_goes_into_the_graph_under_the_graphics(monkeypatch):
@@ -1276,8 +1285,9 @@ def test_broll_goes_into_the_graph_under_the_graphics(monkeypatch):
     assert "between(t,2.983,4.983)" in graph
     points = render.rhythm_points(edit)
     assert any(abs(p - 3.0) < 0.01 for p in points) and any(abs(p - 5.0) < 0.01 for p in points)
+    # One whoosh into each cutaway, none out of it and none on the edit's rhythm points.
     whooshes = [c for c in render.sound_cues(edit, points) if c.sound == "whoosh"]
-    assert len(whooshes) >= 4
+    assert [round(c.at, 2) for c in whooshes] == [2.86, 5.86]
 
 
 def test_stock_inputs_shift_when_there_is_no_sound_track(monkeypatch):
@@ -1431,7 +1441,8 @@ def test_graphics_are_written_under_captions_and_stay_escaped():
     events = [line for line in ass.splitlines() if line.startswith("Dialogue")]
     assert any("THOUSANDS" in e and e.startswith("Dialogue: 3") for e in events)
     assert any("RECORD" in e for e in events)
-    assert sum(1 for e in events if "\\p1" in e) == 3
+    # No drawing at all: the full-screen yellow card and the black dim behind numbers are gone.
+    assert sum(1 for e in events if "\\p1" in e) == 0
     assert not any("{DIED}" in e for e in events)
 
 
@@ -1471,7 +1482,7 @@ def test_edit_plan_changes_the_graph(monkeypatch):
     held = render.plan_clip(Moment(10, 40), [], _signals(), INFO, has_graphics=True, edit=edit, hold_end=True)
     assert held.duration == pytest.approx((4.0 + render._END_HOLD) / 1.12, abs=0.05)
     assert "setpts=PTS/1.12" in graph and "atempo=1.12" in graph
-    assert "[sfxst]amix" in graph and "drawbox=x=0:y=0" in graph and "sin(t*75)" in graph
+    assert "[sfxst]amix" in graph and "sin(t*75)" in graph and "drawbox" not in graph
 
 
 def test_crop_position_is_held_inside_each_frame():

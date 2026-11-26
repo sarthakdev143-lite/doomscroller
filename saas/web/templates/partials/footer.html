@@ -1,0 +1,34 @@
+<footer class="site-footer on-dark">
+  <div class="wrap">
+    <div class="site-footer__top">
+      <div>
+        <p class="site-footer__brand">{{ brand_name }}</p>
+        <p class="site-footer__tagline">Long video in, finished Shorts out. Priced by the minute of source video.</p>
+      </div>
+      <div>
+        <h2>Product</h2>
+        <ul role="list">
+          <li><a href="/#how" data-track="footer-how">How it works</a></li>
+          <li><a href="/#clip" data-track="footer-clip">What a clip contains</a></li>
+          <li><a href="/#pricing" data-track="footer-pricing">Pricing</a></li>
+          <li><a href="/#api" data-track="footer-api">API and MCP</a></li>
+          <li><a href="/#faq" data-track="footer-faq">FAQ</a></li>
+        </ul>
+      </div>
+      <div>
+        <h2>Legal</h2>
+        <ul role="list">
+          <li><a href="/privacy" data-track="footer-privacy">Privacy</a></li>
+          <li><a href="/terms" data-track="footer-terms">Terms</a></li>
+          <li><a href="/refunds" data-track="footer-refunds">Refunds</a></li>
+          <li><a href="/cookies" data-track="footer-cookies">Cookies</a></li>
+          <li><button type="button" data-consent-open data-track="footer-cookie-settings">Cookie settings</button></li>
+        </ul>
+      </div>
+    </div>
+    <div class="site-footer__base">
+      <span>&copy; {{ year }} {{ brand_name }}</span>
+      <a href="mailto:{{ support_email }}" data-track="footer-support-email">{{ support_email }}</a>
+    </div>
+  </div>
+</footer>

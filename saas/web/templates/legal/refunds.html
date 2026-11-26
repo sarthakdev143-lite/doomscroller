@@ -1,0 +1,52 @@
+{% extends "legal/_layout.html" %}
+{% block toc %}
+<nav class="legal__toc" aria-label="On this page">
+  <p>On this page</p>
+  <ol role="list">
+    <li><a href="#short" data-track="toc-short">The short version</a></li>
+    <li><a href="#failed" data-track="toc-failed">Failed jobs</a></li>
+    <li><a href="#packs" data-track="toc-packs">Credit packs</a></li>
+    <li><a href="#plans" data-track="toc-plans">Subscriptions</a></li>
+    <li><a href="#quality" data-track="toc-quality">Clips you are unhappy with</a></li>
+    <li><a href="#chargebacks" data-track="toc-chargebacks">Chargebacks</a></li>
+    <li><a href="#how" data-track="toc-how">How to ask</a></li>
+  </ol>
+</nav>
+{% endblock %}
+
+{% block legal %}
+<h2 id="short">1. The short version</h2>
+<ul>
+  <li>A job that fails costs nothing: its credits come back automatically.</li>
+  <li>Unused credit packs can be refunded within <span class="todo">[owner + LAWYER REVIEW: number]</span> days of purchase.</li>
+  <li>Subscriptions can be cancelled at any time and run until the end of the period you paid for.</li>
+</ul>
+
+<h2 id="failed">2. Failed and cancelled jobs</h2>
+<p>Credits are reserved when a job starts. If it fails, or you cancel it before it finishes, the reserved credits
+  return to your balance without you asking. You can see each reservation and return in your billing history.</p>
+
+<h2 id="packs">3. Credit packs</h2>
+<p>If you have not used any of a pack’s credits, you can ask for a full refund within
+  <span class="todo">[number]</span> days of buying it. Once credits from a pack have been used, the pack is not
+  refundable. <span class="todo">[owner decision: partial refunds of partly used packs?]</span></p>
+
+<h2 id="plans">4. Subscriptions</h2>
+<p>Cancel any time from Billing. You keep the plan, and its credits, until the end of the current period, and you
+  are not charged again. <span class="todo">[owner + LAWYER REVIEW: refunds for a renewal you did not mean to keep, annual plans]</span></p>
+
+<h2 id="quality">5. Clips you are unhappy with</h2>
+<p>If a job finished but the clips are unusable (for example, the captions are out of sync with the voice), write to
+  us with the job ID. We look at each case and may return the credits. <span class="todo">[owner decision]</span></p>
+
+<h2 id="chargebacks">6. Chargebacks and reversed payments</h2>
+<p>If a payment is refunded or disputed with your bank, the credits it bought are removed from your balance (never
+  below zero) and new jobs are paused until the dispute is resolved. Please contact us first; it is faster for both
+  of us.</p>
+
+<h2 id="how">7. How to ask</h2>
+<p>Email <a href="mailto:{{ support_email }}" data-track="refunds-email">{{ support_email }}</a> from your account’s
+  address with the payment reference from your billing history. Refunds go back to the original payment method,
+  usually within <span class="todo">[number]</span> business days.</p>
+<p><span class="todo">[LAWYER REVIEW: statutory rights, e.g. the EU/UK 14-day right of withdrawal for digital content and how it ends once a job starts with your consent]</span></p>
+{% endblock %}

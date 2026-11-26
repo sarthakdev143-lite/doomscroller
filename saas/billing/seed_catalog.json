@@ -1,0 +1,71 @@
+{
+  "_note": "Preliminary numbers (CONTRACT.md 'Preliminary pricing'). Seeded once into the DB; every value is admin-editable data. docs/saas/costs-and-pricing.md will finalise them. Amounts are minor units (cents, paise). Annual = 10x monthly (2 months free).",
+  "plans": [
+    {"slug": "free", "name": "Free", "description": "Try it: free credits once per verified person, watermarked output.",
+     "monthly_credits": 0, "rollover_months": 0, "public": false, "sort": 0,
+     "features": {"api": false, "mcp": false, "priority": 0, "watermark": true, "max_source_minutes": 30,
+                  "concurrency": 1, "daily_jobs": 3, "max_clips": 3, "max_upload_mb": 500}},
+    {"slug": "starter", "name": "Starter", "description": "For creators posting a few Shorts a week.",
+     "monthly_credits": 150, "rollover_months": 1, "public": true, "sort": 10,
+     "features": {"api": false, "mcp": false, "priority": 1, "watermark": false, "max_source_minutes": 90,
+                  "concurrency": 1, "daily_jobs": 20, "max_clips": 10, "max_upload_mb": 2048}},
+    {"slug": "pro", "name": "Pro", "description": "For daily posters and small teams.",
+     "monthly_credits": 500, "rollover_months": 1, "public": true, "sort": 20,
+     "features": {"api": false, "mcp": false, "priority": 5, "watermark": false, "max_source_minutes": 180,
+                  "concurrency": 2, "daily_jobs": 50, "max_clips": 15, "max_upload_mb": 2048}},
+    {"slug": "studio", "name": "Studio", "description": "For agencies and automation: API + MCP access and priority queue.",
+     "monthly_credits": 1500, "rollover_months": 1, "public": true, "sort": 30,
+     "features": {"api": true, "mcp": true, "priority": 10, "watermark": false, "max_source_minutes": 240,
+                  "concurrency": 4, "daily_jobs": 200, "max_clips": 20, "max_upload_mb": 2048}}
+  ],
+  "packs": [
+    {"slug": "pack-60", "name": "60 minutes", "credits": 60, "sort": 10, "description": "One hour of source video. Never expires."},
+    {"slug": "pack-300", "name": "300 minutes", "credits": 300, "sort": 20, "description": "Five hours of source video. Never expires."},
+    {"slug": "pack-1000", "name": "1000 minutes", "credits": 1000, "sort": 30, "description": "Best value. Never expires."}
+  ],
+  "prices": [
+    {"item_kind": "plan", "item_slug": "starter", "interval": "month", "currency": "USD", "tier": "default", "amount_minor": 1500},
+    {"item_kind": "plan", "item_slug": "starter", "interval": "year", "currency": "USD", "tier": "default", "amount_minor": 15000},
+    {"item_kind": "plan", "item_slug": "pro", "interval": "month", "currency": "USD", "tier": "default", "amount_minor": 3900},
+    {"item_kind": "plan", "item_slug": "pro", "interval": "year", "currency": "USD", "tier": "default", "amount_minor": 39000},
+    {"item_kind": "plan", "item_slug": "studio", "interval": "month", "currency": "USD", "tier": "default", "amount_minor": 9900},
+    {"item_kind": "plan", "item_slug": "studio", "interval": "year", "currency": "USD", "tier": "default", "amount_minor": 99000},
+    {"item_kind": "pack", "item_slug": "pack-60", "interval": "once", "currency": "USD", "tier": "default", "amount_minor": 900},
+    {"item_kind": "pack", "item_slug": "pack-300", "interval": "once", "currency": "USD", "tier": "default", "amount_minor": 3500},
+    {"item_kind": "pack", "item_slug": "pack-1000", "interval": "once", "currency": "USD", "tier": "default", "amount_minor": 9900},
+
+    {"item_kind": "plan", "item_slug": "starter", "interval": "month", "currency": "INR", "tier": "in", "amount_minor": 79900},
+    {"item_kind": "plan", "item_slug": "starter", "interval": "year", "currency": "INR", "tier": "in", "amount_minor": 799000},
+    {"item_kind": "plan", "item_slug": "pro", "interval": "month", "currency": "INR", "tier": "in", "amount_minor": 199900},
+    {"item_kind": "plan", "item_slug": "pro", "interval": "year", "currency": "INR", "tier": "in", "amount_minor": 1999000},
+    {"item_kind": "plan", "item_slug": "studio", "interval": "month", "currency": "INR", "tier": "in", "amount_minor": 499900},
+    {"item_kind": "plan", "item_slug": "studio", "interval": "year", "currency": "INR", "tier": "in", "amount_minor": 4999000},
+    {"item_kind": "pack", "item_slug": "pack-60", "interval": "once", "currency": "INR", "tier": "in", "amount_minor": 49900},
+    {"item_kind": "pack", "item_slug": "pack-300", "interval": "once", "currency": "INR", "tier": "in", "amount_minor": 179900},
+    {"item_kind": "pack", "item_slug": "pack-1000", "interval": "once", "currency": "INR", "tier": "in", "amount_minor": 499900},
+
+    {"item_kind": "plan", "item_slug": "starter", "interval": "month", "currency": "USD", "tier": "ppp_low", "amount_minor": 800},
+    {"item_kind": "plan", "item_slug": "starter", "interval": "year", "currency": "USD", "tier": "ppp_low", "amount_minor": 8000},
+    {"item_kind": "plan", "item_slug": "pro", "interval": "month", "currency": "USD", "tier": "ppp_low", "amount_minor": 1900},
+    {"item_kind": "plan", "item_slug": "pro", "interval": "year", "currency": "USD", "tier": "ppp_low", "amount_minor": 19000},
+    {"item_kind": "plan", "item_slug": "studio", "interval": "month", "currency": "USD", "tier": "ppp_low", "amount_minor": 4900},
+    {"item_kind": "plan", "item_slug": "studio", "interval": "year", "currency": "USD", "tier": "ppp_low", "amount_minor": 49000},
+    {"item_kind": "pack", "item_slug": "pack-60", "interval": "once", "currency": "USD", "tier": "ppp_low", "amount_minor": 500},
+    {"item_kind": "pack", "item_slug": "pack-300", "interval": "once", "currency": "USD", "tier": "ppp_low", "amount_minor": 1800},
+    {"item_kind": "pack", "item_slug": "pack-1000", "interval": "once", "currency": "USD", "tier": "ppp_low", "amount_minor": 4900}
+  ],
+  "region_tiers": [
+    {"country": "IN", "currency": "INR", "tier": "in", "note": "Rupee pricing via Razorpay"},
+    {"country": "PK", "currency": "USD", "tier": "ppp_low", "note": "PPP"},
+    {"country": "BD", "currency": "USD", "tier": "ppp_low", "note": "PPP"},
+    {"country": "LK", "currency": "USD", "tier": "ppp_low", "note": "PPP"},
+    {"country": "NP", "currency": "USD", "tier": "ppp_low", "note": "PPP"},
+    {"country": "ID", "currency": "USD", "tier": "ppp_low", "note": "PPP"},
+    {"country": "PH", "currency": "USD", "tier": "ppp_low", "note": "PPP"},
+    {"country": "VN", "currency": "USD", "tier": "ppp_low", "note": "PPP"},
+    {"country": "NG", "currency": "USD", "tier": "ppp_low", "note": "PPP"},
+    {"country": "KE", "currency": "USD", "tier": "ppp_low", "note": "PPP"},
+    {"country": "EG", "currency": "USD", "tier": "ppp_low", "note": "PPP"},
+    {"country": "MA", "currency": "USD", "tier": "ppp_low", "note": "PPP"}
+  ]
+}

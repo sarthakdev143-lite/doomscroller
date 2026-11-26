@@ -1,0 +1,62 @@
+{% extends "admin/base.html" %}
+{% import "admin/_ui.html" as ui %}
+{% block title %}Waitlist{% endblock %}
+{% block heading %}Waitlist <span class="adm-count">{{ h.num(counts.total) }}</span>{% endblock %}
+{% block tools %}<a class="adm-btn adm-btn-quiet" href="/admin/waitlist/export.csv{{ qs(page=None) if qs(page=None) != '?' else '' }}">Export CSV</a>{% endblock %}
+{% block content %}
+<section class="adm-kpis">
+  {{ ui.stat('Waiting', h.num(counts.waiting), 'confirmed, not invited') }}
+  {{ ui.stat('Unconfirmed', h.num(counts.pending)) }}
+  {{ ui.stat('Invited', h.num(counts.invited)) }}
+  {{ ui.stat('Joined', h.num(counts.joined), 'redeemed an invite') }}
+  {{ ui.stat('Flagged', h.num(counts.flagged), 'held from batches', 'tone-warn' if counts.flagged else '') }}
+</section>
+
+<section class="adm-card">
+  <div class="adm-card-head"><h2>Invite the next batch</h2></div>
+  <form class="adm-inline-form" data-api="/admin/api/waitlist/invite" data-confirm="Send invites to the next people in line?">
+    <label class="adm-field adm-field-sm"><span>How many</span><input type="number" name="count" min="1" max="1000" value="25" required></label>
+    <label class="adm-field adm-field-grow"><span>Note (for the log)</span><input type="text" name="note" maxlength="200" placeholder="e.g. creators wave 1"></label>
+    <label class="adm-check"><input type="checkbox" name="include_flagged" value="1"> include flagged</label>
+    <button class="adm-btn adm-btn-primary" type="submit">Send invites</button>
+  </form>
+  {% if batches %}<p class="adm-muted adm-small">Recent: {% for b in batches %}{{ b.invited }} on {{ b.created_at.strftime('%d %b') }}{{ ' (' ~ b.note ~ ')' if b.note }}{{ ', ' if not loop.last }}{% endfor %}</p>{% endif %}
+</section>
+
+<form class="adm-filters" method="get" action="/admin/waitlist">
+  <label class="adm-field adm-field-grow"><span>Search</span><input type="search" name="q" value="{{ f.q }}" placeholder="email, referral code, invite code"></label>
+  <label class="adm-field"><span>Status</span><select name="status"><option value="">Active</option>
+    {% for s in ['pending', 'confirmed', 'invited', 'joined', 'removed'] %}<option {{ 'selected' if f.status == s }}>{{ s }}</option>{% endfor %}</select></label>
+  <label class="adm-field"><span>Flagged</span><select name="flagged"><option value="">Any</option><option value="yes" {{ 'selected' if f.flagged == 'yes' }}>Flagged</option><option value="no" {{ 'selected' if f.flagged == 'no' }}>Clean</option></select></label>
+  <label class="adm-field"><span>Order</span><select name="sort"><option value="rank" {{ 'selected' if f.sort == 'rank' }}>Place in line</option><option value="recent" {{ 'selected' if f.sort == 'recent' }}>Newest</option></select></label>
+  <button class="adm-btn" type="submit">Filter</button>
+</form>
+
+<section class="adm-card adm-card-flush">
+  <div class="adm-table-wrap"><table class="adm-table">
+    <thead><tr><th class="num">#</th><th>Email</th><th>Status</th><th>Role / channel</th><th class="num">Referrals</th><th>Came from</th><th>Risk</th><th>Joined</th><th></th></tr></thead>
+    <tbody>{% for e in rows %}
+      <tr>
+        <td class="num">{{ positions.get(e.id) or '' }}</td>
+        <td><span class="adm-mono">{{ e.email }}</span>
+          {% if e.visitor_id %}<a class="adm-small" href="/admin/visitors/{{ e.visitor_id }}">journey</a>{% endif %}</td>
+        <td><span class="chip chip-plain">{{ e.status }}</span>{% if e.invite_code %} <span class="adm-mono adm-small">{{ e.invite_code }}</span>{% endif %}</td>
+        <td>{{ e.role or '' }}{% if e.channel_url %}<br><span class="adm-small adm-break">{{ e.channel_url }}</span>{% endif %}</td>
+        <td class="num">{{ e.referrals_counted }}{% if e.referred_by_id %}<br><span class="adm-small {{ 'adm-warn' if e.referral_status == 'rejected' }}">referred · {{ e.referral_status }}{{ ' (' ~ e.referral_reason ~ ')' if e.referral_reason }}</span>{% endif %}</td>
+        <td>{{ h.flag(e.country) }} {{ (e.source or {}).get('source') or '' }}</td>
+        <td>{% if e.flagged %}<span class="chip chip-bad">flagged</span>{% endif %}
+          {% if e.risk_score %}<span class="adm-small" title="{{ (e.risk_reasons or [])|join(', ') }}">{{ e.risk_score }} · {{ (e.risk_reasons or [])[:2]|join(', ') }}</span>{% endif %}</td>
+        <td class="adm-muted">{{ h.ago(e.created_at) }}</td>
+        <td class="adm-row-actions">
+          {% if e.status in ('confirmed', 'pending') %}<button class="adm-btn adm-btn-xs" data-api="/admin/api/waitlist/{{ e.id }}/invite" data-confirm="Invite {{ e.email }} now?">Invite</button>{% endif %}
+          {% if e.status in ('pending', 'invited') %}<button class="adm-btn adm-btn-xs adm-btn-quiet" data-api="/admin/api/waitlist/{{ e.id }}/resend">Resend</button>{% endif %}
+          <button class="adm-btn adm-btn-xs adm-btn-quiet" data-api="/admin/api/waitlist/{{ e.id }}/{{ 'unflag' if e.flagged else 'flag' }}">{{ 'Unflag' if e.flagged else 'Flag' }}</button>
+          {% if e.status != 'removed' %}<button class="adm-btn adm-btn-xs adm-btn-danger" data-api="/admin/api/waitlist/{{ e.id }}/remove" data-confirm="Remove {{ e.email }} from the waitlist?">Remove</button>
+          {% else %}<button class="adm-btn adm-btn-xs" data-api="/admin/api/waitlist/{{ e.id }}/restore">Restore</button>{% endif %}
+        </td>
+      </tr>
+    {% else %}<tr class="adm-empty-row"><td colspan="9">Nobody here yet.</td></tr>{% endfor %}
+    </tbody></table></div>
+</section>
+{{ ui.pager(page, pages, qs) }}
+{% endblock %}

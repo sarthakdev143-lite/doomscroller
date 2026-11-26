@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en" data-track-noreplay>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="referrer" content="no-referrer">
+  <title>{% if state == 'ready' %}Confirm your spot{% else %}Link problem{% endif %} · {{ brand }}</title>
+  <link rel="stylesheet" href="{{ asset('/static/css/tokens.css') }}">
+  <link rel="stylesheet" href="{{ asset('/admin-static/public.css') }}">
+  <script src="{{ asset('/ts/t.js') }}" defer></script>
+</head>
+<body class="pub">
+  <main class="pub-card">
+    <p class="pub-brand">{{ brand }}</p>
+    {% if state == 'ready' %}
+      <h1>Confirming your spot…</h1>
+      <p class="pub-lead">One moment. If nothing happens, press the button.</p>
+      <form id="confirm-form" method="post" action="/waitlist/confirm/{{ token }}">
+        <input type="hidden" name="fp" value="">
+        <button type="submit" class="pub-btn" data-track="waitlist-confirm">Confirm my spot</button>
+      </form>
+      <script nonce="{{ request.state.csp_nonce }}">
+        (function () {
+          var f = document.getElementById('confirm-form'), sent = false;
+          function go() { if (!sent) { sent = true; f.submit(); } }
+          f.addEventListener('submit', function () { sent = true; });
+          var fp = window.dsFingerprint;
+          if (typeof fp === 'function') {
+            fp().then(function (v) { f.fp.value = v; go(); }, go);
+            setTimeout(go, 1500);
+          } else {
+            window.addEventListener('load', function () {
+              if (typeof window.dsFingerprint === 'function') {
+                window.dsFingerprint().then(function (v) { f.fp.value = v; go(); }, go);
+                setTimeout(go, 1500);
+              } else { go(); }
+            });
+          }
+        })();
+      </script>
+    {% elif state == 'expired' %}
+      <h1>This link has expired</h1>
+      <p class="pub-lead">Confirmation links work for a few days. Join again with the same email and we'll send a fresh one.</p>
+      <p><a class="pub-btn" href="/">Back to the waitlist</a></p>
+    {% else %}
+      <h1>That link doesn't work</h1>
+      <p class="pub-lead">It may have been copied incompletely, or already replaced by a newer email. Use the most recent email we sent, or join again.</p>
+      <p><a class="pub-btn" href="/">Back to the waitlist</a></p>
+    {% endif %}
+  </main>
+</body>
+</html>

@@ -1,0 +1,79 @@
+{% extends "admin/base.html" %}
+{% import "admin/_ui.html" as ui %}
+{% block title %}Security{% endblock %}
+{% block heading %}Security{% endblock %}
+{% block tools %}<button class="adm-btn adm-btn-quiet" data-api="/admin/api/maintenance" data-confirm="Run retention cleanup now?">Run cleanup</button>{% endblock %}
+{% block content %}
+<div class="adm-grid adm-grid-2">
+  <section class="adm-card">
+    <div class="adm-card-head"><h2>Block something</h2></div>
+    <form class="adm-inline-form" data-api="/admin/api/bans" data-confirm="Add this ban?">
+      <label class="adm-field"><span>Kind</span><select name="kind">{% for k in ban_kinds %}<option>{{ k }}</option>{% endfor %}</select></label>
+      <label class="adm-field adm-field-grow"><span>Value</span><input type="text" name="value" required placeholder="1.2.3.4, 10.0.0.0/24, fingerprint, email, domain, 14061"></label>
+      <label class="adm-field adm-field-sm"><span>Hours</span><input type="number" name="hours" min="1" placeholder="forever"></label>
+      <label class="adm-field adm-field-grow"><span>Reason</span><input type="text" name="reason" maxlength="300"></label>
+      <button class="adm-btn adm-btn-danger" type="submit">Ban</button>
+    </form>
+    <div class="adm-card-head"><h2>Active bans <span class="adm-count">{{ s.bans|length }}</span></h2></div>
+    {% if s.bans %}<div class="adm-table-wrap"><table class="adm-table">
+      <thead><tr><th>Kind</th><th>Value</th><th>Reason</th><th>Expires</th><th></th></tr></thead>
+      <tbody>{% for b in s.bans %}
+        <tr><td><span class="chip chip-plain">{{ b.kind }}</span></td><td class="adm-mono adm-break">{{ b.value }}</td><td class="adm-small">{{ b.reason }}</td>
+          <td class="adm-muted">{{ b.expires_at.strftime('%d %b %H:%M') if b.expires_at else 'never' }}</td>
+          <td><button class="adm-btn adm-btn-xs adm-btn-quiet" data-api="/admin/api/bans/{{ b.id }}" data-method="DELETE" data-confirm="Lift this ban?">Lift</button></td></tr>
+      {% endfor %}</tbody></table></div>{% else %}<p class="adm-empty">No active bans.</p>{% endif %}
+  </section>
+  <section class="adm-card">
+    <div class="adm-card-head"><h2>Last 7 days by kind</h2></div>
+    {{ ui.bars(s.kinds, h, empty='No security events yet.', link='/admin/security?kind=') }}
+    <div class="adm-card-head"><h2>Noisiest IPs (medium+)</h2></div>
+    {% if s.offenders %}<ul class="adm-list">{% for ip, n, last in s.offenders %}
+      <li><a class="adm-mono" href="/admin/security?ip={{ ip|urlencode }}">{{ ip }}</a> ×{{ n }} <span class="adm-muted">{{ h.ago(last) }}</span>
+        <button class="adm-btn adm-btn-xs adm-btn-danger" data-api="/admin/api/bans" data-body='{"kind": "ip", "value": {{ ip|tojson }}, "hours": 24, "reason": "noisy in security log"}' data-confirm="Ban {{ ip }} for 24 hours?">Ban 24h</button></li>{% endfor %}</ul>
+    {% else %}<p class="adm-empty">Nobody stands out.</p>{% endif %}
+    {% if s.referrals %}<div class="adm-card-head"><h2>Referrals not counted</h2></div>
+      <ul class="adm-list">{% for reason, n in s.referrals %}<li><b>{{ reason }}</b> ×{{ n }}</li>{% endfor %}</ul>{% endif %}
+  </section>
+</div>
+
+<section class="adm-card">
+  <div class="adm-card-head"><h2>Multi-account rings</h2><span class="adm-muted">one IP or device behind several identities</span></div>
+  {% if s.clusters or s.signup_clusters %}
+  <div class="adm-rings">
+    {% for c in s.clusters %}
+      <article class="adm-ring">
+        <header><span class="chip {{ 'chip-bad' if c.kind == 'fp' else 'chip-plain' }}">{{ 'device' if c.kind == 'fp' else 'IP' }}</span>
+          <span class="adm-mono">{{ c.value[:24] }}</span> <b>{{ c.count }} identities</b></header>
+        <ul>{% for m in c.members %}<li>{% if m.kind == 'user' %}<a href="/admin/users/{{ m.id }}">{{ m.email or m.id }}</a>{% else %}<a href="/admin/waitlist?q={{ (m.email or m.id)|urlencode }}">{{ m.email or m.id }}</a>{% endif %}
+          <span class="adm-muted">{{ m.kind }} · {{ h.ago(m.last_seen) }}</span></li>{% endfor %}</ul>
+        <button class="adm-btn adm-btn-xs adm-btn-danger" data-api="/admin/api/bans" data-body='{"kind": {{ ('fingerprint' if c.kind == 'fp' else 'ip')|tojson }}, "value": {{ c.value|tojson }}, "reason": "multi-account ring"}' data-confirm="Ban this {{ 'device' if c.kind == 'fp' else 'IP' }}?">Ban</button>
+      </article>
+    {% endfor %}
+    {% for c in s.signup_clusters %}
+      <article class="adm-ring"><header><span class="chip chip-bad">signup {{ c.kind }}</span> <span class="adm-mono">{{ c.value[:24] }}</span> <b>{{ c.accounts }} accounts</b></header>
+        <a href="/admin/users?q=">see users</a></article>
+    {% endfor %}
+  </div>
+  {% else %}<p class="adm-empty">No shared IPs or devices across identities.</p>{% endif %}
+</section>
+
+<form class="adm-filters" method="get" action="/admin/security">
+  <label class="adm-field"><span>Kind</span><input type="text" name="kind" value="{{ f.kind }}" placeholder="e.g. rate_limited"></label>
+  <label class="adm-field"><span>Severity</span><select name="severity"><option value="">Any</option>{% for sv in ['info', 'low', 'medium', 'high', 'critical'] %}<option {{ 'selected' if f.severity == sv }}>{{ sv }}</option>{% endfor %}</select></label>
+  <label class="adm-field"><span>IP</span><input type="text" name="ip" value="{{ f.ip }}"></label>
+  <button class="adm-btn" type="submit">Filter</button>
+</form>
+<section class="adm-card adm-card-flush">
+  <div class="adm-card-head"><h2>Event stream</h2></div>
+  <div class="adm-table-wrap"><table class="adm-table">
+    <thead><tr><th>When</th><th>Severity</th><th>Kind</th><th>IP</th><th>Path</th><th>Detail</th></tr></thead>
+    <tbody>{% for ev in s.stream %}
+      <tr><td class="adm-muted">{{ h.ago(ev.created_at) }}</td><td>{{ ui.severity(ev.severity) }}</td><td><b>{{ ev.kind }}</b></td>
+        <td class="adm-mono">{% if ev.ip %}<a href="/admin/security?ip={{ ev.ip|urlencode }}">{{ ev.ip }}</a>{% endif %}</td>
+        <td class="adm-mono adm-small">{{ ev.path or '' }}</td>
+        <td class="adm-small adm-break">{% for k, val in (ev.detail or {}).items() %}<span class="adm-kv">{{ k }}=<b>{{ val if val is string else (val|tojson) }}</b></span> {% endfor %}
+          {% if ev.visitor_id %}<a href="/admin/visitors/{{ ev.visitor_id }}">visitor</a>{% endif %}</td></tr>
+    {% else %}<tr class="adm-empty-row"><td colspan="6">No events match.</td></tr>{% endfor %}
+    </tbody></table></div>
+</section>
+{% endblock %}

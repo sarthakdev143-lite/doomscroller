@@ -28,6 +28,7 @@ import httpx
 from app.config import settings
 from app.logging_config import scrub_secrets as _scrub_secrets
 
+from . import metering
 from .media import MediaError, probe, read_ffmpeg
 
 log = logging.getLogger(__name__)
@@ -217,6 +218,7 @@ def _pixabay_candidates(hits: object) -> list[Candidate]:
 def _request(url: str, params: dict, headers: Optional[dict] = None) -> dict:
     """GET a library's JSON. Nothing raised from here may contain the key."""
     name = provider() or "the stock library"
+    metering.record("api", provider=str(name).lower(), requests=1)
     try:
         response = httpx.get(url, params=params, headers=headers or {}, timeout=_TIMEOUT)
     except UnicodeEncodeError:
@@ -296,9 +298,10 @@ def search(query: str) -> list[Candidate]:
 def _download(link: str, path: Path) -> None:
     """Fetch to a temporary name, so a dropped connection never leaves a bad clip in the cache."""
     partial = path.with_name(f"{path.name}.part")
+    started = time.monotonic()
+    written = 0
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        written = 0
         with httpx.stream("GET", link, timeout=_TIMEOUT, follow_redirects=True) as response:
             if response.status_code != 200:
                 raise StockError(f"download returned {response.status_code}")
@@ -314,6 +317,7 @@ def _download(link: str, path: Path) -> None:
     except (httpx.HTTPError, httpx.InvalidURL, OSError) as exc:
         raise StockError(f"download failed: {scrub_secrets(exc)}") from None
     finally:
+        metering.record("download", source="broll", bytes=written, seconds=round(time.monotonic() - started, 2))
         try:
             partial.unlink()
         except OSError:

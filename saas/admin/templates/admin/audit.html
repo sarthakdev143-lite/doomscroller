@@ -1,0 +1,25 @@
+{% extends "admin/base.html" %}
+{% import "admin/_ui.html" as ui %}
+{% block title %}Audit log{% endblock %}
+{% block heading %}Audit log <span class="adm-count">{{ h.num(total) }}</span>{% endblock %}
+{% block content %}
+<form class="adm-filters" method="get" action="/admin/audit">
+  <label class="adm-field"><span>Action</span><select name="action"><option value="">Any</option>
+    {% for a in actions %}<option {{ 'selected' if f.action == a }}>{{ a }}</option>{% endfor %}</select></label>
+  <label class="adm-field adm-field-grow"><span>Admin</span><input type="text" name="actor" value="{{ f.actor }}" placeholder="email or id"></label>
+  <button class="adm-btn" type="submit">Filter</button>
+</form>
+<section class="adm-card adm-card-flush">
+  <div class="adm-table-wrap"><table class="adm-table">
+    <thead><tr><th>When</th><th>Admin</th><th>Action</th><th>Target</th><th>Detail</th><th>From</th></tr></thead>
+    <tbody>{% for a in rows %}
+      <tr><td class="adm-muted" title="{{ a.created_at.isoformat() }}">{{ a.created_at.strftime('%d %b %H:%M:%S') }}</td>
+        <td>{{ a.actor_email or a.actor_id or '—' }}</td><td><b>{{ a.action }}</b></td>
+        <td class="adm-mono adm-small">{{ a.target_kind or '' }} {{ a.target_id or '' }}</td>
+        <td class="adm-small adm-break">{% for k, val in (a.detail or {}).items() %}<span class="adm-kv">{{ k }}=<b>{{ val if val is string else (val|tojson) }}</b></span> {% endfor %}</td>
+        <td class="adm-mono adm-small">{{ a.ip or '' }}</td></tr>
+    {% else %}<tr class="adm-empty-row"><td colspan="6">No admin actions recorded yet.</td></tr>{% endfor %}
+    </tbody></table></div>
+</section>
+{{ ui.pager(page, pages, qs) }}
+{% endblock %}

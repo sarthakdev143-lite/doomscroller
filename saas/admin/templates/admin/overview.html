@@ -1,0 +1,91 @@
+{% extends "admin/base.html" %}
+{% import "admin/_ui.html" as ui %}
+{% block title %}Overview{% endblock %}
+{% block heading %}Overview{% endblock %}
+{% block tools %}{{ ui.range_picker(o.range, qs) }}{% endblock %}
+{% block content %}
+{% set w = o.windows %}
+<section class="adm-kpis" aria-label="Right now">
+  <a class="adm-stat adm-stat-live" href="/admin/live">
+    <div class="adm-stat-label"><span class="adm-pulse" aria-hidden="true"></span> On the site now</div>
+    <div class="adm-stat-value">{{ h.num(o.live) }}</div>
+    <div class="adm-stat-sub">active in the last 3 min</div>
+  </a>
+  {{ ui.stat('Visitors · 24h', h.num(w['24h'].visitors), h.num(w['24h'].sessions) ~ ' sessions') }}
+  {{ ui.stat('Visitors · 7d', h.num(w['7d'].visitors), h.num(w['7d'].sessions) ~ ' sessions') }}
+  {{ ui.stat('Visitors · 30d', h.num(w['30d'].visitors), h.num(w['30d'].sessions) ~ ' sessions') }}
+  {{ ui.stat('Bounce · 30d', (h.num(w['30d'].bounce, 1) ~ '%') if w['30d'].bounce is not none else '—',
+             (h.num(w['30d'].avg_active_s, 1) ~ 's engaged / session') if w['30d'].avg_active_s is not none else None) }}
+</section>
+
+<section class="adm-card">
+  <div class="adm-card-head"><h2>Last 30 days</h2></div>
+  {{ ui.series(o.chart, h, 'Daily visitors and waitlist joins, last 30 days') }}
+</section>
+
+<section class="adm-kpis" aria-label="Business in the selected range">
+  {{ ui.stat('Waitlist joins', h.num(o.waitlist.joins), h.num(o.waitlist.confirms) ~ ' confirmed' ~ ((' · ' ~ h.num(o.waitlist.confirm_rate, 1) ~ '%') if o.waitlist.confirm_rate is not none else '')) }}
+  {{ ui.stat('Waiting in line', h.num(o.waitlist.waiting), h.num(o.waitlist.invited) ~ ' invited · ' ~ h.num(o.waitlist.joined) ~ ' joined') }}
+  {{ ui.stat('Signups', h.num(o.signups), (h.num(o.signups_total) ~ ' total') if o.signups_total is not none else 'accounts not live yet') }}
+  {{ ui.stat('Paid conversions', h.num(o.paid), (h.num(o.paid_total) ~ ' paying ever') if o.paid_total is not none else None) }}
+  <div class="adm-stat">
+    <div class="adm-stat-label">Revenue</div>
+    {% if o.revenue %}
+      {% for cur, r in o.revenue.items() %}<div class="adm-stat-value adm-stat-value-sm">{{ h.money(r.minor, cur) }}</div>{% endfor %}
+      <div class="adm-stat-sub">{{ o.revenue.values()|map(attribute='count')|sum }} payments</div>
+    {% else %}<div class="adm-stat-value">—</div><div class="adm-stat-sub">no payments yet</div>{% endif %}
+  </div>
+</section>
+
+<section class="adm-kpis" aria-label="Product">
+  {% set c = o.credits or {} %}
+  {{ ui.stat('Credits sold', h.num(c.get('sold')), h.num(c.get('free')) ~ ' given free') }}
+  {{ ui.stat('Credits burned', h.num(c.get('burned')), 'source minutes processed') }}
+  {% set j = o.jobs %}
+  {{ ui.stat('Job success', (h.num(j.success_rate * 100, 1) ~ '%') if j and j.success_rate is not none else '—',
+             (h.num(j.total) ~ ' jobs') if j else 'jobs not live yet') }}
+  {{ ui.stat('Avg cost / job', ('$' ~ '%.3f'|format(j.avg_cost)) if j and j.avg_cost is not none else '—',
+             ('$' ~ '%.4f'|format(j.cost_per_source_min) ~ ' per source min') if j and j.cost_per_source_min else 'estimate from job meters') }}
+</section>
+
+<div class="adm-grid adm-grid-3">
+  <section class="adm-card"><div class="adm-card-head"><h2>Top pages</h2><a href="/admin/pages">All</a></div>
+    {{ ui.bars(o.pages, h, link='/admin/pages/view?path=') }}</section>
+  <section class="adm-card"><div class="adm-card-head"><h2>Sources</h2><a href="/admin/sources">All</a></div>
+    {{ ui.bars(o.sources, h) }}</section>
+  <section class="adm-card"><div class="adm-card-head"><h2>Intent</h2><a href="/admin/visitors?sort=score">Leads</a></div>
+    {{ ui.bars(o.labels, h, link='/admin/visitors?label=') }}</section>
+  <section class="adm-card"><div class="adm-card-head"><h2>Countries</h2></div>
+    {{ ui.bars(o.countries, h, link='/admin/visitors?country=') }}</section>
+  <section class="adm-card"><div class="adm-card-head"><h2>Devices</h2></div>
+    {{ ui.bars(o.devices, h, link='/admin/visitors?device=') }}</section>
+  <section class="adm-card"><div class="adm-card-head"><h2>Hottest leads</h2><a href="/admin/visitors?sort=score">All</a></div>
+    {% if o.leads %}
+    <ul class="adm-list">
+      {% for v in o.leads %}
+        <li><a href="/admin/visitors/{{ v.id }}">{{ ui.score(v.lead_score) }} {{ ui.label_chip(v.lead_label) }}
+          <span class="adm-muted">{{ h.flag(v.country) }} {{ v.city or v.country or '' }} · {{ h.ago(v.last_seen_at) }}</span></a></li>
+      {% endfor %}
+    </ul>
+    {% else %}<p class="adm-empty">No scored visitors yet.</p>{% endif %}
+  </section>
+</div>
+
+<div class="adm-grid adm-grid-2">
+  <section class="adm-card"><div class="adm-card-head"><h2>Latest waitlist joins</h2><a href="/admin/waitlist?sort=recent">All</a></div>
+    {% if o.recent_joins %}
+    <ul class="adm-list">{% for e in o.recent_joins %}
+      <li><span class="adm-mono">{{ e.email }}</span> <span class="chip chip-plain">{{ e.status }}</span>
+        {% if e.flagged %}<span class="chip chip-bad">flagged</span>{% endif %}
+        <span class="adm-muted">{{ h.ago(e.created_at) }}</span></li>{% endfor %}
+    </ul>{% else %}<p class="adm-empty">Nobody yet. Share the landing page.</p>{% endif %}
+  </section>
+  <section class="adm-card"><div class="adm-card-head"><h2>Security</h2><a href="/admin/security">All</a></div>
+    {% if o.security %}
+    <ul class="adm-list">{% for ev in o.security %}
+      <li>{{ ui.severity(ev.severity) }} <b>{{ ev.kind }}</b> <span class="adm-mono">{{ ev.ip or '' }}</span>
+        <span class="adm-muted">{{ h.ago(ev.created_at) }}</span></li>{% endfor %}
+    </ul>{% else %}<p class="adm-empty">Quiet. Nothing above low severity.</p>{% endif %}
+  </section>
+</div>
+{% endblock %}

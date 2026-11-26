@@ -1,0 +1,9 @@
+disposable_domains.txt
+  Verbatim copy of disposable_email_blocklist.conf from
+  https://github.com/disposable-email-domains/disposable-email-domains
+  at commit 9cf2bee345b0276e1b65cee7484beb51e5c715b1 (2026-11-21), 10455 domains.
+  License: CC0 1.0 Universal (public domain dedication), see disposable_domains.LICENSE.txt.
+
+  Refresh: download the same file from the repo's main branch, replace this one, update the commit
+  above. saas.security.disposable also honours SAAS_DISPOSABLE_EXTRA_DOMAINS (block more) and
+  SAAS_DISPOSABLE_ALLOW_DOMAINS (un-block a false positive) without a code change.

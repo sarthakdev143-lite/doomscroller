@@ -1,0 +1,62 @@
+{#
+  The waitlist form. waitlist.js posts it as JSON to POST /api/waitlist (docs/saas/CONTRACT.md):
+  {email, role?, channel_url?, ref?, fp, ts, website, cf_turnstile_response?}.
+  t.js fills input[name=fp]; an empty fp still submits, so an ad blocker never blocks joining.
+#}
+{% macro waitlist_form(id, full=false, button="Join the waitlist") -%}
+<form class="waitlist{% if full %} waitlist--full{% endif %}" id="wl-{{ id }}" action="/api/waitlist" method="post"
+      data-waitlist-form data-form-id="{{ id }}" novalidate>
+  {% if full %}
+  <div class="field">
+    <label class="label" for="wl-{{ id }}-email">Email</label>
+    <input class="input" id="wl-{{ id }}-email" name="email" type="email" autocomplete="email" inputmode="email"
+           required maxlength="254" placeholder="you@example.com" aria-describedby="wl-{{ id }}-error" data-track-mask>
+  </div>
+  <div class="field">
+    <label class="label" for="wl-{{ id }}-role">What do you make? <span class="optional">(optional)</span></label>
+    <select class="select" id="wl-{{ id }}-role" name="role" data-track="waitlist-role-{{ id }}">
+      <option value="">Choose one</option>
+      <option value="podcaster">Podcasts</option>
+      <option value="streamer">Streams</option>
+      <option value="interviews">Interviews and talks</option>
+      <option value="educator">Courses and lectures</option>
+      <option value="agency">Client work (editor or agency)</option>
+      <option value="developer">I want the API</option>
+      <option value="other">Something else</option>
+    </select>
+  </div>
+  <div class="field">
+    <label class="label" for="wl-{{ id }}-channel">Your channel <span class="optional">(optional)</span></label>
+    <input class="input" id="wl-{{ id }}-channel" name="channel_url" type="url" inputmode="url" autocomplete="url"
+           maxlength="300" placeholder="https://www.youtube.com/@yourchannel" data-track-mask>
+    <p class="hint">Helps us invite people whose videos suit the product first.</p>
+  </div>
+  <div class="waitlist__submit">
+    <button class="btn btn--accent btn--lg" type="submit" data-track="waitlist-submit-{{ id }}">
+      <span class="spinner" aria-hidden="true"></span><span data-label>{{ button }}</span>
+    </button>
+  </div>
+  {% else %}
+  <label class="label" for="wl-{{ id }}-email">Your email</label>
+  <div class="inline-form">
+    <input class="input" id="wl-{{ id }}-email" name="email" type="email" autocomplete="email" inputmode="email"
+           required maxlength="254" placeholder="you@example.com" aria-describedby="wl-{{ id }}-error" data-track-mask>
+    <button class="btn btn--accent" type="submit" data-track="waitlist-submit-{{ id }}">
+      <span class="spinner" aria-hidden="true"></span><span data-label>{{ button }}</span>
+    </button>
+  </div>
+  {% endif %}
+
+  <input type="hidden" name="ref" value="{{ ref or '' }}">
+  <input type="hidden" name="fp" value="">
+  <input type="hidden" name="ts" value="{{ now_ms }}">
+  <div class="hp" aria-hidden="true">
+    <label for="wl-{{ id }}-website">Leave this empty</label>
+    <input id="wl-{{ id }}-website" name="website" type="text" tabindex="-1" autocomplete="off">
+  </div>
+  {% if turnstile_site_key %}
+  <div class="cf-turnstile waitlist__turnstile" data-sitekey="{{ turnstile_site_key }}" data-theme="light" data-size="flexible"></div>
+  {% endif %}
+  <p class="error-text" id="wl-{{ id }}-error" data-form-error role="alert"></p>
+</form>
+{%- endmacro %}

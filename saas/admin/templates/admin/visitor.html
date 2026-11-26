@@ -1,0 +1,162 @@
+{% extends "admin/base.html" %}
+{% import "admin/_ui.html" as ui %}
+{% set v = d.v %}
+{% block title %}Visitor{% endblock %}
+{% block crumbs %}<a class="adm-crumb" href="/admin/visitors">← Visitors</a>{% endblock %}
+{% block heading %}{{ h.flag(v.country) }} {{ v.city or v.country or 'Unknown place' }} <span class="adm-mono adm-muted adm-id">{{ v.id }}</span>{% endblock %}
+{% block content %}
+<section class="adm-hero">
+  <div class="adm-hero-score">
+    {{ ui.score(v.lead_score) }}
+    <div>
+      {{ ui.label_chip(v.lead_label) }}
+      <p class="adm-muted">First seen {{ h.ago(v.created_at) }} · last seen {{ h.ago(v.last_seen_at) }} ·
+        {{ v.sessions }} visit{{ '' if v.sessions == 1 else 's' }} · {{ v.pageviews }} pages · {{ h.dur(v.active_ms) }} engaged</p>
+    </div>
+  </div>
+  <div class="adm-hero-why">
+    <h2>Why this score</h2>
+    {% if v.lead_reasons %}<ul class="adm-reasons">{% for r in v.lead_reasons %}<li class="{{ 'warn' if r.startswith('!') else '' }}">{{ r }}</li>{% endfor %}</ul>
+    {% else %}<p class="adm-muted">Not enough activity to score yet.</p>{% endif %}
+  </div>
+  <div class="adm-hero-why">
+    <h2>Probably looking for</h2>
+    {% if v.interests %}<ul class="adm-reasons">{% for i in v.interests %}<li><b>{{ i.topic }}</b> <span class="adm-muted">{{ h.dur(i.ms) }} · {{ i['from']|join(', ') }}</span></li>{% endfor %}</ul>
+    {% else %}<p class="adm-muted">No clear interest yet.</p>{% endif %}
+  </div>
+</section>
+
+<div class="adm-grid adm-grid-3">
+  <section class="adm-card">
+    <div class="adm-card-head"><h2>Identity</h2></div>
+    <dl class="adm-dl">
+      {% for e in d.waitlist %}
+        <dt>Waitlist</dt><dd><a href="/admin/waitlist?q={{ e.email|urlencode }}">{{ e.email }}</a> <span class="chip chip-plain">{{ e.status }}</span></dd>
+      {% endfor %}
+      {% for u in d.users %}
+        <dt>User</dt><dd><a href="/admin/users/{{ u.id }}">{{ u.email }}</a> <span class="chip chip-plain">{{ u.plan_slug }}</span></dd>
+      {% endfor %}
+      {% if not d.waitlist and not d.users %}<dt>Who</dt><dd class="adm-muted">Anonymous (not on the waitlist, no account)</dd>{% endif %}
+      {% if d.siblings %}<dt>Same person, other browsers</dt><dd>{% for s in d.siblings %}<a class="adm-mono" href="/admin/visitors/{{ s }}">{{ s[:12] }}…</a> {% endfor %}</dd>{% endif %}
+      <dt>Consent</dt><dd>{{ v.consent }}{% if v.consent_at %} <span class="adm-muted">{{ h.ago(v.consent_at) }}</span>{% endif %}</dd>
+    </dl>
+  </section>
+  <section class="adm-card">
+    <div class="adm-card-head"><h2>Device &amp; network</h2></div>
+    <dl class="adm-dl">
+      <dt>Device</dt><dd>{{ v.device_type or '—' }}{% if v.device_brand %} · {{ v.device_brand }} {{ v.device_model or '' }}{% endif %}</dd>
+      <dt>Browser</dt><dd>{{ v.browser or '—' }} {{ v.browser_version or '' }} on {{ v.os or '—' }} {{ v.os_version or '' }}</dd>
+      <dt>IP</dt><dd class="adm-mono">{{ v.last_ip or '—' }}{% if v.first_ip and v.first_ip != v.last_ip %} <span class="adm-muted">(first {{ v.first_ip }})</span>{% endif %}</dd>
+      <dt>Location</dt><dd>{{ v.city or '' }}{{ ', ' if v.city and v.region else '' }}{{ v.region or '' }} {{ v.country or '' }}{% if v.geo_timezone %} <span class="adm-muted">{{ v.geo_timezone }}</span>{% endif %}</dd>
+      <dt>Network</dt><dd>{% if v.asn %}AS{{ v.asn }} {{ v.asn_org or '' }}{% else %}<span class="adm-muted">ASN unknown (no GeoIP ASN db)</span>{% endif %}
+        {% if v.is_tor %}<span class="chip chip-bad">Tor</span>{% endif %}{% if v.is_vpn %}<span class="chip chip-bad">VPN</span>{% elif v.is_datacenter %}<span class="chip chip-bad">datacenter</span>{% endif %}</dd>
+      <dt>Fingerprint</dt><dd class="adm-mono">{{ v.fingerprint or '—' }}</dd>
+      {% set c = v.client or {} %}
+      {% if c %}<dt>Screen</dt><dd>{{ c.sw }}×{{ c.sh }} @{{ c.dpr }}x · {{ c.hc }} cores · {{ c.dm }} GB · touch {{ c.touch }}</dd>
+      <dt>Locale</dt><dd>{{ c.tz }} · {{ (c.langs or [])|join(', ') }}</dd>
+      {% if c.wgl %}<dt>GPU</dt><dd class="adm-small">{{ c.wgl }}</dd>{% endif %}{% endif %}
+      {% if v.bot_reasons %}<dt>Bot signals</dt><dd>{% for r in v.bot_reasons %}<span class="chip chip-bad">{{ r }}</span>{% endfor %}</dd>{% endif %}
+    </dl>
+  </section>
+  <section class="adm-card">
+    <div class="adm-card-head"><h2>How they found us</h2></div>
+    <dl class="adm-dl">
+      <dt>Source</dt><dd>{{ v.first_source or 'direct' }} <span class="adm-muted">{{ v.first_medium or '' }}</span></dd>
+      {% if v.first_campaign %}<dt>Campaign</dt><dd>{{ v.first_campaign }}</dd>{% endif %}
+      {% if v.first_term %}<dt>Term</dt><dd>{{ v.first_term }}</dd>{% endif %}
+      <dt>Referrer</dt><dd class="adm-small adm-break">{{ v.first_referrer or '—' }}</dd>
+      <dt>Landed on</dt><dd class="adm-mono">{{ v.first_landing or '—' }}</dd>
+    </dl>
+    <h3 class="adm-h3">Sections they lingered on</h3>
+    {{ ui.bars(d.sections, h, empty='No section dwell recorded.') }}
+  </section>
+</div>
+
+<section class="adm-card">
+  <div class="adm-card-head"><h2>Sessions</h2><span class="adm-muted">most recent first</span></div>
+  {% for t in d.timeline %}{% set s = t.session %}
+    <details class="adm-session" {{ 'open' if loop.first }}>
+      <summary>
+        <b>{{ s.started_at.strftime('%a %d %b, %H:%M') }} UTC</b>
+        <span class="adm-muted">{{ s.source or 'direct' }}{% if s.campaign %} / {{ s.campaign }}{% endif %} · {{ s.pageviews }} pages · {{ h.dur(s.active_ms) }} · scrolled {{ s.max_scroll }}%</span>
+        <span class="adm-mono adm-muted">{{ s.landing_path }} → {{ s.current_path }}</span>
+        {% if t.recordings %}<span class="chip chip-hot">▶ {{ t.recordings|length }} recording{{ 's' if t.recordings|length > 1 }}</span>{% endif %}
+      </summary>
+      {% if t.recordings %}
+      <div class="adm-recs">{% for r in t.recordings %}
+        <a class="adm-btn adm-btn-quiet" href="/admin/replay/{{ r.page_id }}">▶ {{ r.path }} <span class="adm-muted">{{ r.duration_s }}s</span></a>{% endfor %}
+      </div>{% endif %}
+      <ol class="adm-timeline">
+        {% for e in t.events %}
+          <li class="ev ev-{{ e.type }}">
+            <time>{{ e.ts.strftime('%H:%M:%S') }}</time>
+            <span class="ev-type">{{ e.type }}</span>
+            <span class="ev-what">
+              {% if e.type == 'pageview' %}<span class="adm-mono">{{ e.path }}</span>
+              {% elif e.type == 'dwell' %}<b>{{ e.name }}</b> for {{ h.dur(e.value) }}
+              {% elif e.type in ('click', 'rage', 'dead', 'hover', 'imp') %}<b>{{ e.name }}</b>{% if e.section %} <span class="adm-muted">in {{ e.section }}</span>{% endif %}
+              {% elif e.type in ('focus', 'submit', 'abandon') %}form <b>{{ e.name }}</b>{% if e.props and e.props.get('f') %} · field {{ e.props.get('f') }}{% endif %}{% if e.props and e.props.get('fields') %} · touched {{ e.props.get('fields')|join(', ') }}{% endif %}
+              {% elif e.type == 'vital' %}{{ e.name }} {{ e.value }}
+              {% elif e.type == 'error' %}<span class="adm-warn">{{ e.name }}</span>
+              {% elif e.type == 'heat' %}<span class="adm-muted">{{ (e.props or {}).get('p', [])|length }} mouse points</span>
+              {% else %}{{ e.name or '' }}{% endif %}
+              {% if e.type != 'pageview' %}<span class="adm-muted adm-mono"> {{ e.path }}</span>{% endif %}
+            </span>
+          </li>
+        {% else %}<li class="adm-muted">No events stored for this visit (or past retention).</li>{% endfor %}
+      </ol>
+    </details>
+  {% else %}<p class="adm-empty">No sessions.</p>{% endfor %}
+</section>
+
+<div class="adm-grid adm-grid-2">
+  <section class="adm-card">
+    <div class="adm-card-head"><h2>Shares an IP or fingerprint with</h2></div>
+    {% if d.cluster %}
+    <ul class="adm-list">{% for c in d.cluster %}
+      <li><span class="chip chip-plain">{{ c.kind }}</span> <span class="adm-mono">{{ c.value[:20] }}</span> →
+        {% if c.subject_kind == 'visitor' %}<a href="/admin/visitors/{{ c.subject_id }}">visitor {{ c.subject_id[:10] }}…</a>
+        {% elif c.subject_kind == 'user' %}<a href="/admin/users/{{ c.subject_id }}">user {{ c.subject_id }}</a>
+        {% else %}<a href="/admin/waitlist?q={{ c.subject_id }}">waitlist {{ c.subject_id }}</a>{% endif %}
+        <span class="adm-muted">{{ h.ago(c.last_seen) }}</span></li>{% endfor %}
+    </ul>{% else %}<p class="adm-empty">Nobody else seen on this IP or device.</p>{% endif %}
+  </section>
+  <section class="adm-card">
+    <div class="adm-card-head"><h2>Actions</h2></div>
+    {% if d.bans %}<p>{% for b in d.bans %}<span class="chip chip-bad">banned {{ b.kind }}</span> {% endfor %}</p>{% endif %}
+    <div class="adm-actions">
+      <form data-api="/admin/api/bans" data-confirm="Ban this browser? It will get 403 on every page.">
+        <input type="hidden" name="kind" value="visitor"><input type="hidden" name="value" value="{{ v.id }}">
+        <input type="hidden" name="reason" value="banned from visitor page">
+        <button class="adm-btn adm-btn-danger" type="submit">Ban browser</button></form>
+      {% if v.fingerprint %}<form data-api="/admin/api/bans" data-confirm="Ban this device fingerprint (blocks waitlist/signup from it)?">
+        <input type="hidden" name="kind" value="fingerprint"><input type="hidden" name="value" value="{{ v.fingerprint }}">
+        <input type="hidden" name="reason" value="banned from visitor page">
+        <button class="adm-btn adm-btn-danger" type="submit">Ban device</button></form>{% endif %}
+      {% if v.last_ip %}<form data-api="/admin/api/bans" data-confirm="Ban IP {{ v.last_ip }} for 7 days? Shared IPs (offices, mobile carriers) block other people too.">
+        <input type="hidden" name="kind" value="ip"><input type="hidden" name="value" value="{{ v.last_ip }}">
+        <input type="hidden" name="hours" value="168"><input type="hidden" name="reason" value="banned from visitor page">
+        <button class="adm-btn adm-btn-danger" type="submit">Ban IP 7d</button></form>{% endif %}
+      <form data-api="/admin/api/visitors/{{ v.id }}/forget" data-confirm="Erase this visitor's events and recordings? This cannot be undone.">
+        <button class="adm-btn adm-btn-quiet" type="submit">Erase data</button></form>
+    </div>
+    <form class="adm-note-form" data-api="/admin/api/notes">
+      <input type="hidden" name="subject_kind" value="visitor"><input type="hidden" name="subject_id" value="{{ v.id }}">
+      <label class="adm-field adm-field-grow"><span>Add a note</span><textarea name="body" rows="2" required></textarea></label>
+      <button class="adm-btn" type="submit">Save note</button>
+    </form>
+    {% for n in notes %}<blockquote class="adm-noteq">{{ n.body }}<footer>{{ n.author_email or 'admin' }} · {{ h.ago(n.created_at) }}</footer></blockquote>{% endfor %}
+  </section>
+</div>
+
+<section class="adm-card adm-card-flush">
+  <div class="adm-card-head"><h2>Pages</h2></div>
+  <div class="adm-table-wrap"><table class="adm-table">
+    <thead><tr><th>When</th><th>Page</th><th class="num">Engaged</th><th class="num">Scrolled</th><th></th></tr></thead>
+    <tbody>{% for p in d.pages %}
+      <tr><td class="adm-muted">{{ p.started_at.strftime('%d %b %H:%M') }}</td><td class="adm-mono">{{ p.path }}</td>
+        <td class="num">{{ h.dur(p.active_ms) }}</td><td class="num">{{ p.max_scroll }}%</td>
+        <td>{% if p.has_replay %}<a href="/admin/replay/{{ p.id }}">▶ replay</a>{% endif %}</td></tr>
+    {% endfor %}</tbody></table></div>
+</section>
+{% endblock %}

@@ -19,6 +19,11 @@ rather than the real working directory, so PWD has to move too.
 The message goes over stdin because a long transcript exceeds the argument limit,
 and stdin must always be supplied or closed: with an inherited stdin the CLI
 waits on it forever.
+
+``CLIP_AI_BACKEND=api`` replaces both CLIs with the Anthropic Messages API over HTTPS
+(``ANTHROPIC_API_KEY``), for hosts with no logged-in CLI such as the SaaS. The request
+carries the same system prompt and no tools, images travel as base64 blocks, and the
+token usage of every call is recorded through :mod:`app.clipper.metering`.
 """
 from __future__ import annotations
 
@@ -36,9 +41,13 @@ import time
 from pathlib import Path
 from typing import Optional, Sequence
 
+import httpx
+
 from app.config import settings
 from app.metadata import _extract_json
 from app.winproc import background_subprocess_kwargs
+
+from . import metering
 
 log = logging.getLogger(__name__)
 
@@ -165,8 +174,134 @@ def claude_path() -> Optional[str]:
     return _resolve_cli(settings.claude_bin, "claude", fallbacks)
 
 
+def backend() -> str:
+    """"api" when CLIP_AI_BACKEND asks for the Messages API, else "cli" (the owner's default)."""
+    return "api" if str(getattr(settings, "clip_ai_backend", "") or "").strip().lower() == "api" else "cli"
+
+
 def available() -> bool:
+    if backend() == "api":
+        return bool((settings.anthropic_api_key or "").strip())
     return opencode_path() is not None or claude_path() is not None
+
+
+# ---- Anthropic Messages API backend
+
+_API_VERSION = "2026-10-21"
+_API_MAX_TOKENS = 16000
+_API_RETRIES = 2
+_API_MAX_WAIT_SEC = 30.0
+_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
+# Models that take the server-side refusal fallback; a declined request is re-run on another model.
+_FALLBACK_BETA = "server-side-fallback-2026-07-01"
+_FALLBACK_MODELS = {"claude-opus-5-5", "claude-opus-5", "claude-fable-5-1", "claude-fable-5-2", "claude-sonnet-5-5"}
+
+
+def _api_model(files: Sequence[str]) -> str:
+    vision = str(getattr(settings, "clip_ai_api_vision_model", "") or "").strip()
+    text = str(getattr(settings, "clip_ai_api_model", "") or "").strip() or "claude-opus-5-5"
+    return (vision or text) if files else text
+
+
+def _api_content(prompt: str, files: Sequence[str]) -> list[dict]:
+    content: list[dict] = []
+    for path in files:
+        media = _IMAGE_TYPES.get(Path(path).suffix.lower())
+        if media is None:
+            raise ValueError(f"cannot send {Path(path).name} to the API: not an image")
+        data = base64.b64encode(Path(path).read_bytes()).decode("ascii")
+        content.append({"type": "image", "source": {"type": "base64", "media_type": media, "data": data}})
+    content.append({"type": "text", "text": _safe_utf8(prompt)})
+    return content
+
+
+def _api_scrub(text: object) -> str:
+    out = str(text or "")
+    key = (settings.anthropic_api_key or "").strip()
+    return out.replace(key, "[REDACTED]") if len(key) >= 3 else out
+
+
+def _retry_wait(response: Optional[httpx.Response], attempt: int) -> float:
+    try:
+        wait = float(response.headers.get("retry-after", "")) if response is not None else 0.0
+    except ValueError:
+        wait = 0.0
+    if not math.isfinite(wait) or wait <= 0:
+        wait = 2.0 * (attempt + 1)
+    return min(_API_MAX_WAIT_SEC, wait)
+
+
+def _ask_api(prompt: str, *, files: Sequence[str] = ()) -> Optional[str]:
+    """One Messages API call. None on any failure, a refusal, or an empty reply; never raises."""
+    key = (settings.anthropic_api_key or "").strip()
+    if not key:
+        return None
+    model = _api_model(files)
+    try:
+        content = _api_content(prompt, files)
+    except (OSError, ValueError) as exc:
+        log.warning("anthropic api: %s", exc)
+        return None
+    body: dict = {
+        "model": model,
+        "max_tokens": _API_MAX_TOKENS,
+        "system": _CLAUDE_SYSTEM,
+        "messages": [{"role": "user", "content": content}],
+    }
+    effort = str(getattr(settings, "clip_ai_api_effort", "") or "").strip().lower()
+    if effort in _EFFORTS:
+        body["output_config"] = {"effort": effort}
+    headers = {"x-api-key": key, "anthropic-version": _API_VERSION, "content-type": "application/json"}
+    if getattr(settings, "clip_ai_api_fallbacks", True) and model in _FALLBACK_MODELS:
+        headers["anthropic-beta"] = _FALLBACK_BETA
+        body["fallbacks"] = "default"
+    base = str(getattr(settings, "clip_ai_api_base_url", "") or "https://api.anthropic.com").rstrip("/")
+    timeout = httpx.Timeout(_timeout(), connect=15)
+
+    def spent(ok: bool, data: Optional[dict] = None) -> None:
+        usage = (data or {}).get("usage") if isinstance(data, dict) else None
+        usage = usage if isinstance(usage, dict) else {}
+        metering.record(
+            "llm", provider="anthropic", model=str((data or {}).get("model") or model), ok=ok, images=len(files),
+            input_tokens=int(usage.get("input_tokens") or 0), output_tokens=int(usage.get("output_tokens") or 0),
+            cache_read_input_tokens=int(usage.get("cache_read_input_tokens") or 0),
+            cache_creation_input_tokens=int(usage.get("cache_creation_input_tokens") or 0),
+        )
+
+    for attempt in range(_API_RETRIES + 1):
+        response: Optional[httpx.Response] = None
+        try:
+            response = httpx.post(f"{base}/v1/messages", json=body, headers=headers, timeout=timeout)
+        except httpx.HTTPError as exc:
+            if attempt < _API_RETRIES:
+                time.sleep(_retry_wait(None, attempt))
+                continue
+            log.warning("anthropic api could not be reached: %s", type(exc).__name__)
+            spent(False)
+            return None
+        status = response.status_code
+        if (status in (408, 409, 429) or status >= 500) and attempt < _API_RETRIES:
+            time.sleep(_retry_wait(response, attempt))
+            continue
+        try:
+            data = response.json()
+        except ValueError:
+            data = None
+        if status != 200 or not isinstance(data, dict):
+            error = data.get("error") if isinstance(data, dict) else None
+            detail = error.get("message") if isinstance(error, dict) else ""
+            log.warning("anthropic api returned %s: %s", status, _api_scrub(str(detail)[:300]))
+            spent(False, data if isinstance(data, dict) else None)
+            return None
+        if data.get("stop_reason") == "refusal":
+            log.warning("anthropic api declined the request (%s)", (data.get("stop_details") or {}).get("category"))
+            spent(False, data)
+            return None
+        blocks = data.get("content") if isinstance(data.get("content"), list) else []
+        text = "".join(str(b.get("text") or "") for b in blocks if isinstance(b, dict) and b.get("type") == "text")
+        spent(bool(text.strip()), data)
+        return text.strip() or None
+    return None
 
 
 def _events_text_and_error(stdout: str | bytes) -> tuple[str, str]:
@@ -199,6 +334,11 @@ def ask(prompt: str, *, files: Sequence[str] = (), model: str = "") -> Optional[
     """Return the model's reply, or None when every route fails."""
     global _opencode_down_until
     _last_provider.name = None
+    if backend() == "api":
+        reply = _ask_api(prompt, files=files)
+        if reply is not None:
+            _last_provider.name = "anthropic"
+        return reply
     with _state_lock:
         opencode_down_until = _opencode_down_until
     if opencode_path() and time.monotonic() >= opencode_down_until:
@@ -248,6 +388,26 @@ def _result_from_stream(stdout: str | bytes) -> Optional[str]:
     return None
 
 
+def _usage_from_stream(stdout: str | bytes) -> dict[str, int]:
+    """Token counts from the Claude CLI's result event, or zeros when it carries none."""
+    for line in _safe_utf8(stdout).splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and event.get("type") == "result" and isinstance(event.get("usage"), dict):
+            usage = event["usage"]
+            try:
+                return {
+                    "input_tokens": int(usage.get("input_tokens") or 0) + int(usage.get("cache_read_input_tokens") or 0)
+                    + int(usage.get("cache_creation_input_tokens") or 0),
+                    "output_tokens": int(usage.get("output_tokens") or 0),
+                }
+            except (TypeError, ValueError):
+                return {}
+    return {}
+
+
 def _ask_claude(prompt: str, *, files: Sequence[str] = ()) -> Optional[str]:
     binary = claude_path()
     if binary is None:
@@ -276,8 +436,15 @@ def _ask_claude(prompt: str, *, files: Sequence[str] = ()) -> Optional[str]:
     err_text = _safe_utf8(proc.stderr) or _safe_utf8(proc.stdout)
     if proc.returncode != 0:
         log.warning("claude failed: %s", err_text[-400:])
+        metering.record("llm", provider="claude-cli", model=settings.claude_model, images=len(files), ok=False,
+                        input_tokens=0, output_tokens=0)
         return None
-    return _result_from_stream(proc.stdout)
+    result = _result_from_stream(proc.stdout)
+    usage = _usage_from_stream(proc.stdout)
+    metering.record("llm", provider="claude-cli", model=settings.claude_model, images=len(files),
+                    ok=result is not None, input_tokens=usage.get("input_tokens", 0),
+                    output_tokens=usage.get("output_tokens", 0))
+    return result
 
 
 def _model_candidates(model: str) -> list[str]:
@@ -333,11 +500,15 @@ def _ask_opencode(prompt: str, *, files: Sequence[str] = (), model: str = "") ->
                 )
             except subprocess.TimeoutExpired:
                 log.warning("opencode timed out after %ss (%s)", timeout, cand or "default")
+                metering.record("llm", provider="opencode", model=cand or "default", images=len(files), ok=False,
+                                input_tokens=0, output_tokens=0)
                 return None
             except OSError as exc:
                 log.warning("opencode could not start: %s", exc)
                 return None
         if proc.returncode != 0:
+            metering.record("llm", provider="opencode", model=cand or "default", images=len(files), ok=False,
+                            input_tokens=0, output_tokens=0)
             # --format json writes structured errors to stdout while stderr is often empty.
             err_text = (_safe_utf8(proc.stderr) or _safe_utf8(proc.stdout)).strip()
             log.warning("opencode failed (%s): %s", cand or "default", err_text[-400:])
@@ -346,6 +517,8 @@ def _ask_opencode(prompt: str, *, files: Sequence[str] = (), model: str = "") ->
                     _model_down_until[cand] = time.monotonic() + _OPENCODE_REST_SEC
             continue
         reply, event_err = _events_text_and_error(proc.stdout)
+        metering.record("llm", provider="opencode", model=cand or "default", images=len(files), ok=bool(reply),
+                        input_tokens=0, output_tokens=0)
         if reply:
             return reply
         if cand and event_err and _COOLDOWN_ERROR_RE.search(event_err):
@@ -372,7 +545,7 @@ def ask_json(prompt: str, *, files: Sequence[str] = (), model: str = "") -> Opti
         if isinstance(parsed, dict):
             return parsed
         log.info("AI reply was not a JSON object: %s", reply[:200])
-    if getattr(_last_provider, "name", None) == "opencode" and claude_path():
+    if backend() == "cli" and getattr(_last_provider, "name", None) == "opencode" and claude_path():
         fallback = _ask_claude(f"{prompt.rstrip()}{_STRICT_JSON_SUFFIX}", files=files)
         if fallback:
             parsed = _extract_json(fallback)

@@ -1,0 +1,74 @@
+{# Shared admin macros: range picker, stat tiles, inline-SVG charts, bars, chips. #}
+
+{% macro range_picker(current, qs) -%}
+<div class="adm-seg" role="group" aria-label="Time range">
+  {% for key, label in [('1d', '24h'), ('7d', '7 days'), ('30d', '30 days'), ('90d', '90 days')] %}
+    <a href="{{ qs(range=key, page=None) }}" class="{{ 'is-on' if current == key else '' }}"{% if current == key %} aria-current="true"{% endif %}>{{ label }}</a>
+  {% endfor %}
+</div>
+{%- endmacro %}
+
+{% macro stat(label, value, sub=None, tone='') -%}
+<div class="adm-stat {{ tone }}">
+  <div class="adm-stat-label">{{ label }}</div>
+  <div class="adm-stat-value">{{ value }}</div>
+  {% if sub %}<div class="adm-stat-sub">{{ sub }}</div>{% endif %}
+</div>
+{%- endmacro %}
+
+{% macro series(c, h, title='') -%}
+<figure class="adm-chart">
+  <svg viewBox="0 0 {{ c.width }} {{ c.height }}" role="img" aria-label="{{ title }}" preserveAspectRatio="none">
+    {% for t in c.ticks %}
+      <line class="grid" x1="{{ c.pad_l }}" x2="{{ c.right }}" y1="{{ t.y }}" y2="{{ t.y }}"></line>
+      <text class="tick" x="{{ c.pad_l - 6 }}" y="{{ t.y + 3 }}" text-anchor="end">{{ h.num(t.v) }}</text>
+    {% endfor %}
+    {% for s in c.series %}
+      {% if s.kind == 'area' %}<path class="area s{{ s.idx }}" d="{{ s.area }}"></path>{% endif %}
+      <path class="line s{{ s.idx }}" d="{{ s.line }}"></path>
+      {% for p in s.points %}<circle class="pt s{{ s.idx }}" cx="{{ p.x }}" cy="{{ p.y }}" r="2.5"><title>{{ p.label }}: {{ p.v }} {{ s.name|lower }}</title></circle>{% endfor %}
+    {% endfor %}
+    {% for l in c.xlabels %}<text class="tick" x="{{ l.x }}" y="{{ c.height - 6 }}" text-anchor="middle">{{ l.text }}</text>{% endfor %}
+  </svg>
+  <figcaption class="adm-legend">
+    {% for s in c.series %}<span class="key s{{ s.idx }}">{{ s.name }} <b>{{ h.num(s.total) }}</b></span>{% endfor %}
+  </figcaption>
+</figure>
+{%- endmacro %}
+
+{% macro bars(rows, h, empty='No data yet.', link=None, unit='') -%}
+{% if rows %}
+<ol class="adm-bars">
+  {% for r in rows %}
+    <li>
+      <span class="adm-bar" style="--w: {{ r.pct }}%"></span>
+      <span class="adm-bar-label">{% if link %}<a href="{{ link }}{{ (r.label or '')|string|urlencode }}">{{ r.label or '(none)' }}</a>{% else %}{{ r.label or '(none)' }}{% endif %}</span>
+      <span class="adm-bar-value">{{ h.num(r.value) }}{{ unit }}</span>
+    </li>
+  {% endfor %}
+</ol>
+{% else %}<p class="adm-empty">{{ empty }}</p>{% endif %}
+{%- endmacro %}
+
+{% macro label_chip(label) -%}
+{% set cls = {'ready to buy': 'chip-hot', 'comparing prices': 'chip-warm', 'developer / API': 'chip-dev', 'bot': 'chip-bad'} %}
+<span class="chip {{ cls.get(label, 'chip-plain') }}">{{ label or 'new' }}</span>
+{%- endmacro %}
+
+{% macro score(n) -%}
+<span class="adm-score" style="--s: {{ n or 0 }}" title="Lead score {{ n or 0 }}/100"><span>{{ n or 0 }}</span></span>
+{%- endmacro %}
+
+{% macro severity(s) -%}
+<span class="chip sev-{{ s }}">{{ s }}</span>
+{%- endmacro %}
+
+{% macro pager(page, pages, qs) -%}
+{% if pages > 1 %}
+<nav class="adm-pager" aria-label="Pages">
+  {% if page > 1 %}<a href="{{ qs(page=page - 1) }}">← Newer</a>{% endif %}
+  <span>Page {{ page }} of {{ pages }}</span>
+  {% if page < pages %}<a href="{{ qs(page=page + 1) }}">Older →</a>{% endif %}
+</nav>
+{% endif %}
+{%- endmacro %}

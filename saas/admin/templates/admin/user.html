@@ -1,0 +1,87 @@
+{% extends "admin/base.html" %}
+{% import "admin/_ui.html" as ui %}
+{% block title %}{{ u.email }}{% endblock %}
+{% block crumbs %}<a class="adm-crumb" href="/admin/users">← Users</a>{% endblock %}
+{% block heading %}<span class="adm-mono">{{ u.email }}</span>{% endblock %}
+{% block content %}
+<section class="adm-kpis">
+  {{ ui.stat('Credits', h.num(balance), 'minutes of source video') }}
+  {{ ui.stat('Plan', u.plan_slug or 'free') }}
+  {{ ui.stat('Status', u.status, ('billing hold' if u.billing_hold else None), 'tone-warn' if u.status != 'active' or u.billing_hold else '') }}
+  {{ ui.stat('Joined', h.ago(u.created_at), ('verified' if u.email_verified_at else 'email unverified')) }}
+  {{ ui.stat('Last login', h.ago(u.last_login_at)) }}
+</section>
+
+<div class="adm-grid adm-grid-3">
+  <section class="adm-card">
+    <div class="adm-card-head"><h2>Signup</h2></div>
+    <dl class="adm-dl">
+      <dt>User id</dt><dd class="adm-mono">{{ u.id }}</dd>
+      <dt>Name</dt><dd>{{ u.name or '—' }}</dd>
+      <dt>Signup IP</dt><dd class="adm-mono">{{ u.signup_ip or '—' }} {{ h.flag(u.signup_country) }}</dd>
+      <dt>Fingerprint</dt><dd class="adm-mono">{{ u.signup_fingerprint or '—' }}</dd>
+      <dt>Device</dt><dd class="adm-small">{{ u.signup_user_agent or '—' }}</dd>
+      {% set r = u.signup_risk or {} %}
+      <dt>Risk at signup</dt><dd>{{ r.get('score', '—') }} {% for x in r.get('reasons') or [] %}<span class="chip chip-plain">{{ x }}</span>{% endfor %}
+        {% if r.get('grant_free_credits') == false %}<span class="chip chip-bad">no free credits</span>{% endif %}</dd>
+      {% if wl %}<dt>Waitlist</dt><dd><a href="/admin/waitlist?q={{ wl.email|urlencode }}">{{ wl.email }}</a> · invite {{ wl.invite_code }}</dd>{% endif %}
+      {% if u.flags %}<dt>Flags</dt><dd>{% for k, val in u.flags.items() %}<span class="chip chip-bad">{{ k }}</span> {% endfor %}</dd>{% endif %}
+    </dl>
+  </section>
+  <section class="adm-card">
+    <div class="adm-card-head"><h2>Journey before signup</h2></div>
+    {% if visitors %}<ul class="adm-list">{% for v in visitors %}
+      <li><a href="/admin/visitors/{{ v.id }}">{{ ui.score(v.lead_score) }} {{ v.device_type }} · {{ v.browser }}</a>
+        <span class="adm-muted">{{ v.sessions }} visits · first via {{ v.first_source or 'direct' }} · {{ h.ago(v.created_at) }}</span></li>{% endfor %}</ul>
+    {% else %}<p class="adm-empty">No tracked browser linked (analytics declined, or signed up before tracking).</p>{% endif %}
+    {% if sharing %}
+      <h3 class="adm-h3">Other accounts from the same IP or device</h3>
+      <ul class="adm-list">{% for o in sharing %}<li><a href="/admin/users/{{ o.id }}">{{ o.email }}</a> <span class="chip chip-plain">{{ o.status }}</span></li>{% endfor %}</ul>
+    {% endif %}
+  </section>
+  <section class="adm-card">
+    <div class="adm-card-head"><h2>Actions</h2></div>
+    <div class="adm-actions">
+      {% if u.status != 'active' %}<button class="adm-btn" data-api="/admin/api/users/{{ u.id }}/status" data-body='{"status": "active"}'>Reactivate</button>{% endif %}
+      {% if u.status == 'active' and u.role != 'admin' %}<button class="adm-btn adm-btn-quiet" data-api="/admin/api/users/{{ u.id }}/status" data-body='{"status": "suspended"}' data-confirm="Suspend {{ u.email }}? They are signed out everywhere.">Suspend</button>{% endif %}
+      {% if u.status != 'banned' and u.role != 'admin' %}<button class="adm-btn adm-btn-danger" data-api="/admin/api/users/{{ u.id }}/status" data-body='{"status": "banned", "ban_signals": true}' data-confirm="Ban {{ u.email }} and their signup IP and device?">Ban + block device</button>{% endif %}
+      {% if u.billing_hold %}<button class="adm-btn" data-api="/admin/api/users/{{ u.id }}/billing-hold" data-body='{"hold": false}' data-confirm="Clear the billing hold?">Clear billing hold</button>
+      {% else %}<button class="adm-btn adm-btn-quiet" data-api="/admin/api/users/{{ u.id }}/billing-hold" data-body='{"hold": true}'>Put on billing hold</button>{% endif %}
+    </div>
+    <form class="adm-inline-form" data-api="/admin/api/users/{{ u.id }}/credits" data-confirm="Adjust this user's credits?">
+      <label class="adm-field adm-field-sm"><span>Credits ±</span><input type="number" name="amount" step="1" required></label>
+      <label class="adm-field adm-field-grow"><span>Reason</span><input type="text" name="note" maxlength="300" required></label>
+      <button class="adm-btn" type="submit">Adjust</button>
+    </form>
+    <form class="adm-note-form" data-api="/admin/api/notes">
+      <input type="hidden" name="subject_kind" value="user"><input type="hidden" name="subject_id" value="{{ u.id }}">
+      <label class="adm-field adm-field-grow"><span>Add a note</span><textarea name="body" rows="2" required></textarea></label>
+      <button class="adm-btn" type="submit">Save note</button>
+    </form>
+    {% for n in notes %}<blockquote class="adm-noteq">{{ n.body }}<footer>{{ n.author_email or 'admin' }} · {{ h.ago(n.created_at) }}</footer></blockquote>{% endfor %}
+  </section>
+</div>
+
+<div class="adm-grid adm-grid-2">
+  <section class="adm-card adm-card-flush"><div class="adm-card-head"><h2>Jobs</h2></div>
+    <div class="adm-table-wrap"><table class="adm-table">
+      <thead><tr><th>When</th><th>Source</th><th>Status</th><th class="num">Credits</th><th>Error</th></tr></thead>
+      <tbody>{% for j in jobs %}
+        <tr><td class="adm-muted">{{ h.ago(j.created_at) }}</td><td class="adm-small">{{ j.source_title or j.source_url or j.upload_id }}</td>
+          <td><span class="chip {{ 'chip-bad' if j.status == 'failed' else 'chip-plain' }}">{{ j.status }}</span></td>
+          <td class="num">{{ j.credits_charged or j.credits_reserved }}</td><td class="adm-small">{{ j.error_code or '' }}</td></tr>
+      {% else %}<tr class="adm-empty-row"><td colspan="5">No jobs.</td></tr>{% endfor %}</tbody></table></div></section>
+  <section class="adm-card adm-card-flush"><div class="adm-card-head"><h2>Payments &amp; credits</h2></div>
+    <div class="adm-table-wrap"><table class="adm-table">
+      <thead><tr><th>When</th><th>What</th><th class="num">Amount</th><th>Status</th></tr></thead>
+      <tbody>{% for p in payments %}
+        <tr><td class="adm-muted">{{ h.ago(p.created_at) }}</td><td>{{ p.kind }} {{ p.item_slug }}</td><td class="num">{{ h.money(p.amount_minor, p.currency) }}</td><td><span class="chip chip-plain">{{ p.status }}</span></td></tr>
+      {% endfor %}
+      {% for e in ledger %}
+        <tr><td class="adm-muted">{{ h.ago(e.created_at) }}</td><td>{{ e.kind }} <span class="adm-small">{{ e.note or '' }}</span></td>
+          <td class="num {{ 'adm-warn' if e.amount < 0 }}">{{ '%+d'|format(e.amount) }}</td><td class="adm-small">→ {{ e.balance_after }}</td></tr>
+      {% endfor %}
+      {% if not payments and not ledger %}<tr class="adm-empty-row"><td colspan="4">No payments or credit movements.</td></tr>{% endif %}
+      </tbody></table></div></section>
+</div>
+{% endblock %}

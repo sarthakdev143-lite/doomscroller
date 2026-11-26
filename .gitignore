@@ -50,3 +50,4 @@ saas.db
 saas.db-wal
 saas.db-shm
 saas_data/
+.playwright-mcp/

@@ -38,6 +38,15 @@ _STING_FADE_SEC = 0.25
 class Cue:
     at: float
     sound: str
+    # A file cue (a meme sound) is normalised to _STING_PEAK and then scaled by this. The ending sting
+    # plays alone over the held last frame at 1.0; a meme sound mid-clip sits under the voice.
+    gain: float = 1.0
+    # Above zero, a file cue is cut to this many seconds, so a meme's sound ends with its picture.
+    max_sec: float = 0.0
+
+
+# A meme's sound plays while someone may still be talking, so it peaks well under the levelled voice.
+MEME_STING_GAIN = 0.5
 
 
 def _whoosh(rng: np.random.Generator) -> np.ndarray:
@@ -142,12 +151,35 @@ def trending(*, language: str = "") -> dict[str, Path]:
     return fallback
 
 
-def sting(path: str) -> Optional[np.ndarray]:
+def mood_sting(mood: str, seed: str, *, language: str = "", exclude: Sequence[str] = ()) -> Optional[Path]:
+    """A pack sound that suits a reaction mood, or None when the pack has nothing that fits.
+
+    Looks through the same folders as the ending stings (``trending/``, then the language folder),
+    matching the mood's words against each file's name. Deterministic per seed, so a re-render of
+    one clip sounds the same, and never a file in ``exclude`` (the clip's other sounds).
+    """
+    from . import reactions
+
+    words = reactions.STINGS.get(mood, ())
+    if not words:
+        return None
+    skip = {str(Path(p).resolve()).lower() for p in exclude if p}
+    pool = list(trending(language=language).values())
+    for word in words:
+        fits = [p for p in pool if word in p.stem.lower() and str(p.resolve()).lower() not in skip]
+        if fits:
+            index = int(hashlib.sha1(f"{seed}|{mood}".encode()).hexdigest(), 16) % len(fits)
+            return sorted(fits)[index]
+    return None
+
+
+def sting(path: str, max_sec: float = 0.0) -> Optional[np.ndarray]:
     """A meme sound ready to mix: leading silence trimmed, capped and faded, at a fixed peak. None if unreadable."""
+    limit = min(_STING_MAX_SEC, max_sec) if math.isfinite(max_sec) and max_sec > 0 else _STING_MAX_SEC
     try:
         from .media import Interrupted, read_ffmpeg
         raw = read_ffmpeg(["-i", str(path), "-map", "0:a:0", "-af", "silenceremove=start_periods=1:start_threshold=-50dB",
-                           "-ac", "1", "-ar", str(RATE), "-t", f"{_STING_MAX_SEC}", "-f", "f32le", "-"])
+                           "-ac", "1", "-ar", str(RATE), "-t", f"{limit:.3f}", "-f", "f32le", "-"])
         sound = np.frombuffer(raw, dtype=np.float32).astype(np.float64)
     except Interrupted:
         raise
@@ -204,9 +236,11 @@ def build_track(path: str, duration: float, cues: Sequence[Cue], seed: str = "",
             continue
         if cue.sound not in makers:
             # Anything else is a meme sound's file.
-            sound = sting(cue.sound) if Path(cue.sound).is_file() else None
+            sound = sting(cue.sound, cue.max_sec) if Path(cue.sound).is_file() else None
             if sound is None:
                 continue
+            gain = cue.gain if math.isfinite(cue.gain) and cue.gain >= 0 else 1.0
+            sound = sound * min(1.0, gain)
         else:
             clip = _decode_pack(pack[cue.sound]) if pack[cue.sound] is not None else None
             if clip is not None and len(clip):

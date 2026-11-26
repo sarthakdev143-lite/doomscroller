@@ -1,0 +1,16 @@
+Vendored, unmodified builds of rrweb (MIT, see LICENSE in this folder).
+Downloaded 2026-11-27 from unpkg and verified against the registry's sha256 integrity values.
+
+rrweb-record-2.2.2.min.js   <- @rrweb/record@2.2.2  dist/record.umd.min.cjs
+                               sha256 per unpkg ?meta; UMD global: window.rrwebRecord.record(...)
+rrweb-player-2.2.2.min.js   <- rrweb-player@2.2.2   dist/rrweb-player.umd.min.cjs
+                               UMD global: new window.rrwebPlayer.Player({target, props})
+rrweb-player-2.2.2.min.css  <- rrweb-player@2.2.2   dist/style.min.css
+
+Saved with a .js/.css extension so they are served with a script/style MIME type
+(X-Content-Type-Options: nosniff would block a .cjs served as application/octet-stream).
+LICENSE                     <- github.com/rrweb-io/rrweb tag rrweb@2.2.2, file LICENSE
+
+To upgrade: download the same three files for a new exact version, verify the integrity hashes
+from https://unpkg.com/<pkg>@<version>/dist/?meta, rename, and update saas/tracking/replay.py's
+asset constants plus the admin replay template.

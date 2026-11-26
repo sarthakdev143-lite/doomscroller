@@ -1,0 +1,6 @@
+{% extends "admin/base.html" %}
+{% block title %}Not found{% endblock %}
+{% block heading %}No such {{ what }}{% endblock %}
+{% block content %}
+<section class="adm-card"><p class="adm-empty">It may have been deleted by retention (events 90 days, recordings 30 days), or the link is wrong.</p></section>
+{% endblock %}

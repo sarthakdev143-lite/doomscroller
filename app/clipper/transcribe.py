@@ -26,6 +26,7 @@ import httpx
 from app.config import settings
 from app.logging_config import scrub_secrets
 
+from . import metering
 from .media import MediaInfo, content_id, run_ffmpeg
 
 log = logging.getLogger(__name__)
@@ -232,13 +233,19 @@ def _write_cache(paths: tuple[str, str], fingerprint: dict, transcript: Transcri
             log.warning("transcribe: could not cache at %s: %s", path, exc)
 
 
-def transcribe(video_path: str, info: MediaInfo) -> Optional[Transcript]:
-    """Return a transcript, or None when there is no audio or no API key."""
+def transcribe(video_path: str, info: MediaInfo, *, sidecar: bool = True) -> Optional[Transcript]:
+    """Return a transcript, or None when there is no audio or no API key.
+
+    ``sidecar=False`` keeps the cache under content/transcripts only, never beside the video: a caller
+    that must write nothing outside its own directory (the SaaS seam) points content/ there.
+    """
     if not info.has_audio or not math.isfinite(info.duration) or info.duration <= 0:
         return None
     # Taken first, so a file replaced during the request is not stamped as current.
     fingerprint = _fingerprint(video_path)
     caches = _cache_paths(video_path, fingerprint)
+    if not sidecar:
+        caches = caches[1:]
     for cache in caches:
         cached = _load_cache(cache, fingerprint, info.duration)
         if cached is not None:
@@ -248,9 +255,12 @@ def transcribe(video_path: str, info: MediaInfo) -> Optional[Transcript]:
         return None
     with tempfile.TemporaryDirectory(prefix="clipper-audio-", ignore_cleanup_errors=True) as tmp:
         audio_path = os.path.join(tmp, "audio.mp3")
-        run_ffmpeg(["-i", video_path, "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000",
-                    "-b:a", "48k", audio_path])
+        with metering.timed("render", stage="extract", output_seconds=round(info.duration, 2)):
+            run_ffmpeg(["-i", video_path, "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000",
+                        "-b:a", "48k", audio_path])
         payload = _request(audio_path)
+        metering.record("stt", provider="deepgram", model=settings.deepgram_model,
+                        audio_seconds=round(info.duration, 2))
         try:
             transcript = parse_response(payload, info.duration)
         except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
