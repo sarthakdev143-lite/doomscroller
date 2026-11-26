@@ -478,7 +478,7 @@ def test_render_compilation_cleans_up_partial_tmp_mp4_and_scrubs_warnings(tmp_pa
     )
 
     monkeypatch.setattr("app.clipper.music.library", lambda: [])
-    monkeypatch.setattr(voiceover, "generate_commentary_script", lambda _p: (_ for _ in ()).throw(RuntimeError("Bearer sk_live_secret_12345")))
+    monkeypatch.setattr(voiceover, "generate_commentary_script", lambda _p: (_ for _ in ()).throw(RuntimeError("Bearer unconfigured_render_tok_99")))
     monkeypatch.setattr(lf_render, "_render_segment", lambda s, out_p, td, **kw: (Path(out_p).write_bytes(b"SEG" * 50), 10.0)[1])
     monkeypatch.setattr(lf_render, "_render_stinger", lambda out_p, td: Path(out_p).write_bytes(b"STG" * 20))
     monkeypatch.setattr(lf_render, "_probe_duration", lambda p, fb: fb)
@@ -492,7 +492,7 @@ def test_render_compilation_cleans_up_partial_tmp_mp4_and_scrubs_warnings(tmp_pa
     out1 = tmp_path / "out1.mp4"
     res = lf_render.render_compilation(plan, str(out1), include_end_screen=False, include_voiceover=True)
     assert any("voiceover skipped" in w for w in res.warnings)
-    assert all("sk_live_secret_12345" not in w for w in res.warnings)
+    assert all("unconfigured_render_tok_99" not in w for w in res.warnings)
     assert any("[REDACTED]" in w for w in res.warnings)
 
     # Partial .tmp.mp4 must be cleaned up if probe fails after concat writes partial

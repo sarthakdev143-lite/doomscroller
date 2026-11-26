@@ -1203,3 +1203,30 @@ def test_wave14_approval_backstop_nan_safe_cards_and_channel_scoped_clip_held_ev
         assert "CANARY_JOB_W14" not in (jrow.error or "")
         assert "CANARY_JOB_W14" not in str((jrow.result or {}).get("error", ""))
 
+
+def test_for_each_scrubs_secrets_in_raised_exceptions_and_logs(tmp_path, monkeypatch, caplog):
+    import logging
+
+    _write(tmp_path, monkeypatch, {"channels": [{"slug": "alpha"}, {"slug": "beta"}]})
+    with session_scope() as db:
+        active = channels.active_channels(db)
+
+    def run(ch):
+        if ch.slug == "alpha":
+            raise RuntimeError(
+                "boom ?key=AIzaChanSecret999 Bearer bare_chan_tok_999 http://u:proxy_pass_chan_999@p:8080"
+            )
+        return {"ok": True}
+
+    with caplog.at_level(logging.WARNING):
+        out = channels.for_each(active, run)
+
+    assert out["beta"] == {"ok": True}
+    for raw_secret in ("AIzaChanSecret999", "bare_chan_tok_999", "proxy_pass_chan_999"):
+        assert raw_secret not in out["alpha"]["error"]
+        assert raw_secret not in out["error"]
+        assert raw_secret not in caplog.text
+    assert "[REDACTED]" in out["alpha"]["error"]
+    assert "[REDACTED]" in out["error"]
+    assert "[REDACTED]" in caplog.text
+

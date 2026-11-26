@@ -669,7 +669,7 @@ def test_planner_scrubs_secrets_from_warnings_and_logs(tmp_path, monkeypatch, ca
             planner.subprocess,
             "run",
             lambda *a, **k: subprocess.CompletedProcess(
-                a[0], 1, stdout="", stderr="proxy http://user:pass123@proxy:8080 failed"
+                a[0], 1, stdout="", stderr="proxy http://user:pass123@proxy:8080 failed Bearer bare_planner_tok_77"
             ),
         )
         assert planner.list_creator_videos("https://youtube.com/@c?key=AIzaPlanSecret") == []
@@ -677,7 +677,7 @@ def test_planner_scrubs_secrets_from_warnings_and_logs(tmp_path, monkeypatch, ca
         monkeypatch.setattr(
             planner.subprocess,
             "run",
-            lambda *a, **k: (_ for _ in ()).throw(OSError("proxy http://user:pass123@proxy:8080")),
+            lambda *a, **k: (_ for _ in ()).throw(OSError("proxy http://user:pass123@proxy:8080 {'Authorization': 'Bearer bare_planner_dict_88'}")),
         )
         assert planner.list_creator_videos("https://youtube.com/@c?key=AIzaPlanSecret") == []
 
@@ -732,12 +732,12 @@ def test_planner_scrubs_secrets_from_warnings_and_logs(tmp_path, monkeypatch, ca
         monkeypatch.setattr(
             planner.ingest,
             "fetch",
-            lambda url: (_ for _ in ()).throw(RuntimeError("Bearer sk_planner_secret_99")),
+            lambda url: (_ for _ in ()).throw(RuntimeError("Bearer bare_planner_tok_77")),
         )
 
         def fake_moments(src, creator, already, max_needed=5):
             if src.source_id == "bad_moments":
-                raise RuntimeError("Bearer sk_planner_secret_99")
+                raise RuntimeError("{'Authorization': 'Bearer bare_planner_dict_88'} key=sk_planner_secret_99")
             return [_seg("good1", creator, 50.0 + i * 70.0, 95.0 + i * 70.0, 92.0 - i) for i in range(4)]
 
         monkeypatch.setattr(planner, "_moments_from_source", fake_moments)
@@ -754,6 +754,8 @@ def test_planner_scrubs_secrets_from_warnings_and_logs(tmp_path, monkeypatch, ca
     assert len(plan.warnings) == 2
     combined = "\n".join([*plan.warnings, caplog.text])
     assert "sk_planner_secret_99" not in combined
+    assert "bare_planner_tok_77" not in combined
+    assert "bare_planner_dict_88" not in combined
     assert "AIzaPlanSecret" not in combined
     assert "pass123" not in combined
     assert "[REDACTED]" in combined

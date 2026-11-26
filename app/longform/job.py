@@ -752,7 +752,12 @@ def long_autopilot_job(*, now: Optional[datetime] = None) -> dict:
             vid = target_video.id
             vtitle = target_video.title or ""
 
-        res = publish_task(vid)
+        try:
+            res = publish_task(vid)
+        except Exception as exc:
+            safe_err = logging_config.scrub_secrets(f"{type(exc).__name__}: {exc}")
+            log.warning("longform.job: publish failed for %s (%s): %s", channel.slug, vid[:8], safe_err)
+            return {"ok": False, "error": safe_err}
         if isinstance(res, dict):
             for k in ("error", "skipped"):
                 if isinstance(res.get(k), str):

@@ -712,6 +712,23 @@ def test_logging_scrub_secrets_redacts_configured_secrets_overlap_and_inline_pat
     for inline in ("INLINE_API_999", "INLINE_BEARER_XYZ", "1//0gINLINE_REFRESH_SECRET", "GOCSPX-INLINE_CLIENT_SEC"):
         assert inline not in scrubbed
 
+    # Bare Bearer tokens and quoted dict-repr Authorization headers (unconfigured in settings)
+    bare = logging_config.scrub_secrets("401 Unauthorized: Bearer UNCONFIGURED_BARE_TOK_123")
+    assert "UNCONFIGURED_BARE_TOK_123" not in bare
+    assert "Bearer [REDACTED]" in bare
+
+    quoted_bearer = logging_config.scrub_secrets("{'Authorization': 'Bearer UNCONFIGURED_DICT_TOK_456'}")
+    assert "UNCONFIGURED_DICT_TOK_456" not in quoted_bearer
+    assert "[REDACTED]" in quoted_bearer
+
+    quoted_token = logging_config.scrub_secrets('{"Authorization": "Token UNCONFIGURED_DICT_TOK_789"}')
+    assert "UNCONFIGURED_DICT_TOK_789" not in quoted_token
+    assert "[REDACTED]" in quoted_token
+
+    # Non-secret English prose with the word 'token' must remain intact
+    assert logging_config.scrub_secrets("indianvlogs: token expired") == "indianvlogs: token expired"
+    assert logging_config.scrub_secrets("invalid_grant: Token has been revoked") == "invalid_grant: Token has been revoked"
+
 
 def test_job_history_and_panel_api_logs_scrub_structured_and_raw_secrets(monkeypatch: pytest.MonkeyPatch):
     for attr, val in CANARIES.items():

@@ -1591,20 +1591,38 @@ def test_longform_job_scrubs_secrets_in_notify_recovery_and_portrait_errors(tmp_
     assert "sk_secret_job_audit" not in caplog.text
     assert "[REDACTED]" in caplog.text
 
-    # 3. re_render_ambient_with_portrait image decode error scrubbing
+    # 3. re_render_ambient_with_portrait image decode error scrubbing (including unconfigured bare Bearer)
     buf = io.BytesIO()
     Image.new("RGB", (640, 360), (10, 20, 30)).save(buf, format="JPEG")
-    monkeypatch.setattr(ImageOps, "exif_transpose", lambda _im: (_ for _ in ()).throw(RuntimeError("key=sk_secret_job_audit")))
+    monkeypatch.setattr(ImageOps, "exif_transpose", lambda _im: (_ for _ in ()).throw(RuntimeError("key=sk_secret_job_audit Bearer bare_portrait_tok_123")))
     with pytest.raises(ValueError) as exc_info:
         long_job.re_render_ambient_with_portrait("any-id", buf.getvalue())
     assert "sk_secret_job_audit" not in str(exc_info.value)
+    assert "bare_portrait_tok_123" not in str(exc_info.value)
     assert "[REDACTED]" in str(exc_info.value)
 
-    # 4. long_autopilot_job scrubs error/skipped from publish_task
-    monkeypatch.setattr(pipeline, "publish_task", lambda vid: {"ok": False, "error": "Authorization: Bearer sk_secret_job_audit", "skipped": "key=sk_secret_job_audit"})
+    # 4. long_autopilot_job scrubs error/skipped from publish_task (including bare Bearer & dict repr)
+    monkeypatch.setattr(
+        pipeline,
+        "publish_task",
+        lambda vid: {"ok": False, "error": "401 Bearer bare_auto_tok_1", "skipped": "{'Authorization': 'Bearer bare_auto_dict_2'}"},
+    )
     auto_res = long_job.long_autopilot_job()
-    assert "sk_secret_job_audit" not in auto_res["indianvlogs"]["error"]
-    assert "sk_secret_job_audit" not in auto_res["indianvlogs"]["skipped"]
+    assert "bare_auto_tok_1" not in auto_res["indianvlogs"]["error"]
+    assert "bare_auto_dict_2" not in auto_res["indianvlogs"]["skipped"]
     assert "[REDACTED]" in auto_res["indianvlogs"]["error"]
+    assert "[REDACTED]" in auto_res["indianvlogs"]["skipped"]
+
+    # 5. long_autopilot_job scrubs secrets when publish_task raises an uncaught exception
+    def boom_publish(_vid):
+        raise RuntimeError("boom ?key=AIzaBareAutoKey999 Bearer bare_tok_auto_999 http://u:proxy_pass_auto_999@p:8080")
+
+    monkeypatch.setattr(pipeline, "publish_task", boom_publish)
+    boom_res = long_job.long_autopilot_job()
+    for raw_secret in ("AIzaBareAutoKey999", "bare_tok_auto_999", "proxy_pass_auto_999"):
+        assert raw_secret not in boom_res["indianvlogs"]["error"]
+        assert raw_secret not in boom_res["error"]
+    assert "[REDACTED]" in boom_res["indianvlogs"]["error"]
+    assert "[REDACTED]" in boom_res["error"]
 
 

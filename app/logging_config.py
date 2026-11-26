@@ -80,9 +80,10 @@ _URL_PARAM_SECRET_RE = re.compile(
     re.IGNORECASE,
 )
 _AUTH_HEADER_RE = re.compile(
-    r"(Authorization\s*:\s*(?:Bearer|Token)\s+)([^\s,;'\"]+)",
+    r"(['\"]?Authorization['\"]?\s*:\s*['\"]?(?:Bearer|Token)\s+)([^\s,;'\"]+)",
     re.IGNORECASE,
 )
+_BEARER_RE = re.compile(r"\b(Bearer\s+)[A-Za-z0-9._~+/=-]+", re.IGNORECASE)
 _PROXY_CRED_RE = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]*://[^/\s:@]+:)[^@\s/]+@")
 
 
@@ -123,6 +124,7 @@ def scrub_secrets(text: str) -> str:
     out = _ENV_SECRET_RE.sub(r"\1[REDACTED]", out)
     out = _URL_PARAM_SECRET_RE.sub(r"\1[REDACTED]", out)
     out = _AUTH_HEADER_RE.sub(r"\1[REDACTED]", out)
+    out = _BEARER_RE.sub(r"\1[REDACTED]", out)
     out = _PROXY_CRED_RE.sub(r"\1[REDACTED]@", out)
     return out
 

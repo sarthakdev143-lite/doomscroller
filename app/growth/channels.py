@@ -24,6 +24,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 
 from app.config import settings
+from app.logging_config import scrub_secrets
 from app.models import Channel, Feed, GrowthState
 
 log = logging.getLogger(__name__)
@@ -923,10 +924,14 @@ def for_each(active: list[Channel], run: Callable[[Channel], dict]) -> dict:
     out: dict = {}
     for channel in active:
         try:
-            out[channel.slug] = run(channel)
+            res = run(channel)
+            if isinstance(res, dict) and isinstance(res.get("error"), str):
+                res = {**res, "error": scrub_secrets(res["error"])}
+            out[channel.slug] = res
         except Exception as exc:
-            log.exception("growth: a job failed for channel %s", channel.slug)
-            out[channel.slug] = {"error": f"{type(exc).__name__}: {exc}"}
+            safe_err = scrub_secrets(f"{type(exc).__name__}: {exc}")
+            log.warning("growth: a job failed for channel %s: %s", channel.slug, safe_err)
+            out[channel.slug] = {"error": safe_err}
     failed = [f"{slug}: {result['error']}" for slug, result in out.items()
               if isinstance(result, dict) and result.get("error")]
     if failed:
