@@ -5,6 +5,16 @@ at the end gives the URL and the date it was seen. "Second-hand" means the numbe
 not the vendor's own. FX used throughout: **$1 = ₹94** (Nov 2026 quotes cluster at ₹93.5-94.5 [S40]) and
 **€1 = $1.10** [S40].
 
+> **Provisional.** The price table below assumes paid infrastructure (Hetzner, Haiku 5.5 API) and Dodo/Razorpay
+> fees. The owner has since chosen a **zero-budget launch** (section 9):
+> - payments through Buy Me a Coffee memberships, which cost about 3 margin points more than Dodo;
+> - no registered company;
+> - Cloudflare's free tier;
+> - the owner's laptop as the render worker;
+> - a free tier of 10 shorts or 10 source minutes, whichever comes first.
+>
+> Keep the prices as list prices, and re-price once the first 100 paid jobs have been metered.
+
 ## 0. Decisions in one page
 
 **Unit.** 1 credit = 1 minute of source video, rounded up per job. A job is charged
@@ -632,6 +642,153 @@ Haiku 4.5, its configured primary) would cost **$0.36**, or $0.56 with Sonnet 5.
 
 ---
 
+## 9. Zero-budget launch
+
+The owner's constraints: no cash spend, no registered company, Buy Me a Coffee (BMC) for payments, Cloudflare
+free for hosting, and a free tier of **10 shorts or 10 source minutes, whichever comes first**.
+
+**Verdict: launch on free tiers with $0 cash per signup, at about 19 free signups a day.** Groq's free LLM token
+budget is the binding limit, not the laptop. The first revenue should buy capacity, not features.
+
+### 9.1 GitHub Actions as a render farm: no
+
+GitHub's official terms, verbatim excerpts from "GitHub Terms for Additional Products and Features", Actions
+section [S43]:
+- On prohibited uses: "regardless of whether an Action is using self-hosted runners, Actions should not be used
+  for:" … "don't use Actions as a content delivery network or as part of a serverless application" … "Any activity
+  that places a burden on our servers, where that burden is disproportionate to the benefits provided to users." …
+  "If using GitHub-hosted runners, any other activity unrelated to the production, testing, deployment," "or
+  publication of the software project associated with the repository where GitHub Actions are used."
+- On enforcement: "GitHub may monitor your use." Consequences include "termination of jobs, restrictions in your
+  ability to use GitHub Actions," "disabling of repositories created to run Actions in a way that violates these
+  Terms," "or in some cases, suspension or termination of your GitHub account."
+
+Rendering customers' videos is unrelated to the repository's software and is part of a serverless application.
+Twenty repos created for it is the exact pattern the terms name, and the downside is the owner's GitHub account,
+which hosts this codebase.
+
+### 9.2 Cloudflare free plan
+
+**Commercial use is allowed.** The Cloudflare Self-Serve Subscription Agreement (last updated 2025-09-12) has no
+personal-use or non-commercial restriction [S44]. Three clauses matter:
+- **§2.2.1(h):** we must not "process or collect personal or business credit card information" on a property
+  receiving Free Services. BMC's checkout is off-site, so this holds as long as we never take cards ourselves.
+- **§2.6 and §8:** Cloudflare may end Free Services "in our sole discretion".
+- **CDN video clause** [S45]: Cloudflare "reserves the right to disable or limit … if you use … the CDN without
+  such Paid Services to serve video … or a disproportionate percentage of pictures, audio files, or other large
+  files." So clips must be delivered from **R2**, never through a proxied tunnel to the laptop.
+
+| service | free limit | source |
+|---|---|---|
+| Workers + Pages Functions | **100,000 requests/day**, shared between the two (resets 00:00 UTC); 10 ms CPU per invocation; 128 MB memory | [S46][S47] |
+| Pages static assets | free and unlimited | [S47] |
+| D1 | **5 GB storage, 5 million rows read/day, 100,000 rows written/day**; since 2026-09-01, queries *fail* past the daily caps | [S46] |
+| R2 | 10 GB-month, 1M Class A, 10M Class B ops/month, free egress. Activation likely needs a card or PayPal on file ("Purchase R2 Plan"; recent guides, not confirmed on an official page); usage stays $0 | [S22][S48] |
+| Turnstile | free, unlimited challenges, 20 widgets | [S27] |
+| Zero Trust / Access | free up to **50 users**, $0 "forever" | [S49] |
+
+**Fit:**
+- **Pages** serves the site; a **Worker** serves the JSON API and the BMC webhook; **D1** holds accounts, credits
+  and jobs. The free `*.pages.dev` / `*.workers.dev` hostnames mean no domain purchase.
+- **The laptop polls the Worker for jobs** and uploads finished clips to **R2**.
+- **Access** guards `/admin`.
+- **Port work:** the current SaaS is FastAPI + SQLite and must be ported to a Worker + D1 (core agent's call).
+
+**R2 caps volume.** At 11 MB per clip, 10 GB holds ~900 clips. A 3-day expiry for free-tier clips supports about
+**300 new clips a day**.
+
+### 9.3 Payments: Buy Me a Coffee
+
+| item | fact | source |
+|---|---|---|
+| fees | **5% platform fee** + Stripe **2.9% + $0.30**, **+1%** outside the US, **+0.5%** on subscriptions, **0.5%** payout fee | [S50] (dated 2026-03-18) |
+| what that costs | a $10 international membership loses **$1.29 (12.9%)**, against $1.00 on Dodo. A $100 annual loses $10.20; a $4 one-off loses $0.68 | derived |
+| memberships | multiple levels, each with a **monthly and a yearly** price; billed every 30 or 365 days; 10-day grace on failed payments; a lifetime option | [S51] |
+| webhooks | 16 events, incl. `membership.started/updated/cancelled/paused`, `extra_purchase.created/refunded`, `donation.created/refunded`; header **`x-signature-sha256`** = HMAC-SHA256 of the raw body with the signing secret; 4 retries; disabled after 10 consecutive failures | [S52] (dated 2026-07-09) |
+| India payouts | **India is supported, via Stripe Express** (with Israel, Philippines, South Korea, Türkiye) | [S53] (dated 2026-10-09) |
+| without a company | Stripe Connect in India offers an **individual** business type (PAN required). Stripe does not say whether individuals receive cross-border funds | [S54] |
+
+**Wiring:**
+- **Plans:** each plan is a BMC membership level with monthly and yearly prices.
+- **Packs:** sold as BMC "Extras" (`extra_purchase.created`).
+- **Matching:** the Worker matches the supporter's email to the account and grants credits on `membership.started`
+  and each renewal (`membership.updated`).
+- **Contract change:** `/webhooks/bmc` replaces `/webhooks/dodo` and `/webhooks/razorpay`.
+
+**Test first:** a $1 purchase end to end, to prove an individual PAN-holder actually gets paid out before
+launching paid plans.
+
+**Under BMC fees, margins on the section 0 table fall about 3-4 points.** Monthly plans land at ~70%, and annual
+plans at 67-69% once paid infrastructure is in use. While everything runs on free tiers, COGS is $0 and margin is
+simply 100% minus the BMC fee: 87-90%.
+
+**buymeachai.in:** "We don't take a cut"; money goes "straight to your bank account via UPI. Instant
+settlements." [S55]. I found no memberships, API or webhooks, so it cannot grant credits automatically. **Use it
+only as a UPI tip jar, not for billing.**
+
+### 9.4 Free compute and AI
+
+| resource | free allowance | catch | source |
+|---|---|---|---|
+| **Groq Whisper** (turbo / large-v3) | 20 RPM, 2,000 requests/day, 7,200 audio-s/hour, **28,800 audio-s/day (480 min)**, word timestamps | the published table is labelled the Developer plan's base limits; check the console on day one | [S2][S41] |
+| **Groq LLMs** (gpt-oss-20b, gpt-oss-120b, qwen3.8-27b) | each: 30 RPM, 1,000 requests/day, **8,000 tokens/min, 200,000 tokens/day** | no vision model in the free table; 8K tokens/min means the moment-pick call must stay under ~8K tokens (cap proposals at 10) | [S41] |
+| **Gemini API free tier** | per-model limits shown only in AI Studio; third-party figures range 500-1,500 requests/day for Flash-Lite | **free-tier inputs may be read by human reviewers and used "to improve, and develop Google products"**, and the terms say "Do not submit sensitive, confidential, or personal information". Only paid services may be offered to users in the EEA, Switzerland or the UK; users must be 18+ | [S56][S57] |
+| **Deepgram** | **$200 free credit** = ~46,500 Nova-3 minutes, once | not recurring | [S1] |
+| **Oracle Cloud Always Free** | Ampere A1: 1,500 OCPU-hours + 9,000 GB-hours a month = **2 OCPUs / 12 GB**; 10 TB egress; 200 GB block storage | **needs a credit card** (no virtual, prepaid or PIN debit); idle instances (p95 CPU, network and memory under 20% for 7 days) may be reclaimed | [S58][S59] |
+
+**Choices:**
+- **No Gemini free tier for customer content.** Human review of customers' transcripts and the EEA/UK ban make it
+  unfit.
+- **Skip Oracle.** It needs a card, adds only 2 Arm cores, and can be reclaimed.
+- **Customer AI calls run on Groq's free text models**, rotating across the three.
+- **Free tier has no B-roll.** B-roll judging needs a vision model, and without a judge the pipeline already drops
+  stock footage. Captions, SFX and music stay on.
+- **Keep the Deepgram credit as STT overflow** for paying users.
+
+### 9.5 Capacity and cost per free signup
+
+**Worst-case free signup:** one 10-minute source cut into 10 shorts.
+
+| resource | per signup | daily free budget | signups/day |
+|---|---|---|---|
+| Groq Whisper | 10 audio minutes | 480 min | **48** |
+| Groq LLM tokens | ~30k: moment pick ~8.7k, payoff ~6.8k, 10 edit passes ~15k (incl. reasoning) | 3 models x 200k = 600k | **~19** |
+| Laptop render | 10 x 123 s (measured real render per ~25 s clip) + ~27 s decode = **~21 min of CPU** | 12 h/day available (the owner's own growth loop uses ~2 h/day and the laptop sleeps) | **~34** (68 at 24 h) |
+| R2 storage | 10 clips x 11 MB, kept 3 days | 10 GB | ~30 |
+| D1 / Workers | a few hundred rows and requests | 100k writes, 100k requests | thousands |
+
+**Capacity: ~19 free signups a day,** about 570 a month, bound by Groq's free LLM tokens. If Groq's actual free
+limits turn out lower in the console, scale proportionally.
+
+**Cost per free signup: $0 cash.** STT, LLM, hosting and storage all sit inside free tiers. The only physical cost
+is ~12 Wh of laptop power per signup (35 W TDP x 21 min, derived) on a machine that already runs 24/7.
+
+**Paid users share the same free budgets.** Groq's 480 audio-minutes/day covers only ~14 fully used Creator plans
+a month. Run paid users' STT on the Deepgram credit (~46,500 minutes) and their AI on Groq. **Spend the first BMC
+revenue in this order:**
+1. Groq paid tier (Whisper at $0.04/hour).
+2. Claude Haiku 5.5 API.
+3. An AX42 when the laptop's queue wait passes 10 minutes.
+
+### 9.6 What the zero-budget plan changes
+
+**Contract and core agent:**
+- Payments: `/webhooks/bmc` (HMAC-SHA256, `x-signature-sha256`) replaces the Dodo and Razorpay webhooks.
+- Hosting: the backend moves to a Cloudflare Worker + D1, and the laptop becomes a pull-based render worker.
+- Free tier: 10 shorts or 10 source minutes, whichever comes first, no B-roll, 3-day clip expiry.
+
+**Pipeline agent:**
+- An engine mode with Groq Whisper (word timestamps) and Groq text models, no vision calls.
+- Moment-pick proposals capped at 10 to fit 8K tokens/min.
+- Deepgram as overflow for paying users.
+
+**Owner, before launch:**
+- Run a $1 BMC test purchase and payout.
+- Add a PayPal or card to Cloudflare to activate R2 (stays $0).
+- Check Groq's console for the real free-tier limits.
+
+---
+
 ## Sources
 
 Seen 2026-11-27 unless a date is given. "Second-hand" = not the vendor's own page.
@@ -660,6 +817,25 @@ Seen 2026-11-27 unless a date is given. "Second-hand" = not the vendor's own pag
 - [S21] PassMark Ryzen 7 PRO 8700GE (28,155, snapshot 2026-08-27) — https://www.cpubenchmark.net/compare/6001vs5836/AMD-Ryzen-7-PRO-8700GE-vs-AMD-Ryzen-7-8700G
 - [S41] Groq rate limits (Whisper: 20 RPM, 2K RPD, 7.2K audio-s/hour, 28.8K audio-s/day on the Developer plan) — https://console.groq.com/docs/rate-limits
 - [S42] OVHcloud Bare Metal 2026, second-hand via search — https://www.ovhcloud.com/en-ie/bare-metal/advance/ ; https://itbrief.news/story/ovhcloud-unveils-bare-metal-2026-servers-with-amd-chips
+
+**Zero-budget section**
+- [S43] GitHub Terms for Additional Products and Features, Actions — https://docs.github.com/en/site-policy/github-terms/github-terms-for-additional-products-and-features#actions
+- [S44] Cloudflare Self-Serve Subscription Agreement (last updated 2025-09-12) — https://www.cloudflare.com/terms/
+- [S45] Cloudflare Service-Specific Terms, CDN (video / large files) — https://www.cloudflare.com/service-specific-terms-application-services/
+- [S46] Cloudflare Workers limits and pricing; D1 free-tier enforcement from 2026-09-01 — https://developers.cloudflare.com/workers/platform/limits/ ; https://developers.cloudflare.com/workers/platform/pricing/ ; https://developers.cloudflare.com/changelog/post/2026-09-01-d1-free-tier-limit-enforcement/
+- [S47] Cloudflare Pages Functions pricing — https://developers.cloudflare.com/pages/functions/pricing/
+- [S48] R2 activation needs a card/PayPal (recent third-party guides, not official) — https://agentdeals.dev/vendor/cloudflare-r2 ; https://dev.to/yeagoo/cloudflare-r2-hands-on-guide-set-up-free-10gb-storage-zero-egress-object-storage-and-325n
+- [S49] Cloudflare Zero Trust plans (Free: 50 users, $0) — https://www.cloudflare.com/plans/sase-zero-trust.md
+- [S50] Buy Me a Coffee, "How to calculate charges on your payment" (2026-03-18) — https://help.buymeacoffee.com/en/articles/8105744-how-to-calculate-charges-on-your-payment
+- [S51] Buy Me a Coffee memberships guides — https://help.buymeacoffee.com/en/articles/9969554-a-simple-guide-to-get-started-with-memberships ; https://help.buymeacoffee.com/en/articles/4368555-how-to-become-a-member (via search)
+- [S52] Buy Me a Coffee webhooks (2026-07-09) — https://help.buymeacoffee.com/en/articles/15743173-how-to-setup-and-use-buy-me-a-coffee-webhooks
+- [S53] Buy Me a Coffee supported payout countries (2026-10-09) — https://help.buymeacoffee.com/en/articles/6258038-supported-countries-for-payouts-on-buy-me-a-coffee
+- [S54] Stripe Connect onboarding requirements in India — https://support.stripe.com/questions/onboarding-requirements-for-stripe-connect-in-india
+- [S55] buymeachai.in (official page via search snippet; direct fetch rate-limited) — https://www.buymeachai.in/
+- [S56] Gemini API Additional Terms of Service (effective 2026-03-23) — https://aistudio.google.com/docs/terms
+- [S57] Gemini free-tier limits (AI Studio only; third-party figures) — https://aistudio.google.com/docs/rate-limits ; https://www.scriptbyai.com/gemini-api-free-tier-limits/
+- [S58] Oracle Cloud Always Free resources — https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm
+- [S59] Oracle Cloud Free Tier FAQ (card verification) — https://www.oracle.com/sg/cloud/free/faq/
 
 **Storage, email, bot protection**
 - [S22] Cloudflare R2 pricing — https://developers.cloudflare.com/r2/pricing/
