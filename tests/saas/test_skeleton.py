@@ -1,4 +1,4 @@
-﻿"""The skeleton boots and stays isolated from the owner's growth-loop database."""
+"""The skeleton boots and stays isolated from the owner's growth-loop database."""
 from __future__ import annotations
 
 

@@ -85,6 +85,22 @@ venv/Scripts/python.exe scripts/channels.py clone tech tech-clips --name "Tech C
 only a fallback if the plain HTTP scrape is ever challenged, and it is not in `requirements.txt`
 (`pip install playwright && playwright install chromium` to enable it). GitHub Actions CI (`.github/workflows/ci.yml`) runs `node --check` on `app.review_ui.PAGE`, `scripts/final_audit.py --offline`, and `pytest -q -m "not slow"` across Ubuntu and Windows; contributor rules and hard invariants are summarized in `CONTRIBUTING.md`.
 
+## SaaS (`saas/`, `edge/`)
+
+The clipper is also sold as a multi-tenant SaaS ("doomscroller"). Ownership, interfaces and rules live in
+`docs/saas/CONTRACT.md`; costs and pricing in `docs/saas/costs-and-pricing.md`; MCP setup in `docs/saas/MCP.md`.
+
+- **Marketing site + waitlist** run free on Cloudflare Pages: `scripts/saas_export_static.py` renders
+  `saas/web/templates` to static `edge/public/`, and `edge/functions/` (Pages Functions + D1) serve `/api/waitlist`,
+  `/api/waitlist/me` and a Basic-auth `/admin`. Deploy steps: `edge/README.md`. Tests: `cd edge && npm test`.
+- **Product app** (`saas.main:app`, :8700, its own DB and `SAAS_*` settings from `.env.saas`; never the owner's
+  `.env` or `doomscroller.db`): auth, credits ledger (Buy Me a Coffee webhooks), jobs + worker, publish packages,
+  brand kit, `/api/v1`, MCP at `/mcp`. It renders through `app.clipper.standalone.clip_to_directory`.
+  Run: `.venv-saas/Scripts/python.exe scripts/saas_serve.py --workers 1`; tests:
+  `.venv-saas/Scripts/python.exe -m pytest tests/saas -q -m "not slow"` (separate venv: `requirements-saas.txt`).
+- Never render customer jobs on GitHub Actions: its terms forbid serverless use unrelated to the repo's software.
+  The render worker is the owner's own machine.
+
 ## Architecture
 
 ### Single unified slim process (`scripts/serve_slim.py`), one SQLite file
@@ -301,15 +317,23 @@ drive it through the `ClipJob` table, so queued work survives a restart.
   a second AI pass that drops weak sentences and places graphics on exact phrases. Stutters and filler are cut
   by rule. `render.py` then changes the framing every 1-2.4s, and `sfx.py` synthesises effects, so there is
   nothing to license. `faces.py` picks the face that moves, and never averages two people: that lands on the gap.
-  Most emphasis is a `punch`: a flash, a shake and a thud, with no text. Big words over dimmed footage were tried and
-  the owner rejected them, so only real numbers (`stat`) and one turning point per clip (`card`) get on-screen text.
+  Emphasis goes only where something lands (a reveal, a number, a turn, a punchline), usually two to four per clip. A
+  `punch` is a framing change, a short shake and a hit: the full-frame white flash was removed in Nov 2026 because it
+  read as a random solid wash. Big words over dimmed footage were tried and the owner rejected them, so only real numbers
+  (`stat`) and one turning point per clip (`card`) get on-screen text, drawn as outlined text only: the full-screen
+  yellow card and the black dim behind numbers were removed for the same reason, so `_beat_events` never emits `\p1`
+  and the render never draws a `drawbox`.
 - **B-roll** (`broll.py`). The AI names filmable search terms, and Pixabay or Pexels supplies clips, cached under
   `content/broll/` and credited in the description. It is optional at every step: no key, no results or a failed
   download just means fewer cutaways. A 429 stops further searches. Pixabay requires searches cached for 24h, and
   its key travels in the URL, so the httpx logger stays at WARNING and errors must never include the URL.
-  Searches match tags rather than meaning, so `shots.py` shows the vision model the results, cropped as they will
-  render, with the words spoken over them. If it rejects them all it can suggest one better search; if that fails
-  too the cutaway is dropped. If it cannot judge at all, the job stops asking and uses no stock: unjudged matches put a sapphire ring and Alcatraz into a 1940 film.
+  The AI proposes B-roll only where the speaker names a concrete filmable thing (`subject`); `edit.grounded_subject`
+  drops ungrounded or generic subjects. Cutaways never cover a beat, a reaction or the final sentence, take at most 30%
+  of the clip and sit at least 6s apart. Searches match tags rather than meaning, so `shots.py` shows the vision model
+  the results, cropped as they will render, with the subject and the words spoken over them, and only its first choice
+  is used. A rejection is final: no second, broader search (that is how a duck illustrated a wet ball). No judge (no
+  AI, no thumbnails, a failed reply) means no cutaway, never the first unjudged match: unjudged matches put a sapphire
+  ring and Alcatraz into a 1940 film.
   Files are test-decoded before use, because a CDN can answer 200 with an error page, and a render that still
   fails is retried once without B-roll.
 - **Tidying speech is conservative.** A rule that removes words changes what someone said, so `droppable_indices`
@@ -346,7 +370,9 @@ drive it through the `ClipJob` table, so queued work survives a restart.
   The whole audio mix is rendered **stereo** (`_STEREO`, output `-ac 2`): the voice is centred dual-mono and a
   stereo music bed keeps its width instead of being folded to mono (earshot's critique caught every clip collapsing
   to one channel). Without music a talking clip is honestly near-mono. Judge any clip's sound with the **earshot**
-  skill (`earshot critique <clip.mp4>`) rather than guessing — it is the tool that found this.
+  skill (`earshot critique <clip.mp4>`) rather than guessing — it is the tool that found this. Effects follow
+  meaning, not rhythm: the opening hit, one per beat, one whoosh into each cutaway, and each meme's sound; sounds
+  closer than 0.45s keep only the stronger (`render._destack`).
 - **Optional audio QA** (`audio_qa.py`, `EARSHOT_QA`, off by default). When on and the `earshot` CLI is on PATH, each
   finished clip is scored by `earshot critique --json` (shelled out, like the AI CLIs, so the app venv stays free of
   earshot's models) and a trimmed scorecard is stored on the row (`meta.earshot`: verdict, score, top fixable issues)
@@ -354,11 +380,21 @@ drive it through the `ClipJob` table, so queued work survives a restart.
   a clip — it is information for the owner and for later analysis, not an auto-reject.
 - **On-screen text.** `Credit: <name>` runs the whole clip whenever the source names a creator, and `BRAND_NAME`, when
   set, does the same for the channel.
-- **Memes.** `scripts/fetch_memes.py` downloads the trending pack into `content/memes/`
-  (Tenor/Giphy keys unlock their fresher packs; keyless MemeGen templates always work); `attach_memes` flashes up to 3 of them top-right over
-  punch beats (`CLIP_MEMES` off skips it, no key means none). Reaction GIFs skip the vision judge —
-  they fail the literal-match filter — and rotate through trending instead. Attribution rides the
-  description credit like B-roll.
+- **Memes.** Memes go only on reaction beats the edit pass marks by meaning (`reactions`, a mood from
+  `reactions.py`), at most one per 20s; Hindi clean-vlog edits get `mark_reactions`, never fixed points. Each meme
+  searches its mood and skips memes this job or the last 30 placed memes used (`content/meme_history.json`, identity =
+  canonical id plus content hash). A small pool means fewer memes, never a repeat. Every meme carries sound: its own
+  audio, else a mood-matched pack sting (`sfx.mood_sting`), else a synthesised hit, at half peak under the voice. Clips
+  without audio get none. A final-line meme plays over the held ending with the ending sting. In the framed layout
+  memes sit in the band above the picture. Giphy is the provider (Tenor shut down 2026-06-30);
+  `fetch_memes.py --moods` warms the pool. `CLIP_MEMES` off skips it. Attribution rides the description credit.
+- **Shared core and the SaaS seam.** `produce.produce_clip` renders one moment and is shared by `job.py` and
+  `standalone.clip_to_directory`, the database-free seam the SaaS calls (see `docs/saas/CONTRACT.md`).
+  `CLIP_AI_BACKEND=api` with `CLIP_AI_API_PROVIDER=anthropic|openai_compatible` replaces the CLIs (anthropic defaults
+  to the cheapest model, `claude-haiku-5-5`); `CLIP_STT_PROVIDER=openai_compatible` (e.g. Groq Whisper) is optional.
+  With a Hindi hint or two agreeing 20s Deepgram samples of clear Hindi speech, Sarvam goes first and the full
+  Deepgram pass is skipped. `metering.record`/`metering.timed` sit at every point of spend and are no-ops without a
+  meter.
 - Changes to the filter graph need the `slow` tier in `tests/test_clipper_render.py`.
 
 ### Growth loop (`app/growth/`)

@@ -237,7 +237,7 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     # The key for openai_compatible (and, when set, for anthropic in place of ANTHROPIC_API_KEY).
     clip_ai_api_key: str = ""
-    # Empty means claude-opus-5-5 for anthropic; openai_compatible needs one named.
+    # Empty means claude-haiku-5-5 for anthropic (cheapest); openai_compatible needs one named.
     clip_ai_api_model: str = ""
     # Must accept images (stock-shot judging, frame strips). Empty means clip_ai_api_model.
     clip_ai_api_vision_model: str = ""

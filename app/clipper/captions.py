@@ -427,7 +427,9 @@ def build_ass(words: Sequence[Word], hook: str, duration: float, font: str,
         f"Style: Hook,{font},72,&H00111111,&H000000FF,&H0000E5FF,&H0000E5FF,-1,0,0,0,100,100,0,0,3,20,0,8,60,60,0,1",
         f"Style: Brand,{font},48,&H00FFFFFF,&H000000FF,&H66000000,&H00000000,-1,0,0,0,100,100,0,0,1,4,0,5,40,40,0,1",
         f"Style: Credit,{font},40,&H30FFFFFF,&H000000FF,&H99000000,&H00000000,-1,0,0,0,100,100,0,0,1,3,0,5,40,40,0,1",
-        f"Style: Watermark,{font},36,&H50FFFFFF,&H000000FF,&HA0000000,&H00000000,-1,0,0,0,100,100,0,0,1,2,0,5,40,40,0,1",
+        # Only declared when a watermark is drawn, so every other clip's ASS stays exactly as it was.
+        *([f"Style: Watermark,{font},36,&H50FFFFFF,&H000000FF,&HA0000000,&H00000000,-1,0,0,0,100,100,0,0,1,2,0,5,40,40,0,1"]
+          if mark else []),
         f"Style: Beat,{font},190,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,12,4,5,40,40,0,1",
         "",
         "[Events]",

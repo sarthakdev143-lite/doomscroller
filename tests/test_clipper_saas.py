@@ -136,8 +136,13 @@ def test_the_owner_default_is_still_the_cli_backend():
     assert fresh.clip_ai_backend == "cli" and fresh.clip_stt_provider == "deepgram"
 
 
-def test_anthropic_request_shape_usage_and_images(monkeypatch, tmp_path):
+def test_the_anthropic_default_model_is_the_cheapest(monkeypatch):
     _api(monkeypatch)
+    assert ai._api_model([]) == "claude-haiku-5-5"
+
+
+def test_anthropic_request_shape_usage_and_images(monkeypatch, tmp_path):
+    _api(monkeypatch, model="claude-opus-5-5")  # a fallback-capable model, to cover the beta header
     sent = []
 
     def post(url, json=None, headers=None, timeout=None):

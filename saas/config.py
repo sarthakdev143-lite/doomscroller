@@ -1,4 +1,4 @@
-﻿"""SaaS settings. Separate from app.config on purpose.
+"""SaaS settings. Separate from app.config on purpose.
 
 app.config.settings belongs to the owner's single-tenant growth loop, and its .env turns real
 YouTube uploads on. Nothing in saas/ may read that file: every value here comes from SAAS_* env vars

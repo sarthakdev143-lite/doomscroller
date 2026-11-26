@@ -140,13 +140,18 @@ def produce_clip(src: SourceVideo, info: MediaInfo, signals: Signals, moment: Mo
     try:
         plan = render()
     except MediaError as exc:
-        if not (edit and (edit.cutaways or edit.meme_overlays)):
+        has_extras = bool(edit and (edit.cutaways or edit.meme_overlays))
+        if not has_extras and "logo" not in extras:
             raise
-        # B-roll and memes are optional, so shots that will not render cost only themselves.
-        lost = [n for n, items in (("B-roll", edit.cutaways), ("meme overlays", edit.meme_overlays)) if items]
+        # B-roll, memes and a logo are optional, so pictures that will not render cost only themselves.
+        lost = [n for n, items in (("B-roll", edit.cutaways if edit else []),
+                                   ("meme overlays", edit.meme_overlays if edit else []),
+                                   ("logo", [1] if "logo" in extras else [])) if items]
         warn(f"the clip lost its {' and '.join(lost)}, which would not render: {exc}")
-        edit.cutaways = []
-        edit.meme_overlays = []
+        if edit is not None:
+            edit.cutaways = []
+            edit.meme_overlays = []
+        extras.pop("logo", None)
         plan = render()
     if not plan.tail:
         moment.sound = ""  # an ending sound that did not load is not credited either

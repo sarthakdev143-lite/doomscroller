@@ -87,6 +87,19 @@ def hashtags(tags: Sequence[str], title: str = "") -> list[str]:
     return out
 
 
+def logo_ok(path: str) -> bool:
+    """Whether a customer's logo is a real image: checked once, so a bad upload cannot fail every clip."""
+    try:
+        from PIL import Image
+
+        with Image.open(path) as img:
+            img.verify()
+        with Image.open(path) as img:
+            return img.width > 0 and img.height > 0
+    except Exception:
+        return False
+
+
 def make_thumbnail(clip_path: Path, duration: float) -> Optional[Path]:
     """A JPEG of one frame a third of the way in, after the hook has left the screen. None if it fails."""
     target = clip_path.with_suffix(".jpg")
@@ -228,8 +241,8 @@ def _run(source: str, out: Path, *, count: int, wanted_language: str, captions: 
                         title_from_filename=src.title_from_filename)
     stock = StockSession()
     mstock = MemeSession(recent={str(k) for k in recent_memes if k}, custom=custom_candidates(custom_memes))
-    if logo and not Path(logo).is_file():
-        warn("the logo file could not be read, so clips carry no logo")
+    if logo and not logo_ok(logo):
+        warn("the logo file is not a readable image, so clips carry no logo")
         logo = ""
     chosen = moments[:count]
     clips: list[dict] = []

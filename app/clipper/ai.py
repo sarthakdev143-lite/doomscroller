@@ -229,7 +229,8 @@ def _api_model(files: Sequence[str]) -> str:
     vision = str(getattr(settings, "clip_ai_api_vision_model", "") or "").strip()
     text = str(getattr(settings, "clip_ai_api_model", "") or "").strip()
     if not text and api_provider() == ANTHROPIC:
-        text = "claude-opus-5-5"
+        # Cheapest current model: the owner runs on a zero budget. Name a bigger one in CLIP_AI_API_MODEL.
+        text = "claude-haiku-5-5"
     return (vision or text) if files else text
 
 
