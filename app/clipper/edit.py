@@ -60,6 +60,14 @@ _MEME_SEC = 1.5
 _MIN_MEME_GAP_SEC = 4.0
 _SPOKEN_MARGIN_SEC = 1.0
 _MAX_QUERY_CHARS = 60
+_EN_MEME_QUERIES = (
+    "shocked reaction", "mind blown reaction", "laughing reaction",
+    "bruh reaction", "surprised reaction", "dramatic reaction",
+)
+_HI_MEME_QUERIES = (
+    "indian funny reaction", "bollywood shocked reaction", "bollywood funny reaction",
+    "shocked reaction", "mind blown reaction", "laughing reaction",
+)
 
 
 def _token(text: str) -> str:
@@ -478,7 +486,10 @@ def attach_memes(
     used: set[str] = set()
     kept: list[MemeOverlay] = []
     last_end = -_MIN_MEME_GAP_SEC
-    for at in candidate_times:
+    use_local = memes.has_local_pack(language)
+    use_reaction = (not use_local) and memes.provider() in (memes.TENOR, memes.GIPHY)
+    qbank = _HI_MEME_QUERIES if str(language or "").strip().lower().startswith("hi") else _EN_MEME_QUERIES
+    for idx, at in enumerate(candidate_times):
         if len(kept) >= _MAX_MEMES:
             break
         when = plan.to_output(at)
@@ -486,11 +497,25 @@ def attach_memes(
             continue
         if session.stopped:
             break
-        try:
+        skip = used | session.used
+        query = qbank[(len(session.used) + idx) % len(qbank)] if use_reaction else ""
+
+        def _rotate(cands: list[memes.Candidate], off: int = len(session.used) + idx) -> list[memes.Candidate]:
+            if not cands:
+                return cands
+            pos = off % len(cands)
+            return cands[pos:] + cands[:pos]
+
+        def _fetch(q: str, ex: set[str]) -> Optional[memes.MemeClip]:
             try:
-                clip = memes.fetch("", _MEME_SEC, exclude=used, language=language)
+                return memes.fetch(q, _MEME_SEC, exclude=ex, choose=_rotate, language=language)
             except TypeError:
-                clip = memes.fetch("", _MEME_SEC, exclude=used)
+                return memes.fetch(q, _MEME_SEC, exclude=ex)
+
+        try:
+            clip = _fetch(query, skip)
+            if clip is None and (query or session.used):
+                clip = _fetch("", used)
         except memes.SearchBlocked as exc:
             session.stopped = True
             warnings.append(f"{memes.scrub_secrets(exc)}, so the rest of this job's memes were skipped")
@@ -515,6 +540,7 @@ def attach_memes(
             continue
         session.failed_files = 0
         used.add(clip.meme_id)
+        session.used.add(clip.meme_id)
         kept.append(MemeOverlay(at, _MEME_SEC, clip))
         last_end = when + _MEME_SEC
     plan.meme_overlays = kept

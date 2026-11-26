@@ -305,16 +305,22 @@ def _speech_prompt(sentences: Sequence[Sentence], count: int, title: str, used: 
         rows.append(f"[{sentence.index}] {sentence.text}")
     lines = "\n".join(rows)
     sound_field = f', "sound": "<one of: {", ".join(sounds)}; or none>"' if sounds else ""
-    sound_rule = ("A meme sound can play once, right after the clip's last line. Name one only when that last line is "
-                  "plainly the joke, fail, shock or twist the sound's name describes. Anything emotional, serious or "
-                  "unclear gets none: a wrong sound ruins the clip, and most clips should get none. "
-                  "Never reuse the same sound on two clips from the same video.\n\n"
-                  if sounds else "")
-    pace_note = (f"aim for ~{target_sec} seconds of fast, punchy action."
-                 if target_sec else "aim for ~24 seconds of fast, punchy action.")
     is_hindi = (language or "").strip().lower().startswith("hi") or any(
         "\u0900" <= ch <= "\u097F" for s in sentences[:12] for ch in s.text
     )
+    hindi_sound_tip = (
+        " For Hindi clips, prefer expressive Hindi meme sounds (like aayein, are-baap-re, arnab, cid, "
+        "kuch-to-gadbad, paisa-hi-paisa) when they fit the punchline."
+        if is_hindi else ""
+    )
+    sound_rule = ("A meme sound can play once, right after the clip's last line. Name one only when that last line is "
+                  "plainly the joke, fail, shock or twist the sound's name describes. Anything emotional, serious or "
+                  "unclear gets none: a wrong sound ruins the clip, and most clips should get none. "
+                  "Never reuse the same sound on two clips from the same video, and vary your picks instead of defaulting to vine-boom-sound every time."
+                  + hindi_sound_tip + "\n\n"
+                  if sounds else "")
+    pace_note = (f"aim for ~{target_sec} seconds of fast, punchy action."
+                 if target_sec else "aim for ~24 seconds of fast, punchy action.")
     hindi_rule = (
         "\nIMPORTANT FOR HINDI SPEECH: Title, hook, reveal, and description MUST be written in Romanized Hinglish "
         "(Hindi words in English/Latin alphabet ONLY — NEVER Devanagari script), punchy Indian vlog Short style, "

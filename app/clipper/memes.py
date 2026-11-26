@@ -17,7 +17,7 @@ import math
 import os
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
@@ -35,6 +35,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 TENOR, GIPHY, MEMEGEN, LOCAL = "Tenor", "Giphy", "MemeGen", "Local"
 _LOCAL_VIDEO_EXTS = frozenset({".mp4", ".webm", ".mov", ".gif"})
+_API_CACHE_PREFIXES = ("meme-", "giphy-", "tenor-", "memegen-")
 _TENOR_FEATURED_URL = "https://tenor.googleapis.com/v2/featured"
 _TENOR_SEARCH_URL = "https://tenor.googleapis.com/v2/search"
 _GIPHY_TRENDING_URL = "https://api.giphy.com/v1/gifs/trending"
@@ -91,6 +92,7 @@ class MemeSession:
 
     stopped: bool = False
     failed_files: int = 0
+    used: set[str] = field(default_factory=set)
 
 
 @dataclass(frozen=True)
@@ -289,12 +291,12 @@ def trending(limit: int = _RESULTS_PER_SEARCH) -> list[Candidate]:
     if cached is None:
         if library == TENOR:
             body = _request(_TENOR_FEATURED_URL, {"key": settings.tenor_api_key, "client_key": "doomscroller",
-                                                 "limit": count, "media_filter": "mp4,tinymp4,gif",
+                                                 "limit": _RESULTS_PER_SEARCH, "media_filter": "mp4,tinymp4,gif",
                                                  "contentfilter": "high"})
             cached = body.get("results")
         else:
             body = _request(_GIPHY_TRENDING_URL, {"api_key": settings.giphy_api_key,
-                                                 "limit": count, "rating": "pg"})
+                                                 "limit": _RESULTS_PER_SEARCH, "rating": "pg"})
             cached = body.get("data")
         if not isinstance(cached, list):
             raise MemeError(f"{library} sent an unreadable reply")
@@ -385,7 +387,13 @@ def local_pack(language: str = "") -> list[Candidate]:
     seen: set[str] = set()
     for folder in dirs:
         for p in sorted(folder.iterdir()):
-            if not p.is_file() or p.suffix.lower() not in _LOCAL_VIDEO_EXTS or p.name.startswith("meme-"):
+            low_name = p.name.lower()
+            if (
+                not p.is_file()
+                or p.suffix.lower() not in _LOCAL_VIDEO_EXTS
+                or low_name.startswith(_API_CACHE_PREFIXES)
+                or low_name.endswith(".part")
+            ):
                 continue
             mid = f"local-{_safe_meme_id(p.stem)}"
             if mid in seen:

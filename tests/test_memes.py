@@ -599,3 +599,93 @@ def test_fetch_memes_limits_errors_oserror_bailout_and_secret_scrubbing(tmp_path
     assert "CANARY_MEME_W21" not in str(search_exc.value)
 
 
+def test_wave23_local_pack_ignores_api_cache_and_attach_memes_rotates_reaction_queries(tmp_path, monkeypatch):
+    from app.clipper import edit as edit_mod
+    from app.clipper import moments
+    from app.clipper.transcribe import Word
+
+    monkeypatch.setattr(settings, "content_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "tenor_api_key", "")
+    monkeypatch.setattr(settings, "giphy_api_key", "g")
+    monkeypatch.setattr(settings, "clip_memes", True)
+    monkeypatch.setattr(settings, "clip_memes_allow_stills", False)
+
+    meme_dir = tmp_path / "memes"
+    meme_dir.mkdir(parents=True)
+    for ignored in ("giphy-abc.mp4", "tenor-def.mp4", "memegen-3hd.jpg", "foo.mp4.part"):
+        (meme_dir / ignored).write_bytes(b"FAKE")
+    custom = meme_dir / "custom_clip.mp4"
+    custom.write_bytes(b"OWNER_MEME")
+
+    for lang in ("", "hi"):
+        items = memes.local_pack(lang)
+        assert [c.meme_id for c in items] == ["local-custom_clip"]
+
+    # Trending requests full _RESULTS_PER_SEARCH pool and caches it across limit sizes.
+    req_params = []
+    pool_data = [
+        {"id": f"id{i}", "title": f"React {i}", "images": {"original_mp4": {"mp4": f"https://media.giphy.com/{i}.mp4"}}}
+        for i in range(6)
+    ]
+
+    def fake_request(url, params):
+        req_params.append(dict(params))
+        return {"data": pool_data}
+
+    monkeypatch.setattr(memes, "_request", fake_request)
+    first = memes.trending(limit=2)
+    second = memes.trending(limit=5)
+    assert len(req_params) == 1
+    assert req_params[0]["limit"] == memes._RESULTS_PER_SEARCH
+    assert len(first) == 2
+    assert len(second) == 5
+
+    # Without local pack files, attach_memes queries reaction GIFs and excludes session.used across clips.
+    custom.unlink()
+    assert memes.has_local_pack("") is False
+    seen_calls = []
+
+    def fake_fetch(query, seconds, *, exclude=(), choose=None, language=""):
+        seen_calls.append({"query": query, "exclude": set(exclude), "language": language})
+        for idx in range(1, 10):
+            mid = f"giphy-r{idx}"
+            if mid not in exclude:
+                return memes.MemeClip(mid, str(tmp_path / f"{mid}.mp4"), f"Title {idx}", memes.GIPHY)
+        return None
+
+    monkeypatch.setattr(edit_mod.memes, "fetch", fake_fetch)
+
+    session = memes.MemeSession()
+    p1 = edit_mod.EditPlan(
+        words=[], segments=[(0.0, 22.0)],
+        beats=[edit_mod.Beat(4.0, "A", edit_mod.PUNCH), edit_mod.Beat(12.0, "B", edit_mod.PUNCH)],
+    )
+    p2 = edit_mod.EditPlan(
+        words=[], segments=[(0.0, 22.0)],
+        beats=[edit_mod.Beat(4.0, "C", edit_mod.PUNCH), edit_mod.Beat(12.0, "D", edit_mod.PUNCH)],
+    )
+    assert edit_mod.attach_memes(p1, session, language="en") == []
+    assert edit_mod.attach_memes(p2, session, language="en") == []
+    ids1 = {ov.clip.meme_id for ov in p1.meme_overlays}
+    ids2 = {ov.clip.meme_id for ov in p2.meme_overlays}
+    assert len(ids1) == 2 and len(ids2) == 2 and ids1.isdisjoint(ids2)
+    assert all(call["query"] != "" for call in seen_calls[:4])
+    assert ids1.issubset(seen_calls[2]["exclude"])
+
+    # Hindi speech uses Hindi/Bollywood reaction queries and Hindi SFX variety guidance in prompt.
+    hi_plan = edit_mod.EditPlan(
+        words=[], segments=[(0.0, 22.0)],
+        beats=[edit_mod.Beat(5.0, "H", edit_mod.PUNCH)],
+    )
+    hi_start = len(seen_calls)
+    assert edit_mod.attach_memes(hi_plan, memes.MemeSession(), language="hi") == []
+    hi_query = seen_calls[hi_start]["query"].lower()
+    assert any(tok in hi_query for tok in ("indian", "bollywood"))
+
+    sents = moments.build_sentences([Word("Bhai", 0.0, 0.4), Word("kya.", 0.4, 0.8)])
+    hi_prompt = moments._speech_prompt(sents, 1, "Test", sounds=["aayein-meme", "vine-boom-sound"], language="hi")
+    assert "vine-boom-sound" in hi_prompt
+    assert "hindi" in hi_prompt.lower()
+
+
+
