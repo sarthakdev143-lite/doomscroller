@@ -265,6 +265,7 @@ def test_faces_speaker_position_bounds_frames_at_and_detector_fallbacks(monkeypa
     assert faces.speaker_box_in_pair(np.zeros((10,), dtype=np.uint8), np.zeros((10,), dtype=np.uint8)) is None
     assert faces.speaker_box_in_pair(np.zeros((10, 10), dtype=np.uint8), np.zeros((10, 12), dtype=np.uint8)) is None
     assert faces.speaker_box_in_pair(np.zeros((1, 10), dtype=np.uint8), np.zeros((1, 10), dtype=np.uint8)) is None
+    assert faces.speaker_box_in_pair(np.zeros((20, 20), dtype=np.float64), np.zeros((20, 20), dtype=np.float64)) is None
 
     orig_detector = faces._detector
     monkeypatch.setattr(faces, "_detector", lambda: None)

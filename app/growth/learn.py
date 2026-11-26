@@ -115,16 +115,21 @@ def upload_turned_down(status: Optional[str]) -> bool:
     return bool(status) and status not in _UPLOAD_LIVE
 
 
-def _subscriber_rate(analytics: dict) -> Optional[float]:
-    """Per 1000 views. A raw count keeps climbing with age, while the views a video is judged on stop at the horizon."""
-    views, gained = analytics.get("views"), analytics.get("subscribersGained")
-    if isinstance(views, bool) or isinstance(gained, bool) or views is None or gained is None:
+def _finite_float(raw: object) -> Optional[float]:
+    if isinstance(raw, bool) or raw is None:
         return None
     try:
-        v_f, g_f = float(views), float(gained)
+        val = float(raw)
     except (TypeError, ValueError):
         return None
-    if not (math.isfinite(v_f) and math.isfinite(g_f)) or v_f <= 0:
+    return val if math.isfinite(val) else None
+
+
+def _subscriber_rate(analytics: dict) -> Optional[float]:
+    """Per 1000 views. A raw count keeps climbing with age, while the views a video is judged on stop at the horizon."""
+    v_f = _finite_float(analytics.get("views"))
+    g_f = _finite_float(analytics.get("subscribersGained"))
+    if v_f is None or g_f is None or v_f <= 0:
         return None
     return max(0.0, 1000 * g_f / v_f)
 
@@ -160,31 +165,23 @@ def matured_results(db, *, include_diagnosed: bool = True, scope=None, zone=None
         if views is None:
             continue
         analytics = (video.meta or {}).get("yt_analytics") or {}
-        percent = analytics.get("averageViewPercentage")
-        raw_ev = analytics.get("engagedViews")
-        raw_av = analytics.get("views") or views
-        engaged_rate: Optional[float] = None
-        if raw_ev is not None and raw_av and raw_av > 0:
-            try:
-                ev_f = float(raw_ev)
-                if math.isfinite(ev_f) and ev_f >= 0:
-                    engaged_rate = min(1.0, ev_f / float(raw_av))
-            except (TypeError, ValueError):
-                engaged_rate = None
-        raw_share = analytics.get("shorts_feed_share")
-        feed_share: Optional[float] = None
-        if raw_share is not None:
-            try:
-                sh_f = float(raw_share)
-                if math.isfinite(sh_f) and sh_f >= 0:
-                    feed_share = min(1.0, sh_f)
-            except (TypeError, ValueError):
-                feed_share = None
+        if not isinstance(analytics, dict):
+            analytics = {}
+        percent = _finite_float(analytics.get("averageViewPercentage"))
+        ev_f = _finite_float(analytics.get("engagedViews"))
+        raw_av = analytics.get("views")
+        av_f = _finite_float(views if (raw_av is None or raw_av == 0) else raw_av)
+        engaged_rate: Optional[float] = (
+            min(1.0, ev_f / av_f)
+            if (ev_f is not None and ev_f >= 0 and av_f is not None and av_f > 0)
+            else None
+        )
+        sh_f = _finite_float(analytics.get("shorts_feed_share"))
+        feed_share: Optional[float] = min(1.0, sh_f) if (sh_f is not None and sh_f >= 0) else None
         results.append(Result(
             video_id=video.id, title=video.title or "", views=max(0, int(views)), arms=published_arms(video, zone),
             day=(aware(video.published_at) - first).total_seconds() / 86400,
-            retention=(min(max(0.0, float(percent) / 100), _MAX_RETENTION)
-                       if percent is not None and math.isfinite(percent) else None),
+            retention=(min(max(0.0, percent / 100), _MAX_RETENTION) if percent is not None else None),
             subscribers=_subscriber_rate(analytics),
             source_url=video.source_url or "", diagnosed=diagnosed, authors=author_names(video),
             published_at=aware(video.published_at),

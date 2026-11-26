@@ -241,7 +241,11 @@ def run_next_long_job(*, now: Optional[datetime] = None, job_id: Optional[str] =
     from app.clipper.media import Interrupted
 
     global _active_long_job_id
-    requested_job_id = (job_id or "").strip() or None
+    requested_job_id: Optional[str] = None
+    if job_id is not None:
+        requested_job_id = str(job_id).strip()
+        if not requested_job_id:
+            return None
     if not clip_job.RENDER_LOCK.acquire(blocking=False):
         return {"busy": True}
     now = now or datetime.now(timezone.utc)

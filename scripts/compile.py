@@ -38,7 +38,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--enqueue", action="store_true", help="Enqueue job and exit without waiting for render")
     parser.add_argument("--run-now", action="store_true", help="Enqueue (or retry) and build synchronously")
     parser.add_argument("--jobs", action="store_true", help="List recent long-form jobs")
-    parser.add_argument("--retry", default="", help="Retry a failed long-form job id")
+    parser.add_argument("--retry", default=None, help="Retry a failed long-form job id")
     parser.add_argument("--json", dest="as_json", action="store_true", help="Print JSON output")
     args = parser.parse_args(argv)
 
@@ -56,7 +56,7 @@ def main(argv: list[str] | None = None) -> int:
                 print("No long-form jobs.")
         return 0
 
-    if args.retry:
+    if args.retry is not None:
         try:
             res = long_job.retry_long_job(args.retry)
         except (LookupError, ValueError) as exc:

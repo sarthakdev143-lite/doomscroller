@@ -896,6 +896,7 @@ def test_model_rejects_bool_rewards_days_and_non_dict_arms_and_recipes_collect_g
         Observation({"slot": "08-12"}, 1.0, False),      # type: ignore[arg-type]
         Observation(None, 2.0, 0.0),                     # type: ignore[arg-type]
         Observation(["bad"], 2.0, 0.0),                  # type: ignore[arg-type]
+        Observation({"pace": ["fast"]}, 2.0, 0.0),       # type: ignore[dict-item]
         Observation({"slot": "00-04"}, 3.0, 1.0),
     ]
     m = Model(obs)  # type: ignore[arg-type]
@@ -946,4 +947,64 @@ def test_model_rejects_bool_rewards_days_and_non_dict_arms_and_recipes_collect_g
         assert len(learn.matured_results(db)) == 1
     out_run = learn._learn_one(None, now)
     assert out_run["matured"] == 1
+
+    # 4. learn.matured_results safely coerces string yt_analytics and ignores malformed/bool values
+    with session_scope() as db:
+        v_str = Video(
+            source="youtube",
+            source_id="str_analytics_1",
+            source_url="https://youtu.be/sa1",
+            title="Str Analytics",
+            status=VideoStatus.PUBLISHED,
+            youtube_video_id="YT_SA_1",
+            published_at=now - timedelta(hours=72),
+            meta={
+                "clip_rendered": True,
+                "yt_privacy": "public",
+                "yt_analytics": {
+                    "views": "100",
+                    "engagedViews": "50",
+                    "averageViewPercentage": "55.0",
+                    "shorts_feed_share": "0.6",
+                    "subscribersGained": "2",
+                },
+            },
+        )
+        v_bad = Video(
+            source="youtube",
+            source_id="bad_analytics_1",
+            source_url="https://youtu.be/ba1",
+            title="Bad Analytics",
+            status=VideoStatus.PUBLISHED,
+            youtube_video_id="YT_BA_1",
+            published_at=now - timedelta(hours=72),
+            meta={
+                "clip_rendered": True,
+                "yt_privacy": "public",
+                "yt_analytics": {
+                    "views": "bad",
+                    "engagedViews": "nope",
+                    "averageViewPercentage": "bad",
+                    "shorts_feed_share": True,
+                    "subscribersGained": False,
+                },
+            },
+        )
+        db.add_all([v_str, v_bad])
+        db.flush()
+        db.add_all([
+            VideoSnapshot(video_id=v_str.id, taken_at=now, age_hours=72.0, views=100, likes=5, comments=1),
+            VideoSnapshot(video_id=v_bad.id, taken_at=now, age_hours=72.0, views=100, likes=5, comments=1),
+        ])
+    with session_scope() as db:
+        by_id = {r.video_id: r for r in learn.matured_results(db)}
+        assert by_id[v_str.id].retention == pytest.approx(0.55)
+        assert by_id[v_str.id].engaged_rate == pytest.approx(0.5)
+        assert by_id[v_str.id].shorts_feed_share == pytest.approx(0.6)
+        assert by_id[v_str.id].subscribers == pytest.approx(20.0)
+        assert by_id[v_bad.id].retention is None
+        assert by_id[v_bad.id].engaged_rate is None
+        assert by_id[v_bad.id].shorts_feed_share is None
+        assert by_id[v_bad.id].subscribers is None
+
 

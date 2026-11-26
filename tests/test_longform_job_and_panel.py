@@ -1702,5 +1702,18 @@ def test_compile_cli_retry_and_enqueue_run_now_target_specific_job_and_propagate
     with session_scope() as db:
         assert db.get(LongJob, older_id).status == "queued"
 
+    # 4. Blank/whitespace job_id in run_next_long_job and --retry "" in compile.py must not run or enqueue
+    with session_scope() as db:
+        before_count = db.query(LongJob).count()
+    assert long_job.run_next_long_job(job_id="") is None
+    assert long_job.run_next_long_job(job_id="   ") is None
+    rc_empty_retry = compile_cli.main(["--retry", "", "--json"])
+    assert rc_empty_retry == 1
+    out_empty = json.loads(capsys.readouterr().out)
+    assert out_empty["ok"] is False
+    with session_scope() as db:
+        assert db.get(LongJob, older_id).status == "queued"
+        assert db.query(LongJob).count() == before_count
+
 
 

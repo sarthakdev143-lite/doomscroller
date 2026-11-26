@@ -51,6 +51,8 @@ def speaker_box_in_pair(first: np.ndarray, second: np.ndarray) -> Optional[tuple
     if (
         not isinstance(first, np.ndarray)
         or not isinstance(second, np.ndarray)
+        or first.dtype != np.uint8
+        or second.dtype != np.uint8
         or first.ndim < 2
         or first.shape != second.shape
     ):

@@ -42,6 +42,7 @@ class Model:
             o for o in observations
             if o is not None
             and isinstance(getattr(o, "arms", None), dict)
+            and all(isinstance(k, str) and isinstance(v, str) for k, v in o.arms.items())
             and isinstance(o.reward, (int, float)) and not isinstance(o.reward, bool)
             and isinstance(o.day, (int, float)) and not isinstance(o.day, bool)
             and math.isfinite(o.reward) and math.isfinite(o.day)

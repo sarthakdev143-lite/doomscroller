@@ -2768,6 +2768,13 @@ def test_queue_channel_slug_scopes_queued_and_posted_slices(tmp_path, monkeypatc
         assert len(q_all["queued"]) == approval._QUEUE_LIMIT
         assert len(q_all["posted"]) == approval._POSTED_LIMIT
         assert len(q_all["channels"]) == 2
+
+        q_unknown = approval.queue("nonexistent_slug_xyz")
+        assert q_unknown["clips"] == []
+        assert q_unknown["queued"] == []
+        assert q_unknown["posted"] == []
+        assert q_unknown["total_waiting"] == 0
+        assert len(q_unknown["channels"]) == 2
     finally:
         with session_scope() as db:
             db.execute(delete(Video))
