@@ -57,6 +57,9 @@ class Job(Base):
     options: Mapped[dict] = mapped_column(JSON, default=dict)
     credits_reserved: Mapped[int] = mapped_column(Integer, default=0)
     credits_charged: Mapped[int] = mapped_column(Integer, default=0)
+    funding: Mapped[str] = mapped_column(String(8), default="credits")  # credits | free
+    shorts_reserved: Mapped[int] = mapped_column(Integer, default=0)
+    shorts_charged: Mapped[int] = mapped_column(Integer, default=0)
     priority: Mapped[int] = mapped_column(Integer, default=0)
     watermark: Mapped[bool] = mapped_column(Boolean, default=False)
     via: Mapped[str] = mapped_column(String(8), default="web")  # web | api | mcp
@@ -104,3 +107,22 @@ class Clip(Base):
 
 
 Index("ix_clips_user_created", Clip.user_id, Clip.created_at)
+
+
+class BrandAsset(Base):
+    """A customer's brand kit: one logo (re-encoded PNG) and their own memes (re-encoded GIF/PNG/MP4)."""
+
+    __tablename__ = "brand_assets"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("bra_"))
+    user_id: Mapped[str] = mapped_column(String(40), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(8))  # logo | meme
+    path: Mapped[str] = mapped_column(String(500))  # relative to SAAS_DATA_DIR
+    media_type: Mapped[str] = mapped_column(String(40))
+    original_name: Mapped[str] = mapped_column(String(200), default="")
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    width: Mapped[int] = mapped_column(Integer, default=0)
+    height: Mapped[int] = mapped_column(Integer, default=0)
+    duration_s: Mapped[float] = mapped_column(Float, default=0.0)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime, nullable=True)

@@ -32,7 +32,7 @@ from . import sfx as sfx_mod
 from .broll import StockSession
 from .ingest import IngestError, SourceVideo, fetch
 from .media import Interrupted, MediaError, probe, require_tools, run_ffmpeg
-from .memes import MemeSession
+from .memes import MemeSession, custom_candidates
 from .moments import Moment, pick_speech, pick_visual
 from .produce import produce_clip
 from .signals import analyse
@@ -106,6 +106,7 @@ def clip_to_directory(source: str, out_dir: Path, *, count: int = 3, language: s
                       max_clip_seconds: int = 60, brand_name: Optional[str] = None,
                       watermark_text: Optional[str] = None, recent_memes: Sequence[str] = (),
                       on_stage: Optional[Callable[[str, float], None]] = None,
+                      logo_path: Optional[str] = None, custom_memes: Sequence[str] = (),
                       cache_dir: Optional[Path] = None, sfx_pack_dir: Optional[Path] = None,
                       music_dir: Optional[Path] = None) -> dict:
     """Cut ``count`` finished clips from ``source`` into ``out_dir``. Raises :class:`ClipError` if none can be made.
@@ -115,6 +116,11 @@ def clip_to_directory(source: str, out_dir: Path, *, count: int = 3, language: s
     ``recent_memes`` and their next clips will not repeat a meme. ``on_stage(stage, progress)`` is called
     with the job stages (fetching, transcribing, selecting, rendering, done) and overall progress 0..1; an
     exception raised from it stops the run (that is how a caller cancels).
+
+    ``logo_path`` is an image shown small in the safe band where the brand handle would be (it replaces
+    ``brand_name``'s text). ``custom_memes`` are the customer's own GIF/MP4/WebM/PNG files, offered before
+    the meme library on each reaction beat, with the same no-repeat rule and a sound of their own or a
+    matching sting. Both are read from where they are; nothing is written beside them.
 
     ``sfx_pack_dir`` defaults to this deployment's configured pack; ``music_dir`` defaults to an empty
     folder under the cache, so music (when on) is the zero-copyright synthesised bed.
@@ -150,7 +156,8 @@ def clip_to_directory(source: str, out_dir: Path, *, count: int = 3, language: s
         try:
             result = _run(source, out, count=count, wanted_language=wanted_language, captions=captions,
                           max_clip_seconds=max_clip_seconds, brand=(brand_name or "").strip(),
-                          watermark=(watermark_text or "").strip(), recent_memes=recent_memes, report=report)
+                          watermark=(watermark_text or "").strip(), recent_memes=recent_memes, report=report,
+                          logo=str(logo_path or "").strip(), custom_memes=custom_memes)
         except (ClipError, Interrupted):
             raise
         except IngestError as exc:
@@ -163,7 +170,7 @@ def clip_to_directory(source: str, out_dir: Path, *, count: int = 3, language: s
 
 def _run(source: str, out: Path, *, count: int, wanted_language: str, captions: bool, max_clip_seconds: int,
          brand: str, watermark: str, recent_memes: Sequence[str],
-         report: Callable[[str, float], None]) -> dict:
+         report: Callable[[str, float], None], logo: str = "", custom_memes: Sequence[str] = ()) -> dict:
     warnings: list[str] = []
 
     def warn(message: str) -> None:
@@ -182,7 +189,8 @@ def _run(source: str, out: Path, *, count: int, wanted_language: str, captions: 
     report("transcribing", 0.15)
     transcript = None
     try:
-        transcript = transcribe(src.path, info, sidecar=False)
+        transcript = transcribe(src.path, info, sidecar=False,
+                                language_hint="" if wanted_language == "auto" else wanted_language)
     except TranscribeError as exc:
         warn(f"transcription failed, so no captions: {exc}")
     except MediaError as exc:
@@ -219,7 +227,10 @@ def _run(source: str, out: Path, *, count: int, wanted_language: str, captions: 
                         url=src.url, source=src.source, source_id=src.source_id, keywords=list(src.keywords),
                         title_from_filename=src.title_from_filename)
     stock = StockSession()
-    mstock = MemeSession(recent={str(k) for k in recent_memes if k})
+    mstock = MemeSession(recent={str(k) for k in recent_memes if k}, custom=custom_candidates(custom_memes))
+    if logo and not Path(logo).is_file():
+        warn("the logo file could not be read, so clips carry no logo")
+        logo = ""
     chosen = moments[:count]
     clips: list[dict] = []
     for number, moment in enumerate(chosen, 1):
@@ -229,7 +240,7 @@ def _run(source: str, out: Path, *, count: int, wanted_language: str, captions: 
         try:
             made = produce_clip(shown, info, signals, moment, words, str(clip_path), timed=timed, language=language,
                                 burned_in=burned_in, stings=stings, stock=stock, mstock=mstock, warn=warn,
-                                track=track, brand=brand, watermark=watermark, max_sec=max_clip_seconds,
+                                track=track, brand=brand, watermark=watermark, logo=logo, max_sec=max_clip_seconds,
                                 captions=captions)
         except Interrupted:
             raise

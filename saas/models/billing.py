@@ -166,18 +166,26 @@ class WebhookEvent(Base):
 
 
 class CreditAccount(Base):
-    """The running balance, one row per user. The ledger explains it; this row enforces it."""
+    """The running balance, one row per user. The ledger explains it; this row enforces it.
+
+    Paid credits are source minutes (`balance`). The one-time free grant is two meters, source minutes
+    and finished shorts, and the free tier ends when either runs out.
+    """
 
     __tablename__ = "credit_accounts"
     __table_args__ = (
         CheckConstraint("balance >= 0", name="ck_credit_balance_nonneg"),
         CheckConstraint("sub_balance >= 0", name="ck_credit_sub_nonneg"),
+        CheckConstraint("free_minutes >= 0", name="ck_credit_free_minutes_nonneg"),
+        CheckConstraint("free_shorts >= 0", name="ck_credit_free_shorts_nonneg"),
     )
 
     user_id: Mapped[str] = mapped_column(String(40), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
     balance: Mapped[int] = mapped_column(Integer, default=0)
     # The part of the balance that came from subscription grants and is subject to the rollover cap.
     sub_balance: Mapped[int] = mapped_column(Integer, default=0)
+    free_minutes: Mapped[int] = mapped_column(Integer, default=0)
+    free_shorts: Mapped[int] = mapped_column(Integer, default=0)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
 
@@ -189,8 +197,10 @@ class CreditEntry(Base):
     # grant | purchase | subscription_grant | reserve | settle | release | refund | expire | admin_adjust |
     # promo | referral
     kind: Mapped[str] = mapped_column(String(24))
-    amount: Mapped[int] = mapped_column(Integer)  # signed
+    amount: Mapped[int] = mapped_column(Integer)  # signed change to paid credits (source minutes)
     balance_after: Mapped[int] = mapped_column(Integer)
+    free_minutes: Mapped[int] = mapped_column(Integer, default=0)  # signed change to the free minutes meter
+    free_shorts: Mapped[int] = mapped_column(Integer, default=0)  # signed change to the free shorts meter
     idempotency_key: Mapped[str] = mapped_column(String(160), unique=True)
     job_id: Mapped[Optional[str]] = mapped_column(String(40), nullable=True, index=True)
     payment_id: Mapped[Optional[str]] = mapped_column(String(40), nullable=True, index=True)
@@ -248,3 +258,24 @@ class Referral(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     rewarded_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime, nullable=True)
 
+
+
+class PendingClaim(Base):
+    """A provider payment we could not match to an account yet (e.g. someone paid on Buy Me a Coffee
+    before signing up, or with another address). Claimed automatically when a user verifies that email;
+    otherwise an admin resolves it."""
+
+    __tablename__ = "billing_pending_claims"
+    __table_args__ = (UniqueConstraint("provider", "external_id", name="uq_claim_provider_external"),)
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("clm_"))
+    provider: Mapped[str] = mapped_column(String(16))
+    external_id: Mapped[str] = mapped_column(String(160))  # stable provider id (payment / membership period)
+    email: Mapped[str] = mapped_column(String(320), index=True)  # normalised
+    event_type: Mapped[str] = mapped_column(String(60))
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)  # the event data, for replaying the claim
+    status: Mapped[str] = mapped_column(String(12), default="pending")  # pending | claimed | unmatched | void
+    reason: Mapped[str] = mapped_column(String(200), default="")
+    claimed_by: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    claimed_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime, nullable=True)

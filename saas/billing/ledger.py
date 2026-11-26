@@ -16,7 +16,13 @@ Invariants
   and its grant are one transaction.
 
 Buckets: `sub_balance` is the part of the balance that came from subscription grants and is subject to
-the rollover cap; it is spent first. Everything else (packs, free, promo, referral) never expires.
+the rollover cap; it is spent first. Everything else (packs, promo, referral) never expires.
+
+Free tier: the one-time free grant is two meters on the account, `free_minutes` (source minutes) and
+`free_shorts` (finished clips). A job is funded entirely by the free meters when both cover it
+(minutes needed and clips requested), otherwise entirely by paid credits; settling a free job charges
+the minutes used and the clips actually produced and returns the rest, so the free tier ends when
+either meter runs out. Ledger rows carry the meter changes in `free_minutes` / `free_shorts`.
 """
 from __future__ import annotations
 
@@ -42,7 +48,8 @@ class InsufficientCredits(Exception):
 
 def ensure_account(db: Session, user_id: str) -> None:
     dialect = db.get_bind().dialect.name
-    values = {"user_id": user_id, "balance": 0, "sub_balance": 0, "updated_at": utcnow()}
+    values = {"user_id": user_id, "balance": 0, "sub_balance": 0, "free_minutes": 0, "free_shorts": 0,
+              "updated_at": utcnow()}
     if dialect == "postgresql":
         stmt = postgresql.insert(CreditAccount).values(**values).on_conflict_do_nothing(index_elements=["user_id"])
     elif dialect == "sqlite":
@@ -60,6 +67,13 @@ def balance(db: Session, user_id: str) -> int:
     return int(row[0]) if row else 0
 
 
+def free_balance(db: Session, user_id: str) -> tuple[int, int]:
+    """(free minutes, free shorts) left from the one-time free grant."""
+    row = db.execute(select(CreditAccount.free_minutes, CreditAccount.free_shorts)
+                     .where(CreditAccount.user_id == user_id)).first()
+    return (int(row[0]), int(row[1])) if row else (0, 0)
+
+
 def _amounts(db: Session, user_id: str) -> tuple[int, int]:
     row = db.execute(select(CreditAccount.balance, CreditAccount.sub_balance)
                      .where(CreditAccount.user_id == user_id)).first()
@@ -72,9 +86,10 @@ def _applied(db: Session, key: str) -> Optional[CreditEntry]:
 
 def _insert(db: Session, user_id: str, *, kind: str, amount: int, key: str, job_id: Optional[str] = None,
             payment_id: Optional[str] = None, actor_id: Optional[str] = None, note: str = "",
-            meta: Optional[dict] = None) -> CreditEntry:
+            meta: Optional[dict] = None, free_minutes: int = 0, free_shorts: int = 0) -> CreditEntry:
     bal, _sub = _amounts(db, user_id)
     entry = CreditEntry(user_id=user_id, kind=kind, amount=amount, balance_after=bal, idempotency_key=key,
+                        free_minutes=free_minutes, free_shorts=free_shorts,
                         job_id=job_id, payment_id=payment_id, actor_id=actor_id, note=note[:300], meta=meta or {},
                         created_at=utcnow())
     db.add(entry)
@@ -99,6 +114,21 @@ def grant(db: Session, user_id: str, amount: int, *, kind: str, idempotency_key:
                        updated_at=utcnow()))
     return _insert(db, user_id, kind=kind, amount=amount, key=idempotency_key, actor_id=actor_id,
                    payment_id=payment_id, note=note, meta={**(meta or {}), "bucket": bucket})
+
+
+def grant_free(db: Session, user_id: str, minutes: int, shorts: int, *, idempotency_key: str,
+               note: str = "Free tier") -> Optional[CreditEntry]:
+    """Fill the free meters (the one-time free tier). None if this key was already applied."""
+    if minutes < 0 or shorts < 0 or (minutes == 0 and shorts == 0):
+        raise ValueError("free grant needs positive meters")
+    if _applied(db, idempotency_key) is not None:
+        return None
+    ensure_account(db, user_id)
+    db.execute(update(CreditAccount).where(CreditAccount.user_id == user_id)
+               .values(free_minutes=CreditAccount.free_minutes + minutes,
+                       free_shorts=CreditAccount.free_shorts + shorts, updated_at=utcnow()))
+    return _insert(db, user_id, kind="grant", amount=0, key=idempotency_key, note=note, free_minutes=minutes,
+                   free_shorts=shorts, meta={"bucket": "free"})
 
 
 def _debit_rows(db: Session, user_id: str, amount: int, *, sub_first: bool) -> Optional[int]:
@@ -157,8 +187,10 @@ def debit(db: Session, user_id: str, amount: int, *, kind: str, idempotency_key:
                    meta={**(meta or {}), "requested": amount, "shortfall": shortfall, "sub": from_sub})
 
 
-def reserve(db: Session, user_id: str, job_id: str, amount: int) -> CreditEntry:
-    """Hold credits for a job. Raises InsufficientCredits. Idempotent per job."""
+def reserve(db: Session, user_id: str, job_id: str, amount: int, *, shorts: int = 0) -> CreditEntry:
+    """Hold `amount` source minutes for a job. With `shorts` (clips requested) the free meters are tried
+    first and fund the whole job if they cover both; otherwise paid credits do. Raises InsufficientCredits.
+    Idempotent per job; `entry.meta["source"]` says which paid for it ("free" | "credits")."""
     if amount <= 0:
         raise ValueError("reserve amount must be positive")
     key = f"job:{job_id}:reserve"
@@ -166,20 +198,47 @@ def reserve(db: Session, user_id: str, job_id: str, amount: int) -> CreditEntry:
     if existing is not None:
         return existing
     ensure_account(db, user_id)
+    if shorts > 0:
+        res = db.execute(update(CreditAccount)
+                         .where(CreditAccount.user_id == user_id, CreditAccount.free_minutes >= amount,
+                                CreditAccount.free_shorts >= shorts)
+                         .values(free_minutes=CreditAccount.free_minutes - amount,
+                                 free_shorts=CreditAccount.free_shorts - shorts, updated_at=utcnow()))
+        if res.rowcount == 1:
+            return _insert(db, user_id, kind="reserve", amount=0, key=key, job_id=job_id, free_minutes=-amount,
+                           free_shorts=-shorts, note="Reserved from the free tier",
+                           meta={"source": "free", "minutes": amount, "shorts": shorts})
     from_sub = _debit_rows(db, user_id, amount, sub_first=True)
     if from_sub is None:
         raise InsufficientCredits(amount, balance(db, user_id))
     return _insert(db, user_id, kind="reserve", amount=-amount, key=key, job_id=job_id,
-                   note="Reserved for a clip job", meta={"sub": from_sub})
+                   note="Reserved for a clip job", meta={"source": "credits", "sub": from_sub})
 
 
-def _finalise(db: Session, job_id: str, charged: Optional[int], *, note: str) -> Optional[CreditEntry]:
+def _finalise_free(db: Session, res: CreditEntry, key: str, charged: Optional[int], shorts: Optional[int],
+                   *, note: str) -> CreditEntry:
+    reserved_m, reserved_s = -int(res.free_minutes), -int(res.free_shorts)
+    charge_m = 0 if charged is None else max(0, min(int(charged), reserved_m))
+    charge_s = 0 if charged is None else max(0, min(reserved_s if shorts is None else int(shorts), reserved_s))
+    back_m, back_s = reserved_m - charge_m, reserved_s - charge_s
+    db.execute(update(CreditAccount).where(CreditAccount.user_id == res.user_id)
+               .values(free_minutes=CreditAccount.free_minutes + back_m,
+                       free_shorts=CreditAccount.free_shorts + back_s, updated_at=utcnow()))
+    return _insert(db, res.user_id, kind="settle" if charged is not None else "release", amount=0, key=key,
+                   job_id=res.job_id, note=note, free_minutes=back_m, free_shorts=back_s,
+                   meta={"source": "free", "reserved": [reserved_m, reserved_s], "charged": [charge_m, charge_s]})
+
+
+def _finalise(db: Session, job_id: str, charged: Optional[int], *, note: str,
+              shorts: Optional[int] = None) -> Optional[CreditEntry]:
     key = f"job:{job_id}:final"
     if _applied(db, key) is not None:
         return None
     res = _applied(db, f"job:{job_id}:reserve")
     if res is None:
         return None
+    if (res.meta or {}).get("source") == "free":
+        return _finalise_free(db, res, key, charged, shorts, note=note)
     reserved = -int(res.amount)
     from_sub = int((res.meta or {}).get("sub", 0))
     charge = 0 if charged is None else max(0, min(int(charged), reserved))
@@ -197,9 +256,10 @@ def _finalise(db: Session, job_id: str, charged: Optional[int], *, note: str) ->
                    job_id=job_id, note=note, meta={"reserved": reserved, "charged": charge})
 
 
-def settle(db: Session, job_id: str, actual: int) -> Optional[CreditEntry]:
-    """Charge `actual` (capped at the reservation) and return the rest. No-op once finalised."""
-    return _finalise(db, job_id, actual, note="Job finished")
+def settle(db: Session, job_id: str, actual: int, *, shorts: Optional[int] = None) -> Optional[CreditEntry]:
+    """Charge `actual` minutes (capped at the reservation) and, for a free-tier job, `shorts` clips;
+    return the rest. No-op once finalised."""
+    return _finalise(db, job_id, actual, note="Job finished", shorts=shorts)
 
 
 def release(db: Session, job_id: str, note: str = "Job did not run to completion") -> Optional[CreditEntry]:
@@ -233,13 +293,18 @@ def entries(db: Session, user_id: str, *, limit: int = 50, before: Optional[str]
 
 
 def public_entry(e: CreditEntry) -> dict:
-    return {"id": e.id, "kind": e.kind, "amount": e.amount, "balance_after": e.balance_after, "note": e.note,
+    return {"id": e.id, "kind": e.kind, "amount": e.amount, "balance_after": e.balance_after,
+            "free_minutes": e.free_minutes, "free_shorts": e.free_shorts, "note": e.note,
             "job_id": e.job_id, "created_at": e.created_at.isoformat()}
 
 
 def audit(db: Session, user_id: str) -> dict:
     """Ledger sum vs account balance (admin consistency check)."""
-    total = db.execute(select(func.coalesce(func.sum(CreditEntry.amount), 0))
-                       .where(CreditEntry.user_id == user_id)).scalar_one()
-    return {"ledger_sum": int(total), "balance": balance(db, user_id)}
+    total, fm, fs = db.execute(select(func.coalesce(func.sum(CreditEntry.amount), 0),
+                                      func.coalesce(func.sum(CreditEntry.free_minutes), 0),
+                                      func.coalesce(func.sum(CreditEntry.free_shorts), 0))
+                               .where(CreditEntry.user_id == user_id)).one()
+    minutes, shorts = free_balance(db, user_id)
+    return {"ledger_sum": int(total), "balance": balance(db, user_id), "free_minutes_sum": int(fm),
+            "free_minutes": minutes, "free_shorts_sum": int(fs), "free_shorts": shorts}
 

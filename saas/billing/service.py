@@ -384,6 +384,18 @@ def grant_due_subscription_credits(db: Session, now: Optional[datetime] = None) 
     return granted
 
 
+def expire_ended_subscriptions(db: Session, now: Optional[datetime] = None) -> int:
+    """End subscriptions cancelled at period end once that period is over."""
+    now = now or utcnow()
+    due = (db.query(Subscription).filter(Subscription.status.in_(("active", "past_due")),
+                                         Subscription.cancel_at_period_end.is_(True),
+                                         Subscription.current_period_end.is_not(None),
+                                         Subscription.current_period_end <= now).limit(500).all())
+    for sub in due:
+        end_subscription(db, sub)
+    return len(due)
+
+
 def end_subscription(db: Session, sub: Subscription, *, status: str = "canceled") -> None:
     sub.status = status
     sub.canceled_at = sub.canceled_at or utcnow()

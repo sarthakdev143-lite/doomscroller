@@ -6,8 +6,8 @@
     <li><a href="#who" data-track="toc-who">Who we are</a></li>
     <li><a href="#collect" data-track="toc-collect">What we collect</a></li>
     <li><a href="#why" data-track="toc-why">Why we use it</a></li>
-    <li><a href="#fraud" data-track="toc-fraud">Fingerprinting and fraud</a></li>
-    <li><a href="#analytics" data-track="toc-analytics">Analytics and replay</a></li>
+    <li><a href="#analytics" data-track="toc-analytics">Analytics and recordings</a></li>
+    <li><a href="#fraud" data-track="toc-fraud">Bots and abuse</a></li>
     <li><a href="#processors" data-track="toc-processors">Who processes it</a></li>
     <li><a href="#transfers" data-track="toc-transfers">International transfers</a></li>
     <li><a href="#retention" data-track="toc-retention">How long we keep it</a></li>
@@ -20,30 +20,27 @@
 {% endblock %}
 
 {% block legal %}
-<p>This policy covers {{ brand_name }}’s website, web app, API and MCP server. It explains what we collect when you
-  visit, join the waitlist, make an account, send us video and pay us.</p>
+<p>This policy covers {{ brand_name }}’s website and waitlist today, and the web app, API and MCP server when they open.
+  It says what we collect, why, and what you can do about it.</p>
 
 <h2 id="who">1. Who we are</h2>
-<p>The controller of your personal data is <span class="todo">[LAWYER REVIEW: legal entity name, registered address, company number]</span>.
+<p>The controller of your personal data is <span class="todo">[LAWYER REVIEW: legal entity or sole trader name, address]</span>.
   Contact us about privacy at <a href="mailto:{{ support_email }}" data-track="privacy-email">{{ support_email }}</a>.
   <span class="todo">[LAWYER REVIEW: data protection officer or EU/UK representative, if required]</span></p>
 
 <h2 id="collect">2. What we collect</h2>
-<h3>You give us</h3>
+<h3>On the website, today</h3>
 <ul>
-  <li><strong>Waitlist:</strong> email address, and optionally what you make and a link to your channel; the referral code you arrived with.</li>
-  <li><strong>Account:</strong> email, name, a password hash (never the password itself), and your Google account ID if you sign in with Google.</li>
-  <li><strong>Your videos:</strong> the links and files you submit, and what we make from them: the audio, the transcript, the clips, and their titles, descriptions and hashtags.</li>
-  <li><strong>Payments:</strong> handled by our payment providers. We receive the payment’s status, amount, currency, country and a reference, not your full card number.</li>
-  <li><strong>Messages:</strong> anything you send to support.</li>
+  <li><strong>Waitlist:</strong> your email address, and if you give them, what you make and a link to your channel; the referral code you arrived with, and the one we give you.</li>
+  <li><strong>Technical data:</strong> your IP address and browser details, used to stop automated sign-ups. <span class="todo">[confirm what the waitlist endpoint stores]</span></li>
+  <li><strong>Analytics, only if you accept:</strong> pages you view, links and buttons you click, how far you scroll, the page that sent you, an approximate location from your IP address, and recordings of clicks and scrolling with every form field hidden. See <a href="#analytics" data-track="privacy-link-analytics">section 4</a>.</li>
 </ul>
-<h3>Collected automatically</h3>
+<h3>In the app, when it opens</h3>
 <ul>
-  <li><strong>Usage:</strong> pages you view, buttons and links you click, how far you scroll, how long sections are on screen, the page that sent you and campaign tags in the link.</li>
-  <li><strong>Session replay:</strong> a recording of how the page responded to you (movements, clicks, scrolling), with every form field masked. See <a href="#analytics" data-track="privacy-link-analytics">section 5</a>.</li>
-  <li><strong>Device and network:</strong> IP address, an approximate location derived from it (country, region, city), browser and operating system, screen size, language and time zone.</li>
-  <li><strong>Device fingerprint:</strong> a one-way hash of technical characteristics of your browser and device. See <a href="#fraud" data-track="privacy-link-fraud">section 4</a>.</li>
-  <li><strong>Security records:</strong> sign-ins, failed sign-ins, rate-limit events and other signs of abuse.</li>
+  <li><strong>Account:</strong> email, name, a password hash (never the password itself), and your Google account ID if you sign in with Google.</li>
+  <li><strong>Your videos:</strong> the links and files you submit, the logos and memes you upload, and what we make from them: the audio, the transcript, the clips, thumbnails, titles, descriptions, hashtags and suggested posting times.</li>
+  <li><strong>Payments:</strong> handled by our payment provider. We receive the payment’s status, amount, currency and a reference, not your card details.</li>
+  <li><strong>Security records:</strong> sign-ins, failed sign-ins and other signs of abuse.</li>
 </ul>
 
 <h2 id="why">3. Why we use it</h2>
@@ -51,90 +48,83 @@
   <table class="table">
     <thead><tr><th scope="col">Purpose</th><th scope="col">Data</th><th scope="col">Legal basis</th></tr></thead>
     <tbody>
-      <tr><td>Run the service: make your clips, keep your account, take payment</td><td>Account, videos, payments</td><td>Contract <span class="todo">[LAWYER REVIEW]</span></td></tr>
       <tr><td>Run the waitlist and send your invite</td><td>Waitlist</td><td>Consent <span class="todo">[LAWYER REVIEW]</span></td></tr>
-      <tr><td>Stop fraud and abuse, including repeat free-credit claims</td><td>Device fingerprint, IP, security records</td><td>Legitimate interests <span class="todo">[LAWYER REVIEW: balancing test]</span></td></tr>
-      <tr><td>Understand and improve the product</td><td>Usage, session replay</td><td>Consent where the law requires it, otherwise legitimate interests <span class="todo">[LAWYER REVIEW]</span></td></tr>
+      <tr><td>Understand which pages work</td><td>Analytics and recordings</td><td>Consent, given with the Accept button</td></tr>
+      <tr><td>Stop bots, fraud and repeat free-tier claims</td><td>Technical data, security records</td><td>Legitimate interests <span class="todo">[LAWYER REVIEW: balancing test]</span></td></tr>
+      <tr><td>Make your clips, keep your account, take payment</td><td>Account, videos, payments</td><td>Contract <span class="todo">[LAWYER REVIEW]</span></td></tr>
       <tr><td>Keep tax and accounting records</td><td>Payments</td><td>Legal obligation <span class="todo">[LAWYER REVIEW]</span></td></tr>
     </tbody>
   </table>
 </div>
 <p>We do not sell your personal data, and we do not use it for advertising.</p>
 
-<h2 id="fraud">4. Device fingerprinting and fraud prevention</h2>
-<p>New accounts get {{ free_credits }} free credits, once per person. To keep that true, and to stop automated
-  sign-ups, we combine a fingerprint of your browser and device with your IP address and its network type
-  (for example, whether it belongs to a data centre or an anonymising network).</p>
+<h2 id="analytics">4. Analytics and recordings</h2>
+<p>We use Google Analytics 4 and Microsoft Clarity, and only after you press Accept on the banner. Until then neither
+  script is loaded, and Google’s consent mode stays set to “denied”.</p>
 <ul>
-  <li>The fingerprint is a hash. We store the hash, not the raw characteristics it was made from.</li>
-  <li>We use it to spot many accounts made from one device or network, and to decide whether free credits are granted. A match may mean an account gets no free credits or is reviewed by a person.</li>
-  <li>We do not use it to follow you across other websites.</li>
-  <li><span class="todo">[LAWYER REVIEW: whether fingerprinting needs consent in each market (ePrivacy), and how to object]</span></li>
+  <li><strong>Google Analytics</strong> counts visits, pages and the buttons people press, so we know which parts of the page help.</li>
+  <li><strong>Microsoft Clarity</strong> records how pages respond to clicks and scrolling, and builds heatmaps. Form fields are masked, so what you type is never recorded.</li>
+  <li>Both set cookies, listed on the <a href="/cookies" data-track="privacy-link-cookies">cookie page</a>. Your choice is stored in your browser, and you can change it at any time with <button type="button" class="link-btn" data-consent-open data-track="privacy-cookie-settings">Cookie settings</button>.</li>
 </ul>
+<p><span class="todo">[LAWYER REVIEW: consent wording per region; Google and Microsoft as processors or independent controllers]</span></p>
 
-<h2 id="analytics">5. Analytics and session replay</h2>
-<p>Our analytics and session replay run on our own servers. We set a first-party visitor cookie
-  (<code>vid</code>) so visits from one browser can be counted together, and, if you later sign up, linked to
-  your account so we can see which pages helped.</p>
-<p>Session replay records the page’s changes as you use it, not a video of your screen. Every input field is
-  masked before anything leaves your browser, and fields we mark as sensitive are never recorded.</p>
-<p>Where the law requires consent, analytics and replay wait until you allow them. You can change your choice at
-  any time with <button type="button" class="link-btn" data-consent-open data-track="privacy-cookie-settings">Cookie settings</button>.
-  <span class="todo">[LAWYER REVIEW: consent model per region]</span></p>
+<h2 id="fraud">5. Bots and abuse</h2>
+<p>Forms on the website may be protected by Cloudflare Turnstile, which checks that a person, not a script, is
+  submitting them. It looks at technical signals from your browser and does not set advertising cookies.</p>
+<p>In the app, the free tier is once per person. To keep it that way we will combine signals such as your IP address,
+  network type and technical characteristics of your browser and device, stored as a one-way hash. A match may mean
+  an account gets no free tier or is reviewed by a person. We do not use these signals to follow you across other
+  websites. <span class="todo">[LAWYER REVIEW: whether device signals need consent in each market]</span></p>
 
 <h2 id="processors">6. Who processes it for us</h2>
-<p>These companies process data on our behalf, only to provide the service:</p>
 <div class="table-wrap">
   <table class="table">
     <thead><tr><th scope="col">Provider</th><th scope="col">What for</th><th scope="col">What they receive</th></tr></thead>
     <tbody>
-      <tr><td>Deepgram</td><td>Speech to text</td><td>The audio of videos you submit</td></tr>
-      <tr><td>Sarvam AI</td><td>Hindi speech to text</td><td>The audio of videos detected as Hindi</td></tr>
+      <tr><td>Cloudflare</td><td>Hosting the website and waitlist, bot checks (Turnstile)</td><td>IP address, browser signals, waitlist entries</td></tr>
+      <tr><td>Google (Analytics 4)</td><td>Visit statistics, after you accept</td><td>Usage events, IP address, browser details</td></tr>
+      <tr><td>Microsoft (Clarity)</td><td>Recordings and heatmaps, after you accept</td><td>Masked page recordings, IP address, browser details</td></tr>
+      <tr><td><span class="todo">[payment provider, named at launch]</span></td><td>Payments, in the app</td><td>What you enter at checkout</td></tr>
+      <tr><td>Deepgram, Sarvam AI</td><td>Speech to text, in the app</td><td>The audio of videos you submit</td></tr>
       <tr><td>AI model providers <span class="todo">[confirm list]</span></td><td>Choosing moments, writing titles, judging footage</td><td>Transcript text and still frames from your video</td></tr>
-      <tr><td>Pexels, Pixabay</td><td>Stock B-roll</td><td>Search words taken from the transcript, never your video</td></tr>
-      <tr><td>Tenor, Giphy</td><td>Reaction memes</td><td>Search words only</td></tr>
-      <tr><td>Stripe, Razorpay</td><td>Payments</td><td>What you enter at checkout</td></tr>
-      <tr><td>Cloudflare</td><td>Bot checks (Turnstile) and network protection</td><td>IP address and browser signals</td></tr>
-      <tr><td><span class="todo">[email provider]</span></td><td>Sending email</td><td>Your email address and the message</td></tr>
-      <tr><td><span class="todo">[hosting provider]</span></td><td>Servers and storage</td><td>Everything above, encrypted at rest <span class="todo">[confirm]</span></td></tr>
+      <tr><td>Pexels, Pixabay, Tenor, Giphy</td><td>Stock footage and reaction GIFs</td><td>Search words only, never your video</td></tr>
+      <tr><td><span class="todo">[email provider]</span></td><td>Sending your invite</td><td>Your email address and the message</td></tr>
     </tbody>
   </table>
 </div>
-<p class="review-note" role="note">[LAWYER REVIEW: confirm every provider, sign data processing agreements, and check each provider’s terms on training with customer data.]</p>
+<p class="review-note" role="note">[LAWYER REVIEW: confirm every provider, data processing terms, and each provider’s terms on training with customer data.]</p>
 
 <h2 id="transfers">7. International transfers</h2>
-<p><span class="todo">[LAWYER REVIEW: where data is stored, which providers are outside your country, and the transfer safeguards used (for example, standard contractual clauses).]</span></p>
+<p><span class="todo">[LAWYER REVIEW: where data is stored, which providers are outside your country, and the transfer safeguards used.]</span></p>
 
 <h2 id="retention">8. How long we keep it</h2>
 <div class="table-wrap">
   <table class="table">
     <thead><tr><th scope="col">Data</th><th scope="col">Kept for</th></tr></thead>
     <tbody>
-      <tr><td>Finished clips and uploads</td><td>{{ retention_days }} days after they are made, then deleted</td></tr>
-      <tr><td>Working files (downloaded source, extracted audio)</td><td>Deleted when the job ends <span class="todo">[confirm]</span></td></tr>
-      <tr><td>Account data</td><td>While your account is open, then <span class="todo">[LAWYER REVIEW: period]</span></td></tr>
-      <tr><td>Waitlist entries</td><td>Until you get an invite or ask us to delete it, at most <span class="todo">[LAWYER REVIEW: period]</span></td></tr>
-      <tr><td>Analytics events and session replays</td><td><span class="todo">[LAWYER REVIEW: period]</span></td></tr>
-      <tr><td>Fingerprints and security records</td><td><span class="todo">[LAWYER REVIEW: period]</span></td></tr>
-      <tr><td>Payment records</td><td>As long as tax law requires <span class="todo">[LAWYER REVIEW: period per country]</span></td></tr>
+      <tr><td>Waitlist entries</td><td>Until you get your invite or ask us to delete them, at most <span class="todo">[LAWYER REVIEW: period]</span></td></tr>
+      <tr><td>Analytics and recordings</td><td>Google Analytics: <span class="todo">[2 or 14 months, as set]</span>. Clarity: <span class="todo">[as set by Microsoft]</span></td></tr>
+      <tr><td>Finished clips and uploads (app)</td><td>{{ retention_days }} days after they are made, then deleted</td></tr>
+      <tr><td>Account data (app)</td><td>While your account is open, then <span class="todo">[LAWYER REVIEW: period]</span></td></tr>
+      <tr><td>Payment records (app)</td><td>As long as tax law requires <span class="todo">[LAWYER REVIEW: period per country]</span></td></tr>
     </tbody>
   </table>
 </div>
 
 <h2 id="rights">9. Your rights</h2>
-<p>Depending on where you live, you can ask to see, correct, export or delete your data, object to or restrict how
-  we use it, and withdraw consent. Signed-in users can download a copy of their data and delete their account from
-  Settings. Anyone can email <a href="mailto:{{ support_email }}" data-track="privacy-rights-email">{{ support_email }}</a>.
-  You can also complain to your data protection authority.</p>
+<p>Depending on where you live, you can ask to see, correct, export or delete your data, object to or restrict how we
+  use it, and withdraw consent. Email <a href="mailto:{{ support_email }}" data-track="privacy-rights-email">{{ support_email }}</a>
+  from the address you signed up with. You can also complain to your data protection authority.</p>
 <p><span class="todo">[LAWYER REVIEW: GDPR / UK GDPR, India DPDP Act 2023, California CCPA/CPRA wording and response times]</span></p>
 
 <h2 id="children">10. Children</h2>
 <p>The service is not for children. <span class="todo">[LAWYER REVIEW: minimum age per market]</span></p>
 
 <h2 id="security">11. Security</h2>
-<p>Passwords are stored as Argon2 hashes. Sessions use secure, HTTP-only cookies. You can turn on two-factor
-  authentication. Admin access needs two-factor authentication. <span class="todo">[LAWYER REVIEW: breach notification commitments]</span></p>
+<p>The website is served over HTTPS only. In the app, passwords are stored as Argon2 hashes, sessions use secure,
+  HTTP-only cookies, and you can turn on two-factor authentication. <span class="todo">[LAWYER REVIEW: breach notification commitments]</span></p>
 
 <h2 id="changes">12. Changes to this policy</h2>
-<p>If we change this policy in a way that matters, we will email account holders before the change takes effect.</p>
+<p>If we change this policy in a way that matters, we will update the date at the top and, for waitlist members and
+  account holders, email you before the change takes effect.</p>
 {% endblock %}

@@ -21,6 +21,7 @@ def stripe(core, monkeypatch):
     """Stripe configured, its HTTP API mocked. Returns the list of captured requests."""
     from saas.billing import providers
 
+    monkeypatch.setattr(core, "payment_provider_default", "stripe")  # dormant unless selected
     monkeypatch.setattr(core, "stripe_secret_key", "sk_test_123")
     monkeypatch.setattr(core, "stripe_webhook_secret", WHSEC)
     calls: list[httpx.Request] = []
@@ -315,6 +316,7 @@ def test_partial_refund_and_chargeback(client, core, saas_db, stripe):
 def razorpay(core, monkeypatch):
     from saas.billing import providers
 
+    monkeypatch.setattr(core, "payment_provider_inr", "razorpay")  # dormant unless selected
     monkeypatch.setattr(core, "razorpay_key_id", "rzp_test_key")
     monkeypatch.setattr(core, "razorpay_key_secret", "rzp_test_secret")
     monkeypatch.setattr(core, "razorpay_webhook_secret", RZP_SECRET)

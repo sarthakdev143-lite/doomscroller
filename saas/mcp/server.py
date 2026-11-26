@@ -205,6 +205,23 @@ def build_server() -> MCPServer:
                     "thumbnail_url": thumb, "expires_at": exp}
         return await _call(ctx, ("clips:read",), fn)
 
+    @server.tool(description=(
+        "Everything needed to post one clip by hand (we never post for the user): per-platform copy already cut "
+        "to each platform's limits (YouTube Shorts title/description/tags, Instagram Reels caption, TikTok caption), "
+        "suggested posting times per platform in the user's time zone, and signed links to the MP4, thumbnail and "
+        "a zip of it all."), annotations=read_only)
+    async def get_publish_package(
+        ctx: Context,
+        clip_id: Annotated[str, Field(description="Clip id (clp_...).", max_length=40)],
+        timezone: Annotated[Optional[str], Field(description="IANA time zone, e.g. 'Asia/Kolkata'. Defaults to "
+                                                             "the account's.", max_length=64)] = None,
+    ) -> str:
+        def fn(db, user, _key):
+            from ..jobs import package
+
+            return package.build(service.get_clip(db, user.id, clip_id), timezone or user.timezone, signed=True)
+        return await _call(ctx, ("clips:read",), fn)
+
     @server.tool(description="Cancel a queued or running job. Reserved credits are returned in full. Finished jobs "
                              "are unaffected.",
                  annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True,

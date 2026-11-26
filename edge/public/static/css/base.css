@@ -1,0 +1,336 @@
+/* Reset, type, layout primitives. Components live in components.css, page layouts in landing.css/pages.css. */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  scroll-padding-top: calc(var(--header-h) + var(--space-4));
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-stretch: var(--stretch-text);
+  font-size: var(--text-md);
+  line-height: var(--leading-text);
+  font-kerning: normal;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  display: flex;
+  flex-direction: column;
+}
+
+main {
+  flex: 1 0 auto;
+}
+
+::selection {
+  background: var(--selection);
+  color: var(--accent-ink);
+}
+
+img,
+svg,
+video {
+  display: block;
+  max-width: 100%;
+}
+
+input,
+button,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+h1,
+h2,
+h3,
+h4,
+p,
+figure,
+blockquote,
+dl,
+dd,
+ol,
+ul {
+  margin: 0;
+}
+
+ol[role="list"],
+ul[role="list"] {
+  list-style: none;
+  padding: 0;
+}
+
+/* ---- headings ------------------------------------------------------------------------------- */
+
+.display,
+h1 {
+  font-size: var(--text-3xl);
+  font-weight: 800;
+  font-stretch: var(--stretch-display);
+  line-height: var(--leading-tight);
+  letter-spacing: var(--tracking-display);
+  text-wrap: balance;
+}
+
+h2,
+.h2 {
+  font-size: var(--text-2xl);
+  font-weight: 780;
+  font-stretch: var(--stretch-heading);
+  line-height: var(--leading-heading);
+  letter-spacing: var(--tracking-display);
+  text-wrap: balance;
+}
+
+h3,
+.h3 {
+  font-size: var(--text-xl);
+  font-weight: 680;
+  font-stretch: var(--stretch-heading);
+  line-height: var(--leading-snug);
+  text-wrap: balance;
+}
+
+h4,
+.h4 {
+  font-size: var(--text-md);
+  font-weight: 680;
+  line-height: var(--leading-snug);
+}
+
+.lede {
+  font-size: var(--text-lg);
+  line-height: 1.5;
+  color: var(--ink-2);
+  max-width: var(--measure);
+  text-wrap: pretty;
+}
+
+p {
+  text-wrap: pretty;
+}
+
+.muted {
+  color: var(--ink-3);
+}
+
+.small {
+  font-size: var(--text-sm);
+}
+
+.mono,
+code,
+kbd,
+samp {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  font-stretch: 100%;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+.deva,
+:lang(hi) {
+  font-family: var(--font-deva);
+  font-stretch: 100%;
+}
+
+/* The hook box: the same yellow box the renderer puts behind a clip's opening title. */
+.mark {
+  background: var(--accent);
+  color: var(--accent-ink);
+  padding: 0 0.12em;
+  margin: 0 -0.12em; /* the box bleeds, the letters stay on the text edge */
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+/* ---- links and focus ------------------------------------------------------------------------- */
+
+a {
+  color: inherit;
+  text-decoration-line: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.2em;
+  text-decoration-color: var(--rule-strong);
+  transition: text-decoration-color var(--dur-1) linear;
+}
+
+a:hover {
+  text-decoration-color: currentColor;
+  text-decoration-thickness: 2px;
+}
+
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 3px;
+  border-radius: var(--radius-1);
+}
+
+.on-dark :focus-visible {
+  outline-color: var(--focus-on-dark);
+}
+
+.skip-link {
+  position: absolute;
+  left: var(--space-4);
+  top: -100px;
+  z-index: var(--z-toast);
+  background: var(--ink);
+  color: var(--paper);
+  padding: var(--space-3) var(--space-4);
+  text-decoration: none;
+  font-weight: 650;
+}
+
+.skip-link:focus {
+  top: var(--space-3);
+}
+
+.visually-hidden {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---- layout ---------------------------------------------------------------------------------- */
+
+.wrap {
+  width: 100%;
+  max-width: var(--page-max);
+  margin-inline: auto;
+  padding-inline: var(--gutter);
+}
+
+/* The editorial grid: a rubric column on the left, the story on the right. Collapses below 900px. */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  column-gap: var(--gutter);
+}
+
+.section {
+  padding-block: var(--section);
+}
+
+.section + .section {
+  border-top: var(--border);
+}
+
+.rubric {
+  grid-column: 1 / span 3;
+  padding-top: var(--space-3);
+  border-top: 2px solid var(--ink);
+  align-self: start;
+  font-size: var(--text-sm);
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.rubric .mono {
+  display: block;
+  font-weight: 400;
+  color: var(--ink-3);
+  margin-top: var(--space-1);
+}
+
+.story {
+  grid-column: 4 / -1;
+  min-width: 0;
+}
+
+@media (max-width: 900px) {
+  .grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .rubric,
+  .story {
+    grid-column: 1 / -1;
+  }
+
+  .rubric {
+    margin-bottom: var(--space-5);
+  }
+}
+
+.stack > * + * {
+  margin-top: var(--stack, var(--space-4));
+}
+
+.cluster {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--cluster, var(--space-3));
+}
+
+/* Long-form text: legal pages, docs. */
+.prose {
+  max-width: 42rem;
+  font-size: var(--text-md);
+}
+
+.prose > * + * {
+  margin-top: 1em;
+}
+
+.prose h2 {
+  font-size: var(--text-xl);
+  font-stretch: var(--stretch-heading);
+  margin-top: 2em;
+  padding-top: var(--space-4);
+  border-top: var(--border);
+}
+
+.prose h3 {
+  font-size: var(--text-lg);
+  margin-top: 1.8em;
+}
+
+.prose ul,
+.prose ol {
+  padding-left: 1.25em;
+}
+
+.prose li + li {
+  margin-top: 0.4em;
+}
+
+.prose table {
+  width: 100%;
+}

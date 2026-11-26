@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}{{ brand_name }}{% endblock %}</title>
-  <meta name="description" content="{% block description %}Turn a long video into finished vertical Shorts: cut on sentence boundaries, captioned word by word, framed on the speaker. Priced per minute of source video.{% endblock %}">
+  <meta name="description" content="{% block description %}Turn a long video into publish-ready Shorts: cut on sentence boundaries, captioned word by word, framed on the speaker, with title, description, hashtags and thumbnail. Priced per minute of source video.{% endblock %}">
   <link rel="canonical" href="{{ canonical }}">
   {% block robots %}{% endblock %}
   <meta name="theme-color" content="#f4f4f0">
@@ -37,7 +37,14 @@
   {% block styles %}<link rel="stylesheet" href="{{ asset('/static/css/pages.css') }}">{% endblock %}
   {% block head_extra %}{% endblock %}
 
+  {% if static_export %}
+  {# The static site (Cloudflare Pages): analytics load only after the visitor accepts, via consent.js. #}
+  {% if analytics.ga4 %}<meta name="ds:ga4" content="{{ analytics.ga4 }}">{% endif %}
+  {% if analytics.clarity %}<meta name="ds:clarity" content="{{ analytics.clarity }}">{% endif %}
+  {% if analytics.ga4 or analytics.clarity %}<script type="module" src="{{ asset('/static/js/consent.js') }}"></script>{% endif %}
+  {% else %}
   <script src="{{ asset('/ts/t.js') }}" defer></script>
+  {% endif %}
   <script type="module" src="{{ asset('/static/js/site.js') }}"></script>
   {% block scripts %}{% endblock %}
 </head>
@@ -49,5 +56,17 @@
   </main>
   {% include "partials/footer.html" %}
   <div class="toasts" data-toasts role="status" aria-live="polite"></div>
+  {% if static_export and (analytics.ga4 or analytics.clarity) %}
+  <div class="consent" data-consent role="region" aria-labelledby="consent-title" hidden>
+    <p class="consent__title" id="consent-title">Analytics, only if you say yes</p>
+    <p class="consent__text">We would like to use {% if analytics.ga4 %}Google Analytics{% endif %}{% if analytics.ga4 and analytics.clarity %} and {% endif %}{% if analytics.clarity %}Microsoft Clarity{% endif %}
+      to see how this site is used{% if analytics.clarity %}, including recordings of clicks and scrolling with every form field hidden{% endif %}.
+      Nothing loads until you choose. <a href="/privacy#analytics" data-track="consent-privacy">Privacy</a> &middot; <a href="/cookies" data-track="consent-cookies">Cookies</a></p>
+    <div class="consent__actions">
+      <button class="btn" type="button" data-consent-choice="denied" data-track="consent-reject">Reject</button>
+      <button class="btn" type="button" data-consent-choice="granted" data-track="consent-accept">Accept</button>
+    </div>
+  </div>
+  {% endif %}
 </body>
 </html>

@@ -167,15 +167,29 @@ def mark_verified(db: Session, user: User) -> None:
         user.role = "admin"
     db.flush()
     grant_free_credits(db, user)
+    from ..billing import bmc
+
+    bmc.claim_pending(db, user)  # purchases made on Buy Me a Coffee before this email was verified
+
+
+def free_tier_allowance(db: Session) -> tuple[int, int]:
+    """(source minutes, shorts) of the one-time free tier, from the free plan row (admin-editable)."""
+    from ..billing import catalog
+
+    catalog.ensure_seeded(db)
+    plan = catalog.get_plan(db, "free")
+    feats = (plan.features or {}) if plan else {}
+    return int(feats.get("free_grant_minutes", 10)), int(feats.get("free_grant_shorts", 10))
 
 
 def grant_free_credits(db: Session, user: User) -> int:
-    """Once per verified identity: the stored verdict must allow it, and neither this inbox (canonical)
-    nor this device fingerprint may have had a grant before. Returns credits granted."""
+    """The free tier (N source minutes AND M shorts, whichever runs out first), once per verified
+    identity: the stored verdict must allow it, and neither this inbox (canonical) nor this device
+    fingerprint may have had a grant before. Returns the minutes granted (0 when withheld)."""
     from ..billing import ledger
 
-    amount = settings.signup_free_credits
-    if amount <= 0 or user.free_credits_granted_at is not None or user.email_verified_at is None:
+    amount, shorts = free_tier_allowance(db)
+    if amount <= 0 or shorts <= 0 or user.free_credits_granted_at is not None or user.email_verified_at is None:
         return 0
     verdict = user.signup_risk or {}
     reason = None
@@ -189,8 +203,8 @@ def grant_free_credits(db: Session, user: User) -> int:
         user.flags = {**(user.flags or {}), "free_credits_withheld": reason}
         db.flush()
         return 0
-    entry = ledger.grant(db, user.id, amount, kind="grant", idempotency_key=f"free:{_hash_canonical(user.email)}",
-                         note="Free credits")
+    entry = ledger.grant_free(db, user.id, amount, shorts, idempotency_key=f"free:{_hash_canonical(user.email)}",
+                              note=f"Free tier: {amount} minutes or {shorts} shorts")
     if entry is None:
         user.flags = {**(user.flags or {}), "free_credits_withheld": "inbox_already_granted"}
         db.flush()
@@ -322,6 +336,7 @@ def public_user(db: Session, user: User) -> dict:
 
     google = db.query(Identity.id).filter(Identity.user_id == user.id, Identity.provider == "google").first() is not None
     plan = plan_of(db, user)
+    free_minutes, free_shorts = ledger.free_balance(db, user.id)
     return {
         "id": user.id,
         "email": user.email,
@@ -332,6 +347,8 @@ def public_user(db: Session, user: User) -> dict:
         "plan": {"slug": plan.slug if plan else user.plan_slug, "name": plan.name if plan else user.plan_slug,
                  "features": (plan.features if plan else {})},
         "balance": ledger.balance(db, user.id),
+        "free": {"minutes": free_minutes, "shorts": free_shorts},
+        "timezone": user.timezone or "UTC",
         "mfa_enabled": has_totp(db, user.id),
         "has_password": bool(user.password_hash),
         "google_linked": google,

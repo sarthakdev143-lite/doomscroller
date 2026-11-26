@@ -36,6 +36,9 @@ SEED_CATALOG = WEB_DIR.parent / "billing" / "seed_catalog.json"
 # Job option limits from the jobs contract (POST /api/jobs options): clips 1-20, 15-90 s per clip.
 MAX_CLIPS = 20
 CLIP_SECONDS = (15, 90)
+# The owner's free tier (2026-11-27): whichever of the two runs out first.
+FREE_SHORTS = 10
+FREE_MINUTES = 10
 
 _SOURCE_NAMES = {
     "youtube.com": "YouTube", "youtu.be": "YouTube", "m.youtube.com": "YouTube", "vimeo.com": "Vimeo",
@@ -248,17 +251,57 @@ def _credit_examples() -> list[dict]:
     return rows
 
 
-def _base_context(request: Request, **extra: Any) -> dict:
+def common_context(path: str, public_url: str) -> dict:
+    """What every page template reads, for a request or for the static export."""
     now = utcnow()
-    ctx = {
-        "request": request,
-        "canonical": f"{settings.public_url.rstrip('/')}{request.url.path}",
+    return {
+        "canonical": f"{public_url.rstrip('/')}{path}",
         "year": now.year,
         "now_ms": int(now.timestamp() * 1000),  # the form's render time; waitlist.js refreshes it on load
-        "free_credits": settings.signup_free_credits,
+        "free_shorts": FREE_SHORTS,
+        "free_minutes": FREE_MINUTES,
         "retention_days": settings.clip_retention_days,
         "is_dev": not settings.is_prod,
+        "static_export": False,
+        "analytics": {},
     }
+
+
+def landing_context(pricing: dict | None, ref: str = "") -> dict:
+    max_upload_gb = settings.max_upload_mb / 1024
+    return {
+        "pricing": pricing,
+        "demo": _demo(),
+        "credit_examples": _credit_examples(),
+        "sources": _source_names(),
+        "max_upload": f"{max_upload_gb:g} GB" if max_upload_gb >= 1 else f"{settings.max_upload_mb} MB",
+        "max_clips": MAX_CLIPS,
+        "clip_seconds": CLIP_SECONDS,
+        "ref": ref[:64],
+    }
+
+
+def pricing_context(pricing: dict | None) -> dict:
+    return {"pricing": pricing, "credit_examples": _credit_examples(), "max_clips": MAX_CLIPS, "ref": ""}
+
+
+LEGAL = {
+    "privacy": ("Privacy policy", "What we collect, why, who processes it, how long we keep it, and your rights."),
+    "terms": ("Terms of service", "The agreement between you and us when you use the service."),
+    "refunds": ("Refund policy", "When payments can be refunded, and how."),
+    "cookies": ("Cookie policy", "Every cookie and similar technology we use, and how to change your choice."),
+}
+
+
+def legal_context(slug: str) -> dict:
+    title, description = LEGAL[slug]
+    return {"page_title": title, "page_description": description, "legal_slug": slug, "legal_pages": LEGAL,
+            "session_days": settings.session_days}
+
+
+def _base_context(request: Request, **extra: Any) -> dict:
+    ctx = common_context(request.url.path, settings.public_url)
+    ctx["request"] = request
     ctx.update(extra)
     return ctx
 
@@ -271,19 +314,13 @@ def _render(request: Request, template: str, status_code: int = 200, **extra: An
 
 @router.get("/")
 def landing(request: Request, db: Session = Depends(get_db)):
-    max_upload_gb = settings.max_upload_mb / 1024
-    return _render(
-        request,
-        "landing.html",
-        pricing=load_pricing(db, client_country(request)),
-        demo=_demo(),
-        credit_examples=_credit_examples(),
-        sources=_source_names(),
-        max_upload=f"{max_upload_gb:g} GB" if max_upload_gb >= 1 else f"{settings.max_upload_mb} MB",
-        max_clips=MAX_CLIPS,
-        clip_seconds=CLIP_SECONDS,
-        ref=(request.query_params.get("ref") or "")[:64],
-    )
+    pricing = load_pricing(db, client_country(request))
+    return _render(request, "landing.html", **landing_context(pricing, request.query_params.get("ref") or ""))
+
+
+@router.get("/pricing")
+def pricing_page(request: Request, db: Session = Depends(get_db)):
+    return _render(request, "pricing.html", **pricing_context(load_pricing(db, client_country(request))))
 
 
 @router.get("/waitlist/thanks")
@@ -291,26 +328,15 @@ def waitlist_thanks(request: Request):
     return _render(request, "waitlist_thanks.html", code=(request.query_params.get("code") or "")[:64])
 
 
-_LEGAL = {
-    "privacy": ("Privacy policy", "What we collect, why, who processes it, how long we keep it, and your rights."),
-    "terms": ("Terms of service", "The agreement between you and us when you use the service."),
-    "refunds": ("Refund policy", "When credits and subscriptions can be refunded, and how."),
-    "cookies": ("Cookie policy", "Every cookie and similar technology we use, and how to change your choice."),
-}
-
-
 def _legal_page(slug: str):
-    title, description = _LEGAL[slug]
-
     def page(request: Request):
-        return _render(request, f"legal/{slug}.html", page_title=title, page_description=description,
-                       legal_slug=slug, legal_pages=_LEGAL, session_days=settings.session_days)
+        return _render(request, f"legal/{slug}.html", **legal_context(slug))
 
     page.__name__ = f"legal_{slug}"
     return page
 
 
-for _slug in _LEGAL:
+for _slug in LEGAL:
     router.add_api_route(f"/{_slug}", _legal_page(_slug), methods=["GET"])
 
 
@@ -330,11 +356,10 @@ def favicon():
                         headers={"Cache-Control": "public, max-age=604800"})
 
 
-@router.get("/site.webmanifest")
-def manifest():
-    body = {
-        "name": settings.brand_name,
-        "short_name": settings.brand_name,
+def manifest_body(brand: str) -> dict:
+    return {
+        "name": brand,
+        "short_name": brand,
         "start_url": "/",
         "display": "standalone",
         "background_color": "#f4f4f0",
@@ -346,13 +371,16 @@ def manifest():
              "purpose": "maskable"},
         ],
     }
-    return Response(json.dumps(body), media_type="application/manifest+json")
 
 
-@router.get("/robots.txt")
-def robots():
-    base = settings.public_url.rstrip("/")
-    body = "\n".join([
+@router.get("/site.webmanifest")
+def manifest():
+    return Response(json.dumps(manifest_body(settings.brand_name)), media_type="application/manifest+json")
+
+
+def robots_txt(public_url: str) -> str:
+    base = public_url.rstrip("/")
+    return "\n".join([
         "User-agent: *",
         "Disallow: /app",
         "Disallow: /api/",
@@ -361,19 +389,27 @@ def robots():
         f"Sitemap: {base}/sitemap.xml",
         "",
     ])
-    return PlainTextResponse(body)
+
+
+@router.get("/robots.txt")
+def robots():
+    return PlainTextResponse(robots_txt(settings.public_url))
+
+
+def sitemap_xml(public_url: str, paths: list[str]) -> str:
+    base = public_url.rstrip("/")
+    urls = "".join(f"<url><loc>{base}{path}</loc></url>" for path in paths)
+    return f'<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{urls}</urlset>'
 
 
 @router.get("/sitemap.xml")
 def sitemap():
-    base = settings.public_url.rstrip("/")
-    urls = "".join(f"<url><loc>{base}{path}</loc></url>" for path in ["/", *(f"/{s}" for s in _LEGAL)])
-    xml = f'<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{urls}</urlset>'
+    xml = sitemap_xml(settings.public_url, ["/", "/pricing", *(f"/{s}" for s in LEGAL)])
     return Response(xml, media_type="application/xml")
 
 
 @lru_cache(maxsize=4)
-def _og_png(brand: str) -> bytes:
+def og_png(brand: str) -> bytes:
     """The 1200x630 share card, drawn from the configured brand name so a rename needs no new asset."""
     from PIL import Image, ImageDraw, ImageFont  # lazy: only social crawlers ask for this
 
@@ -387,7 +423,7 @@ def _og_png(brand: str) -> bytes:
 
     img = Image.new("RGB", (1200, 630), "#f4f4f0")
     draw = ImageDraw.Draw(img)
-    draw.text((72, 64), brand.upper(), font=face(44, 850, 68), fill="#111111")
+    draw.text((72, 64), brand, font=face(44, 850, 68), fill="#111111")
     headline = face(112, 800, 72)
     draw.text((72, 170), "Shorts that end", font=headline, fill="#111111")
     second = "where the sentence ends."
@@ -407,5 +443,5 @@ def _og_png(brand: str) -> bytes:
 
 @router.get("/og.png")
 def og_image():
-    return Response(_og_png(settings.brand_name), media_type="image/png",
+    return Response(og_png(settings.brand_name), media_type="image/png",
                     headers={"Cache-Control": "public, max-age=86400"})

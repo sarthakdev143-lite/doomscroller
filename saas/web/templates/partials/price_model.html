@@ -1,0 +1,54 @@
+{# Prices when a catalog is available (the Python app); otherwise the announcement. Then the rounding rule. #}
+{% if pricing %}
+<div class="price-tables">
+  {% if pricing.packs %}
+  <div class="price-table">
+    <h3 class="h4">Pay as you go</h3>
+    <div class="table-wrap">
+      <table class="table">
+        <thead><tr><th scope="col">Minutes</th><th scope="col" class="num">Price</th><th scope="col" class="num">Per minute</th></tr></thead>
+        <tbody>
+          {% for p in pricing.packs %}
+          <tr><th scope="row">{{ p.name }}{% if p.description %}<span class="table__note">{{ p.description }}</span>{% endif %}</th>
+            <td class="num">{{ p.price_label }}</td><td class="num">{{ p.per_minute or "" }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+  {% if pricing.plans %}
+  <div class="price-table">
+    <h3 class="h4">Monthly</h3>
+    <div class="table-wrap">
+      <table class="table">
+        <thead><tr><th scope="col">Plan</th><th scope="col" class="num">Minutes a month</th><th scope="col" class="num">Price</th><th scope="col" class="num">Per minute</th></tr></thead>
+        <tbody>
+          {% for p in pricing.plans %}
+          <tr><th scope="row">{{ p.name }}{% if p.description %}<span class="table__note">{{ p.description }}</span>{% endif %}</th>
+            <td class="num">{{ p.credits }}</td><td class="num">{{ p.price_label }}</td><td class="num">{{ p.per_minute or "" }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% set rollover = pricing.plans|map(attribute="rollover_months")|max %}
+    {% if rollover %}<p class="price-table__foot">Unused plan minutes carry over for {{ rollover }} month{{ "s" if rollover != 1 }}.</p>{% endif %}
+  </div>
+  {% endif %}
+</div>
+{% else %}
+<div class="price-pending">
+  <p class="price-pending__title">Prices are announced at launch.</p>
+  <p class="muted">Everyone on the waitlist hears them first.</p>
+</div>
+{% endif %}
+
+<table class="receipt">
+  <caption>How minutes are counted</caption>
+  <thead><tr><th scope="col">Source video</th><th scope="col" class="num">Length</th><th scope="col" class="num">Minutes charged</th></tr></thead>
+  <tbody>
+    {% for row in credit_examples %}
+    <tr><th scope="row">{{ row.label }}</th><td class="num">{{ row.length }}</td><td class="num"><strong>{{ row.credits }}</strong></td></tr>
+    {% endfor %}
+  </tbody>
+</table>

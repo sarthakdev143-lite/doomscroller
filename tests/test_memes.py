@@ -44,12 +44,14 @@ def test_provider_none_without_keys(monkeypatch):
     assert memes.available() is True
 
 
-def test_provider_prefers_tenor(monkeypatch):
+def test_provider_prefers_giphy_now_that_tenor_is_shut_down(monkeypatch):
     monkeypatch.setattr(settings, "tenor_api_key", "t")
     monkeypatch.setattr(settings, "giphy_api_key", "g")
     monkeypatch.setattr(settings, "clip_memes", True)
-    assert memes.provider() == memes.TENOR
+    assert memes.provider() == memes.GIPHY
     assert memes.available() is True
+    monkeypatch.setattr(settings, "giphy_api_key", "")
+    assert memes.provider() == memes.TENOR
 
 
 def test_provider_giphy_fallback(monkeypatch):
@@ -709,6 +711,26 @@ def test_wave23_local_pack_ignores_api_cache_and_attach_memes_rotates_reaction_q
     hi_prompt = moments._speech_prompt(sents, 1, "Test", sounds=["aayein-meme", "vine-boom-sound"], language="hi")
     assert "vine-boom-sound" in hi_prompt
     assert "hindi" in hi_prompt.lower()
+
+
+def test_fetch_memes_warms_every_mood_pool(tmp_path, monkeypatch):
+    from app.clipper import reactions
+    from scripts import fetch_memes
+
+    asked = []
+
+    def search(query):
+        asked.append(query)
+        return [memes.Candidate(f"giphy-{query[:4]}{i}", f"https://m/{i}.mp4", "T", "", memes.GIPHY) for i in range(9)]
+
+    monkeypatch.setattr(memes, "search", search)
+    monkeypatch.setattr(memes, "_local_copy", lambda c, s: tmp_path / f"{c.meme_id}.mp4")
+    ready = fetch_memes.warm_moods(["laugh", "fail"], per_query=2)
+    assert asked == list(reactions.QUERIES["laugh"]) + list(reactions.QUERIES["fail"])
+    assert ready == {"laugh": 2 * len(reactions.QUERIES["laugh"]), "fail": 2 * len(reactions.QUERIES["fail"])}
+    assert fetch_memes._mood_list("all") == list(reactions.MOODS)
+    with pytest.raises(ValueError, match="unknown mood"):
+        fetch_memes._mood_list("sarcasm")
 
 
 

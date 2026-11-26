@@ -1,4 +1,5 @@
-"""Payment provider adapters over raw HTTP (httpx, no SDKs): Stripe, Razorpay and a dev provider.
+"""Payment provider adapters: Buy Me a Coffee (primary), Stripe and Razorpay over raw HTTP (httpx, no
+SDKs; dormant until selected and configured), a Dodo placeholder, and a dev provider.
 
 A provider only creates hosted checkouts, cancels subscriptions and verifies webhook signatures.
 What a payment is worth is never taken from the provider's redirect or the client: fulfilment
@@ -222,6 +223,55 @@ class RazorpayProvider:
             raise _upstream_error("razorpay", r)
 
 
+# ---- Buy Me a Coffee (primary) -------------------------------------------------------------------
+
+def verify_bmc_signature(payload: bytes, header: Optional[str], secret: str) -> bool:
+    """`x-signature-sha256`: hex HMAC-SHA256 of the raw body keyed with the webhook's signing secret."""
+    if not header or not secret:
+        return False
+    expected = hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, header.strip().lower())
+
+
+class BmcProvider:
+    """Buy Me a Coffee: memberships for plans, shop extras for credit packs. There is no API checkout:
+    we send the customer to the configured page (per item via Price.provider_refs["bmc_url"], else
+    SAAS_BMC_PAGE_URL) and the webhook matches the payment back by supporter email."""
+
+    name = "bmc"
+
+    def configured(self) -> bool:
+        return bool(settings.bmc_page_url)
+
+    def create_checkout(self, req: CheckoutRequest) -> CheckoutSession:
+        refs = req.provider_refs or {}
+        url = str(refs.get("bmc_url") or settings.bmc_page_url or "")
+        if not url.startswith("https://"):
+            raise ApiError(503, "payments_unavailable", "Payments are not available right now.")
+        return CheckoutSession(redirect_url=url, provider_order_id=f"bmc_intent_{req.payment_id}")
+
+    def cancel_subscription(self, provider_subscription_id: str) -> None:
+        # Members cancel on Buy Me a Coffee itself; its membership.cancelled webhook updates us.
+        raise ApiError(409, "cancel_on_provider",
+                       "Cancel your membership on Buy Me a Coffee (Settings > Memberships). We'll update your plan "
+                       "automatically.")
+
+
+class DodoProvider:
+    """Dodo Payments (merchant of record) - dormant placeholder until the account exists."""
+
+    name = "dodo"
+
+    def configured(self) -> bool:
+        return False
+
+    def create_checkout(self, req: CheckoutRequest) -> CheckoutSession:
+        raise ApiError(503, "payments_unavailable", "Payments are not available right now.")
+
+    def cancel_subscription(self, provider_subscription_id: str) -> None:
+        raise ApiError(503, "payments_unavailable", "Payments are not available right now.")
+
+
 # ---- dev ------------------------------------------------------------------------------------------
 
 def dev_signature(payment_id: str) -> str:
@@ -245,7 +295,8 @@ class DevProvider:
         return None
 
 
-_PROVIDERS: dict[str, Provider] = {"stripe": StripeProvider(), "razorpay": RazorpayProvider(), "dev": DevProvider()}
+_PROVIDERS: dict[str, Provider] = {"bmc": BmcProvider(), "stripe": StripeProvider(), "razorpay": RazorpayProvider(),
+                                   "dodo": DodoProvider(), "dev": DevProvider()}
 
 
 def get(name: str) -> Provider:

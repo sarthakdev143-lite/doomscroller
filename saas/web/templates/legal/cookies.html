@@ -4,8 +4,8 @@
   <p>On this page</p>
   <ol role="list">
     <li><a href="#what" data-track="toc-what">What they are</a></li>
-    <li><a href="#list" data-track="toc-list">The ones we use</a></li>
-    <li><a href="#similar" data-track="toc-similar">Similar technologies</a></li>
+    <li><a href="#site" data-track="toc-site">On this website</a></li>
+    <li><a href="#app" data-track="toc-app">In the app</a></li>
     <li><a href="#choices" data-track="toc-choices">Your choices</a></li>
   </ol>
 </nav>
@@ -13,35 +13,40 @@
 
 {% block legal %}
 <h2 id="what">1. What cookies are</h2>
-<p>Cookies are small files a website stores in your browser. Local storage is a similar store that stays on your
-  device. We use both, only first-party, except for the bot check on forms.</p>
+<p>Cookies are small files a website stores in your browser. Local storage and session storage are similar stores that
+  stay on your device. Analytics cookies are set only after you press Accept.</p>
 
-<h2 id="list">2. The ones we use</h2>
+<h2 id="site">2. On this website</h2>
+<div class="table-wrap">
+  <table class="table">
+    <thead><tr><th scope="col">Name</th><th scope="col">Set by</th><th scope="col">Purpose</th><th scope="col">Lasts</th></tr></thead>
+    <tbody>
+      <tr><td><code>ds_consent</code> (local storage)</td><td>Us</td><td>Remembers whether you accepted or rejected analytics</td><td>Until you clear it</td></tr>
+      <tr><td><code>ds_ref</code> (local storage)</td><td>Us</td><td>The referral code you arrived with, for the waitlist form</td><td>Until you clear it</td></tr>
+      <tr><td><code>ds_waitlist</code> (session storage)</td><td>Us</td><td>Your waitlist result, for the page after you join</td><td>Until you close the tab</td></tr>
+      <tr><td><code>_ga</code>, <code>_ga_*</code></td><td>Google Analytics, after Accept</td><td>Tells visits apart, counts pages and clicks</td><td>Up to 2 years</td></tr>
+      <tr><td><code>_clck</code>, <code>_clsk</code></td><td>Microsoft Clarity, after Accept</td><td>Groups page views into a visit for recordings and heatmaps</td><td>1 year and 1 day</td></tr>
+      <tr><td><code>MUID</code>, <code>CLID</code>, <code>ANONCHK</code>, <code>SM</code>, <code>MR</code> <span class="todo">[confirm]</span></td><td>Microsoft, after Accept</td><td>Used by Clarity to identify the browser across Microsoft sites</td><td>Up to 1 year</td></tr>
+      <tr><td><code>cf_clearance</code> <span class="todo">[confirm]</span></td><td>Cloudflare Turnstile</td><td>Tells people from bots on forms</td><td><span class="todo">[confirm]</span></td></tr>
+    </tbody>
+  </table>
+</div>
+<p>We use no advertising cookies.</p>
+
+<h2 id="app">3. In the app, when it opens</h2>
 <div class="table-wrap">
   <table class="table">
     <thead><tr><th scope="col">Name</th><th scope="col">Purpose</th><th scope="col">Type</th><th scope="col">Lasts</th></tr></thead>
     <tbody>
       <tr><td><code>sid</code></td><td>Keeps you signed in</td><td>Strictly necessary</td><td>{{ session_days }} days</td></tr>
       <tr><td><code>csrf</code></td><td>Stops other sites submitting forms as you</td><td>Strictly necessary</td><td><span class="todo">[confirm]</span></td></tr>
-      <tr><td><code>vid</code></td><td>A random visitor ID for analytics and fraud prevention</td><td>Analytics / security <span class="todo">[LAWYER REVIEW]</span></td><td><span class="todo">[confirm]</span></td></tr>
-      <tr><td><span class="todo">[consent cookie name]</span></td><td>Remembers your cookie choice</td><td>Strictly necessary</td><td><span class="todo">[confirm]</span></td></tr>
-      <tr><td>Cloudflare Turnstile <span class="todo">[confirm names]</span></td><td>Tells people from bots on forms</td><td>Strictly necessary, third party</td><td><span class="todo">[confirm]</span></td></tr>
-      <tr><td><code>ds_ref</code> (local storage)</td><td>The referral code you arrived with, for the waitlist form</td><td>Functional</td><td>Until you clear it</td></tr>
-      <tr><td><code>ds_waitlist</code> (session storage)</td><td>Your waitlist result, for the page after you join</td><td>Functional</td><td>Until you close the tab</td></tr>
     </tbody>
   </table>
 </div>
-<p>We use no advertising cookies and no third-party analytics.</p>
-
-<h2 id="similar">3. Similar technologies</h2>
-<ul>
-  <li><strong>Device fingerprinting.</strong> A one-way hash of browser and device characteristics, used to prevent fraud and repeat free-credit claims. See <a href="/privacy#fraud" data-track="cookies-link-fraud">Privacy, section 4</a>.</li>
-  <li><strong>Session replay.</strong> A recording of how pages responded to you, with form fields masked. See <a href="/privacy#analytics" data-track="cookies-link-analytics">Privacy, section 5</a>.</li>
-</ul>
 
 <h2 id="choices">4. Your choices</h2>
 <p>Change what you allow at any time:</p>
 <p><button type="button" class="btn btn--ghost" data-consent-open data-track="cookies-open-settings">Cookie settings</button></p>
-<p>You can also clear or block cookies in your browser. Blocking strictly necessary cookies stops sign-in from working.
-  <span class="todo">[LAWYER REVIEW: consent wording per region]</span></p>
+<p>Rejecting analytics stops Google Analytics and Clarity from loading on your next page. You can also clear or block
+  cookies in your browser. <span class="todo">[LAWYER REVIEW: consent wording per region]</span></p>
 {% endblock %}

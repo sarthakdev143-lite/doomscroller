@@ -8,8 +8,9 @@ import pytest
 
 from core_fixtures import core, csrf, login, make_user  # noqa: F401
 
-MP4 = b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom" + b"\x00" * 8192
-MKV = b"\x1a\x45\xdf\xa3" + b"\x00" * 8192
+MP4 = b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom" + b"\x00" * 700_000  # plausible for 300 s
+MKV = b"\x1a\x45\xdf\xa3" + b"\x00" * 700_000
+TINY_MP4 = MP4[:8192]
 
 
 @pytest.fixture()
@@ -31,7 +32,7 @@ def test_good_upload_and_job_uses_stored_duration(client, core, saas_db, probe_o
     from saas.billing import ledger
     from saas.models.jobs import Upload
 
-    u = make_user(saas_db, "up@example.com", credits=20)
+    u = make_user(saas_db, "up@example.com", credits=20, plan="pro")
     h = login(client, "up@example.com")
     r = _upload(client, h)
     assert r.status_code == 201, r.text
@@ -78,10 +79,10 @@ def test_oversize_upload_is_cut_off(client, core, saas_db, probe_ok, monkeypatch
 def test_duration_caps_and_implausible_media(client, core, saas_db, probe_ok):
     make_user(saas_db, "dur@example.com")
     h = login(client, "dur@example.com")
-    probe_ok["duration_s"] = 31 * 60.0  # free plan allows 30 minutes
+    probe_ok["duration_s"] = 11 * 60.0  # the free plan allows 10 minutes
     r = _upload(client, h)
     assert r.status_code == 400 and r.json()["error"] == "source_too_long"
-    probe_ok["duration_s"] = 25 * 60.0  # 8 KB file "lasting" 25 minutes: a crafted header
+    probe_ok["duration_s"] = 9 * 60.0  # an 8 KB file "lasting" 9 minutes: a crafted header
     r = _upload(client, h, data=TINY_MP4)
     assert r.status_code == 415 and r.json()["error"] == "implausible_media"
     probe_ok.update(duration_s=100.0, has_video=False)
@@ -95,7 +96,7 @@ def test_upload_needs_multipart_and_file_field(client, core, saas_db, probe_ok):
     h = login(client, "mp@example.com")
     r = client.post("/api/uploads", content=MP4, headers={**h, "Content-Type": "video/mp4"})
     assert r.status_code == 415 and r.json()["error"] == "multipart_required"
-    r = client.post("/api/uploads", files={"other": ("a.mp4", MP4, "video/mp4")}, headers=h)
+    r = client.post("/api/uploads", files={"other": ("a.mp4", TINY_MP4, "video/mp4")}, headers=h)
     assert r.status_code == 400 and r.json()["error"] == "file_required"
 
 
@@ -116,6 +117,7 @@ def test_unverified_users_cannot_upload(client, core, saas_db, probe_ok):
     assert _upload(client, h).json()["error"] == "email_unverified"
 
 
+@pytest.mark.slow
 @pytest.mark.skipif(not (shutil.which("ffmpeg") and shutil.which("ffprobe")), reason="ffmpeg not installed")
 def test_real_ffprobe_accepts_video_and_refuses_playlists(tmp_path, core):
     from saas.auth.errors import ApiError

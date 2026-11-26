@@ -67,6 +67,7 @@ class User(Base):
     role: Mapped[str] = mapped_column(String(16), default="user")  # user | admin
     status: Mapped[str] = mapped_column(String(16), default="active")  # active | suspended | banned | deleted
     plan_slug: Mapped[str] = mapped_column(String(40), default="free")
+    timezone: Mapped[str] = mapped_column(String(64), default="UTC")  # IANA name; posting-time suggestions
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
     last_login_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime, nullable=True)

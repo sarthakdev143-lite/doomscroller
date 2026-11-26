@@ -162,8 +162,10 @@ def public_catalog(db: Session, country: Optional[str]) -> dict:
                       "price": _price_view(pr),
                       "per_credit_minor": round(pr.amount_minor / max(1, k.credits), 2)})
     free = get_plan(db, "free")
+    free_feats = {**DEFAULT_FEATURES, **((free.features or {}) if free else {})}
     return {"currency": currency, "tier": tier, "country": (country or "").upper() or None,
             "credit_unit": "1 credit = 1 minute of source video (rounded up per job)",
-            "free": {"credits": settings.signup_free_credits,
-                     "features": {**DEFAULT_FEATURES, **((free.features or {}) if free else {})}},
+            "free": {"minutes": int(free_feats.get("free_grant_minutes", 10)),
+                     "shorts": int(free_feats.get("free_grant_shorts", 10)),
+                     "rule": "once per verified person; ends when either runs out", "features": free_feats},
             "plans": plans, "packs": packs}

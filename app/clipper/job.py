@@ -252,6 +252,16 @@ def _store_audio_qa(video_id: str, path: str) -> None:
         log.warning("clipper: could not store audio QA for %s: %s", video_id, exc)
 
 
+def _language_hint(channel_id: Optional[str]) -> str:
+    """"hi" for a channel that only posts Hindi, else "" (the transcriber detects the language itself)."""
+    channel = _channel_for(channel_id)
+    if channel is None:
+        return ""
+    from app.growth import channels
+
+    return "hi" if channels.target_languages(channel) == ["hi"] else ""
+
+
 def _trending_stings(language: str) -> dict:
     if not settings.clip_sfx:
         return {}
@@ -314,8 +324,10 @@ def clip_source(source: str | SourceVideo, *, count: Optional[int] = None,
 
         report("transcribing")
         transcript = None
+        # A Hindi-only channel goes straight to Sarvam, skipping a Deepgram pass that would be thrown away.
+        hint = _language_hint(channel_id)
         try:
-            transcript = transcribe(src.path, info)
+            transcript = transcribe(src.path, info, language_hint=hint) if hint else transcribe(src.path, info)
         except TranscribeError as exc:
             err_text = scrub_secrets(str(exc))
             # Unattended, cutting a talking video without its words would post the outage.

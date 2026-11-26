@@ -19,10 +19,12 @@ from ..db import get_db
 from ..models.billing import Payment, Subscription
 from ..models.core import User
 from . import catalog, ledger, service
+from .bmc import router as bmc_router
 from .webhooks import router as webhooks_router
 
 router = APIRouter(route_class=ApiRoute)
 router.include_router(webhooks_router)
+router.include_router(bmc_router)
 
 
 class CheckoutIn(BaseModel):

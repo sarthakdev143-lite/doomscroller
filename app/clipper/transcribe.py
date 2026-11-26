@@ -233,12 +233,37 @@ def _write_cache(paths: tuple[str, str], fingerprint: dict, transcript: Transcri
             log.warning("transcribe: could not cache at %s: %s", path, exc)
 
 
-def transcribe(video_path: str, info: MediaInfo, *, sidecar: bool = True) -> Optional[Transcript]:
+# Below this length a full Deepgram pass is cheap enough that sampling the language first saves nothing.
+_SAMPLE_MIN_SEC = 180.0
+_SAMPLE_SEC = 30.0
+
+
+def _sample_language(audio_path: str, duration: float) -> str:
+    """The language of 30 seconds from the middle, via Deepgram. "" when it cannot tell."""
+    sample = os.path.join(os.path.dirname(audio_path), "sample.mp3")
+    try:
+        run_ffmpeg(["-ss", f"{max(0.0, duration / 2 - _SAMPLE_SEC / 2):.3f}", "-t", f"{_SAMPLE_SEC:.3f}",
+                    "-i", audio_path, "-c", "copy", sample])
+        payload = _request(sample)
+        metering.record("stt", provider="deepgram", model=settings.deepgram_model, audio_seconds=_SAMPLE_SEC)
+        return parse_response(payload, _SAMPLE_SEC).language.lower()[:2]
+    except Exception as exc:  # the full pass still runs, so a failed sample only costs the saving
+        log.info("transcribe: no language from the sample (%s)", type(exc).__name__)
+        return ""
+
+
+def transcribe(video_path: str, info: MediaInfo, *, sidecar: bool = True, language_hint: str = "") -> Optional[Transcript]:
     """Return a transcript, or None when there is no audio or no API key.
 
     ``sidecar=False`` keeps the cache under content/transcripts only, never beside the video: a caller
     that must write nothing outside its own directory (the SaaS seam) points content/ there.
+
+    Hindi is captioned by Sarvam, and a full Deepgram pass over Hindi audio is paid for and thrown away.
+    So when ``language_hint`` says Hindi, or a 30-second Deepgram sample from the middle hears Hindi,
+    Sarvam goes first and the full Deepgram pass only runs if Sarvam fails.
     """
+    from . import whisper_stt
+
     if not info.has_audio or not math.isfinite(info.duration) or info.duration <= 0:
         return None
     # Taken first, so a file replaced during the request is not stamped as current.
@@ -250,27 +275,45 @@ def transcribe(video_path: str, info: MediaInfo, *, sidecar: bool = True) -> Opt
         cached = _load_cache(cache, fingerprint, info.duration)
         if cached is not None:
             return cached
-    if not (settings.deepgram_api_key or "").strip():
+    deepgram = bool((settings.deepgram_api_key or "").strip())
+    whisper = whisper_stt.available()
+    has_sarvam = bool((settings.sarvam_api_key or "").strip())
+    hint = str(language_hint or "").strip().lower()[:2]
+    if not (deepgram or whisper or (has_sarvam and hint == "hi")):
         log.warning("DEEPGRAM_API_KEY not set; treating this video as no-speech")
         return None
+    from . import sarvam
+
     with tempfile.TemporaryDirectory(prefix="clipper-audio-", ignore_cleanup_errors=True) as tmp:
         audio_path = os.path.join(tmp, "audio.mp3")
         with metering.timed("render", stage="extract", output_seconds=round(info.duration, 2)):
             run_ffmpeg(["-i", video_path, "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000",
                         "-b:a", "48k", audio_path])
-        payload = _request(audio_path)
-        metering.record("stt", provider="deepgram", model=settings.deepgram_model,
-                        audio_seconds=round(info.duration, 2))
-        try:
-            transcript = parse_response(payload, info.duration)
-        except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
-            raise TranscribeError(f"unexpected Deepgram reply: {exc!r}") from exc
-        # Deepgram heard Hindi, which it does not caption well. Sarvam does — and the Devanagari font
-        # renders it. Only Hindi: the installed font is Devanagari, so other Indic scripts stay on the
-        # motion path rather than dropping to empty boxes. Any Sarvam failure keeps the Deepgram result.
-        if (settings.sarvam_api_key and not transcript.is_english_speech
+        transcript: Optional[Transcript] = None
+        tried_sarvam = False
+        if has_sarvam and hint != "en":
+            if not hint and deepgram and info.duration > _SAMPLE_MIN_SEC:
+                hint = _sample_language(audio_path, info.duration)
+            if hint == "hi":
+                tried_sarvam = True
+                transcript = sarvam.transcribe(audio_path, info.duration, language_code="hi-IN")
+        if transcript is None and whisper:
+            transcript = whisper_stt.transcribe(audio_path, info.duration)
+        if transcript is None:
+            if not deepgram:
+                return None
+            payload = _request(audio_path)
+            metering.record("stt", provider="deepgram", model=settings.deepgram_model,
+                            audio_seconds=round(info.duration, 2))
+            try:
+                transcript = parse_response(payload, info.duration)
+            except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
+                raise TranscribeError(f"unexpected Deepgram reply: {exc!r}") from exc
+        # Deepgram (or Whisper) heard Hindi, which it does not caption well. Sarvam does — and the Devanagari
+        # font renders it. Only Hindi: the installed font is Devanagari, so other Indic scripts stay on the
+        # motion path rather than dropping to empty boxes. Any Sarvam failure keeps the first result.
+        if (has_sarvam and not tried_sarvam and transcript.engine != "sarvam" and not transcript.is_english_speech
                 and transcript.language.lower().startswith("hi")):
-            from . import sarvam
             hindi = sarvam.transcribe(audio_path, info.duration, language_code="hi-IN")
             if hindi is not None:
                 transcript = hindi

@@ -1,0 +1,173 @@
+/*
+ * Design tokens. Every customer page and the admin panel read these; nothing else hardcodes a colour,
+ * size or duration.
+ *
+ * The palette is the clip's own: #FFE500 is the caption highlight and progress bar the renderer burns
+ * into every Short (app/clipper/captions.py, render.py), #111111 is the hook text on it. The site wears
+ * the product's colours instead of inventing a brand palette.
+ *
+ * Contrast (WCAG 2.x, measured, asserted in tests/saas/test_web_pages.py):
+ *   ink on paper 17.1, ink-2 on paper 8.8, ink-3 on paper 5.8, danger on paper 6.0, ok on paper 5.9,
+ *   ink on accent 14.8, night-text on night 16.7, night-muted on night 7.7, field border on paper 3.1.
+ *   The accent is never text on paper (1.2:1): it is a fill under ink, or a mark on dark.
+ */
+
+@font-face {
+  font-family: "Archivo";
+  src: url("/static/fonts/archivo-latin-wdth-normal.woff2") format("woff2-variations"),
+       url("/static/fonts/archivo-latin-wdth-normal.woff2") format("woff2");
+  font-weight: 100 900;
+  font-stretch: 62% 125%;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308,
+    U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  src: url("/static/fonts/ibm-plex-mono-latin-400-normal.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308,
+    U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  src: url("/static/fonts/ibm-plex-mono-latin-500-normal.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308,
+    U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* Fetched only when Devanagari is on screen. It is the family the clipper renders Hindi captions in. */
+@font-face {
+  font-family: "Noto Sans Devanagari";
+  src: url("/static/fonts/noto-sans-devanagari-devanagari-wght-normal.woff2") format("woff2-variations"),
+       url("/static/fonts/noto-sans-devanagari-devanagari-wght-normal.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0900-097F, U+1CD0-1CF9, U+200C-200D, U+20A8, U+20B9, U+20F0, U+25CC, U+A830-A839,
+    U+A8E0-A8FF, U+11B00-11B09;
+}
+
+:root {
+  /* ---- colour: light paper, one accent ---------------------------------------------------- */
+  --paper: #f4f4f0;
+  --surface: #ffffff;
+  --surface-sunk: #ebebe5;
+  --ink: #111111;
+  --ink-2: #45453f;
+  --ink-3: #5f5f58;
+  --rule: #d4d4cc;
+  --rule-strong: #8c8c84; /* field borders: 3:1 against paper */
+  --accent: #ffe500; /* caption yellow */
+  --accent-ink: #111111;
+  --accent-wash: #fff6b0;
+  --danger: #b42318;
+  --danger-wash: #fbe9e7;
+  --ok: #1f6b3a;
+  --ok-wash: #e4f1e8;
+
+  /* dark objects on the page: the clip, code, the footer */
+  --night: #141413;
+  --night-2: #1e1e1c;
+  --night-3: #2b2b28;
+  --night-rule: #3a3a36;
+  --night-text: #f4f4f0;
+  --night-muted: #a8a89f;
+
+  --focus: #111111;
+  --focus-on-dark: #ffe500;
+  --selection: #ffe500;
+
+  /* ---- type ------------------------------------------------------------------------------ */
+  --font-sans: "Archivo", "Arial Narrow", "Helvetica Neue", Arial, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --font-deva: "Noto Sans Devanagari", "Nirmala UI", "Mangal", sans-serif;
+
+  /* width axis: display type is set condensed, text at its natural width */
+  --stretch-display: 72%;
+  --stretch-heading: 82%;
+  --stretch-text: 100%;
+
+  /* fluid scale, 360px -> 1440px */
+  --text-xs: 0.8125rem;                                  /* 13 */
+  --text-sm: 0.9375rem;                                  /* 15 */
+  --text-md: 1.0625rem;                                  /* 17 */
+  --text-lg: clamp(1.125rem, 1.05rem + 0.35vw, 1.3125rem); /* 18 -> 21 */
+  --text-xl: clamp(1.375rem, 1.2rem + 0.8vw, 1.875rem);  /* 22 -> 30 */
+  --text-2xl: clamp(2rem, 1.55rem + 2.1vw, 3.5rem);      /* 32 -> 56 */
+  --text-3xl: clamp(2.75rem, 1.9rem + 4.2vw, 6.25rem);   /* 44 -> 100 */
+  --text-num: clamp(4rem, 2.6rem + 6.5vw, 9rem);         /* big figures: queue position */
+
+  --leading-tight: 0.92;
+  --leading-heading: 1.02;
+  --leading-snug: 1.3;
+  --leading-text: 1.55;
+
+  --tracking-display: -0.012em;
+  --tracking-caps: 0.06em;
+
+  /* ---- space: 4px base ------------------------------------------------------------------- */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+  --space-8: 4rem;
+  --space-9: 6rem;
+  --section: clamp(3rem, 2rem + 3.5vw, 5.5rem); /* the one vertical rhythm: each seam is twice this */
+  --gutter: clamp(1rem, 0.5rem + 2.2vw, 2.5rem);
+  --page-max: 88rem;
+  --measure: 38rem;
+
+  /* ---- shape ----------------------------------------------------------------------------- */
+  --radius-1: 3px;
+  --radius-2: 6px;
+  --radius-3: 10px;
+  --radius-pill: 999px;
+  --border: 1px solid var(--rule);
+  --border-strong: 1px solid var(--ink);
+
+  --shadow-1: 0 1px 0 rgba(17, 17, 17, 0.06), 0 1px 2px rgba(17, 17, 17, 0.06);
+  --shadow-2: 0 2px 4px rgba(17, 17, 17, 0.06), 0 8px 24px rgba(17, 17, 17, 0.08);
+  --shadow-3: 0 12px 48px rgba(17, 17, 17, 0.22);
+
+  /* ---- motion ---------------------------------------------------------------------------- */
+  --ease-out: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --ease-in-out: cubic-bezier(0.6, 0, 0.3, 1);
+  --dur-1: 90ms;
+  --dur-2: 160ms;
+  --dur-3: 280ms;
+  --dur-4: 520ms;
+
+  /* ---- layers ---------------------------------------------------------------------------- */
+  --z-base: 0;
+  --z-raised: 10;
+  --z-header: 100;
+  --z-overlay: 400;
+  --z-modal: 500;
+  --z-toast: 600;
+
+  --tap: 44px;
+  --header-h: 64px;
+
+  color-scheme: light;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-1: 0ms;
+    --dur-2: 0ms;
+    --dur-3: 0ms;
+    --dur-4: 0ms;
+  }
+}

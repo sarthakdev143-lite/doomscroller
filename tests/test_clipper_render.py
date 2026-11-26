@@ -408,7 +408,7 @@ def test_quiet_recording_keeps_its_voice_above_the_effects(tmp_path):
     assert voice > impact
 
 
-def test_punch_leaves_the_picture_undimmed_and_free_of_text(tmp_path):
+def test_punch_leaves_the_picture_undimmed_unflashed_and_free_of_text(tmp_path):
     source = tmp_path / "gray.mp4"
     subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
                     "-i", "color=c=gray:s=540x960:r=30:d=14", "-f", "lavfi", "-i", "sine=frequency=300:duration=14",
@@ -430,7 +430,8 @@ def test_punch_leaves_the_picture_undimmed_and_free_of_text(tmp_path):
     during, before = frame_at(when + 0.5), frame_at(when - 0.5)
     assert _yellow_graphic_pixels(during) == 0
     assert abs(float(during[500:950].mean()) - float(before[500:950].mean())) < 3
-    assert frame_at(when + 0.02)[500:950].mean() > before[500:950].mean() + 20, "the flash is still there"
+    # No white flash either: the frame right on the punch is as bright as the one before it.
+    assert abs(float(frame_at(when + 0.02)[500:950].mean()) - float(before[500:950].mean())) < 6, "a wash is back"
 
 
 def test_landscape_stock_clip_is_cropped_to_fill_the_frame(tmp_path):
@@ -680,3 +681,52 @@ def test_mix_is_stereo_and_keeps_a_stereo_bed_width(landscape, tmp_path):
     # The music sits below the voice and is ducked, so the side is quiet in absolute terms; what matters is
     # that a stereo bed produces far more side energy than a mono one, i.e. width is preserved not collapsed.
     assert _side_energy_db(str(st)) - _side_energy_db(str(mo)) > 25.0
+
+
+def test_stat_and_card_leave_the_picture_unwashed_and_a_meme_and_logo_render(tmp_path):
+    """The graphics that used to fill or dim the frame, a meme in the band and a customer logo, through real ffmpeg."""
+    from app.clipper.edit import CARD, STAT, MemeOverlay, Reaction
+    from app.clipper.memes import MemeClip
+    from PIL import Image
+    source = tmp_path / "gray.mp4"
+    subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+                    "-i", "color=c=gray:s=1280x720:r=30:d=16", "-f", "lavfi", "-i", "sine=frequency=300:duration=16",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", str(source)],
+                   check=True, capture_output=True)
+    meme = tmp_path / "meme.mp4"
+    subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+                    "-i", "color=c=red:s=320x180:r=25:d=2", "-c:v", "libx264", "-preset", "ultrafast",
+                    "-pix_fmt", "yuv420p", str(meme)], check=True, capture_output=True)
+    logo = tmp_path / "logo.png"
+    Image.new("RGBA", (400, 100), (0, 255, 0, 255)).save(logo)
+    info = probe(str(source))
+    words = [Word("word", 1.0 + i * 0.4, 1.35 + i * 0.4, 0.99) for i in range(30)]
+    edit = EditPlan(words=words, segments=timeline.edit_segments(words, list(range(30)), 0.12), speed=1.0,
+                    beats=[Beat(words[8].start, "40%", STAT), Beat(words[18].start, "BIG TURN", CARD)],
+                    meme_overlays=[MemeOverlay(words[24].start, 1.5, MemeClip("m", str(meme), "T", "Giphy"), sound="impact")])
+    out = tmp_path / "out.mp4"
+    plan = render_moment(str(source), info, analyse(str(source), info), Moment(1.0, 13.0, kind="speech"), words,
+                         str(out), edit=edit, logo=str(logo), watermark="made with clipper")
+    assert plan.logo and plan.memes
+
+    def frame_at(seconds):
+        raw = read_ffmpeg(["-ss", f"{seconds:.3f}", "-i", str(out), "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+        return np.frombuffer(raw, np.uint8).reshape(1920, 1080, 3).astype(int)
+
+    stat_at, card_at = edit.to_output(words[8].start), edit.to_output(words[18].start)
+    calm = frame_at(stat_at - 0.8)
+    for when in (stat_at + 0.6, card_at + 0.4):
+        frame = frame_at(when)
+        # Outside the text in the middle, the picture is untouched: no full-frame yellow, white or black wash.
+        for band in (frame[700:760, 40:140], frame[1100:1160, 900:1040]):
+            assert abs(band.mean() - calm[700:760, 40:140].mean()) < 8
+        yellowish = ((frame[..., 0] > 190) & (frame[..., 1] > 170) & (frame[..., 2] < 90)).mean()
+        assert yellowish < 0.15
+    meme_at = edit.to_output(words[24].start) + 0.5
+    frame = frame_at(meme_at)
+    top = (1920 - plan.picture_height) // 2
+    red = (frame[..., 0] > 180) & (frame[..., 1] < 80) & (frame[..., 2] < 80)
+    rows = np.flatnonzero(red.any(axis=1))
+    assert rows.size and rows.max() < top, "the meme sits in the band above the picture, off the speaker"
+    green = (frame[..., 1] > 180) & (frame[..., 0] < 80) & (frame[..., 2] < 80)
+    assert 2000 < green.sum() < 220 * 88 + 500, "the logo is small"

@@ -228,18 +228,31 @@ class Settings(BaseSettings):
     clip_font: str = ""
     clip_ai_timeout_sec: int = 240
     # Where the clipper's AI calls go. "cli" (default) uses the local OpenCode CLI with the Claude CLI as the
-    # fallback, on whatever accounts they are logged in to. "api" calls the Anthropic Messages API over HTTPS
-    # with ANTHROPIC_API_KEY, for hosts with no logged-in CLI (the SaaS); usage is metered per call.
+    # fallback, on whatever accounts they are logged in to. "api" calls an HTTP API instead, for hosts with no
+    # logged-in CLI (the SaaS); usage is metered per call.
     clip_ai_backend: str = "cli"
+    # With the api backend: "anthropic" (Messages API) or "openai_compatible" (any /chat/completions endpoint,
+    # e.g. Gemini https://generativelanguage.googleapis.com/v1beta/openai or Groq https://api.groq.com/openai/v1).
+    clip_ai_api_provider: str = "anthropic"
     anthropic_api_key: str = ""
-    clip_ai_api_model: str = "claude-opus-5-5"
+    # The key for openai_compatible (and, when set, for anthropic in place of ANTHROPIC_API_KEY).
+    clip_ai_api_key: str = ""
+    # Empty means claude-opus-5-5 for anthropic; openai_compatible needs one named.
+    clip_ai_api_model: str = ""
     # Must accept images (stock-shot judging, frame strips). Empty means clip_ai_api_model.
     clip_ai_api_vision_model: str = ""
-    # low | medium | high | xhigh | max; empty leaves the model's own default.
+    # Anthropic only: low | medium | high | xhigh | max; empty leaves the model's own default.
     clip_ai_api_effort: str = ""
-    # Server-side refusal fallback (beta): a declined request is re-run on a fallback model in the same call.
+    # Anthropic only: server-side refusal fallback (beta), a declined request re-run on a fallback model.
     clip_ai_api_fallbacks: bool = True
-    clip_ai_api_base_url: str = "https://api.anthropic.com"
+    # Empty means https://api.anthropic.com for anthropic; openai_compatible needs one.
+    clip_ai_api_base_url: str = ""
+    # Speech-to-text: "deepgram" (default) or "openai_compatible" (an /audio/transcriptions endpoint with word
+    # timestamps, e.g. Groq's whisper-large-v3-turbo at https://api.groq.com/openai/v1).
+    clip_stt_provider: str = "deepgram"
+    clip_stt_base_url: str = ""
+    clip_stt_api_key: str = ""
+    clip_stt_model: str = "whisper-large-v3-turbo"
     deepgram_api_key: str = ""
     deepgram_model: str = "nova-3"
     # Hindi speech-to-text (Sarvam), wired in app/clipper/sarvam.py. Empty = Hindi speech clips take the

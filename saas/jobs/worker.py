@@ -32,14 +32,16 @@ from ..config import settings
 from ..db import SessionLocal
 from ..models.core import User
 from ..models.jobs import RUNNING_STATUSES, Clip, Job, Upload
-from . import service, ssrf, storage
+from ..auth.errors import ApiError
+from . import brand, service, ssrf, storage
 from .engine import Engine, EngineError, JobCanceled, get_engine
 
 log = logging.getLogger("saas.jobs.worker")
 
 _SAFE_ERRORS = {"canceled", "source_unavailable", "source_private", "source_too_long", "no_clips", "engine_unavailable",
                 "engine_crashed", "timeout", "worker_lost", "source_not_allowed", "clip_failed", "no_speech",
-                "download_failed", "invalid_media"}
+                "download_failed", "invalid_media", "fetch_failed", "unreadable_source",
+                "no_moments", "render_failed", "media_error"}
 
 
 class Worker:
@@ -112,8 +114,13 @@ class Worker:
             memes = service.recent_memes(db, job.user_id)
             options = dict(job.options or {})
             watermark = settings.brand_name if job.watermark else None
+            logo_path, custom_memes = brand.engine_assets(db, job.user_id, options)
             started = time.monotonic()
         except EngineError as exc:
+            db.close()
+            self._fail(job_id, exc.code, exc.message)
+            return
+        except ApiError as exc:  # e.g. the source host now resolves to a private address
             db.close()
             self._fail(job_id, exc.code, exc.message)
             return
@@ -141,7 +148,8 @@ class Worker:
 
         try:
             result = self.engine.run(source=source, out_dir=out_dir, options=options, brand_name=None,
-                                     watermark_text=watermark, recent_memes=memes, on_stage=on_stage)
+                                     watermark_text=watermark, recent_memes=memes, on_stage=on_stage,
+                                     logo_path=logo_path, custom_memes=custom_memes)
             self._succeed(job_id, result, out_dir)
         except JobCanceled:
             self._finish_without_clips(job_id, "canceled", "canceled", "Canceled.")
@@ -221,9 +229,11 @@ class Worker:
             charge = job.credits_reserved
             if actual_s > 0:
                 charge = min(job.credits_reserved, service.credits_for(actual_s))
+            shorts = min(len(rows), job.shorts_reserved) if job.funding == "free" else 0
             now = utcnow()
             res = db.execute(update(Job).where(Job.id == job_id, Job.status.in_(RUNNING_STATUSES))
                              .values(status="done", stage="done", progress=1.0, finished_at=now, credits_charged=charge,
+                                     shorts_charged=shorts,
                                      meter=_safe_meter(result.get("meter")),
                                      source_title=(str(src.get("title"))[:300] if src.get("title") else job.source_title)))
             if res.rowcount != 1:
@@ -231,7 +241,7 @@ class Worker:
                 return
             for r in rows:
                 db.add(r)
-            ledger.settle(db, job_id, charge)
+            ledger.settle(db, job_id, charge, shorts=len(rows))
             db.commit()
         except Exception:
             db.rollback()
@@ -306,6 +316,7 @@ class Worker:
                 from ..billing import service as billing
 
                 billing.grant_due_subscription_credits(db)
+                billing.expire_ended_subscriptions(db)
                 billing.release_stale_promo_holds(db)
                 db.commit()
             except Exception:
@@ -357,6 +368,18 @@ def main(argv: Optional[list[str]] = None) -> int:
     signal.signal(signal.SIGTERM, _stop)
     if hasattr(signal, "SIGBREAK"):
         signal.signal(signal.SIGBREAK, _stop)  # Windows console close / CTRL_BREAK
+    if os.environ.get("SAAS_WORKER_WATCH_STDIN") == "1":
+        def _watch_parent() -> None:
+            import sys
+
+            try:
+                sys.stdin.buffer.read()  # blocks until the supervisor's end of the pipe closes
+            except Exception:
+                pass
+            log.info("supervisor gone; stopping after the current job")
+            stop.set()
+
+        threading.Thread(target=_watch_parent, daemon=True, name="parent-watch").start()
     Worker(stop_event=stop).run_forever()
     return 0
 

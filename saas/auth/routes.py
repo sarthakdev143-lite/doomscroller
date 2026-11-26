@@ -84,7 +84,8 @@ class CodeIn(BaseModel):
 
 
 class ProfileIn(BaseModel):
-    name: str = Field(max_length=120)
+    name: Optional[str] = Field(default=None, max_length=120)
+    timezone: Optional[str] = Field(default=None, max_length=64)  # IANA, e.g. "Asia/Kolkata"
 
 
 class PasswordChangeIn(BaseModel):
@@ -536,7 +537,15 @@ def me(user: User = Depends(require_user), db: Session = Depends(get_db)):
 
 @router.patch("/api/me")
 def update_me(body: ProfileIn, user: User = Depends(require_user), db: Session = Depends(get_db)):
-    user.name = body.name.strip()[:120]
+    if body.name is not None:
+        user.name = body.name.strip()[:120]
+    if body.timezone is not None:
+        from ..jobs.schedule import valid_timezone
+
+        tz = valid_timezone(body.timezone)
+        if tz is None:
+            raise ApiError(400, "invalid_timezone", "Use an IANA time zone such as 'Asia/Kolkata' or 'America/New_York'.")
+        user.timezone = tz
     db.commit()
     return service.public_user(db, user)
 

@@ -38,6 +38,8 @@ class JobOptions(BaseModel):
     sfx: bool = True
     music: bool = False
     max_clip_seconds: int = Field(default=60, ge=15, le=90)
+    logo: bool = True  # use the brand-kit logo, if one is uploaded
+    custom_memes: bool = True  # offer the brand-kit memes before the library ones
 
 
 def parse_options(raw: Optional[dict]) -> JobOptions:
@@ -66,11 +68,15 @@ def estimate_url(db: Session, user: Optional[User], url: str) -> dict:
         feats = catalog.features_for(db, user)
         max_s = int(feats.get("max_source_minutes", 30)) * 60
         bal = ledger.balance(db, user.id)
+        free_m, free_s = ledger.free_balance(db, user.id)
         out["balance"] = bal
+        out["free"] = {"minutes": free_m, "shorts": free_s}
+        # Free meters fund a job only when they cover the minutes and at least one short.
+        out["funding"] = "free" if (free_m >= credits and free_s >= 1) else "credits"
         if meta["duration_s"] > max_s:
             out.update(ok=False, reason="source_too_long",
                        message=f"Videos can be up to {max_s // 60} minutes on your plan.")
-        elif bal < credits:
+        elif out["funding"] == "credits" and bal < credits:
             out.update(ok=False, reason="insufficient_credits",
                        message=f"This video needs {credits} credits; you have {bal}.")
     return out
@@ -141,13 +147,21 @@ def create_job(db: Session, user: User, *, source_url: Optional[str] = None, upl
         if res.rowcount != 1:
             db.rollback()
             raise ApiError(409, "upload_used", "That upload already has a job.")
+    free_m, free_s = ledger.free_balance(db, user.id)
     try:
-        ledger.reserve(db, user.id, job.id, credits)
+        entry = ledger.reserve(db, user.id, job.id, credits, shorts=opts.clips)
     except ledger.InsufficientCredits as exc:
         db.rollback()
+        hint = ""
+        if free_m or free_s:
+            hint = (f" Your free tier has {free_m} minutes and {free_s} shorts left, which doesn't cover "
+                    f"{credits} minutes and {opts.clips} shorts.")
         raise ApiError(402, "insufficient_credits",
-                       f"This video needs {exc.needed} credits; you have {exc.available}.",
-                       needed=exc.needed, balance=exc.available)
+                       f"This video needs {exc.needed} credits; you have {exc.available}.{hint}",
+                       needed=exc.needed, balance=exc.available, free_minutes=free_m, free_shorts=free_s)
+    if (entry.meta or {}).get("source") == "free":
+        job.funding = "free"
+        job.shorts_reserved = opts.clips
     db.commit()
     return job
 
@@ -196,6 +210,7 @@ def job_view(db: Session, job: Job, *, include_clips: bool = True, signed: bool 
                       "title": job.source_title, "duration_s": job.source_duration_s,
                       "thumbnail": job.source_thumbnail},
            "options": job.options, "credits_reserved": job.credits_reserved, "credits_charged": job.credits_charged,
+           "funding": job.funding, "shorts_reserved": job.shorts_reserved, "shorts_charged": job.shorts_charged,
            "watermark": job.watermark, "via": job.via,
            "created_at": job.created_at.isoformat(),
            "started_at": job.started_at.isoformat() if job.started_at else None,
@@ -315,6 +330,10 @@ def purge_user_content(db: Session, user: User) -> None:
         ledger.release(db, job.id, note="Account deleted")
     db.execute(update(Clip).where(Clip.user_id == user.id, Clip.deleted_at.is_(None)).values(deleted_at=now))
     db.execute(update(Upload).where(Upload.user_id == user.id, Upload.deleted_at.is_(None)).values(deleted_at=now))
+    from ..models.jobs import BrandAsset
+
+    db.execute(update(BrandAsset).where(BrandAsset.user_id == user.id, BrandAsset.deleted_at.is_(None))
+               .values(deleted_at=now))
     try:
         storage.remove_tree(storage.user_dir(user.id))
     except ValueError:

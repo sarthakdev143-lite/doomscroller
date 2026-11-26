@@ -56,8 +56,10 @@ def create_app() -> FastAPI:
         app.include_router(router)
 
     from . import mcp as mcp_server
+    from .web import errors as web_errors
 
     mcp_server.mount(app)
+    web_errors.install(app)  # HTML 404/500 for pages; JSON paths keep JSON errors
     return app
 
 

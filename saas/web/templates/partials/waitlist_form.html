@@ -1,11 +1,12 @@
 {#
   The waitlist form. waitlist.js posts it as JSON to POST /api/waitlist (docs/saas/CONTRACT.md):
-  {email, role?, channel_url?, ref?, fp, ts, website, cf_turnstile_response?}.
-  t.js fills input[name=fp]; an empty fp still submits, so an ad blocker never blocks joining.
+  {email, role?, channel_url?, ref?, ts, website, cf_turnstile_response?}, plus fp on the Python app,
+  where t.js fills input[name=fp] (an empty fp still submits, so an ad blocker never blocks joining).
+  The static export (Cloudflare Pages) has no tracker, so it sends no fp.
 #}
 {% macro waitlist_form(id, full=false, button="Join the waitlist") -%}
 <form class="waitlist{% if full %} waitlist--full{% endif %}" id="wl-{{ id }}" action="/api/waitlist" method="post"
-      data-waitlist-form data-form-id="{{ id }}" novalidate>
+      data-waitlist-form data-form-id="{{ id }}" data-clarity-mask="True" novalidate>
   {% if full %}
   <div class="field">
     <label class="label" for="wl-{{ id }}-email">Email</label>
@@ -48,7 +49,7 @@
   {% endif %}
 
   <input type="hidden" name="ref" value="{{ ref or '' }}">
-  <input type="hidden" name="fp" value="">
+  {% if not static_export %}<input type="hidden" name="fp" value="">{% endif %}
   <input type="hidden" name="ts" value="{{ now_ms }}">
   <div class="hp" aria-hidden="true">
     <label for="wl-{{ id }}-website">Leave this empty</label>

@@ -267,3 +267,141 @@
   max-width: 32rem;
   align-items: start;
 }
+
+/* ---- pricing page ---------------------------------------------------------------------------- */
+
+.price-page h1 {
+  max-width: 14ch;
+}
+
+.price-page .lede {
+  margin-top: var(--space-5);
+}
+
+.ways {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
+  margin: var(--space-7) 0 0;
+  border-top: 2px solid var(--ink);
+}
+
+.ways__item {
+  padding: var(--space-4) var(--space-5) var(--space-5) 0;
+}
+
+.ways__item + .ways__item {
+  padding-left: var(--space-5);
+  border-left: var(--border);
+}
+
+.ways dt {
+  font-size: var(--text-sm);
+  font-weight: 650;
+}
+
+.ways dd {
+  margin: var(--space-3) 0 0;
+}
+
+.ways__big {
+  display: block;
+  font-size: var(--text-xl);
+  font-weight: 780;
+  font-stretch: var(--stretch-heading);
+  line-height: 1.1;
+}
+
+.ways__note {
+  display: block;
+  margin-top: var(--space-2);
+  color: var(--ink-2);
+}
+
+.ways__item:first-child .ways__big {
+  background: var(--accent);
+  display: inline;
+  padding: 0 0.15em;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+@media (max-width: 760px) {
+  .ways {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ways__item,
+  .ways__item + .ways__item {
+    padding: var(--space-4) 0;
+    border-left: 0;
+  }
+
+  .ways__item + .ways__item {
+    border-top: var(--border);
+  }
+}
+
+.included {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 var(--space-6);
+  margin-top: var(--space-6);
+  max-width: 56rem;
+}
+
+.included li {
+  padding: var(--space-3) 0 var(--space-3) var(--space-5);
+  border-top: var(--border);
+  position: relative;
+}
+
+.included li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: calc(var(--space-3) + 0.55em);
+  width: 10px;
+  height: 4px;
+  background: var(--ink);
+}
+
+@media (max-width: 640px) {
+  .included {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.rules {
+  margin-top: var(--space-6);
+  max-width: 44rem;
+}
+
+.rules li {
+  display: grid;
+  grid-template-columns: 3rem minmax(0, 1fr);
+  gap: var(--space-3);
+  padding-block: var(--space-4);
+  border-top: var(--border);
+}
+
+.rules .mono {
+  color: var(--ink-3);
+  font-size: var(--text-sm);
+  padding-top: 0.2em;
+}
+
+.price-join .lede {
+  margin-top: var(--space-4);
+}
+
+.price-join__form {
+  margin-top: var(--space-6);
+  max-width: 34rem;
+}
+
+.thanks__nolink {
+  margin-top: var(--space-4);
+  max-width: 40rem;
+  color: var(--ink-2);
+}

@@ -29,7 +29,7 @@ def test_signup_then_verify_logs_in_same_browser_and_grants_free_credits(client,
     assert client.cookies.get("sid")
     me = client.get("/api/me").json()
     assert me["email_verified"] is True
-    assert me["balance"] == core.signup_free_credits
+    assert me["balance"] == 0 and me["free"] == {"minutes": 10, "shorts": 10}  # 10 shorts or 10 minutes
     # Single use: the link can't verify twice.
     r = client.get(f"/auth/verify/{token}", follow_redirects=False)
     assert r.headers["location"] == "/login?verified=1"
@@ -135,9 +135,9 @@ def test_free_credits_once_per_inbox_and_per_device(client, core, saas_db):
     a = verify("john.doe@gmail.com", "a" * 32)
     b = verify("johndoe+promo@gmail.com", "b" * 32)  # same inbox, different spelling
     c = verify("someone.else@example.com", "a" * 32)  # different inbox, same device
-    assert ledger.balance(saas_db, a.id) == core.signup_free_credits
-    assert ledger.balance(saas_db, b.id) == 0 and b.flags["free_credits_withheld"] == "inbox_already_granted"
-    assert ledger.balance(saas_db, c.id) == 0 and c.flags["free_credits_withheld"] == "fingerprint_already_granted"
+    assert ledger.free_balance(saas_db, a.id) == (10, 10)
+    assert ledger.free_balance(saas_db, b.id) == (0, 0) and b.flags["free_credits_withheld"] == "inbox_already_granted"
+    assert ledger.free_balance(saas_db, c.id) == (0, 0) and c.flags["free_credits_withheld"] == "fingerprint_already_granted"
     assert service.canonical_email("J.O.H.N.Doe+x@googlemail.com") == "johndoe@gmail.com"
 
 
@@ -151,7 +151,7 @@ def test_free_credits_withheld_when_risk_says_no(client, core, monkeypatch, saas
     _signup(client, "risky@example.com")
     client.get(f"/auth/verify/{outbox_link('/auth/verify/')}", follow_redirects=False)
     u = saas_db.query(User).filter(User.email == "risky@example.com").one()
-    assert ledger.balance(saas_db, u.id) == 0
+    assert ledger.free_balance(saas_db, u.id) == (0, 0)
 
 
 # ---- login ----------------------------------------------------------------------------------------
@@ -367,7 +367,7 @@ def test_google_signup_creates_verified_user(client, core, monkeypatch, saas_db)
     u = saas_db.query(User).filter(User.email == "guser@example.com").one()
     assert u.email_verified_at is not None and u.password_hash is None
     assert saas_db.query(Identity).filter(Identity.user_id == u.id).count() == 1
-    assert client.get("/api/me").json()["balance"] == core.signup_free_credits
+    assert client.get("/api/me").json()["free"] == {"minutes": 10, "shorts": 10}
     assert len(seen["verifier"]) >= 43
 
 

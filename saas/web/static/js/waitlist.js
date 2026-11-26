@@ -17,11 +17,20 @@ function messageFor(status, body, retryAfter) {
     return server && code !== "invalid_request" ? server : "That email address doesn’t look right. Check it and try again.";
   }
   if (status === 409 || code === "already_joined") {
-    return server || "That email is already on the list. Your link is in the confirmation email we sent.";
+    return server || "That email is already on the list.";
   }
   if (status === 403) return server || "We couldn’t verify this request. Refresh the page and try again.";
   if (status >= 500) return "Something broke on our side. Try again in a minute.";
   return server || "That didn’t work. Try again.";
+}
+
+/** The contract promises referral_url, not referral_code; the code is its ?ref= parameter. */
+function referralCode(url) {
+  try {
+    return url ? new URL(url, location.origin).searchParams.get("ref") || "" : "";
+  } catch (_) {
+    return "";
+  }
 }
 
 function setError(form, input, text) {
@@ -49,10 +58,10 @@ function payload(form) {
   }
   const body = {
     email: value("email"),
-    fp: value("fp"),
     ts: Number(value("ts")) || Date.now(),
     website: form.elements.website ? form.elements.website.value : "",
   };
+  if (form.elements.fp) body.fp = value("fp"); // only the Python app's tracker fills it; the static site has none
   if (value("role")) body.role = value("role");
   if (value("channel_url")) body.channel_url = value("channel_url");
   if (ref) body.ref = ref;
@@ -97,19 +106,19 @@ async function submit(form) {
 
   if (res && res.ok && data && data.ok !== false) {
     track("waitlist_joined", { form: formId, already: Boolean(data.already) });
+    const code = data.referral_code || referralCode(data.referral_url);
     try {
       sessionStorage.setItem(RESULT_KEY, JSON.stringify({
         position: data.position ?? null,
         referral_url: data.referral_url || "",
-        referral_code: data.referral_code || "",
+        referral_code: code,
         already: Boolean(data.already),
-        email: body.email,
       }));
     } catch (_) {
       /* storage blocked: the thanks page falls back to the code in the URL */
     }
-    const code = data.referral_code ? `?code=${encodeURIComponent(data.referral_code)}` : "";
-    location.assign(`/waitlist/thanks${code}`);
+    const query = code ? `?code=${encodeURIComponent(code)}` : "";
+    location.assign(`/waitlist/thanks/${query}`); // trailing slash: the static site serves waitlist/thanks/index.html
     return;
   }
 

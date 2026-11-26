@@ -144,7 +144,7 @@ function modals() {
   });
 }
 
-/** "Cookie settings" reopens the consent choice when t.js provides one, else explains on /cookies. */
+/** "Cookie settings" reopens the consent choice (consent.js or t.js), else explains on /cookies. */
 function consentLinks() {
   document.addEventListener("click", (e) => {
     const btn = e.target.closest("[data-consent-open]");
@@ -157,9 +157,14 @@ function consentLinks() {
   });
 }
 
-rememberReferral();
-header();
-tabs();
-copyButtons();
-modals();
-consentLinks();
+// Page modules import "./site.js" while the page also loads "site.js?v=<hash>": two URLs, so this module
+// can be evaluated twice. Bind the page behaviour once.
+if (!window.__dsSiteReady) {
+  window.__dsSiteReady = true;
+  rememberReferral();
+  header();
+  tabs();
+  copyButtons();
+  modals();
+  consentLinks();
+}

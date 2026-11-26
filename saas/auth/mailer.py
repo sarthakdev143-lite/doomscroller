@@ -60,7 +60,8 @@ def _deliver(mail: Mail) -> None:
             log.error("SMTP is not configured in prod; dropped mail '%s'", mail.subject)
             return
         outbox.append(mail)
-        log.info("[dev mail] to=%s subject=%s\n%s", mail.to, mail.subject, mail.text)
+        # WARNING so it shows on a default console (uvicorn leaves the root logger at WARNING). Dev only.
+        log.warning("[dev mail] to=%s subject=%s\n%s", mail.to, mail.subject, mail.text)
         return
     msg = EmailMessage()
     msg["From"] = _from_address()

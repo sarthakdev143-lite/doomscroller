@@ -60,6 +60,9 @@ function render(result) {
     root.querySelector("[data-referral-url]").value = url;
     shareLinks(url);
     root.querySelector("[data-thanks-share]").hidden = false;
+  } else {
+    // A repeat join from another network gets no place or link back, so nobody can farm someone else's.
+    root.querySelector("[data-thanks-nolink]").hidden = false;
   }
   const referrals = Number(result.referrals);
   if (Number.isFinite(referrals) && referrals > 0) {
@@ -78,12 +81,19 @@ async function lookup(code) {
       credentials: "same-origin",
     });
     if (res.status === 404) {
-      show("empty");
+      const local = stored();
+      if (local) render(local);
+      else show("empty");
       return;
     }
     if (!res.ok) throw new Error(String(res.status));
     const data = await res.json();
-    render({ ...(stored() || {}), ...data });
+    // Fresh values from the server win, but a null never hides what the join itself returned.
+    const merged = { ...(stored() || {}) };
+    Object.entries(data || {}).forEach(([key, value]) => {
+      if (value !== null && value !== undefined && value !== "") merged[key] = value;
+    });
+    render(merged);
   } catch (_) {
     const local = stored();
     if (local) render(local);

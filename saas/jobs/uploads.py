@@ -2,10 +2,11 @@
 
 FastAPI's UploadFile would spool the whole body before our code ran, so the body is parsed here,
 chunk by chunk, with python-multipart's streaming parser, written straight to a temp file and
-aborted the moment it passes the plan's cap. Then, before anything else sees the file:
-extension allowlist -> magic bytes -> ffprobe (file protocol and container whitelist only) -> a video
-stream, a duration within the plan's limit, sane dimensions, and a plausible bitrate (a 1 MB file that
-claims ten hours is refused). Accepted files get a random name under SAAS_DATA_DIR/<user_id>/uploads/.
+aborted the moment it passes the plan's cap (`stream_file`, shared with the brand-kit uploads). Then,
+before anything else sees the file: extension allowlist -> magic bytes -> ffprobe (file protocol and
+container whitelist only) -> a video stream, a duration within the plan's limit, sane dimensions, and
+a plausible bitrate (a 1 MB file that claims ten hours is refused). Accepted files get a random name
+under SAAS_DATA_DIR/<user_id>/uploads/.
 """
 from __future__ import annotations
 
@@ -39,6 +40,7 @@ MAX_DIMENSION = 8192
 MIN_BYTES_PER_SECOND = 2_000  # ~16 kbit/s: below this a long "video" is a crafted header, not footage
 MAX_PENDING_UPLOADS = 10
 _FLUSH_AT = 1024 * 1024
+_OTHER_PARTS_CAP = 64 * 1024
 
 
 class _TooLarge(Exception):
@@ -59,34 +61,30 @@ def sniff_container(head: bytes) -> Optional[str]:
 _EXT_FAMILY = {".mp4": "mp4", ".m4v": "mp4", ".mov": "mp4", ".mkv": "matroska", ".webm": "matroska", ".avi": "avi"}
 
 
-def _clean_name(raw: str) -> str:
+def clean_name(raw: str, default: str = "video") -> str:
     base = os.path.basename(raw.replace("\\", "/"))
     base = re.sub(r"[^\w.\- ()]+", "_", base).strip(" .")
-    return base[:200] or "video"
+    return base[:200] or default
 
 
-async def receive(request: Request, db: Session, user: User) -> Upload:
-    feats = catalog.features_for(db, user)
-    cap_mb = min(int(feats.get("max_upload_mb", 500)), settings.max_upload_mb)
-    cap = cap_mb * 1024 * 1024
-    pending = db.query(Upload).filter(Upload.user_id == user.id, Upload.job_id.is_(None),
-                                      Upload.deleted_at.is_(None)).count()
-    if pending >= MAX_PENDING_UPLOADS:
-        raise ApiError(429, "too_many_uploads", "You have too many unused uploads. Start a job or delete some first.")
+async def stream_file(request: Request, folder: Path, cap: int, too_large_message: str) -> tuple[Path, str, int]:
+    """Stream the multipart field `file` to a temp file in `folder`, aborting past `cap` bytes.
 
+    Returns (temp path, client filename, size). The temp file is deleted on any failure; on success
+    the caller owns it (and must move or delete it).
+    """
     ctype, params = parse_options_header(request.headers.get("content-type", ""))
     boundary = params.get(b"boundary")
     if ctype != b"multipart/form-data" or not boundary or len(boundary) > 200:
-        raise ApiError(415, "multipart_required", "Upload the video as multipart/form-data with a 'file' field.")
+        raise ApiError(415, "multipart_required", "Upload as multipart/form-data with a 'file' field.")
     declared = request.headers.get("content-length")
-    if declared and declared.isdigit() and int(declared) > cap + 64 * 1024:
-        raise ApiError(413, "upload_too_large", f"Files can be up to {cap_mb} MB on your plan.")
+    if declared and declared.isdigit() and int(declared) > cap + _OTHER_PARTS_CAP:
+        raise ApiError(413, "upload_too_large", too_large_message)
 
-    folder = storage.uploads_dir(user.id)
+    folder.mkdir(parents=True, exist_ok=True)
     tmp = folder / f".{secrets.token_hex(16)}.part"
     state: dict = {"headers": {}, "field": b"", "value": b"", "is_file": False, "written": 0, "filename": None,
                    "seen_file": False, "buf": bytearray(), "other_bytes": 0}
-    fh = open(tmp, "wb")
 
     def on_part_begin() -> None:
         state["headers"] = {}
@@ -118,22 +116,24 @@ async def receive(request: Request, db: Session, user: User) -> Upload:
             state["buf"] += data[start:end]
         else:
             state["other_bytes"] += n
-            if state["other_bytes"] > 64 * 1024:
+            if state["other_bytes"] > _OTHER_PARTS_CAP:
                 raise _TooLarge()
 
-    parser = MultipartParser(boundary, callbacks={
-        "on_part_begin": on_part_begin, "on_header_field": on_header_field, "on_header_value": on_header_value,
-        "on_header_end": on_header_end, "on_headers_finished": on_headers_finished, "on_part_data": on_part_data,
-    })
-
-    async def flush() -> None:
-        if state["buf"]:
-            chunk = bytes(state["buf"])
-            state["buf"].clear()
-            await anyio.to_thread.run_sync(fh.write, chunk)
-
     ok = False
+    fh = open(tmp, "wb")
     try:
+        parser = MultipartParser(boundary, callbacks={
+            "on_part_begin": on_part_begin, "on_header_field": on_header_field, "on_header_value": on_header_value,
+            "on_header_end": on_header_end, "on_headers_finished": on_headers_finished,
+            "on_part_data": on_part_data,
+        })
+
+        async def flush() -> None:
+            if state["buf"]:
+                chunk = bytes(state["buf"])
+                state["buf"].clear()
+                await anyio.to_thread.run_sync(fh.write, chunk)
+
         try:
             async for chunk in request.stream():
                 parser.write(chunk)
@@ -142,7 +142,7 @@ async def receive(request: Request, db: Session, user: User) -> Upload:
             parser.finalize()
             await flush()
         except _TooLarge:
-            raise ApiError(413, "upload_too_large", f"Files can be up to {cap_mb} MB on your plan.")
+            raise ApiError(413, "upload_too_large", too_large_message)
         except ClientDisconnect:
             raise ApiError(400, "upload_interrupted", "The upload was interrupted. Try again.")
         except ApiError:
@@ -152,8 +152,32 @@ async def receive(request: Request, db: Session, user: User) -> Upload:
         finally:
             fh.close()
         if not state["seen_file"] or state["written"] == 0:
-            raise ApiError(400, "file_required", "Attach the video in a field named 'file'.")
-        original = _clean_name(state["filename"] or "video")
+            raise ApiError(400, "file_required", "Attach the file in a field named 'file'.")
+        ok = True
+        return tmp, state["filename"] or "", state["written"]
+    finally:
+        if not fh.closed:
+            fh.close()
+        if not ok:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+async def receive(request: Request, db: Session, user: User) -> Upload:
+    feats = catalog.features_for(db, user)
+    cap_mb = min(int(feats.get("max_upload_mb", 500)), settings.max_upload_mb)
+    pending = db.query(Upload).filter(Upload.user_id == user.id, Upload.job_id.is_(None),
+                                      Upload.deleted_at.is_(None)).count()
+    if pending >= MAX_PENDING_UPLOADS:
+        raise ApiError(429, "too_many_uploads", "You have too many unused uploads. Start a job or delete some first.")
+
+    tmp, filename, size = await stream_file(request, storage.uploads_dir(user.id), cap_mb * 1024 * 1024,
+                                            f"Files can be up to {cap_mb} MB on your plan.")
+    ok = False
+    try:
+        original = clean_name(filename or "video")
         ext = Path(original).suffix.lower()
         if ext not in ALLOWED_EXTENSIONS:
             raise ApiError(415, "unsupported_type", "Upload an MP4, MOV, MKV, WebM or AVI video.")
@@ -163,7 +187,7 @@ async def receive(request: Request, db: Session, user: User) -> Upload:
         if family is None or family != _EXT_FAMILY[ext]:
             raise ApiError(415, "unsupported_type", "That file's contents don't match a supported video format.")
         info = await anyio.to_thread.run_sync(probe.ffprobe, tmp)
-        upload = _accept(db, user, tmp, original, ext, state["written"], info, feats)
+        upload = _accept(db, user, tmp, original, ext, size, info, feats)
         ok = True
         return upload
     finally:

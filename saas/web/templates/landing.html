@@ -21,14 +21,14 @@
     <div class="hero__copy">
       <h1 id="hero-title">Shorts that end where the <span class="mark">sentence&nbsp;ends.</span></h1>
       <p class="lede hero__lede">Paste a link to a long video, or upload one. {{ brand_name }} picks the moments worth posting,
-        cuts them on sentence boundaries and hands back finished vertical clips: word-by-word captions,
-        framing that follows the speaker, sound, and a title ready to go.</p>
+        cuts them on sentence boundaries, captions them word by word and keeps the speaker in frame. Each Short
+        comes back ready to publish: the MP4, a title, description, hashtags, a thumbnail and suggested times to post.</p>
       {% if launch_mode == "waitlist" %}
       <div class="hero__form">{{ waitlist_form("hero") }}</div>
       {% else %}
-      <p class="hero__form"><a class="btn btn--accent btn--lg" href="/signup" data-track="hero-cta-signup">Start with {{ free_credits }} free minutes</a></p>
+      <p class="hero__form"><a class="btn btn--accent btn--lg" href="/signup" data-track="hero-cta-signup">Start free</a></p>
       {% endif %}
-      <p class="hero__fine">{% if launch_mode == "waitlist" %}Opening in batches from the waitlist. {% endif %}You pay per minute of source video: a 40-minute podcast costs 40 credits, whether you take one clip from it or twenty.</p>
+      <p class="hero__fine">{% if launch_mode == "waitlist" %}Opening in batches from the waitlist. {% endif %}Free for your first {{ free_shorts }} Shorts or {{ free_minutes }} minutes of video, whichever comes first. After that you pay per minute of source video, however many clips you take from it.</p>
     </div>
 
     <figure class="hero__demo" data-demo>
@@ -53,7 +53,7 @@
         <dl class="source__facts">
           <div><dt>Length</dt><dd class="mono tabular">{{ demo.duration_label }}</dd></div>
           <div><dt>Clips</dt><dd class="mono tabular">{{ demo.clips|length }}</dd></div>
-          <div><dt>Cost</dt><dd class="mono tabular"><strong>{{ demo.credits }} credits</strong></dd></div>
+          <div><dt>Charged</dt><dd class="mono tabular"><strong>{{ demo.credits }} min</strong></dd></div>
         </dl>
       </div>
 
@@ -138,10 +138,11 @@
         </li>
         <li class="step">
           <span class="step__n mono">05</span>
-          <h3 class="step__title">You review, edit the text, and download.</h3>
+          <h3 class="step__title">You edit in the browser, then download.</h3>
           <div class="step__body">
-            <p>Each clip arrives with a title, a description and hashtags. Change any of them, then download the MP4.</p>
-            <p class="step__detail">Scheduled posting to your own YouTube channel comes after launch.</p>
+            <p>Adjust each clip before you take it, add your own logo and memes, and rewrite the title, description
+              and hashtags. Then download the package and post it yourself, wherever you post.</p>
+            <p class="step__detail">Each package: the MP4, a thumbnail, the text, and suggested times to post.</p>
           </div>
         </li>
       </ol>
@@ -154,8 +155,9 @@
   <div class="wrap grid">
     <p class="rubric">What you get</p>
     <div class="story">
-      <h2 id="clip-title">Every clip comes back finished, not as a rough cut.</h2>
-      <p class="lede">1080&times;1920 MP4, stereo sound, ready for Shorts, Reels or TikTok. This is what is in one.</p>
+      <h2 id="clip-title">Every Short comes back ready to publish, not as a rough cut.</h2>
+      <p class="lede">A 1080&times;1920 MP4 with stereo sound for Shorts, Reels or TikTok, plus everything you need to post it.
+        This is what is in one.</p>
 
       <div class="anatomy__body">
         <figure class="anatomy__figure">
@@ -175,22 +177,26 @@
           <li><span class="legend__n">1</span><div><h3 class="h4">Progress bar</h3><p>A thin yellow bar fills across the top as the clip plays.</p></div></li>
           <li><span class="legend__n">2</span><div><h3 class="h4">Hook</h3><p>A title for the first 2.5 seconds, written from what is actually said.</p></div></li>
           <li><span class="legend__n">3</span><div><h3 class="h4">Framing on the speaker</h3><p>Wide footage sits full width over a dimmed copy of itself. The picture moves in on whoever is talking, and only switches on a cut or a beat, so it reads as an edit.</p></div></li>
-          <li><span class="legend__n">4</span><div><h3 class="h4">Reaction memes</h3><p>Up to three per clip, on the strongest beats. One switch turns them off.</p></div></li>
+          <li><span class="legend__n">4</span><div><h3 class="h4">Reaction memes</h3><p>Up to three per clip, on the strongest beats. Upload your own, use the built-in set, or switch them off.</p></div></li>
           <li><span class="legend__n">5</span><div><h3 class="h4">Credit line</h3><p>The creator’s name stays on screen for the whole clip.</p></div></li>
           <li><span class="legend__n">6</span><div><h3 class="h4">Word captions</h3><p>One word lights up at a time, timed to the voice. If the source already has captions burned in, ours are left off so nothing shows twice.</p></div></li>
           <li class="legend__plain"><span class="legend__n">+</span><div><h3 class="h4">B-roll, only where it fits</h3><p>Stock footage replaces the picture when a vision check agrees it matches the words being said. Credited in the description.</p></div></li>
           <li class="legend__plain"><span class="legend__n">+</span><div><h3 class="h4">Sound</h3><p>Effects are synthesised, so there is nothing to license. Music is optional and ducks under the voice.</p></div></li>
+          <li class="legend__plain"><span class="legend__n">+</span><div><h3 class="h4">Your logo</h3><p>Upload it once and it goes on every clip.</p></div></li>
         </ol>
 
       <div class="meta-card" aria-labelledby="meta-title">
         <div class="meta-card__head">
-          <h3 class="h4" id="meta-title">The text comes with it</h3>
+          <h3 class="h4" id="meta-title">The package for this Short</h3>
           <span class="badge">editable before download</span>
         </div>
         <dl class="meta-card__fields">
+          <div><dt>Video</dt><dd class="mono">clip-01.mp4 &middot; 1080&times;1920 &middot; 0:15.6</dd></div>
+          <div><dt>Thumbnail</dt><dd class="mono">clip-01.jpg</dd></div>
           <div><dt>Title</dt><dd>The first 100 videos are practice</dd></div>
           <div><dt>Description</dt><dd>Why the first hundred uploads matter less than what you learn from them.<br><span class="muted">Credit: @yourchannel &middot; B-roll: Pexels</span></dd></div>
           <div><dt>Hashtags</dt><dd class="mono">#shorts #podcast #creator #youtubegrowth</dd></div>
+          <div><dt>When to post</dt><dd class="mono">Tue 18:00 &middot; Thu 12:30 &middot; Sat 10:00</dd></div>
         </dl>
       </div>
         </div>
@@ -230,65 +236,14 @@
   <div class="wrap grid">
     <p class="rubric">Pricing</p>
     <div class="story">
-      <h2 id="pricing-title">You pay for minutes of source video. Nothing else.</h2>
-      <p class="lede">One credit is one minute of the video you send, rounded up per job. Taking {{ max_clips }} clips from it
-        costs the same as taking one. If a job fails, its credits go back to your balance.</p>
+      <h2 id="pricing-title">Pay as you go, or monthly. Per minute of video.</h2>
+      <p class="lede">You pay for the minutes of video you send, rounded up per job, and nothing else. Taking {{ max_clips }} clips
+        from a video costs the same as taking one. If a job fails, the minutes go back to your balance.</p>
+      <p class="pricing__free"><strong>Free to start:</strong> {{ free_shorts }} Shorts or {{ free_minutes }} minutes of video, whichever comes first.</p>
 
-      {% if pricing %}
-      <div class="price-tables">
-        {% if pricing.packs %}
-        <div class="price-table">
-          <h3 class="h4">Credit packs <span class="muted">pay once</span></h3>
-          <div class="table-wrap">
-            <table class="table">
-              <thead><tr><th scope="col">Pack</th><th scope="col" class="num">Price</th><th scope="col" class="num">Per minute</th></tr></thead>
-              <tbody>
-                {% for p in pricing.packs %}
-                <tr><th scope="row">{{ p.name }}{% if p.description %}<span class="table__note">{{ p.description }}</span>{% endif %}</th>
-                  <td class="num">{{ p.price_label }}</td><td class="num">{{ p.per_minute or "" }}</td></tr>
-                {% endfor %}
-              </tbody>
-            </table>
-          </div>
-        </div>
-        {% endif %}
-        {% if pricing.plans %}
-        <div class="price-table">
-          <h3 class="h4">Plans <span class="muted">billed monthly</span></h3>
-          <div class="table-wrap">
-            <table class="table">
-              <thead><tr><th scope="col">Plan</th><th scope="col" class="num">Minutes a month</th><th scope="col" class="num">Price</th><th scope="col" class="num">Per minute</th></tr></thead>
-              <tbody>
-                {% for p in pricing.plans %}
-                <tr><th scope="row">{{ p.name }}{% if p.description %}<span class="table__note">{{ p.description }}</span>{% endif %}</th>
-                  <td class="num">{{ p.credits }}</td><td class="num">{{ p.price_label }}</td><td class="num">{{ p.per_minute or "" }}</td></tr>
-                {% endfor %}
-              </tbody>
-            </table>
-          </div>
-          {% set rollover = pricing.plans|map(attribute="rollover_months")|max %}
-          {% if rollover %}<p class="price-table__foot">Unused plan minutes carry over for {{ rollover }} month{{ "s" if rollover != 1 }}.</p>{% endif %}
-        </div>
-        {% endif %}
-      </div>
-      {% else %}
-      <div class="price-pending">
-        <p class="price-pending__title">Prices are announced at launch.</p>
-        <p class="muted">Everyone on the waitlist hears them first.</p>
-      </div>
-      {% endif %}
+      {% include "partials/price_model.html" %}
 
-      <table class="receipt">
-        <caption>How credits are counted</caption>
-        <thead><tr><th scope="col">Source</th><th scope="col" class="num">Length</th><th scope="col" class="num">Credits</th></tr></thead>
-        <tbody>
-          {% for row in credit_examples %}
-          <tr><th scope="row">{{ row.label }}</th><td class="num">{{ row.length }}</td><td class="num"><strong>{{ row.credits }}</strong></td></tr>
-          {% endfor %}
-        </tbody>
-      </table>
-
-      <p class="pricing__free">New accounts get <strong>{{ free_credits }} free credits</strong>, once per person. Clips made with free credits carry a small watermark.</p>
+      <p class="pricing__more"><a href="/pricing" data-track="pricing-more">How pricing works</a></p>
     </div>
   </div>
 </section>
@@ -303,7 +258,7 @@
         <p>Everything the web app does is in the HTTP API: estimate a link, start a job, check on it, fetch the clips
           and signed download links. The same actions are an MCP server, so Claude, ChatGPT or Cursor can make clips
           when you ask in plain words.</p>
-        <p class="api__note">Keys are created in your account and shown once.
+        <p class="api__note">The API and MCP server open with the app. Keys are created in your account and shown once.
           {%- if pricing and pricing.api_plans %} API and MCP access come with the {{ pricing.api_plans|join(" and ") }} plan{{ "s" if pricing.api_plans|length > 1 }}.
           {%- else %} Which plans include API access is listed with the prices at launch.{% endif %}</p>
       </div>
@@ -353,12 +308,12 @@
       <h2 id="faq-title">Before you ask.</h2>
       <div class="faq">
         <details class="disclosure">
-          <summary data-track="faq-credit">What counts as a credit?</summary>
-          <div class="disclosure__body"><p>One minute of source video, rounded up per job. A 72-minute-40-second video is 73 credits. The number of clips you take from it does not change the price.</p></div>
+          <summary data-track="faq-credit">What exactly am I paying for?</summary>
+          <div class="disclosure__body"><p>Minutes of the video you send, rounded up per job. A 72-minute-40-second video counts as 73 minutes. The number of clips you take from it does not change the price. Pay as you go, or monthly.</p></div>
         </details>
         <details class="disclosure">
           <summary data-track="faq-failed">What happens if a job fails?</summary>
-          <div class="disclosure__body"><p>Credits are set aside when a job starts. If it fails or you cancel it, they go back to your balance.</p></div>
+          <div class="disclosure__body"><p>Minutes are set aside when a job starts. If it fails or you cancel it, they go back to your balance.</p></div>
         </details>
         <details class="disclosure">
           <summary data-track="faq-sources">Which links work?</summary>
@@ -373,20 +328,20 @@
           <div class="disclosure__body"><p>Only if you have their permission. You need the rights to anything you send. Each clip carries a credit line, but a credit is not permission.</p></div>
         </details>
         <details class="disclosure">
-          <summary data-track="faq-edit">Can I change what the clip says?</summary>
-          <div class="disclosure__body"><p>You can edit every title, description and hashtag before you download. The captions follow what was said in the video.</p></div>
+          <summary data-track="faq-edit">Can I edit the clips?</summary>
+          <div class="disclosure__body"><p>Yes, in the browser, before you download. Add your own logo and memes, and rewrite the title, description and hashtags. The captions follow what was said in the video.</p></div>
         </details>
         <details class="disclosure">
           <summary data-track="faq-free">Is there a free tier?</summary>
-          <div class="disclosure__body"><p>New accounts get {{ free_credits }} free credits, once per person. Clips made with free credits carry a small watermark.</p></div>
+          <div class="disclosure__body"><p>Yes. Your first {{ free_shorts }} Shorts or {{ free_minutes }} minutes of video are free, whichever comes first, once per person.</p></div>
         </details>
         <details class="disclosure">
           <summary data-track="faq-retention">How long are my clips kept?</summary>
           <div class="disclosure__body"><p>{{ retention_days }} days after they are made, then they are deleted. Download what you want to keep.</p></div>
         </details>
         <details class="disclosure">
-          <summary data-track="faq-youtube">Can it post to YouTube for me?</summary>
-          <div class="disclosure__body"><p>Not yet. Scheduled posting to your own channel comes after launch. For now you download the MP4s.</p></div>
+          <summary data-track="faq-posting">Does it post for me?</summary>
+          <div class="disclosure__body"><p>No. You get each Short as a package that is ready to publish (the MP4, a thumbnail, a title, description, hashtags and suggested times to post) and you post it yourself, on YouTube, Instagram, TikTok or anywhere else. Nothing needs access to your accounts.</p></div>
         </details>
         <details class="disclosure">
           <summary data-track="faq-when">When can I use it?</summary>
@@ -404,7 +359,7 @@
     <div class="join__copy">
       <h2 id="join-title">Get in early.</h2>
       <p class="lede">We let people in from the waitlist in batches. Your place moves up for every person who joins with your link.</p>
-      <p class="muted small">We email you to confirm your address, and again when your invite is ready.</p>
+      <p class="muted small">We use your email for your invite and nothing else.</p>
     </div>
     <div class="join__form">
       {{ waitlist_form("footer", full=true) }}

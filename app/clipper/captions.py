@@ -391,7 +391,7 @@ def _summary_cue_events(
 def build_ass(words: Sequence[Word], hook: str, duration: float, font: str,
               font_path: Optional[str] = None, beats: Sequence[tuple] = (), creator: str = "", brand: str = "",
               layout: Layout = Layout(), summary_cues: Sequence[tuple[float, float, str]] = (),
-              watermark: str = "") -> str:
+              watermark: str = "", logo: bool = False) -> str:
     """Full ASS document. ``words`` and ``beats`` must already be in output time.
 
     ``watermark`` is a small, semi-transparent line kept on screen above the brand, inside the safe band.
@@ -399,7 +399,7 @@ def build_ass(words: Sequence[Word], hook: str, duration: float, font: str,
     font = _safe_style_token(font, "Arial")
     creator = _safe(creator)
     mark = _steady_text("Watermark", _safe(watermark), duration,
-                        max(110, layout.brand_y - (52 if _safe(brand) else 0)))
+                        max(110, layout.brand_y - (62 if logo else 52 if _safe(brand) else 0)))
     caption_lines = (
         _caption_events(words, font_path, layout.caption_y)
         if words

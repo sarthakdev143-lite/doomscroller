@@ -38,7 +38,8 @@ class Engine(Protocol):
     name: str
 
     def run(self, *, source: str, out_dir: Path, options: dict, brand_name: Optional[str],
-            watermark_text: Optional[str], recent_memes: Sequence[str], on_stage: StageCallback) -> dict:
+            watermark_text: Optional[str], recent_memes: Sequence[str], on_stage: StageCallback,
+            logo_path: Optional[str] = None, custom_memes: Sequence[str] = ()) -> dict:
         """-> {"source": {"title", "duration_s", "author"}, "clips": [{"path", "thumbnail_path", "duration_s",
         "start_s", "end_s", "title", "description", "hashtags", "score", "language", "memes_used"}],
         "meter": {...}}. Paths must be inside out_dir."""
@@ -59,9 +60,11 @@ class MockEngine:
         self.calls: list[dict] = []
 
     def run(self, *, source: str, out_dir: Path, options: dict, brand_name: Optional[str],
-            watermark_text: Optional[str], recent_memes: Sequence[str], on_stage: StageCallback) -> dict:
+            watermark_text: Optional[str], recent_memes: Sequence[str], on_stage: StageCallback,
+            logo_path: Optional[str] = None, custom_memes: Sequence[str] = ()) -> dict:
         self.calls.append({"source": source, "options": dict(options), "watermark_text": watermark_text,
-                           "recent_memes": list(recent_memes)})
+                           "recent_memes": list(recent_memes), "logo_path": logo_path,
+                           "custom_memes": list(custom_memes)})
         for stage, progress in (("fetching", 0.1), ("transcribing", 0.3), ("selecting", 0.5), ("rendering", 0.7)):
             on_stage(stage, progress)
         if self.fail_with is not None:
@@ -90,7 +93,8 @@ class ClipperEngine:
     name = "clipper"
 
     def run(self, *, source: str, out_dir: Path, options: dict, brand_name: Optional[str],
-            watermark_text: Optional[str], recent_memes: Sequence[str], on_stage: StageCallback) -> dict:
+            watermark_text: Optional[str], recent_memes: Sequence[str], on_stage: StageCallback,
+            logo_path: Optional[str] = None, custom_memes: Sequence[str] = ()) -> dict:
         # The owner's growth-loop .env must never configure a customer job (it carries their cookies,
         # keys and turns real uploads on). saas_serve.py sets this before anything imports app.*; this
         # is the second lock on the same door.
@@ -103,6 +107,8 @@ class ClipperEngine:
         except ImportError as exc:
             log.error("clipper engine unavailable: %s", exc)
             raise EngineError("engine_unavailable", "The clip engine is not available right now.", retryable=True)
+        # cache_dir also receives the source download and transcript, so it is per job (private, and
+        # removed by the worker afterwards), never a cache shared between customers.
         with metering.metered() as meter:
             try:
                 result = standalone.clip_to_directory(
@@ -111,7 +117,9 @@ class ClipperEngine:
                     broll=bool(options.get("broll", True)), memes=bool(options.get("memes", True)),
                     sfx=bool(options.get("sfx", True)), music=bool(options.get("music", False)),
                     max_clip_seconds=int(options.get("max_clip_seconds", 60)), brand_name=brand_name,
-                    watermark_text=watermark_text, recent_memes=tuple(recent_memes), on_stage=on_stage)
+                    watermark_text=watermark_text, recent_memes=tuple(recent_memes), on_stage=on_stage,
+                    logo_path=logo_path, custom_memes=tuple(custom_memes),
+                    cache_dir=Path(out_dir).parent / "work")
             except JobCanceled:
                 raise
             except Exception as exc:

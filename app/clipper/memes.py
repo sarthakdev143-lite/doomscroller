@@ -3,7 +3,7 @@
 Everything here is optional. No key, no results, a rate limit or a failed
 download all just mean fewer overlays, because the clip works without them.
 
-Tenor is preferred and Giphy is the fallback; both hand back an MP4 rendition
+Giphy is preferred (Google shut the Tenor API down on 2026-06-30); both hand back an MP4 rendition
 (ffmpeg overlays those with no loop handling, unlike GIFs). Searches are cached
 for 24 hours like stock footage, and the key travels in the URL, so the httpx
 logger stays at WARNING and errors must never include the URL.
@@ -34,7 +34,8 @@ log = logging.getLogger(__name__)
 # httpx logs every URL at INFO, and the meme keys travel in the URL.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-TENOR, GIPHY, MEMEGEN, LOCAL = "Tenor", "Giphy", "MemeGen", "Local"
+TENOR, GIPHY, MEMEGEN, LOCAL, CUSTOM = "Tenor", "Giphy", "MemeGen", "Local", "Custom"
+_CUSTOM_EXTS = frozenset({".mp4", ".webm", ".mov", ".gif", ".png", ".jpg", ".jpeg", ".webp"})
 _LOCAL_VIDEO_EXTS = frozenset({".mp4", ".webm", ".mov", ".gif"})
 _API_CACHE_PREFIXES = ("meme-", "giphy-", "tenor-", "memegen-")
 _TENOR_FEATURED_URL = "https://tenor.googleapis.com/v2/featured"
@@ -102,6 +103,8 @@ class MemeSession:
     failed_files: int = 0
     used: set[str] = field(default_factory=set)
     recent: set[str] = field(default_factory=set)
+    # A customer's own memes, offered before any library, with the same no-repeat rules.
+    custom: list["Candidate"] = field(default_factory=list)
     # Identity keys of memes placed, in order, for the caller to persist or return.
     placed: list[str] = field(default_factory=list)
 
@@ -212,11 +215,15 @@ def record_history(keys: Iterable[str], path: Optional[Path] = None) -> None:
 
 
 def provider() -> str:
-    """Tenor when there is a key, else Giphy, else keyless MemeGen templates."""
-    if settings.tenor_api_key:
-        return TENOR
+    """Giphy when there is a key, else Tenor, else keyless MemeGen templates.
+
+    Google shut the Tenor API down on 2026-06-30, so a Tenor key left in a .env must not shadow a working
+    Giphy one; Tenor is only tried when it is the sole key (and then fails cleanly, meaning no memes).
+    """
     if settings.giphy_api_key:
         return GIPHY
+    if settings.tenor_api_key:
+        return TENOR
     return MEMEGEN
 
 
@@ -503,13 +510,25 @@ def local_pack(language: str = "") -> list[Candidate]:
     return out
 
 
+def custom_candidates(paths) -> list[Candidate]:
+    """Candidates for a customer's uploaded memes (GIF, MP4, WebM, PNG...), in the order given."""
+    found: list[Candidate] = []
+    for raw in paths or ():
+        path = Path(str(raw)).expanduser()
+        if path.suffix.lower() not in _CUSTOM_EXTS or not path.is_file():
+            continue
+        digest = content_key(path).split(":")[-1] or _safe_meme_id(path.stem)
+        found.append(Candidate(f"custom-{digest}", str(path), path.stem.replace("_", " ").replace("-", " "), "", CUSTOM))
+    return found
+
+
 def has_local_pack(language: str = "") -> bool:
     return bool(local_pack(language))
 
 
 def fetch(query: str, seconds: float, *, exclude: Iterable[str] = (),
           choose: Optional[Callable[[list[Candidate]], list[Candidate]]] = None,
-          language: str = "") -> Optional[MemeClip]:
+          language: str = "", preferred: Iterable[Candidate] = ()) -> Optional[MemeClip]:
     """A local meme file for this overlay, or None if nothing suits.
 
     Checks owner-curated video memes in content/memes/ first (preserving native audio),
@@ -528,6 +547,11 @@ def fetch(query: str, seconds: float, *, exclude: Iterable[str] = (),
         digest = content_key(path)
         return not digest or digest not in skip
 
+    # A customer's own memes come first, whatever the mood: they chose them for their channel.
+    for cand in preferred:
+        p = Path(cand.link)
+        if fresh(cand) and p.is_file() and unseen(p) and _playable(p, seconds):
+            return MemeClip(meme_id=cand.meme_id, path=str(p), title=cand.title, provider=cand.provider)
     local_items = [c for c in local_pack(language) if fresh(c)]
     if query and local_items:
         # Only owner files whose names fit this reaction: an unrelated one would be worse than none.

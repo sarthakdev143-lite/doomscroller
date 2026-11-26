@@ -165,6 +165,13 @@ def mood_sting(mood: str, seed: str, *, language: str = "", exclude: Sequence[st
         return None
     skip = {str(Path(p).resolve()).lower() for p in exclude if p}
     pool = list(trending(language=language).values())
+    if _norm_lang(language) != "hi":
+        # The language folder comes first, then the shared trending/ pack (never a Hindi-only sound): an
+        # English pack with no laugh in it should still find trending/haha-laugh-funny-moment.mp3.
+        root = pack_dir()
+        hindi = {p.stem for p in _iter_usable(root / "hi")}
+        known = {p.resolve() for p in pool}
+        pool += [p for p in _iter_usable(root / "trending") if p.stem not in hindi and p.resolve() not in known]
     for word in words:
         fits = [p for p in pool if word in p.stem.lower() and str(p.resolve()).lower() not in skip]
         if fits:

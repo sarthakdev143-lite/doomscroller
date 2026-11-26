@@ -31,6 +31,12 @@
     {% else %}<tr class="adm-empty-row"><td colspan="8">No users match.</td></tr>{% endfor %}
     </tbody></table></div>
 </section>
-{{ ui.pager(page, 1000 if rows|length == 50 else page, qs) }}
+{% if page > 1 or rows|length == 50 %}
+<nav class="adm-pager" aria-label="Pages">
+  {% if page > 1 %}<a href="{{ qs(page=page - 1) }}">← Newer</a>{% endif %}
+  <span>Page {{ page }}</span>
+  {% if rows|length == 50 %}<a href="{{ qs(page=page + 1) }}">Older →</a>{% endif %}
+</nav>
+{% endif %}
 {% endif %}
 {% endblock %}

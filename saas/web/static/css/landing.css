@@ -792,96 +792,15 @@
   margin-top: var(--space-4);
 }
 
-.price-tables {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: var(--space-6);
-  max-width: 52rem;
-  margin-top: var(--space-7);
-}
-
-.price-table h3 {
-  margin-bottom: var(--space-3);
-}
-
-.price-table h3 .muted {
-  font-weight: 400;
-  margin-left: var(--space-2);
-}
-
-.price-table__foot {
-  margin-top: var(--space-3);
-  font-size: var(--text-sm);
-  color: var(--ink-3);
-}
-
-.table__note {
-  display: block;
-  font-weight: 400;
-  color: var(--ink-3);
-  font-size: var(--text-xs);
-  margin-top: 2px;
-}
-
-.price-pending {
-  margin-top: var(--space-7);
-  padding-top: var(--space-4);
-  border-top: 2px solid var(--ink);
-  max-width: 44rem;
-}
-
-.price-pending__title {
-  font-size: var(--text-xl);
-  font-weight: 750;
-  font-stretch: var(--stretch-heading);
-}
-
-/* Worked examples of the rounding rule. */
-.receipt {
-  width: 100%;
-  max-width: 44rem;
-  margin-top: var(--space-7);
-  border-collapse: collapse;
-  font-size: var(--text-sm);
-}
-
-.receipt caption {
-  text-align: left;
-  font-weight: 650;
-  padding-bottom: var(--space-3);
-  border-bottom: 2px solid var(--ink);
-}
-
-.receipt th,
-.receipt td {
-  padding: var(--space-3) 0;
-  border-bottom: var(--border);
-  text-align: left;
-  font-weight: 400;
-}
-
-.receipt thead th {
-  color: var(--ink-3);
-  font-size: var(--text-xs);
-}
-
-.receipt .num {
-  text-align: right;
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
-  padding-left: var(--space-5);
-}
-
-.receipt strong {
-  font-weight: 500;
-  background: var(--accent);
-  padding: 0.1em 0.35em;
-}
-
 .pricing__free {
   margin-top: var(--space-5);
   max-width: 44rem;
   color: var(--ink-2);
+}
+
+.pricing__more {
+  margin-top: var(--space-5);
+  font-weight: 650;
 }
 
 /* ---- API (the one dark band) ----------------------------------------------------------------- */

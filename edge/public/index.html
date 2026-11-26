@@ -1,0 +1,697 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>doomscroller: long videos into finished Shorts, priced by the minute</title>
+  <meta name="description" content="Turn a long video into publish-ready Shorts: cut on sentence boundaries, captioned word by word, framed on the speaker, with title, description, hashtags and thumbnail. Priced per minute of source video.">
+  <link rel="canonical" href="https://doomscroller.pages.dev/">
+  
+  <meta name="theme-color" content="#f4f4f0">
+
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="doomscroller">
+  <meta property="og:title" content="doomscroller: long videos into finished Shorts, priced by the minute">
+  <meta property="og:description" content="Turn a long video into publish-ready Shorts: cut on sentence boundaries, captioned word by word, framed on the speaker, with title, description, hashtags and thumbnail. Priced per minute of source video.">
+  <meta property="og:url" content="https://doomscroller.pages.dev/">
+  <meta property="og:image" content="https://doomscroller.pages.dev/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="doomscroller: Shorts that end where the sentence ends.">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="doomscroller: long videos into finished Shorts, priced by the minute">
+  <meta name="twitter:description" content="Turn a long video into publish-ready Shorts: cut on sentence boundaries, captioned word by word, framed on the speaker, with title, description, hashtags and thumbnail. Priced per minute of source video.">
+  <meta name="twitter:image" content="https://doomscroller.pages.dev/og.png">
+
+  <link rel="icon" href="/favicon.ico" sizes="48x48">
+  <link rel="icon" href="/static/icons/icon.svg?v=0b9ef38bb7" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png?v=c93a504d34">
+  <link rel="manifest" href="/site.webmanifest">
+
+  
+  <link rel="preload" href="/static/fonts/archivo-latin-wdth-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/static/fonts/ibm-plex-mono-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/static/css/tokens.css?v=05b3e06252">
+  <link rel="stylesheet" href="/static/css/base.css?v=e29f3bd798">
+  <link rel="stylesheet" href="/static/css/components.css?v=d3be943212">
+  <link rel="stylesheet" href="/static/css/landing.css?v=da7e67c744">
+  
+
+
+
+  
+  
+  
+  
+  
+  
+  <script type="module" src="/static/js/site.js?v=a47487ae7d"></script>
+  
+<script type="module" src="/static/js/waitlist.js?v=ddfd3f554c"></script>
+<script type="module" src="/static/js/landing.js?v=ce1f67f671"></script>
+
+</head>
+<body class="page-landing">
+  <a class="skip-link" href="#main" data-track="skip-to-content">Skip to content</a>
+  
+<header class="site-header" data-site-header>
+  <div class="wrap site-header__inner">
+    <a class="wordmark" href="/" data-track="nav-home" aria-label="doomscroller home"><svg viewBox="0 0 18 32" aria-hidden="true" focusable="false"><rect width="18" height="32" rx="3" fill="#111"/><rect x="3" y="20" width="12" height="4" fill="#ffe500"/><rect x="0" y="0" width="7" height="1.6" fill="#ffe500"/></svg><span>doomscroller</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <div class="site-nav__links" id="site-menu">
+        <a href="/#how" data-track="nav-how">How it works</a>
+        <a href="/#clip" data-track="nav-clip">What you get</a>
+        <a href="/pricing" data-track="nav-pricing">Pricing</a>
+        <a href="/#api" data-track="nav-api">API</a>
+        <a href="/#faq" data-track="nav-faq">FAQ</a>
+      </div>
+      
+      <a class="btn btn--sm" href="/#join" data-track="nav-cta-waitlist">Join the waitlist</a>
+      
+      <button class="icon-btn menu-btn" type="button" aria-expanded="false" aria-controls="site-menu" data-menu-toggle data-track="nav-menu-toggle">
+        <span class="visually-hidden">Menu</span>
+        <svg viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 6h14M3 10h14M3 14h14"/></svg>
+      </button>
+    </nav>
+  </div>
+</header>
+  <main id="main" tabindex="-1">
+    
+
+
+<section class="hero" data-track-section="hero" aria-labelledby="hero-title">
+  <div class="wrap hero__grid">
+    <div class="hero__copy">
+      <h1 id="hero-title">Shorts that end where the <span class="mark">sentence&nbsp;ends.</span></h1>
+      <p class="lede hero__lede">Paste a link to a long video, or upload one. doomscroller picks the moments worth posting,
+        cuts them on sentence boundaries, captions them word by word and keeps the speaker in frame. Each Short
+        comes back ready to publish: the MP4, a title, description, hashtags, a thumbnail and suggested times to post.</p>
+      
+      <div class="hero__form"><form class="waitlist" id="wl-hero" action="/api/waitlist" method="post"
+      data-waitlist-form data-form-id="hero" data-clarity-mask="True" novalidate>
+  
+  <label class="label" for="wl-hero-email">Your email</label>
+  <div class="inline-form">
+    <input class="input" id="wl-hero-email" name="email" type="email" autocomplete="email" inputmode="email"
+           required maxlength="254" placeholder="you@example.com" aria-describedby="wl-hero-error" data-track-mask>
+    <button class="btn btn--accent" type="submit" data-track="waitlist-submit-hero">
+      <span class="spinner" aria-hidden="true"></span><span data-label>Join the waitlist</span>
+    </button>
+  </div>
+  
+
+  <input type="hidden" name="ref" value="">
+  
+  <input type="hidden" name="ts" value="1795731818185">
+  <div class="hp" aria-hidden="true">
+    <label for="wl-hero-website">Leave this empty</label>
+    <input id="wl-hero-website" name="website" type="text" tabindex="-1" autocomplete="off">
+  </div>
+  
+  <p class="error-text" id="wl-hero-error" data-form-error role="alert"></p>
+</form></div>
+      
+      <p class="hero__fine">Opening in batches from the waitlist. Free for your first 10 Shorts or 10 minutes of video, whichever comes first. After that you pay per minute of source video, however many clips you take from it.</p>
+    </div>
+
+    <figure class="hero__demo" data-demo>
+      <div class="hero__demo-head">
+        <span>Clip 1 of 3</span>
+        <span class="mono tabular"><span data-demo-clock>0:00.0</span> / 0:15.6</span>
+      </div>
+      <div class="clip clip--focus-a clip--live" data-demo-frame>
+  <div class="clip__backdrop"><svg class="scene " viewBox="0 0 160 90" preserveAspectRatio="xMidYMid slice" aria-hidden="true" focusable="false">
+  <rect width="160" height="90" fill="#3a4344"/>
+  <rect x="0" y="0" width="160" height="58" fill="#414b4c"/>
+  <rect x="64" y="8" width="13" height="40" rx="1.5" fill="#4b5658"/>
+  <rect x="80" y="8" width="13" height="40" rx="1.5" fill="#4b5658"/>
+  <rect x="8" y="14" width="30" height="2" fill="#2f3637"/>
+  <rect x="12" y="7" width="5" height="7" fill="#7a6a55"/>
+  <rect x="19" y="9" width="4" height="5" fill="#5d6b5c"/>
+  <rect x="25" y="6" width="6" height="8" fill="#8a7d6b"/>
+  <rect x="124" y="14" width="28" height="2" fill="#2f3637"/>
+  <rect x="128" y="8" width="7" height="6" fill="#6f6250"/>
+  <rect x="139" y="10" width="9" height="4" fill="#556163"/>
+  <!-- speaker A -->
+  <path d="M25 90 V63 a13 13 0 0 1 13 -13 h12 a13 13 0 0 1 13 13 V90 z" fill="#c4b196"/>
+  <rect x="41" y="45" width="6" height="7" fill="#a97c5f"/>
+  <circle cx="44" cy="39" r="9" fill="#b4876a"/>
+  <path d="M35 38 a9 9 0 0 1 18 0 c0 -3 -3 -9 -9 -9 s-9 6 -9 9z" fill="#2b2420"/>
+  <path d="M64 20 L57 44" stroke="#151515" stroke-width="1.6"/>
+  <rect x="53" y="42" width="7" height="11" rx="3.5" fill="#151515"/>
+  <!-- speaker B -->
+  <path d="M97 90 V65 a13 13 0 0 1 13 -13 h12 a13 13 0 0 1 13 13 V90 z" fill="#5d7584"/>
+  <rect x="113" y="47" width="6" height="7" fill="#6f4a35"/>
+  <circle cx="116" cy="41" r="9" fill="#7a523d"/>
+  <path d="M107 40 a9 9 0 0 1 18 0 c0 -6 -4 -10 -9 -10 s-9 4 -9 10z" fill="#1d1a18"/>
+  <path d="M96 20 L103 46" stroke="#151515" stroke-width="1.6"/>
+  <rect x="100" y="44" width="7" height="11" rx="3.5" fill="#151515"/>
+  <!-- desk -->
+  <rect x="0" y="74" width="160" height="16" fill="#1c1d1d"/>
+  <rect x="0" y="74" width="160" height="1.2" fill="#2a2c2c"/>
+</svg></div>
+  <div class="clip__picture"><div class="clip__cam" data-demo-cam><svg class="scene " viewBox="0 0 160 90" preserveAspectRatio="xMidYMid slice" aria-hidden="true" focusable="false">
+  <rect width="160" height="90" fill="#3a4344"/>
+  <rect x="0" y="0" width="160" height="58" fill="#414b4c"/>
+  <rect x="64" y="8" width="13" height="40" rx="1.5" fill="#4b5658"/>
+  <rect x="80" y="8" width="13" height="40" rx="1.5" fill="#4b5658"/>
+  <rect x="8" y="14" width="30" height="2" fill="#2f3637"/>
+  <rect x="12" y="7" width="5" height="7" fill="#7a6a55"/>
+  <rect x="19" y="9" width="4" height="5" fill="#5d6b5c"/>
+  <rect x="25" y="6" width="6" height="8" fill="#8a7d6b"/>
+  <rect x="124" y="14" width="28" height="2" fill="#2f3637"/>
+  <rect x="128" y="8" width="7" height="6" fill="#6f6250"/>
+  <rect x="139" y="10" width="9" height="4" fill="#556163"/>
+  <!-- speaker A -->
+  <path d="M25 90 V63 a13 13 0 0 1 13 -13 h12 a13 13 0 0 1 13 13 V90 z" fill="#c4b196"/>
+  <rect x="41" y="45" width="6" height="7" fill="#a97c5f"/>
+  <circle cx="44" cy="39" r="9" fill="#b4876a"/>
+  <path d="M35 38 a9 9 0 0 1 18 0 c0 -3 -3 -9 -9 -9 s-9 6 -9 9z" fill="#2b2420"/>
+  <path d="M64 20 L57 44" stroke="#151515" stroke-width="1.6"/>
+  <rect x="53" y="42" width="7" height="11" rx="3.5" fill="#151515"/>
+  <!-- speaker B -->
+  <path d="M97 90 V65 a13 13 0 0 1 13 -13 h12 a13 13 0 0 1 13 13 V90 z" fill="#5d7584"/>
+  <rect x="113" y="47" width="6" height="7" fill="#6f4a35"/>
+  <circle cx="116" cy="41" r="9" fill="#7a523d"/>
+  <path d="M107 40 a9 9 0 0 1 18 0 c0 -6 -4 -10 -9 -10 s-9 4 -9 10z" fill="#1d1a18"/>
+  <path d="M96 20 L103 46" stroke="#151515" stroke-width="1.6"/>
+  <rect x="100" y="44" width="7" height="11" rx="3.5" fill="#151515"/>
+  <!-- desk -->
+  <rect x="0" y="74" width="160" height="16" fill="#1c1d1d"/>
+  <rect x="0" y="74" width="160" height="1.2" fill="#2a2c2c"/>
+</svg></div></div>
+  <div class="clip__progress"><span class="clip__bar clip__bar--early" data-demo-progress></span></div>
+  <p class="clip__hook" data-demo-hook><span>The first 100 videos are practice</span></p>
+  
+  <p class="clip__credit">Credit: @yourchannel</p>
+  <p class="clip__caption caption-type" data-demo-caption><span class="is-active">Nobody</span> <span class="">tells</span> <span class="">you</span></p>
+  
+</div>
+      <div class="hero__demo-foot">
+        <span class="mono tabular" aria-label="Cut from 14:02.3 to 14:17.9 of the source">14:02.3 &rarr; 14:17.9</span>
+        <button class="btn btn--ghost btn--sm" type="button" data-demo-toggle hidden data-track="demo-toggle">Pause</button>
+      </div>
+      <figcaption class="visually-hidden">A finished clip playing: the hook title shows for the first seconds, captions light up one word at a time, and the picture moves in on whichever person is speaking.</figcaption>
+    </figure>
+  </div>
+
+  
+  <div class="wrap">
+    <div class="source" data-demo-source>
+      <div class="source__head">
+        <p class="source__file"><span class="source__label">Source</span> <span class="mono">episode-41-final.mp4</span></p>
+        <dl class="source__facts">
+          <div><dt>Length</dt><dd class="mono tabular">1:12:40</dd></div>
+          <div><dt>Clips</dt><dd class="mono tabular">3</dd></div>
+          <div><dt>Charged</dt><dd class="mono tabular"><strong>73 min</strong></dd></div>
+        </dl>
+      </div>
+
+      <div class="source__scale mono" aria-hidden="true"><span>0:00</span><span>18:10</span><span>36:20</span><span>54:30</span><span>1:12:40</span></div>
+      <div class="source__track">
+        <svg class="source__wave" viewBox="0 0 1100 60" preserveAspectRatio="none" aria-hidden="true" focusable="false">
+          <rect class="source__seg" x="212.5" y="0" width="6.0" height="60"/><rect class="source__seg" x="473.8" y="0" width="8.7" height="60"/><rect class="source__seg" x="888.1" y="0" width="14.3" height="60"/>
+          <g class="source__bars"><rect x="0" y="14.8" width="3" height="30.5"/><rect x="5" y="13.2" width="3" height="33.6"/><rect x="10" y="16.2" width="3" height="27.5"/><rect x="15" y="21.4" width="3" height="17.2"/><rect x="20" y="24.6" width="3" height="10.9"/><rect x="25" y="23.1" width="3" height="13.9"/><rect x="30" y="17.9" width="3" height="24.1"/><rect x="35" y="13.1" width="3" height="33.8"/><rect x="40" y="11.8" width="3" height="36.4"/><rect x="45" y="14.1" width="3" height="31.8"/><rect x="50" y="16.9" width="3" height="26.1"/><rect x="55" y="17.0" width="3" height="26.0"/><rect x="60" y="13.6" width="3" height="32.9"/><rect x="65" y="9.4" width="3" height="41.3"/><rect x="70" y="8.4" width="3" height="43.2"/><rect x="75" y="12.4" width="3" height="35.3"/><rect x="80" y="19.2" width="3" height="21.5"/><rect x="85" y="24.9" width="3" height="10.3"/><rect x="90" y="26.1" width="3" height="7.8"/><rect x="95" y="23.6" width="3" height="12.7"/><rect x="100" y="20.9" width="3" height="18.3"/><rect x="105" y="21.1" width="3" height="17.9"/><rect x="110" y="24.6" width="3" height="10.8"/><rect x="115" y="27.8" width="3" height="4.5"/><rect x="120" y="27.8" width="3" height="4.5"/><rect x="125" y="25.8" width="3" height="8.5"/><rect x="130" y="20.6" width="3" height="18.7"/><rect x="135" y="18.1" width="3" height="23.8"/><rect x="140" y="20.2" width="3" height="19.5"/><rect x="145" y="25.6" width="3" height="8.7"/><rect x="150" y="27.8" width="3" height="4.5"/><rect x="155" y="27.8" width="3" height="4.5"/><rect x="160" y="27.4" width="3" height="5.2"/><rect x="165" y="23.4" width="3" height="13.2"/><rect x="170" y="22.1" width="3" height="15.7"/><rect x="175" y="24.3" width="3" height="11.4"/><rect x="180" y="27.0" width="3" height="6.0"/><rect x="185" y="26.6" width="3" height="6.7"/><rect x="190" y="21.9" width="3" height="16.3"/><rect x="195" y="14.9" width="3" height="30.1"/><rect x="200" y="10.2" width="3" height="39.5"/><rect x="205" y="10.4" width="3" height="39.3"/><rect x="210" y="14.4" width="3" height="31.2"/><rect x="215" y="18.5" width="3" height="23.0"/><rect x="220" y="19.4" width="3" height="21.3"/><rect x="225" y="16.8" width="3" height="26.5"/><rect x="230" y="13.7" width="3" height="32.6"/><rect x="235" y="13.6" width="3" height="32.8"/><rect x="240" y="17.2" width="3" height="25.5"/><rect x="245" y="22.1" width="3" height="15.9"/><rect x="250" y="24.0" width="3" height="12.0"/><rect x="255" y="21.3" width="3" height="17.4"/><rect x="260" y="15.9" width="3" height="28.2"/><rect x="265" y="11.9" width="3" height="36.3"/><rect x="270" y="12.3" width="3" height="35.4"/><rect x="275" y="16.6" width="3" height="26.7"/><rect x="280" y="21.5" width="3" height="17.0"/><rect x="285" y="23.2" width="3" height="13.5"/><rect x="290" y="21.4" width="3" height="17.1"/><rect x="295" y="18.9" width="3" height="22.1"/><rect x="300" y="19.1" width="3" height="21.7"/><rect x="305" y="23.2" width="3" height="13.5"/><rect x="310" y="27.8" width="3" height="4.5"/><rect x="315" y="27.8" width="3" height="4.5"/><rect x="320" y="27.8" width="3" height="4.5"/><rect x="325" y="23.8" width="3" height="12.5"/><rect x="330" y="18.6" width="3" height="22.9"/><rect x="335" y="17.2" width="3" height="25.5"/><rect x="340" y="19.9" width="3" height="20.3"/><rect x="345" y="23.1" width="3" height="13.9"/><rect x="350" y="23.6" width="3" height="12.9"/><rect x="355" y="20.5" width="3" height="19.0"/><rect x="360" y="16.6" width="3" height="26.7"/><rect x="365" y="15.7" width="3" height="28.6"/><rect x="370" y="19.1" width="3" height="21.8"/><rect x="375" y="24.7" width="3" height="10.6"/><rect x="380" y="27.8" width="3" height="4.5"/><rect x="385" y="27.1" width="3" height="5.7"/><rect x="390" y="22.2" width="3" height="15.5"/><rect x="395" y="17.3" width="3" height="25.4"/><rect x="400" y="15.8" width="3" height="28.3"/><rect x="405" y="18.2" width="3" height="23.6"/><rect x="410" y="21.4" width="3" height="17.1"/><rect x="415" y="22.1" width="3" height="15.9"/><rect x="420" y="19.1" width="3" height="21.9"/><rect x="425" y="15.0" width="3" height="30.0"/><rect x="430" y="13.6" width="3" height="32.7"/><rect x="435" y="17.0" width="3" height="26.0"/><rect x="440" y="23.1" width="3" height="13.8"/><rect x="445" y="27.8" width="3" height="4.5"/><rect x="450" y="27.8" width="3" height="4.5"/><rect x="455" y="24.1" width="3" height="11.7"/><rect x="460" y="19.6" width="3" height="20.8"/><rect x="465" y="17.9" width="3" height="24.1"/><rect x="470" y="19.9" width="3" height="20.2"/><rect x="475" y="22.6" width="3" height="14.7"/><rect x="480" y="22.8" width="3" height="14.4"/><rect x="485" y="18.9" width="3" height="22.1"/><rect x="490" y="13.6" width="3" height="32.8"/><rect x="495" y="10.8" width="3" height="38.5"/><rect x="500" y="12.7" width="3" height="34.6"/><rect x="505" y="18.1" width="3" height="23.7"/><rect x="510" y="23.1" width="3" height="13.8"/><rect x="515" y="24.1" width="3" height="11.8"/><rect x="520" y="21.1" width="3" height="17.8"/><rect x="525" y="17.3" width="3" height="25.4"/><rect x="530" y="16.2" width="3" height="27.6"/><rect x="535" y="18.8" width="3" height="22.5"/><rect x="540" y="22.4" width="3" height="15.1"/><rect x="545" y="23.5" width="3" height="13.0"/><rect x="550" y="20.4" width="3" height="19.1"/><rect x="555" y="15.3" width="3" height="29.3"/><rect x="560" y="12.2" width="3" height="35.5"/><rect x="565" y="14.0" width="3" height="32.0"/><rect x="570" y="19.6" width="3" height="20.7"/><rect x="575" y="25.4" width="3" height="9.1"/><rect x="580" y="27.8" width="3" height="4.5"/><rect x="585" y="26.1" width="3" height="7.7"/><rect x="590" y="23.4" width="3" height="13.3"/><rect x="595" y="22.9" width="3" height="14.1"/><rect x="600" y="26.1" width="3" height="7.9"/><rect x="605" y="27.8" width="3" height="4.5"/><rect x="610" y="27.8" width="3" height="4.5"/><rect x="615" y="27.8" width="3" height="4.5"/><rect x="620" y="22.4" width="3" height="15.2"/><rect x="625" y="17.4" width="3" height="25.2"/><rect x="630" y="16.8" width="3" height="26.5"/><rect x="635" y="20.2" width="3" height="19.6"/><rect x="640" y="24.2" width="3" height="11.6"/><rect x="645" y="25.1" width="3" height="9.7"/><rect x="650" y="22.4" width="3" height="15.3"/><rect x="655" y="18.3" width="3" height="23.4"/><rect x="660" y="16.7" width="3" height="26.6"/><rect x="665" y="18.9" width="3" height="22.1"/><rect x="670" y="22.9" width="3" height="14.2"/><rect x="675" y="24.5" width="3" height="11.0"/><rect x="680" y="21.4" width="3" height="17.1"/><rect x="685" y="15.1" width="3" height="29.8"/><rect x="690" y="9.4" width="3" height="41.2"/><rect x="695" y="7.9" width="3" height="44.2"/><rect x="700" y="10.8" width="3" height="38.4"/><rect x="705" y="14.9" width="3" height="30.1"/><rect x="710" y="16.7" width="3" height="26.6"/><rect x="715" y="15.0" width="3" height="30.0"/><rect x="720" y="12.3" width="3" height="35.4"/><rect x="725" y="12.1" width="3" height="35.7"/><rect x="730" y="16.2" width="3" height="27.5"/><rect x="735" y="22.6" width="3" height="14.7"/><rect x="740" y="27.2" width="3" height="5.6"/><rect x="745" y="27.1" width="3" height="5.9"/><rect x="750" y="22.9" width="3" height="14.2"/><rect x="755" y="18.6" width="3" height="22.8"/><rect x="760" y="17.8" width="3" height="24.5"/><rect x="765" y="20.9" width="3" height="18.3"/><rect x="770" y="25.2" width="3" height="9.6"/><rect x="775" y="27.1" width="3" height="5.9"/><rect x="780" y="25.1" width="3" height="9.7"/><rect x="785" y="21.7" width="3" height="16.6"/><rect x="790" y="20.5" width="3" height="19.0"/><rect x="795" y="23.6" width="3" height="12.8"/><rect x="800" y="27.8" width="3" height="4.5"/><rect x="805" y="26.4" width="3" height="7.1"/><rect x="810" y="26.9" width="3" height="6.3"/><rect x="815" y="27.8" width="3" height="4.5"/><rect x="820" y="22.6" width="3" height="14.8"/><rect x="825" y="19.7" width="3" height="20.6"/><rect x="830" y="20.6" width="3" height="18.8"/><rect x="835" y="22.9" width="3" height="14.3"/><rect x="840" y="22.9" width="3" height="14.3"/><rect x="845" y="19.1" width="3" height="21.8"/><rect x="850" y="13.7" width="3" height="32.6"/><rect x="855" y="10.6" width="3" height="38.9"/><rect x="860" y="12.2" width="3" height="35.6"/><rect x="865" y="17.4" width="3" height="25.3"/><rect x="870" y="22.1" width="3" height="15.7"/><rect x="875" y="23.0" width="3" height="14.0"/><rect x="880" y="19.6" width="3" height="20.7"/><rect x="885" y="15.2" width="3" height="29.6"/><rect x="890" y="13.4" width="3" height="33.2"/><rect x="895" y="15.4" width="3" height="29.2"/><rect x="900" y="18.9" width="3" height="22.1"/><rect x="905" y="20.4" width="3" height="19.2"/><rect x="910" y="17.9" width="3" height="24.2"/><rect x="915" y="13.2" width="3" height="33.5"/><rect x="920" y="10.5" width="3" height="39.0"/><rect x="925" y="12.4" width="3" height="35.1"/><rect x="930" y="18.4" width="3" height="23.2"/><rect x="935" y="24.6" width="3" height="10.9"/><rect x="940" y="27.1" width="3" height="5.7"/><rect x="945" y="25.4" width="3" height="9.1"/><rect x="950" y="22.1" width="3" height="15.7"/><rect x="955" y="21.0" width="3" height="18.0"/><rect x="960" y="23.4" width="3" height="13.3"/><rect x="965" y="27.2" width="3" height="5.6"/><rect x="970" y="27.8" width="3" height="4.5"/><rect x="975" y="25.8" width="3" height="8.4"/><rect x="980" y="20.0" width="3" height="20.0"/><rect x="985" y="15.3" width="3" height="29.3"/><rect x="990" y="15.2" width="3" height="29.7"/><rect x="995" y="19.2" width="3" height="21.6"/><rect x="1000" y="24.1" width="3" height="11.7"/><rect x="1005" y="26.1" width="3" height="7.7"/><rect x="1010" y="24.1" width="3" height="11.8"/><rect x="1015" y="20.4" width="3" height="19.1"/><rect x="1020" y="18.9" width="3" height="22.2"/><rect x="1025" y="21.1" width="3" height="17.8"/><rect x="1030" y="25.1" width="3" height="9.7"/><rect x="1035" y="27.1" width="3" height="5.7"/><rect x="1040" y="24.7" width="3" height="10.6"/><rect x="1045" y="18.9" width="3" height="22.3"/><rect x="1050" y="13.6" width="3" height="32.9"/><rect x="1055" y="12.4" width="3" height="35.1"/><rect x="1060" y="15.8" width="3" height="28.4"/><rect x="1065" y="20.6" width="3" height="18.7"/><rect x="1070" y="23.0" width="3" height="14.0"/><rect x="1075" y="21.6" width="3" height="16.7"/><rect x="1080" y="18.6" width="3" height="22.8"/><rect x="1085" y="17.6" width="3" height="24.8"/><rect x="1090" y="20.4" width="3" height="19.1"/><rect x="1095" y="25.6" width="3" height="8.9"/></g>
+        </svg>
+        <span class="source__pin" data-pos-x="19.319" data-pos-w="0.545" aria-hidden="true">1</span><span class="source__pin" data-pos-x="43.073" data-pos-w="0.789" aria-hidden="true">2</span><span class="source__pin" data-pos-x="80.736" data-pos-w="1.303" aria-hidden="true">3</span>
+      </div>
+
+      <div class="zoom" data-zoom data-pos-x="19.319" data-pos-w="0.545" aria-hidden="true"></div>
+
+      <div class="sentences-wrap">
+        <ol class="sentences" role="list" aria-label="Clip 1, sentence by sentence">
+          <li class="sentence is-out"><span class="sentence__meta mono">213 &middot; Guest</span><p>&hellip;which was most of year two, honestly.</p></li>
+          <li class="sentence__cut" aria-hidden="true"><span class="mono">IN 14:02.3</span></li>
+          <li class="sentence is-in" data-demo-sentence data-speaker="a"><span class="sentence__meta mono">214 &middot; Host</span><p>Nobody tells you the first hundred videos are practice.</p></li>
+          <li class="sentence is-in" data-demo-sentence data-speaker="b"><span class="sentence__meta mono">215 &middot; Guest</span><p>So what changed at video one hundred and one?</p></li>
+          <li class="sentence is-in" data-demo-sentence data-speaker="a"><span class="sentence__meta mono">216 &middot; Host</span><p>I stopped guessing what people wanted,</p></li>
+          <li class="sentence is-in" data-demo-sentence data-speaker="a"><span class="sentence__meta mono">217 &middot; Host</span><p>and started reading where they stopped watching.</p></li>
+          <li class="sentence__cut" aria-hidden="true"><span class="mono">OUT 14:17.9</span></li>
+          <li class="sentence is-out"><span class="sentence__meta mono">218 &middot; Guest</span><p>Wait, where do they stop?</p></li>
+        </ol>
+      </div>
+
+      <div class="source__foot">
+        <p class="sentences__note"><strong>Clip 1, sentence by sentence.</strong> The model answers with sentence numbers, not timestamps, so a cut can only fall between two sentences.</p>
+        <ol class="source__clips" role="list" aria-label="Clips cut from this source">
+          
+          <li><span class="badge badge--accent">1</span>
+            <span class="mono tabular">14:02.3 &rarr; 14:17.9</span>
+            <span class="mono tabular muted">15.6s</span></li>
+          
+          <li><span class="badge badge--accent">2</span>
+            <span class="mono tabular">31:18.0 &rarr; 31:52.4</span>
+            <span class="mono tabular muted">34.4s</span></li>
+          
+          <li><span class="badge badge--accent">3</span>
+            <span class="mono tabular">58:40.1 &rarr; 59:36.9</span>
+            <span class="mono tabular muted">56.8s</span></li>
+          
+        </ol>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<section class="section" id="how" data-track-section="how-it-works" aria-labelledby="how-title">
+  <div class="wrap grid">
+    <p class="rubric">How it works</p>
+    <div class="story">
+      <h2 id="how-title">From a link to clips you can post.</h2>
+      <ol class="steps" role="list">
+        <li class="step">
+          <span class="step__n mono">01</span>
+          <h3 class="step__title">Paste a link, or upload the file.</h3>
+          <div class="step__body">
+            <p>Links from YouTube, Vimeo, Twitch, Loom, X, TikTok, Instagram, Facebook, Google Drive, Dropbox, Rumble and Kick, or a file up to 2 GB.
+              Before anything runs you see the length and what it will cost.</p>
+            <p class="step__detail">Only send video you made or have permission to use.</p>
+          </div>
+        </li>
+        <li class="step">
+          <span class="step__n mono">02</span>
+          <h3 class="step__title">It is transcribed, word by word.</h3>
+          <div class="step__body">
+            <p>Every word gets its own timestamp. English and Hindi are captioned. When nobody is talking,
+              the video is read for motion, loudness and scene changes instead.</p>
+          </div>
+        </li>
+        <li class="step">
+          <span class="step__n mono">03</span>
+          <h3 class="step__title">The moments are chosen by sentence.</h3>
+          <div class="step__body">
+            <p>The transcript goes to the model as numbered sentences and comes back as sentence numbers,
+              so no clip starts or stops halfway through one.</p>
+            <p class="step__detail">You set how many clips (1 to 20) and the longest a clip may run (15 to 90 seconds).</p>
+          </div>
+        </li>
+        <li class="step">
+          <span class="step__n mono">04</span>
+          <h3 class="step__title">Each one is edited, not just trimmed.</h3>
+          <div class="step__body">
+            <p>Weak sentences are dropped. Stutters, filler words and long pauses are cut. The framing changes every
+              1 to 2.4 seconds and stays on whoever is speaking. Emphasis gets a flash, a shake and a thud.</p>
+          </div>
+        </li>
+        <li class="step">
+          <span class="step__n mono">05</span>
+          <h3 class="step__title">You edit in the browser, then download.</h3>
+          <div class="step__body">
+            <p>Adjust each clip before you take it, add your own logo and memes, and rewrite the title, description
+              and hashtags. Then download the package and post it yourself, wherever you post.</p>
+            <p class="step__detail">Each package: the MP4, a thumbnail, the text, and suggested times to post.</p>
+          </div>
+        </li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+
+<section class="section anatomy" id="clip" data-track-section="clip-anatomy" aria-labelledby="clip-title">
+  <div class="wrap grid">
+    <p class="rubric">What you get</p>
+    <div class="story">
+      <h2 id="clip-title">Every Short comes back ready to publish, not as a rough cut.</h2>
+      <p class="lede">A 1080&times;1920 MP4 with stereo sound for Shorts, Reels or TikTok, plus everything you need to post it.
+        This is what is in one.</p>
+
+      <div class="anatomy__body">
+        <figure class="anatomy__figure">
+          <div class="clip clip--focus-b">
+  <div class="clip__backdrop"><svg class="scene " viewBox="0 0 160 90" preserveAspectRatio="xMidYMid slice" aria-hidden="true" focusable="false">
+  <rect width="160" height="90" fill="#3a4344"/>
+  <rect x="0" y="0" width="160" height="58" fill="#414b4c"/>
+  <rect x="64" y="8" width="13" height="40" rx="1.5" fill="#4b5658"/>
+  <rect x="80" y="8" width="13" height="40" rx="1.5" fill="#4b5658"/>
+  <rect x="8" y="14" width="30" height="2" fill="#2f3637"/>
+  <rect x="12" y="7" width="5" height="7" fill="#7a6a55"/>
+  <rect x="19" y="9" width="4" height="5" fill="#5d6b5c"/>
+  <rect x="25" y="6" width="6" height="8" fill="#8a7d6b"/>
+  <rect x="124" y="14" width="28" height="2" fill="#2f3637"/>
+  <rect x="128" y="8" width="7" height="6" fill="#6f6250"/>
+  <rect x="139" y="10" width="9" height="4" fill="#556163"/>
+  <!-- speaker A -->
+  <path d="M25 90 V63 a13 13 0 0 1 13 -13 h12 a13 13 0 0 1 13 13 V90 z" fill="#c4b196"/>
+  <rect x="41" y="45" width="6" height="7" fill="#a97c5f"/>
+  <circle cx="44" cy="39" r="9" fill="#b4876a"/>
+  <path d="M35 38 a9 9 0 0 1 18 0 c0 -3 -3 -9 -9 -9 s-9 6 -9 9z" fill="#2b2420"/>
+  <path d="M64 20 L57 44" stroke="#151515" stroke-width="1.6"/>
+  <rect x="53" y="42" width="7" height="11" rx="3.5" fill="#151515"/>
+  <!-- speaker B -->
+  <path d="M97 90 V65 a13 13 0 0 1 13 -13 h12 a13 13 0 0 1 13 13 V90 z" fill="#5d7584"/>
+  <rect x="113" y="47" width="6" height="7" fill="#6f4a35"/>
+  <circle cx="116" cy="41" r="9" fill="#7a523d"/>
+  <path d="M107 40 a9 9 0 0 1 18 0 c0 -6 -4 -10 -9 -10 s-9 4 -9 10z" fill="#1d1a18"/>
+  <path d="M96 20 L103 46" stroke="#151515" stroke-width="1.6"/>
+  <rect x="100" y="44" width="7" height="11" rx="3.5" fill="#151515"/>
+  <!-- desk -->
+  <rect x="0" y="74" width="160" height="16" fill="#1c1d1d"/>
+  <rect x="0" y="74" width="160" height="1.2" fill="#2a2c2c"/>
+</svg></div>
+  <div class="clip__picture"><div class="clip__cam"><svg class="scene " viewBox="0 0 160 90" preserveAspectRatio="xMidYMid slice" aria-hidden="true" focusable="false">
+  <rect width="160" height="90" fill="#3a4344"/>
+  <rect x="0" y="0" width="160" height="58" fill="#414b4c"/>
+  <rect x="64" y="8" width="13" height="40" rx="1.5" fill="#4b5658"/>
+  <rect x="80" y="8" width="13" height="40" rx="1.5" fill="#4b5658"/>
+  <rect x="8" y="14" width="30" height="2" fill="#2f3637"/>
+  <rect x="12" y="7" width="5" height="7" fill="#7a6a55"/>
+  <rect x="19" y="9" width="4" height="5" fill="#5d6b5c"/>
+  <rect x="25" y="6" width="6" height="8" fill="#8a7d6b"/>
+  <rect x="124" y="14" width="28" height="2" fill="#2f3637"/>
+  <rect x="128" y="8" width="7" height="6" fill="#6f6250"/>
+  <rect x="139" y="10" width="9" height="4" fill="#556163"/>
+  <!-- speaker A -->
+  <path d="M25 90 V63 a13 13 0 0 1 13 -13 h12 a13 13 0 0 1 13 13 V90 z" fill="#c4b196"/>
+  <rect x="41" y="45" width="6" height="7" fill="#a97c5f"/>
+  <circle cx="44" cy="39" r="9" fill="#b4876a"/>
+  <path d="M35 38 a9 9 0 0 1 18 0 c0 -3 -3 -9 -9 -9 s-9 6 -9 9z" fill="#2b2420"/>
+  <path d="M64 20 L57 44" stroke="#151515" stroke-width="1.6"/>
+  <rect x="53" y="42" width="7" height="11" rx="3.5" fill="#151515"/>
+  <!-- speaker B -->
+  <path d="M97 90 V65 a13 13 0 0 1 13 -13 h12 a13 13 0 0 1 13 13 V90 z" fill="#5d7584"/>
+  <rect x="113" y="47" width="6" height="7" fill="#6f4a35"/>
+  <circle cx="116" cy="41" r="9" fill="#7a523d"/>
+  <path d="M107 40 a9 9 0 0 1 18 0 c0 -6 -4 -10 -9 -10 s-9 4 -9 10z" fill="#1d1a18"/>
+  <path d="M96 20 L103 46" stroke="#151515" stroke-width="1.6"/>
+  <rect x="100" y="44" width="7" height="11" rx="3.5" fill="#151515"/>
+  <!-- desk -->
+  <rect x="0" y="74" width="160" height="16" fill="#1c1d1d"/>
+  <rect x="0" y="74" width="160" height="1.2" fill="#2a2c2c"/>
+</svg></div></div>
+  <div class="clip__progress"><span class="clip__bar clip__bar--mid"></span></div>
+  <p class="clip__hook"><span>The first 100 videos are practice</span></p>
+  <div class="clip__meme"><span>reaction GIF</span></div>
+  <p class="clip__credit">Credit: @yourchannel</p>
+  <p class="clip__caption caption-type"><span class="">started</span> <span class="is-active">reading</span> <span class="">where</span></p>
+  
+            <span class="pin pin--bar" aria-hidden="true">1</span>
+            <span class="pin pin--hook" aria-hidden="true">2</span>
+            <span class="pin pin--picture" aria-hidden="true">3</span>
+            <span class="pin pin--meme" aria-hidden="true">4</span>
+            <span class="pin pin--credit" aria-hidden="true">5</span>
+            <span class="pin pin--caption" aria-hidden="true">6</span>
+          
+</div>
+          <figcaption class="visually-hidden">A finished clip with its parts numbered: progress bar, hook, picture, reaction GIF, credit line and captions.</figcaption>
+        </figure>
+
+        <div class="anatomy__side">
+        <ol class="legend" role="list">
+          <li><span class="legend__n">1</span><div><h3 class="h4">Progress bar</h3><p>A thin yellow bar fills across the top as the clip plays.</p></div></li>
+          <li><span class="legend__n">2</span><div><h3 class="h4">Hook</h3><p>A title for the first 2.5 seconds, written from what is actually said.</p></div></li>
+          <li><span class="legend__n">3</span><div><h3 class="h4">Framing on the speaker</h3><p>Wide footage sits full width over a dimmed copy of itself. The picture moves in on whoever is talking, and only switches on a cut or a beat, so it reads as an edit.</p></div></li>
+          <li><span class="legend__n">4</span><div><h3 class="h4">Reaction memes</h3><p>Up to three per clip, on the strongest beats. Upload your own, use the built-in set, or switch them off.</p></div></li>
+          <li><span class="legend__n">5</span><div><h3 class="h4">Credit line</h3><p>The creator’s name stays on screen for the whole clip.</p></div></li>
+          <li><span class="legend__n">6</span><div><h3 class="h4">Word captions</h3><p>One word lights up at a time, timed to the voice. If the source already has captions burned in, ours are left off so nothing shows twice.</p></div></li>
+          <li class="legend__plain"><span class="legend__n">+</span><div><h3 class="h4">B-roll, only where it fits</h3><p>Stock footage replaces the picture when a vision check agrees it matches the words being said. Credited in the description.</p></div></li>
+          <li class="legend__plain"><span class="legend__n">+</span><div><h3 class="h4">Sound</h3><p>Effects are synthesised, so there is nothing to license. Music is optional and ducks under the voice.</p></div></li>
+          <li class="legend__plain"><span class="legend__n">+</span><div><h3 class="h4">Your logo</h3><p>Upload it once and it goes on every clip.</p></div></li>
+        </ol>
+
+      <div class="meta-card" aria-labelledby="meta-title">
+        <div class="meta-card__head">
+          <h3 class="h4" id="meta-title">The package for this Short</h3>
+          <span class="badge">editable before download</span>
+        </div>
+        <dl class="meta-card__fields">
+          <div><dt>Video</dt><dd class="mono">clip-01.mp4 &middot; 1080&times;1920 &middot; 0:15.6</dd></div>
+          <div><dt>Thumbnail</dt><dd class="mono">clip-01.jpg</dd></div>
+          <div><dt>Title</dt><dd>The first 100 videos are practice</dd></div>
+          <div><dt>Description</dt><dd>Why the first hundred uploads matter less than what you learn from them.<br><span class="muted">Credit: @yourchannel &middot; B-roll: Pexels</span></dd></div>
+          <div><dt>Hashtags</dt><dd class="mono">#shorts #podcast #creator #youtubegrowth</dd></div>
+          <div><dt>When to post</dt><dd class="mono">Tue 18:00 &middot; Thu 12:30 &middot; Sat 10:00</dd></div>
+        </dl>
+      </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<section class="section" id="languages" data-track-section="languages" aria-labelledby="lang-title">
+  <div class="wrap grid">
+    <p class="rubric">Languages</p>
+    <div class="story">
+      <h2 id="lang-title">Captions in English and Hindi.</h2>
+      <div class="lang">
+        <figure class="spec">
+          <div class="spec__screen"><p class="caption-type spec__caption"><span>Nobody</span> <span class="is-active">tells</span> <span>you</span></p></div>
+          <figcaption><strong>English</strong> <span class="muted">Word timings from the speech model.</span></figcaption>
+        </figure>
+        <figure class="spec">
+          <div class="spec__screen"><p class="caption-type spec__caption" lang="hi"><span>पहले</span> <span class="is-active">सौ</span> <span>वीडियो</span></p></div>
+          <figcaption><strong>Hindi</strong> <span class="muted">A Hindi speech model, captioned in Devanagari.</span></figcaption>
+        </figure>
+        <div class="lang__text">
+          <p>Leave the language on auto, or set it per job. Hindi speech goes to a model built for Hindi and is
+            captioned in Devanagari, in the same typeface the renderer uses.</p>
+          <p>Other languages still get clips. They are cut on motion, loudness and scene changes instead of speech,
+            and come without word captions for now.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<section class="section pricing" id="pricing" data-track-section="pricing" aria-labelledby="pricing-title">
+  <div class="wrap grid">
+    <p class="rubric">Pricing</p>
+    <div class="story">
+      <h2 id="pricing-title">Pay as you go, or monthly. Per minute of video.</h2>
+      <p class="lede">You pay for the minutes of video you send, rounded up per job, and nothing else. Taking 20 clips
+        from a video costs the same as taking one. If a job fails, the minutes go back to your balance.</p>
+      <p class="pricing__free"><strong>Free to start:</strong> 10 Shorts or 10 minutes of video, whichever comes first.</p>
+
+      
+
+<div class="price-pending">
+  <p class="price-pending__title">Prices are announced at launch.</p>
+  <p class="muted">Everyone on the waitlist hears them first.</p>
+</div>
+
+
+<table class="receipt">
+  <caption>How minutes are counted</caption>
+  <thead><tr><th scope="col">Source video</th><th scope="col" class="num">Length</th><th scope="col" class="num">Minutes charged</th></tr></thead>
+  <tbody>
+    
+    <tr><th scope="row">An interview</th><td class="num">18:05</td><td class="num"><strong>19</strong></td></tr>
+    
+    <tr><th scope="row">Episode 41, above</th><td class="num">1:12:40</td><td class="num"><strong>73</strong></td></tr>
+    
+    <tr><th scope="row">A lecture</th><td class="num">1:58:00</td><td class="num"><strong>118</strong></td></tr>
+    
+    <tr><th scope="row">A stream replay</th><td class="num">3:04:12</td><td class="num"><strong>185</strong></td></tr>
+    
+  </tbody>
+</table>
+
+      <p class="pricing__more"><a href="/pricing" data-track="pricing-more">How pricing works</a></p>
+    </div>
+  </div>
+</section>
+
+
+<section class="section api on-dark" id="api" data-track-section="api" aria-labelledby="api-title">
+  <div class="wrap grid">
+    <p class="rubric">API and MCP</p>
+    <div class="story api__story">
+      <div class="api__text">
+        <h2 id="api-title">Make clips from code, or from your AI assistant.</h2>
+        <p>Everything the web app does is in the HTTP API: estimate a link, start a job, check on it, fetch the clips
+          and signed download links. The same actions are an MCP server, so Claude, ChatGPT or Cursor can make clips
+          when you ask in plain words.</p>
+        <p class="api__note">The API and MCP server open with the app. Keys are created in your account and shown once. Which plans include API access is listed with the prices at launch.</p>
+      </div>
+      <div class="tabs api__tabs" data-tabs>
+        <div class="tabs__list" role="tablist" aria-label="Ways to connect">
+          <button class="tabs__tab" role="tab" type="button" id="tab-http" aria-controls="panel-http" aria-selected="true" data-track="api-tab-http">HTTP</button>
+          <button class="tabs__tab" role="tab" type="button" id="tab-mcp" aria-controls="panel-mcp" aria-selected="false" tabindex="-1" data-track="api-tab-mcp">MCP</button>
+        </div>
+        <div class="tabs__panel" role="tabpanel" id="panel-http" aria-labelledby="tab-http" tabindex="0">
+          <div class="code">
+            <div class="code__bar"><span>Start a job</span><button class="btn btn--ghost btn--sm" type="button" data-copy="#code-http" data-track="api-copy-http">Copy</button></div>
+<pre id="code-http"><code>curl https://doomscroller.pages.dev/api/v1/jobs \
+  -H <span class="c-str">"Authorization: Bearer dsk_live_…"</span> \
+  -H <span class="c-str">"Content-Type: application/json"</span> \
+  -d <span class="c-str">'{"source_url": "https://www.youtube.com/watch?v=…",
+       "options": {"clips": 5, "language": "auto",
+                   "max_clip_seconds": 45}}'</span></code></pre>
+          </div>
+          <p class="api__flow mono"><span>POST /api/v1/estimate</span><span>POST /api/v1/jobs</span><span>GET /api/v1/jobs/{id}</span><span>GET /api/v1/clips/{id}/links</span></p>
+        </div>
+        <div class="tabs__panel" role="tabpanel" id="panel-mcp" aria-labelledby="tab-mcp" tabindex="0" hidden>
+          <div class="code">
+            <div class="code__bar"><span>MCP client config</span><button class="btn btn--ghost btn--sm" type="button" data-copy="#code-mcp" data-track="api-copy-mcp">Copy</button></div>
+<pre id="code-mcp"><code>{
+  <span class="c-key">"mcpServers"</span>: {
+    <span class="c-key">"doomscroller"</span>: {
+      <span class="c-key">"url"</span>: <span class="c-str">"https://doomscroller.pages.dev/mcp"</span>,
+      <span class="c-key">"headers"</span>: {
+        <span class="c-key">"Authorization"</span>: <span class="c-str">"Bearer dsk_live_…"</span>
+      }
+    }
+  }
+}</code></pre>
+          </div>
+          <p class="api__flow"><span class="c-dim">Then ask:</span> &ldquo;Cut five Shorts from this interview and give me the download links.&rdquo;</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<section class="section" id="faq" data-track-section="faq" aria-labelledby="faq-title">
+  <div class="wrap grid">
+    <p class="rubric">Questions</p>
+    <div class="story">
+      <h2 id="faq-title">Before you ask.</h2>
+      <div class="faq">
+        <details class="disclosure">
+          <summary data-track="faq-credit">What exactly am I paying for?</summary>
+          <div class="disclosure__body"><p>Minutes of the video you send, rounded up per job. A 72-minute-40-second video counts as 73 minutes. The number of clips you take from it does not change the price. Pay as you go, or monthly.</p></div>
+        </details>
+        <details class="disclosure">
+          <summary data-track="faq-failed">What happens if a job fails?</summary>
+          <div class="disclosure__body"><p>Minutes are set aside when a job starts. If it fails or you cancel it, they go back to your balance.</p></div>
+        </details>
+        <details class="disclosure">
+          <summary data-track="faq-sources">Which links work?</summary>
+          <div class="disclosure__body"><p>YouTube, Vimeo, Twitch, Loom, X, TikTok, Instagram, Facebook, Google Drive, Dropbox, Rumble, Kick. Or upload the file directly, up to 2 GB. Private videos need to be uploaded.</p></div>
+        </details>
+        <details class="disclosure">
+          <summary data-track="faq-languages">Which languages are captioned?</summary>
+          <div class="disclosure__body"><p>English and Hindi (in Devanagari). Videos in other languages are still clipped, using motion, loudness and scene changes, but without word captions for now.</p></div>
+        </details>
+        <details class="disclosure">
+          <summary data-track="faq-rights">Can I clip someone else’s video?</summary>
+          <div class="disclosure__body"><p>Only if you have their permission. You need the rights to anything you send. Each clip carries a credit line, but a credit is not permission.</p></div>
+        </details>
+        <details class="disclosure">
+          <summary data-track="faq-edit">Can I edit the clips?</summary>
+          <div class="disclosure__body"><p>Yes, in the browser, before you download. Add your own logo and memes, and rewrite the title, description and hashtags. The captions follow what was said in the video.</p></div>
+        </details>
+        <details class="disclosure">
+          <summary data-track="faq-free">Is there a free tier?</summary>
+          <div class="disclosure__body"><p>Yes. Your first 10 Shorts or 10 minutes of video are free, whichever comes first, once per person.</p></div>
+        </details>
+        <details class="disclosure">
+          <summary data-track="faq-retention">How long are my clips kept?</summary>
+          <div class="disclosure__body"><p>30 days after they are made, then they are deleted. Download what you want to keep.</p></div>
+        </details>
+        <details class="disclosure">
+          <summary data-track="faq-posting">Does it post for me?</summary>
+          <div class="disclosure__body"><p>No. You get each Short as a package that is ready to publish (the MP4, a thumbnail, a title, description, hashtags and suggested times to post) and you post it yourself, on YouTube, Instagram, TikTok or anywhere else. Nothing needs access to your accounts.</p></div>
+        </details>
+        <details class="disclosure">
+          <summary data-track="faq-when">When can I use it?</summary>
+          <div class="disclosure__body"><p>Invites go out from the waitlist in batches. Every person who joins with your link moves you up the list.</p></div>
+        </details>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+
+<section class="section join" id="join" data-track-section="join" aria-labelledby="join-title">
+  <div class="wrap grid">
+    <div class="join__copy">
+      <h2 id="join-title">Get in early.</h2>
+      <p class="lede">We let people in from the waitlist in batches. Your place moves up for every person who joins with your link.</p>
+      <p class="muted small">We use your email for your invite and nothing else.</p>
+    </div>
+    <div class="join__form">
+      <form class="waitlist waitlist--full" id="wl-footer" action="/api/waitlist" method="post"
+      data-waitlist-form data-form-id="footer" data-clarity-mask="True" novalidate>
+  
+  <div class="field">
+    <label class="label" for="wl-footer-email">Email</label>
+    <input class="input" id="wl-footer-email" name="email" type="email" autocomplete="email" inputmode="email"
+           required maxlength="254" placeholder="you@example.com" aria-describedby="wl-footer-error" data-track-mask>
+  </div>
+  <div class="field">
+    <label class="label" for="wl-footer-role">What do you make? <span class="optional">(optional)</span></label>
+    <select class="select" id="wl-footer-role" name="role" data-track="waitlist-role-footer">
+      <option value="">Choose one</option>
+      <option value="podcaster">Podcasts</option>
+      <option value="streamer">Streams</option>
+      <option value="interviews">Interviews and talks</option>
+      <option value="educator">Courses and lectures</option>
+      <option value="agency">Client work (editor or agency)</option>
+      <option value="developer">I want the API</option>
+      <option value="other">Something else</option>
+    </select>
+  </div>
+  <div class="field">
+    <label class="label" for="wl-footer-channel">Your channel <span class="optional">(optional)</span></label>
+    <input class="input" id="wl-footer-channel" name="channel_url" type="url" inputmode="url" autocomplete="url"
+           maxlength="300" placeholder="https://www.youtube.com/@yourchannel" data-track-mask>
+    <p class="hint">Helps us invite people whose videos suit the product first.</p>
+  </div>
+  <div class="waitlist__submit">
+    <button class="btn btn--accent btn--lg" type="submit" data-track="waitlist-submit-footer">
+      <span class="spinner" aria-hidden="true"></span><span data-label>Join the waitlist</span>
+    </button>
+  </div>
+  
+
+  <input type="hidden" name="ref" value="">
+  
+  <input type="hidden" name="ts" value="1795731818185">
+  <div class="hp" aria-hidden="true">
+    <label for="wl-footer-website">Leave this empty</label>
+    <input id="wl-footer-website" name="website" type="text" tabindex="-1" autocomplete="off">
+  </div>
+  
+  <p class="error-text" id="wl-footer-error" data-form-error role="alert"></p>
+</form>
+    </div>
+  </div>
+</section>
+
+
+  </main>
+  <footer class="site-footer on-dark">
+  <div class="wrap">
+    <div class="site-footer__top">
+      <div>
+        <p class="site-footer__brand">doomscroller</p>
+        <p class="site-footer__tagline">Long video in, publish-ready Shorts out. Priced by the minute of source video.</p>
+      </div>
+      <div>
+        <h2>Product</h2>
+        <ul role="list">
+          <li><a href="/#how" data-track="footer-how">How it works</a></li>
+          <li><a href="/#clip" data-track="footer-clip">What a clip contains</a></li>
+          <li><a href="/pricing" data-track="footer-pricing">Pricing</a></li>
+          <li><a href="/#api" data-track="footer-api">API and MCP</a></li>
+          <li><a href="/#faq" data-track="footer-faq">FAQ</a></li>
+        </ul>
+      </div>
+      <div>
+        <h2>Legal</h2>
+        <ul role="list">
+          <li><a href="/privacy" data-track="footer-privacy">Privacy</a></li>
+          <li><a href="/terms" data-track="footer-terms">Terms</a></li>
+          <li><a href="/refunds" data-track="footer-refunds">Refunds</a></li>
+          <li><a href="/cookies" data-track="footer-cookies">Cookies</a></li>
+          <li><button type="button" data-consent-open data-track="footer-cookie-settings">Cookie settings</button></li>
+        </ul>
+      </div>
+    </div>
+    <div class="site-footer__base">
+      <span>&copy; 2026 doomscroller</span>
+      <a href="mailto:support@example.com" data-track="footer-support-email">support@example.com</a>
+    </div>
+  </div>
+</footer>
+  <div class="toasts" data-toasts role="status" aria-live="polite"></div>
+  
+</body>
+</html>

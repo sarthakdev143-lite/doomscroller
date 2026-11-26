@@ -99,6 +99,8 @@ _CUE_RANK = {WHOOSH: 0, POP: 1, IMPACT: 1}
 _MEME_WIDTH = 300
 _MEME_BAND_GAP = 90
 _MEME_FILL_Y = 230
+# A customer logo fits inside this box, centred where the brand handle sits.
+_LOGO_BOX = (220, 88)
 
 
 @dataclass
@@ -123,6 +125,7 @@ class ClipPlan:
     focus_x_expr: str = ""  # where the speaker's face is in the picture, 0 to 1, when known
     focus_y_expr: str = ""
     tail: float = 0.0  # seconds the last frame is held at the end, under a meme sound
+    logo: str = ""  # an image shown small where the brand handle would be, for the whole clip
     end_fade: float = _END_FADE
     ass_path: str = "clip.ass"
     fonts_dir: str = "fonts"
@@ -614,6 +617,13 @@ def build_filtergraph(plan: ClipPlan, info: MediaInfo, seek: float) -> str:
                      f"eof_action=pass:enable='between(t,{start - _HALF_FRAME:.3f},{start + seconds - _HALF_FRAME:.3f})'"
                      f"[mover{index}]")
         chain = f"[mover{index}]null"
+    if plan.logo:
+        logo_input = meme_base + len(plan.memes) + (1 if plan.music else 0)
+        brand_y = max(160, top - 48) if plan.picture_height else 175
+        parts.append(f"[{logo_input}:v]scale={_LOGO_BOX[0]}:{_LOGO_BOX[1]}:force_original_aspect_ratio=decrease:"
+                     f"flags=lanczos,format=rgba,setsar=1[logo]")
+        parts.append(chain + "[unlogo]")
+        chain = f"[unlogo][logo]overlay=x=(W-w)/2:y={brand_y}-h/2:shortest=0:eof_action=repeat"
     if plan.has_graphics:
         chain += f",ass={_filter_path_arg(plan.ass_path)}:fontsdir={_filter_path_arg(plan.fonts_dir)}"
     parts.append(chain + "[graphics]")
@@ -843,14 +853,15 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
                   words: Sequence[Word], out_path: str, edit: Optional[EditPlan] = None, creator: str = "",
                   music: Optional[str] = None, captions: bool = True, source_captioned: bool = False,
                   brand: Optional[str] = None, sting: Optional[str] = None, language: str = "",
-                  watermark: str = "") -> ClipPlan:
+                  watermark: str = "", logo: str = "") -> ClipPlan:
     """Write the finished clip to ``out_path`` and return its plan.
 
     ``source_captioned`` means the footage burns in its own captions. In the framed layout their band is cut
     from the bottom of the picture and ours replace them; otherwise ours are left out. ``captions=False``
     always leaves ours out. ``brand`` is the handle shown on screen: a managed channel passes its own, and
     ``None`` means ``BRAND_NAME``. ``sting`` is a meme sound file, played over the held last frame.
-    ``watermark`` is a small line of text kept on screen in the safe band (the SaaS free tier's mark)."""
+    ``watermark`` is a small line of text kept on screen in the safe band (the SaaS free tier's mark).
+    ``logo`` is an image file shown small in the brand's place for the whole clip; it replaces the handle."""
     # Resolve the font from the clip's own text: a Devanagari clip gets a Devanagari font (if installed)
     # for its captions and overlays, while a Latin clip resolves the same font as before.
     font_words = words or ((edit.words or edit.opening_words) if edit else ())
@@ -895,6 +906,9 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
     if not captions or (source_captioned and not crop_bottom):
         clip_words = []
     brand = settings.brand_name if brand is None else brand
+    logo = os.path.abspath(logo) if logo and os.path.isfile(logo) else ""
+    if logo:
+        brand = ""
     if total_duration(segments) <= 0:
         raise MediaError("clip has no duration")
 
@@ -930,6 +944,7 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
                      end_fade=0.02 if loop_clean else _END_FADE, hold_end=not loop_clean)
     if music and info.has_audio:
         plan.music = os.path.abspath(music)
+    plan.logo = logo
     sting_at = plan.duration
     if sound is not None:
         # Hold the last frame under the sound, so it lands after the punchline and never over a word.
@@ -954,7 +969,7 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
                         clip_words, moment.hook, plan.duration, font_family(font), font, beats,
                         creator=creator, brand=brand,
                         layout=framed_layout(plan.picture_height) if plan.picture_height else Layout(),
-                        summary_cues=summary_cues, watermark=watermark,
+                        summary_cues=summary_cues, watermark=watermark, logo=bool(logo),
                     ))
             if plan.has_sfx:
                 cues = sound_cues(edit, effects=settings.clip_sfx) if edit else []
@@ -974,6 +989,7 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
                     *[item for _start, seconds, path, _sound in plan.memes
                       for item in _meme_input_args(seconds, path)],
                     *(["-stream_loop", "-1", "-i", plan.music] if plan.music else []),
+                    *(["-loop", "1", "-t", f"{plan.duration + 1:.3f}", "-i", plan.logo] if plan.logo else []),
                     "-filter_complex", build_filtergraph(plan, info, seek),
                     "-map", "[vout]"]
             if plan.has_audio:

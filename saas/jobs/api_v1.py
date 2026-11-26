@@ -101,6 +101,14 @@ def clip_links(clip_id: str, p: ApiPrincipal = Depends(require_api_key("clips:re
             "expires_at": exp}
 
 
+@router.get("/clips/{clip_id}/package")
+def clip_package(clip_id: str, tz: Optional[str] = None, p: ApiPrincipal = Depends(require_api_key("clips:read")),
+                 db: Session = Depends(get_db)):
+    from . import package
+
+    return package.build(service.get_clip(db, p.user_id, clip_id), tz or p.user.timezone, signed=True)
+
+
 @router.patch("/clips/{clip_id}")
 def patch_clip(clip_id: str, body: ClipPatch, p: ApiPrincipal = Depends(require_api_key("clips:write")),
                db: Session = Depends(get_db)):

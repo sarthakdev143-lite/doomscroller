@@ -20,10 +20,13 @@ The message goes over stdin because a long transcript exceeds the argument limit
 and stdin must always be supplied or closed: with an inherited stdin the CLI
 waits on it forever.
 
-``CLIP_AI_BACKEND=api`` replaces both CLIs with the Anthropic Messages API over HTTPS
-(``ANTHROPIC_API_KEY``), for hosts with no logged-in CLI such as the SaaS. The request
-carries the same system prompt and no tools, images travel as base64 blocks, and the
-token usage of every call is recorded through :mod:`app.clipper.metering`.
+``CLIP_AI_BACKEND=api`` replaces both CLIs with an HTTP API, for hosts with no logged-in
+CLI such as the SaaS: the Anthropic Messages API (``CLIP_AI_API_PROVIDER=anthropic``,
+``ANTHROPIC_API_KEY``) or any OpenAI-compatible chat endpoint (``openai_compatible``, with
+``CLIP_AI_API_BASE_URL``, ``CLIP_AI_API_KEY`` and ``CLIP_AI_API_MODEL``: Gemini's and Groq's
+free tiers both work). The request carries the same system prompt and no tools, images
+travel inline as base64, and every call's token usage is recorded through
+:mod:`app.clipper.metering`.
 """
 from __future__ import annotations
 
@@ -175,20 +178,45 @@ def claude_path() -> Optional[str]:
 
 
 def backend() -> str:
-    """"api" when CLIP_AI_BACKEND asks for the Messages API, else "cli" (the owner's default)."""
+    """"api" when CLIP_AI_BACKEND asks for an HTTP API, else "cli" (the owner's default)."""
     return "api" if str(getattr(settings, "clip_ai_backend", "") or "").strip().lower() == "api" else "cli"
+
+
+ANTHROPIC, OPENAI_COMPATIBLE = "anthropic", "openai_compatible"
+
+
+def api_provider() -> str:
+    raw = str(getattr(settings, "clip_ai_api_provider", "") or "").strip().lower().replace("-", "_")
+    return OPENAI_COMPATIBLE if raw in ("openai_compatible", "openai", "gemini", "groq") else ANTHROPIC
+
+
+def _api_key() -> str:
+    generic = str(getattr(settings, "clip_ai_api_key", "") or "").strip()
+    if api_provider() == ANTHROPIC:
+        return generic or (settings.anthropic_api_key or "").strip()
+    return generic
+
+
+def _api_base() -> str:
+    configured = str(getattr(settings, "clip_ai_api_base_url", "") or "").strip().rstrip("/")
+    if configured:
+        return configured
+    return "https://api.anthropic.com" if api_provider() == ANTHROPIC else ""
 
 
 def available() -> bool:
     if backend() == "api":
-        return bool((settings.anthropic_api_key or "").strip())
+        return bool(_api_key() and _api_base() and _api_model(()))
     return opencode_path() is not None or claude_path() is not None
 
 
-# ---- Anthropic Messages API backend
+# ---- HTTP API backends: the Anthropic Messages API, or any OpenAI-compatible chat endpoint
+# (Gemini's and Groq's free tiers both speak it). One request per call, no tools, the same system
+# prompt as the Claude CLI, images inline as base64, and every call's token usage metered.
 
 _API_VERSION = "2026-10-21"
 _API_MAX_TOKENS = 16000
+_OPENAI_MAX_TOKENS = 8192
 _API_RETRIES = 2
 _API_MAX_WAIT_SEC = 30.0
 _EFFORTS = {"low", "medium", "high", "xhigh", "max"}
@@ -199,26 +227,44 @@ _FALLBACK_MODELS = {"claude-opus-5-5", "claude-opus-5", "claude-fable-5-1", "cla
 
 def _api_model(files: Sequence[str]) -> str:
     vision = str(getattr(settings, "clip_ai_api_vision_model", "") or "").strip()
-    text = str(getattr(settings, "clip_ai_api_model", "") or "").strip() or "claude-opus-5-5"
+    text = str(getattr(settings, "clip_ai_api_model", "") or "").strip()
+    if not text and api_provider() == ANTHROPIC:
+        text = "claude-opus-5-5"
     return (vision or text) if files else text
 
 
-def _api_content(prompt: str, files: Sequence[str]) -> list[dict]:
-    content: list[dict] = []
+def _images(files: Sequence[str]) -> list[tuple[str, str]]:
+    found = []
     for path in files:
         media = _IMAGE_TYPES.get(Path(path).suffix.lower())
         if media is None:
             raise ValueError(f"cannot send {Path(path).name} to the API: not an image")
-        data = base64.b64encode(Path(path).read_bytes()).decode("ascii")
-        content.append({"type": "image", "source": {"type": "base64", "media_type": media, "data": data}})
+        found.append((media, base64.b64encode(Path(path).read_bytes()).decode("ascii")))
+    return found
+
+
+def _api_content(prompt: str, files: Sequence[str]) -> list[dict]:
+    content: list[dict] = [{"type": "image", "source": {"type": "base64", "media_type": media, "data": data}}
+                           for media, data in _images(files)]
     content.append({"type": "text", "text": _safe_utf8(prompt)})
+    return content
+
+
+def _openai_content(prompt: str, files: Sequence[str]) -> object:
+    if not files:
+        return _safe_utf8(prompt)
+    content: list[dict] = [{"type": "text", "text": _safe_utf8(prompt)}]
+    content += [{"type": "image_url", "image_url": {"url": f"data:{media};base64,{data}"}}
+                for media, data in _images(files)]
     return content
 
 
 def _api_scrub(text: object) -> str:
     out = str(text or "")
-    key = (settings.anthropic_api_key or "").strip()
-    return out.replace(key, "[REDACTED]") if len(key) >= 3 else out
+    for key in {(settings.anthropic_api_key or "").strip(), str(getattr(settings, "clip_ai_api_key", "") or "").strip()}:
+        if len(key) >= 3:
+            out = out.replace(key, "[REDACTED]")
+    return out
 
 
 def _retry_wait(response: Optional[httpx.Response], attempt: int) -> float:
@@ -231,22 +277,12 @@ def _retry_wait(response: Optional[httpx.Response], attempt: int) -> float:
     return min(_API_MAX_WAIT_SEC, wait)
 
 
-def _ask_api(prompt: str, *, files: Sequence[str] = ()) -> Optional[str]:
-    """One Messages API call. None on any failure, a refusal, or an empty reply; never raises."""
-    key = (settings.anthropic_api_key or "").strip()
-    if not key:
-        return None
-    model = _api_model(files)
-    try:
-        content = _api_content(prompt, files)
-    except (OSError, ValueError) as exc:
-        log.warning("anthropic api: %s", exc)
-        return None
+def _anthropic_request(prompt: str, files: Sequence[str], model: str, key: str, base: str) -> tuple[str, dict, dict]:
     body: dict = {
         "model": model,
         "max_tokens": _API_MAX_TOKENS,
         "system": _CLAUDE_SYSTEM,
-        "messages": [{"role": "user", "content": content}],
+        "messages": [{"role": "user", "content": _api_content(prompt, files)}],
     }
     effort = str(getattr(settings, "clip_ai_api_effort", "") or "").strip().lower()
     if effort in _EFFORTS:
@@ -255,28 +291,75 @@ def _ask_api(prompt: str, *, files: Sequence[str] = ()) -> Optional[str]:
     if getattr(settings, "clip_ai_api_fallbacks", True) and model in _FALLBACK_MODELS:
         headers["anthropic-beta"] = _FALLBACK_BETA
         body["fallbacks"] = "default"
-    base = str(getattr(settings, "clip_ai_api_base_url", "") or "https://api.anthropic.com").rstrip("/")
+    return f"{base}/v1/messages", headers, body
+
+
+def _anthropic_reply(data: dict) -> tuple[Optional[str], dict]:
+    usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+    counts = {"input_tokens": int(usage.get("input_tokens") or 0), "output_tokens": int(usage.get("output_tokens") or 0),
+              "cache_read_input_tokens": int(usage.get("cache_read_input_tokens") or 0),
+              "cache_creation_input_tokens": int(usage.get("cache_creation_input_tokens") or 0)}
+    if data.get("stop_reason") == "refusal":
+        log.warning("anthropic api declined the request (%s)", (data.get("stop_details") or {}).get("category"))
+        return None, counts
+    blocks = data.get("content") if isinstance(data.get("content"), list) else []
+    text = "".join(str(b.get("text") or "") for b in blocks if isinstance(b, dict) and b.get("type") == "text")
+    return text.strip() or None, counts
+
+
+def _openai_request(prompt: str, files: Sequence[str], model: str, key: str, base: str) -> tuple[str, dict, dict]:
+    body = {
+        "model": model,
+        "max_tokens": _OPENAI_MAX_TOKENS,
+        "messages": [{"role": "system", "content": _CLAUDE_SYSTEM},
+                     {"role": "user", "content": _openai_content(prompt, files)}],
+    }
+    headers = {"authorization": f"Bearer {key}", "content-type": "application/json"}
+    return f"{base}/chat/completions", headers, body
+
+
+def _openai_reply(data: dict) -> tuple[Optional[str], dict]:
+    usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+    counts = {"input_tokens": int(usage.get("prompt_tokens") or 0), "output_tokens": int(usage.get("completion_tokens") or 0)}
+    choices = data.get("choices") if isinstance(data.get("choices"), list) else []
+    message = choices[0].get("message") if choices and isinstance(choices[0], dict) else None
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, list):
+        content = "".join(str(p.get("text") or "") for p in content if isinstance(p, dict))
+    if choices and isinstance(choices[0], dict) and choices[0].get("finish_reason") == "content_filter":
+        log.warning("%s declined the request", api_provider())
+        return None, counts
+    text = str(content or "").strip()
+    return text or None, counts
+
+
+def _ask_api(prompt: str, *, files: Sequence[str] = ()) -> Optional[str]:
+    """One HTTP API call. None on any failure, a refusal, or an empty reply; never raises."""
+    key, base, provider = _api_key(), _api_base(), api_provider()
+    model = _api_model(files)
+    if not key or not base or not model:
+        return None
+    build, parse = ((_anthropic_request, _anthropic_reply) if provider == ANTHROPIC
+                    else (_openai_request, _openai_reply))
+    try:
+        url, headers, body = build(prompt, files, model, key, base)
+    except (OSError, ValueError) as exc:
+        log.warning("%s api: %s", provider, exc)
+        return None
     timeout = httpx.Timeout(_timeout(), connect=15)
 
-    def spent(ok: bool, data: Optional[dict] = None) -> None:
-        usage = (data or {}).get("usage") if isinstance(data, dict) else None
-        usage = usage if isinstance(usage, dict) else {}
-        metering.record(
-            "llm", provider="anthropic", model=str((data or {}).get("model") or model), ok=ok, images=len(files),
-            input_tokens=int(usage.get("input_tokens") or 0), output_tokens=int(usage.get("output_tokens") or 0),
-            cache_read_input_tokens=int(usage.get("cache_read_input_tokens") or 0),
-            cache_creation_input_tokens=int(usage.get("cache_creation_input_tokens") or 0),
-        )
+    def spent(ok: bool, counts: Optional[dict] = None, served_by: str = "") -> None:
+        metering.record("llm", provider=provider, model=served_by or model, ok=ok, images=len(files),
+                        **{"input_tokens": 0, "output_tokens": 0, **(counts or {})})
 
     for attempt in range(_API_RETRIES + 1):
-        response: Optional[httpx.Response] = None
         try:
-            response = httpx.post(f"{base}/v1/messages", json=body, headers=headers, timeout=timeout)
+            response = httpx.post(url, json=body, headers=headers, timeout=timeout)
         except httpx.HTTPError as exc:
             if attempt < _API_RETRIES:
                 time.sleep(_retry_wait(None, attempt))
                 continue
-            log.warning("anthropic api could not be reached: %s", type(exc).__name__)
+            log.warning("%s api could not be reached: %s", provider, type(exc).__name__)
             spent(False)
             return None
         status = response.status_code
@@ -289,18 +372,13 @@ def _ask_api(prompt: str, *, files: Sequence[str] = ()) -> Optional[str]:
             data = None
         if status != 200 or not isinstance(data, dict):
             error = data.get("error") if isinstance(data, dict) else None
-            detail = error.get("message") if isinstance(error, dict) else ""
-            log.warning("anthropic api returned %s: %s", status, _api_scrub(str(detail)[:300]))
-            spent(False, data if isinstance(data, dict) else None)
+            detail = error.get("message") if isinstance(error, dict) else (error or "")
+            log.warning("%s api returned %s: %s", provider, status, _api_scrub(str(detail)[:300]))
+            spent(False)
             return None
-        if data.get("stop_reason") == "refusal":
-            log.warning("anthropic api declined the request (%s)", (data.get("stop_details") or {}).get("category"))
-            spent(False, data)
-            return None
-        blocks = data.get("content") if isinstance(data.get("content"), list) else []
-        text = "".join(str(b.get("text") or "") for b in blocks if isinstance(b, dict) and b.get("type") == "text")
-        spent(bool(text.strip()), data)
-        return text.strip() or None
+        text, counts = parse(data)
+        spent(text is not None, counts, str(data.get("model") or ""))
+        return text
     return None
 
 
@@ -337,7 +415,7 @@ def ask(prompt: str, *, files: Sequence[str] = (), model: str = "") -> Optional[
     if backend() == "api":
         reply = _ask_api(prompt, files=files)
         if reply is not None:
-            _last_provider.name = "anthropic"
+            _last_provider.name = api_provider()
         return reply
     with _state_lock:
         opencode_down_until = _opencode_down_until
@@ -527,6 +605,7 @@ def _ask_opencode(prompt: str, *, files: Sequence[str] = (), model: str = "") ->
     return None
 
 
+_IMAGE_JSON_PREFIX = "Answer with one JSON object only, in the format asked for at the end. Do not describe the images.\n\n"
 _STRICT_JSON_SUFFIX = (
     "\n\nCRITICAL: Respond with ONLY a single valid raw JSON object starting with { and ending with }. "
     "No markdown headings, no code fences, no explanation."
@@ -534,8 +613,15 @@ _STRICT_JSON_SUFFIX = (
 
 
 def ask_json(prompt: str, *, files: Sequence[str] = (), model: str = "") -> Optional[dict]:
-    """Like :func:`ask`, for a JSON object. Retries once with strict raw-JSON enforcement."""
+    """Like :func:`ask`, for a JSON object. Retries once with strict raw-JSON enforcement.
+
+    With images attached the format is also stated first: vision models shown a contact sheet tend to
+    start describing it ("I can see the 8 vertical video shots...") and never reach the JSON, which the
+    owner's log shows 87 times, each one costing the job its B-roll.
+    """
     _last_provider.name = None
+    if files:
+        prompt = f"{_IMAGE_JSON_PREFIX}{prompt}"
     for attempt in range(2):
         req_prompt = prompt if attempt == 0 else f"{prompt.rstrip()}{_STRICT_JSON_SUFFIX}"
         reply = ask(req_prompt, files=files, model=model)

@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% from "partials/waitlist_form.html" import waitlist_form with context %}
+
+{% block title %}Pricing | {{ brand_name }}{% endblock %}
+{% block description %}Pay per minute of source video, as you go or monthly. Free for your first {{ free_shorts }} Shorts or {{ free_minutes }} minutes of video.{% endblock %}
+{% block head_extra %}
+{% if turnstile_site_key %}<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>{% endif %}
+{% endblock %}
+{% block scripts %}<script type="module" src="{{ asset('/static/js/waitlist.js') }}"></script>{% endblock %}
+
+{% block content %}
+<section class="section price-page" data-track-section="pricing-intro" aria-labelledby="pricing-title">
+  <div class="wrap grid">
+    <p class="rubric">Pricing</p>
+    <div class="story">
+      <h1 id="pricing-title">Pay for the minutes you send. Nothing else.</h1>
+      <p class="lede">Every job is priced by the length of the video you give it, rounded up to the minute. How many
+        Shorts you take from it, and how long they are, does not change the price.</p>
+
+      <dl class="ways">
+        <div class="ways__item">
+          <dt>Free to start</dt>
+          <dd><span class="ways__big">{{ free_shorts }} Shorts or {{ free_minutes }} min</span>
+            <span class="ways__note">of video, whichever comes first. Once per person.</span></dd>
+        </div>
+        <div class="ways__item">
+          <dt>Pay as you go</dt>
+          <dd><span class="ways__big">Buy minutes</span>
+            <span class="ways__note">when you have a video to cut. For occasional posting.</span></dd>
+        </div>
+        <div class="ways__item">
+          <dt>Monthly</dt>
+          <dd><span class="ways__big">Minutes every month</span>
+            <span class="ways__note">for people who post every week.</span></dd>
+        </div>
+      </dl>
+
+      {% include "partials/price_model.html" %}
+    </div>
+  </div>
+</section>
+
+<section class="section" data-track-section="pricing-included" aria-labelledby="included-title">
+  <div class="wrap grid">
+    <p class="rubric">Included</p>
+    <div class="story">
+      <h2 id="included-title">Every Short comes with all of it.</h2>
+      <ul class="included" role="list">
+        <li>Cuts on sentence boundaries, never mid-sentence</li>
+        <li>Word-by-word captions, in English and Hindi</li>
+        <li>Framing that stays on whoever is speaking</li>
+        <li>A hook title for the opening seconds</li>
+        <li>Stock B-roll, only where it matches what is said</li>
+        <li>Sound effects, and music if you want it</li>
+        <li>Reaction memes: yours, ours, or none</li>
+        <li>Your logo on every clip</li>
+        <li>Editing in the browser before you download</li>
+        <li>MP4, thumbnail, title, description and hashtags</li>
+        <li>Suggested times to post</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section class="section" data-track-section="pricing-rules" aria-labelledby="rules-title">
+  <div class="wrap grid">
+    <p class="rubric">The rules</p>
+    <div class="story">
+      <h2 id="rules-title">How minutes are counted, in full.</h2>
+      <ol class="rules" role="list">
+        <li><span class="mono">01</span><p>A job counts the full length of the video you send, rounded up to the next minute. 18:05 counts as 19.</p></li>
+        <li><span class="mono">02</span><p>Minutes are set aside when a job starts and only taken when it finishes. A job that fails, or that you cancel, costs nothing.</p></li>
+        <li><span class="mono">03</span><p>Asking for more Shorts from the same video, up to {{ max_clips }}, or longer ones, costs nothing extra.</p></li>
+        <li><span class="mono">04</span><p>The free tier ends at {{ free_shorts }} Shorts or {{ free_minutes }} minutes of video, whichever comes first, and is once per person.</p></li>
+        <li><span class="mono">05</span><p>Finished Shorts are kept for {{ retention_days }} days, then deleted. Download what you want to keep.</p></li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+{% if launch_mode == "waitlist" %}
+<section class="section" id="join" data-track-section="pricing-join" aria-labelledby="pricing-join-title">
+  <div class="wrap grid">
+    <p class="rubric">Waitlist</p>
+    <div class="story price-join">
+      <h2 id="pricing-join-title">Hear the prices first.</h2>
+      <p class="lede">Everyone on the waitlist gets them before launch. Your place moves up for every person who joins with your link.</p>
+      <div class="price-join__form">{{ waitlist_form("pricing") }}</div>
+    </div>
+  </div>
+</section>
+{% endif %}
+{% endblock %}

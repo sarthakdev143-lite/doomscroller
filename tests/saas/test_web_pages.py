@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-PAGES = ["/", "/waitlist/thanks", "/privacy", "/terms", "/refunds", "/cookies", "/styleguide"]
+PAGES = ["/", "/pricing", "/waitlist/thanks", "/privacy", "/terms", "/refunds", "/cookies", "/styleguide"]
 WEB = Path(__file__).resolve().parents[2] / "saas" / "web"
 
 
@@ -207,7 +207,7 @@ def test_brand_name_is_never_hardcoded(client, monkeypatch):
 def test_share_image_is_drawn_from_the_configured_name():
     from saas.web import routes
 
-    assert routes._og_png("Zebracut") != routes._og_png("Another Name")
+    assert routes.og_png("Zebracut") != routes.og_png("Another Name")
 
 
 # ---- pricing: live catalog, seed file, or nothing ---------------------------------------------

@@ -24,7 +24,8 @@
           <span class="thanks__position-label">Your place in line</span>
           <span class="thanks__number tabular" data-position></span>
         </p>
-        <p class="lede">Check your inbox and confirm your email to keep your place. Invites go out in batches, from the top of the list.</p>
+        <p class="lede">Invites go out in batches, from the top of the list.</p>
+        <p class="thanks__nolink" data-thanks-nolink hidden>Your place in line and your referral link only show on the network you first joined from, so nobody else can use them.</p>
 
         <div class="thanks__share" data-thanks-share hidden>
           <h2 class="h3">Move up the list</h2>
@@ -48,7 +49,7 @@
       <div data-thanks-state="empty" hidden>
         <div class="empty">
           <h1 class="empty__title">Nothing to show here yet.</h1>
-          <p>This page shows your place on the waitlist right after you join. If you joined before, your link is in the confirmation email we sent.</p>
+          <p>This page shows your place on the waitlist right after you join. Joined before? Join again with the same email, from the same network, to see your place and your link.</p>
           <a class="btn btn--accent" href="/#join" data-track="thanks-empty-join">Join the waitlist</a>
         </div>
       </div>
@@ -56,7 +57,7 @@
       <div data-thanks-state="error" hidden>
         <div class="empty">
           <h1 class="empty__title">We couldn’t load your place in line.</h1>
-          <p>You are still on the list. Refresh in a minute, or find your link in the confirmation email.</p>
+          <p>You are still on the list. Refresh in a minute, or join again with the same email from the same network to see your link.</p>
           <button class="btn" type="button" data-thanks-retry data-track="thanks-retry">Try again</button>
         </div>
       </div>

@@ -908,6 +908,97 @@
   line-height: 1.5;
 }
 
+/* ---- price model (partials/price_model.html: landing and /pricing) ------------------------- */
+
+.price-tables {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-6);
+  max-width: 52rem;
+  margin-top: var(--space-7);
+}
+
+.price-table h3 {
+  margin-bottom: var(--space-3);
+}
+
+.price-table h3 .muted {
+  font-weight: 400;
+  margin-left: var(--space-2);
+}
+
+.price-table__foot {
+  margin-top: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--ink-3);
+}
+
+.table__note {
+  display: block;
+  font-weight: 400;
+  color: var(--ink-3);
+  font-size: var(--text-xs);
+  margin-top: 2px;
+}
+
+.price-pending {
+  margin-top: var(--space-7);
+  padding-top: var(--space-4);
+  border-top: 2px solid var(--ink);
+  max-width: 44rem;
+}
+
+.price-pending__title {
+  font-size: var(--text-xl);
+  font-weight: 750;
+  font-stretch: var(--stretch-heading);
+}
+
+/* Worked examples of the rounding rule. */
+.receipt {
+  width: 100%;
+  max-width: 44rem;
+  margin-top: var(--space-7);
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.receipt caption {
+  text-align: left;
+  font-weight: 650;
+  padding-bottom: var(--space-3);
+  border-bottom: 2px solid var(--ink);
+}
+
+.receipt th,
+.receipt td {
+  padding: var(--space-3) 0;
+  border-bottom: var(--border);
+  text-align: left;
+  font-weight: 400;
+}
+
+.receipt thead th {
+  color: var(--ink-3);
+  font-size: var(--text-xs);
+}
+
+.receipt .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  padding-left: var(--space-5);
+}
+
+.receipt td.num {
+  font-family: var(--font-mono);
+}
+
+.receipt strong {
+  font-weight: 500;
+  background: var(--accent);
+  padding: 0.1em 0.35em;
+}
+
 /* ---- site header ----------------------------------------------------------------------------- */
 
 .site-header {
@@ -940,7 +1031,6 @@
   font-stretch: 68%;
   letter-spacing: -0.005em;
   text-decoration: none;
-  text-transform: uppercase;
 }
 
 .wordmark svg {
@@ -1069,7 +1159,6 @@
   font-weight: 850;
   font-stretch: 66%;
   line-height: 0.9;
-  text-transform: uppercase;
   letter-spacing: -0.01em;
 }
 
@@ -1122,4 +1211,44 @@
   .site-footer__top > :first-child {
     grid-column: 1 / -1;
   }
+}
+
+/* ---- consent banner (static site: GA4 and Clarity wait for a choice) --------------------------- */
+
+/* Bottom right: on desktop it sits over the demo, never over the waitlist form. */
+.consent {
+  position: fixed;
+  z-index: var(--z-overlay);
+  right: var(--space-4);
+  bottom: var(--space-4);
+  width: min(26rem, calc(100vw - 2 * var(--space-4)));
+  padding: var(--space-5);
+  border: 1px solid var(--ink);
+  border-radius: var(--radius-3);
+  background: var(--surface);
+  box-shadow: var(--shadow-2);
+  font-size: var(--text-sm);
+}
+
+.consent[hidden] {
+  display: none;
+}
+
+.consent__title {
+  font-size: var(--text-md);
+  font-weight: 700;
+  font-stretch: var(--stretch-heading);
+}
+
+.consent__text {
+  margin-top: var(--space-2);
+  color: var(--ink-2);
+}
+
+/* Reject and Accept look the same on purpose: saying no must be as easy as saying yes. */
+.consent__actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
 }

@@ -1,10 +1,11 @@
 {
   "_note": "Preliminary numbers (CONTRACT.md 'Preliminary pricing'). Seeded once into the DB; every value is admin-editable data. docs/saas/costs-and-pricing.md will finalise them. Amounts are minor units (cents, paise). Annual = 10x monthly (2 months free).",
   "plans": [
-    {"slug": "free", "name": "Free", "description": "Try it: free credits once per verified person, watermarked output.",
+    {"slug": "free", "name": "Free", "description": "Try it once per verified person: 10 shorts or 10 source minutes, whichever comes first. Watermarked output.",
      "monthly_credits": 0, "rollover_months": 0, "public": false, "sort": 0,
-     "features": {"api": false, "mcp": false, "priority": 0, "watermark": true, "max_source_minutes": 30,
-                  "concurrency": 1, "daily_jobs": 3, "max_clips": 3, "max_upload_mb": 500}},
+     "features": {"api": false, "mcp": false, "priority": 0, "watermark": true, "max_source_minutes": 10,
+                  "concurrency": 1, "daily_jobs": 5, "max_clips": 5, "max_upload_mb": 500,
+                  "free_grant_minutes": 10, "free_grant_shorts": 10}},
     {"slug": "starter", "name": "Starter", "description": "For creators posting a few Shorts a week.",
      "monthly_credits": 150, "rollover_months": 1, "public": true, "sort": 10,
      "features": {"api": false, "mcp": false, "priority": 1, "watermark": false, "max_source_minutes": 90,

@@ -21,7 +21,7 @@ from ..config import settings
 
 log = logging.getLogger("saas.jobs.storage")
 
-FILE_KINDS = ("video", "download", "thumbnail")
+FILE_KINDS = ("video", "download", "thumbnail", "package")
 
 
 def root() -> Path:
@@ -71,6 +71,12 @@ def within(path: Path, parent: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def tmp_dir() -> Path:
+    d = root() / "_tmp"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def remove_tree(path: Path) -> None:

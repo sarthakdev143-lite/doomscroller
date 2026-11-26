@@ -1,0 +1,21 @@
+{
+  "name": "doomscroller-edge",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Static site + waitlist backend on Cloudflare Pages Functions and D1 (free tier).",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "wrangler pages dev public --port 8788",
+    "deploy": "wrangler pages deploy public --project-name doomscroller --branch main",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local",
+    "db:migrate:remote": "wrangler d1 migrations apply DB --remote",
+    "gen:disposable": "node test/gen-disposable.mjs",
+    "test": "node test/run.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "4.161.0"
+  }
+}

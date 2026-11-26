@@ -76,9 +76,14 @@ class SaasSettings(BaseSettings):
     stripe_api_base: str = "https://api.stripe.com"
     razorpay_api_base: str = "https://api.razorpay.com"
     webhook_tolerance_s: int = 300  # Stripe signature timestamp tolerance
-    # Which provider takes which currency. "dev" is only ever honoured when env=dev.
-    payment_provider_default: str = "stripe"
-    payment_provider_inr: str = "razorpay"
+    # Which provider takes which currency. "dev" is only ever honoured when env=dev. Buy Me a Coffee is
+    # primary (no company needed); stripe / razorpay / dodo stay dormant until configured and selected.
+    payment_provider_default: str = "bmc"
+    payment_provider_inr: str = "bmc"
+    bmc_page_url: str = ""  # e.g. https://buymeacoffee.com/<handle>; checkout redirects here
+    bmc_webhook_secret: str = ""  # the webhook's "Signing Secret" from the BMC dashboard
+    bmc_max_event_age_hours: int = 72  # events whose signed `created` is older are ignored (replays)
+    bmc_accept_test_events: bool = False  # dashboard test events (live_mode=false); never in prod
     referral_reward_credits: int = 30  # to the referrer, after the referred user's first paid purchase
     referral_max_rewards: int = 50  # per referrer, lifetime
     promo_pending_hours: int = 24  # an unpaid checkout holds its promo redemption this long
@@ -93,6 +98,7 @@ class SaasSettings(BaseSettings):
     clip_retention_days: int = 30
     engine: str = "mock"  # mock | clipper. The real clipper needs ffmpeg, keys and the pipeline seam.
     ffprobe_bin: str = "ffprobe"
+    ffmpeg_bin: str = "ffmpeg"  # brand-kit video memes are re-encoded with it
     ytdlp_timeout_s: int = 30  # metadata extraction for an estimate
     ytdlp_proxy: str = ""
     estimate_cache_s: int = 600

@@ -15,10 +15,10 @@ from app.config import settings
 
 from . import music, sfx
 from .broll import StockSession, credit_line
-from .edit import EditPlan, attach_memes, attach_stock, build_clean_vlog_edit, build_edit, trim_to
+from .edit import EditPlan, attach_memes, attach_stock, build_clean_vlog_edit, build_edit, mark_reactions, trim_to
 from .ingest import SourceVideo
 from .media import MediaError, MediaInfo
-from .memes import MemeSession, credit_line as meme_credit_line, identity_keys
+from .memes import CUSTOM, MemeSession, credit_line as meme_credit_line, identity_keys
 from .moments import Moment, fallback_hook
 from .render import _STING_PAD_SEC, ClipPlan, render_moment
 from .signals import Signals
@@ -39,6 +39,7 @@ class Steps:
     attach_stock: Callable = attach_stock
     attach_memes: Callable = attach_memes
     render_moment: Callable = render_moment
+    mark_reactions: Callable = mark_reactions
 
 
 @dataclass
@@ -72,7 +73,7 @@ def edit_budget(moment: Moment, stings: dict, max_sec: float = DEFAULT_MAX_SEC) 
 def produce_clip(src: SourceVideo, info: MediaInfo, signals: Signals, moment: Moment, words: Sequence[Word],
                  out_path: str, *, timed: bool, language: str, burned_in: bool, stings: dict,
                  stock: StockSession, mstock: MemeSession, warn: Callable[[str], None],
-                 track=None, brand: Optional[str] = None, watermark: str = "",
+                 track=None, brand: Optional[str] = None, watermark: str = "", logo: str = "",
                  max_sec: float = DEFAULT_MAX_SEC, captions: Optional[bool] = None,
                  steps: Optional[Steps] = None) -> Produced:
     """Edit, decorate and render one moment. Raises MediaError when the clip cannot be rendered at all."""
@@ -93,7 +94,10 @@ def produce_clip(src: SourceVideo, info: MediaInfo, signals: Signals, moment: Mo
         if timed:
             for message in run.attach_stock(edit, stock):
                 warn(message)
-        # Only marked reactions get a meme; Hindi clean-vlog edits have no marks, so they get none.
+        elif moment.kind == "speech" and words and settings.clip_memes and info.has_audio:
+            # The clean-vlog edit has no edit pass, so its reaction beats are asked for on their own.
+            run.mark_reactions(edit, moment, words, title=src.title)
+        # Only marked reactions get a meme, never a fixed point in the clip.
         for message in run.attach_memes(edit, mstock, language=language, has_audio=info.has_audio,
                                         ending_sound=ending if edit.tail_room else ""):
             warn(message)
@@ -109,6 +113,8 @@ def produce_clip(src: SourceVideo, info: MediaInfo, signals: Signals, moment: Mo
         extras["language"] = language
     if watermark:
         extras["watermark"] = watermark
+    if logo:
+        extras["logo"] = logo
     if moment.sound in stings:
         extras["sting"] = str(stings[moment.sound])
     if edit is not None and not edit.words and not edit.opening_words and moment.kind == "speech" and words:
@@ -147,8 +153,10 @@ def produce_clip(src: SourceVideo, info: MediaInfo, signals: Signals, moment: Mo
     if edit and edit.cutaways:
         credit = credit_line((c.clip.author for c in edit.cutaways), edit.cutaways[0].clip.provider)
     overlays = [m.clip for m in edit.meme_overlays if m.clip is not None] if edit else []
-    if overlays:
-        credit = f"{credit} {meme_credit_line([c.title for c in overlays], overlays[0].provider)}".strip()
+    # A customer's own memes need no credit line; library ones do.
+    library = [c for c in overlays if c.provider != CUSTOM]
+    if library:
+        credit = f"{credit} {meme_credit_line([c.title for c in library], library[0].provider)}".strip()
     if plan.music and track is not None:
         credit = f"{credit} {music.credit(track)}".strip()
     from .memes import canonical_id
