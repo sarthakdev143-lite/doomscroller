@@ -188,3 +188,29 @@ def test_checkout_redirects_to_bmc_and_webhook_fills_that_order(client, core, sa
     assert p.status == "paid" and p.provider_order_id == "pay:1234"
     r = client.post("/api/billing/subscription/cancel", headers=csrf(client))
     assert r.status_code == 404  # the membership hasn't started yet
+
+
+def test_bmc_charges_one_price_everywhere(client, core, saas_db, bmc, monkeypatch):
+    """BMC's page has one fixed price, so regional/PPP tiers and percent codes must not be offered."""
+    from saas.billing import ledger
+    from saas.models.billing import Payment, PromoCode
+
+    monkeypatch.setattr(core, "trust_proxy", "cloudflare")
+    india = client.get("/api/billing/catalog?country=IN").json()
+    assert india["currency"] == "USD" and india["provider"] == "bmc" and india["promo_codes_at_checkout"] is False
+    make_user(saas_db, "ppp@example.com")
+    h = login(client, "ppp@example.com")
+    out = client.post("/api/billing/checkout", json={"kind": "pack", "slug": "pack-60"},
+                      headers={**h, "CF-IPCountry": "PK"}).json()
+    p = saas_db.get(Payment, out["payment_id"])
+    assert (p.currency, p.tier, p.amount_minor) == ("USD", "default", 900)
+    saas_db.add(PromoCode(code="HALFOFF", kind="percent_off", percent_off=50, applies_to="pack"))
+    saas_db.commit()
+    r = client.post("/api/billing/checkout", json={"kind": "pack", "slug": "pack-60", "promo": "HALFOFF"}, headers=h)
+    assert r.status_code == 400 and r.json()["error"] == "promo_not_applicable"
+    # A $5 support must not match the cheaper PPP price of the 60-minute pack.
+    u = make_user(saas_db, "five@example.com")
+    data = {"id": 5005, "status": "succeeded", "refunded": "false", "amount": 5.0, "currency": "USD",
+            "supporter_email": "five@example.com"}
+    assert send(client, "donation.created", data).json()["status"] == "deferred"
+    assert ledger.balance(saas_db, u.id) == 0

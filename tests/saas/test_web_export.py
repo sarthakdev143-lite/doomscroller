@@ -127,8 +127,24 @@ def test_no_analytics_or_turnstile_unless_configured(site):
     landing = (out / "index.html").read_text(encoding="utf-8")
     for absent in ("ds:ga4", "ds:clarity", "consent.js", "data-consent ", "cf-turnstile", "googletagmanager"):
         assert absent not in landing, absent
+
+
+
+def test_headers_leave_csp_to_the_middleware_and_routes_skip_functions_for_files(site):
+    _exporter_module, out = site
     headers = (out / "_headers").read_text(encoding="utf-8")
-    assert "script-src 'self';" in headers and "frame-src 'none'" in headers
+    # functions/_middleware.js sends the CSP with a nonce; a second policy here would be enforced too.
+    assert "Content-Security-Policy" not in headers
+    assert "X-Content-Type-Options: nosniff" in headers and "immutable" in headers
+    routes = json.loads((out / "_routes.json").read_text(encoding="utf-8"))
+    assert routes["version"] == 1 and routes["include"] == ["/*"]
+    assert "/static/*" in routes["exclude"]
+    root_files = {f"/{f.name}" for f in out.iterdir() if f.is_file()} - {"/_headers", "/_routes.json"}
+    non_html = {name for name in root_files if not name.endswith(".html")}
+    assert non_html <= set(routes["exclude"]), non_html - set(routes["exclude"])
+    assert not any(rule.endswith(".html") or rule in ("/", "/*") for rule in routes["exclude"]), \
+        "pages must reach the middleware"
+    assert len(routes["exclude"]) <= 100 and all(len(rule) <= 100 for rule in routes["exclude"])
 
 
 def test_analytics_load_behind_the_consent_banner(tmp_path):
@@ -143,9 +159,6 @@ def test_analytics_load_behind_the_consent_banner(tmp_path):
     assert 'data-consent-choice="denied"' in landing and 'data-consent-choice="granted"' in landing
     assert "googletagmanager.com/gtag" not in landing, "the tag itself is only injected after Accept"
     assert landing.count('data-sitekey="0x4AAAAAAAtestkey"') == 2
-    headers = (out / "_headers").read_text(encoding="utf-8")
-    for host in ("https://www.googletagmanager.com", "https://*.clarity.ms", "https://challenges.cloudflare.com"):
-        assert host in headers
     consent = (out / "static" / "js" / "consent.js").read_text(encoding="utf-8")
     assert 'analytics_storage: "denied"' in consent and 'window.gtag("consent", "default"' in consent
 
@@ -164,7 +177,7 @@ def test_reexport_removes_only_its_own_files_and_restores_globals(tmp_path):
     before = dict(templates.env.globals)
     out = tmp_path / "public"
     exporter.export(out, brand="Zebracut", public_url="https://z.pages.dev")
-    (out / "_routes.json").write_text("{}", encoding="utf-8")  # someone else's file
+    (out / "_redirects").write_text("/old /new 301\n", encoding="utf-8")  # someone else's file
     stale = out / "old-page" / "index.html"
     stale.parent.mkdir()
     stale.write_text("old", encoding="utf-8")
@@ -172,7 +185,7 @@ def test_reexport_removes_only_its_own_files_and_restores_globals(tmp_path):
     manifest.write_text(json.dumps(json.loads(manifest.read_text(encoding="utf-8")) + ["old-page/index.html"]),
                         encoding="utf-8")
     exporter.export(out, brand="Zebracut", public_url="https://z.pages.dev")
-    assert (out / "_routes.json").is_file()
+    assert (out / "_redirects").is_file()
     assert not stale.exists() and not stale.parent.exists()
     for key in ("brand_name", "public_url", "turnstile_site_key", "support_email", "launch_mode"):
         assert templates.env.globals.get(key) == before.get(key), key

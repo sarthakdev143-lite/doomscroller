@@ -191,6 +191,17 @@ def link_identity(db: Session, request: Request, user_id: str) -> None:
         log.exception("identity.link failed")
 
 
+def mark_invite_redeemed(db: Session, entry: Any, user_id: str) -> None:
+    """Link the redeemed waitlist entry to the account it created (saas.waitlist.service)."""
+    fn = _resolve("saas.waitlist.service", "mark_redeemed_user")
+    if fn is None:
+        return
+    try:
+        fn(db, entry, user_id)
+    except Exception:
+        log.exception("waitlist.mark_redeemed_user failed")
+
+
 def redeem_invite(db: Session, code: Optional[str], email: str):
     """The waitlist entry the invite belongs to, or None. Only called in launch_mode=waitlist."""
     fn = _resolve("saas.waitlist", "redeem_invite")

@@ -66,7 +66,10 @@ def _session_event(payment, *, evt="evt_1", amount=900, currency="usd", mode="pa
 
 # ---- catalog & tiers ------------------------------------------------------------------------------
 
-def test_catalog_regional_display(client, core):
+def test_catalog_regional_display(client, core, monkeypatch):
+    # Regional tiers apply only with providers that can charge them (not Buy Me a Coffee).
+    monkeypatch.setattr(core, "payment_provider_default", "stripe")
+    monkeypatch.setattr(core, "payment_provider_inr", "razorpay")
     us = client.get("/api/billing/catalog?country=US").json()
     india = client.get("/api/billing/catalog?country=IN").json()
     ppp = client.get("/api/billing/catalog?country=PK").json()

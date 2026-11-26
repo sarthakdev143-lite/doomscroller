@@ -84,8 +84,29 @@ def region_for(db: Session, country: Optional[str]) -> tuple[str, str]:
     return settings.default_currency.upper(), "default"
 
 
-def price_for(db: Session, kind: str, slug: str, interval: str, country: Optional[str]) -> Optional[Price]:
+# Providers whose hosted page charges one fixed price whatever the buyer's country: regional (PPP / INR)
+# tiers and percent-off codes can't be honoured through them, so the default tier is used.
+FIXED_PRICE_PROVIDERS = {"bmc"}
+
+
+def provider_name_for(currency: str) -> str:
+    return settings.payment_provider_inr if currency.upper() == "INR" else settings.payment_provider_default
+
+
+def fixed_price_checkout(currency: str) -> bool:
+    return provider_name_for(currency) in FIXED_PRICE_PROVIDERS
+
+
+def pricing_region(db: Session, country: Optional[str]) -> tuple[str, str]:
+    """The (currency, tier) a buyer from `country` is actually charged in."""
     currency, tier = region_for(db, country)
+    if fixed_price_checkout(currency):
+        return settings.default_currency.upper(), "default"
+    return currency, tier
+
+
+def price_for(db: Session, kind: str, slug: str, interval: str, country: Optional[str]) -> Optional[Price]:
+    currency, tier = pricing_region(db, country)
     base = db.query(Price).filter(Price.item_kind == kind, Price.item_slug == slug, Price.interval == interval,
                                   Price.active.is_(True))
     for cur, tr in ((currency, tier), (currency, "default"), (settings.default_currency.upper(), "default")):
@@ -140,7 +161,7 @@ def features_for(db: Session, user) -> dict:
 
 def public_catalog(db: Session, country: Optional[str]) -> dict:
     ensure_seeded(db)
-    currency, tier = region_for(db, country)
+    currency, tier = pricing_region(db, country)
     plans = []
     for p in db.query(Plan).filter(Plan.active.is_(True)).order_by(Plan.sort, Plan.slug):
         if not p.public:
@@ -164,6 +185,7 @@ def public_catalog(db: Session, country: Optional[str]) -> dict:
     free = get_plan(db, "free")
     free_feats = {**DEFAULT_FEATURES, **((free.features or {}) if free else {})}
     return {"currency": currency, "tier": tier, "country": (country or "").upper() or None,
+            "provider": provider_name_for(currency), "promo_codes_at_checkout": not fixed_price_checkout(currency),
             "credit_unit": "1 credit = 1 minute of source video (rounded up per job)",
             "free": {"minutes": int(free_feats.get("free_grant_minutes", 10)),
                      "shorts": int(free_feats.get("free_grant_shorts", 10)),

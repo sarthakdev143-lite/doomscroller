@@ -235,21 +235,35 @@ def _write_cache(paths: tuple[str, str], fingerprint: dict, transcript: Transcri
 
 # Below this length a full Deepgram pass is cheap enough that sampling the language first saves nothing.
 _SAMPLE_MIN_SEC = 180.0
-_SAMPLE_SEC = 30.0
+_SAMPLE_SEC = 20.0
+# Where the two samples are taken, as shares of the length: clear of intros and outros.
+_SAMPLE_AT = (0.35, 0.65)
 
 
 def _sample_language(audio_path: str, duration: float) -> str:
-    """The language of 30 seconds from the middle, via Deepgram. "" when it cannot tell."""
-    sample = os.path.join(os.path.dirname(audio_path), "sample.mp3")
-    try:
-        run_ffmpeg(["-ss", f"{max(0.0, duration / 2 - _SAMPLE_SEC / 2):.3f}", "-t", f"{_SAMPLE_SEC:.3f}",
-                    "-i", audio_path, "-c", "copy", sample])
-        payload = _request(sample)
-        metering.record("stt", provider="deepgram", model=settings.deepgram_model, audio_seconds=_SAMPLE_SEC)
-        return parse_response(payload, _SAMPLE_SEC).language.lower()[:2]
-    except Exception as exc:  # the full pass still runs, so a failed sample only costs the saving
-        log.info("transcribe: no language from the sample (%s)", type(exc).__name__)
-        return ""
+    """"hi" only when two 20-second Deepgram samples are both real speech and both Hindi, else "".
+
+    One window can land on music, a guest or a code-switched aside, and a wrong "hi" would send an
+    English video to Sarvam and lose its captions, so anything short of two clear agreeing samples
+    falls through to the full pass, exactly as before.
+    """
+    heard: list[str] = []
+    for index, share in enumerate(_SAMPLE_AT):
+        sample = os.path.join(os.path.dirname(audio_path), f"sample_{index}.mp3")
+        try:
+            run_ffmpeg(["-ss", f"{max(0.0, duration * share - _SAMPLE_SEC / 2):.3f}", "-t", f"{_SAMPLE_SEC:.3f}",
+                        "-i", audio_path, "-c", "copy", sample])
+            payload = _request(sample)
+            metering.record("stt", provider="deepgram", model=settings.deepgram_model, audio_seconds=_SAMPLE_SEC)
+            piece = parse_response(payload, _SAMPLE_SEC)
+        except Exception as exc:  # the full pass still runs, so a failed sample only costs the saving
+            log.info("transcribe: no language from the sample (%s)", type(exc).__name__)
+            return ""
+        language = piece.language.lower()[:2]
+        if language != "hi" or not piece._is_speech:
+            return ""
+        heard.append(language)
+    return "hi" if heard == ["hi"] * len(_SAMPLE_AT) else ""
 
 
 def transcribe(video_path: str, info: MediaInfo, *, sidecar: bool = True, language_hint: str = "") -> Optional[Transcript]:

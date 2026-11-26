@@ -58,7 +58,8 @@ def _ending_sting_seconds(moment: Moment, stings: dict) -> float:
     if not sting_path:
         return 0.0
     sound = sfx.sting(str(sting_path))
-    return (len(sound) / sfx.RATE) if sound is not None else sfx._STING_MAX_SEC
+    # An unreadable sting gets no held ending in the render, so it promises no room either.
+    return (len(sound) / sfx.RATE) if sound is not None else 0.0
 
 
 def edit_budget(moment: Moment, stings: dict, max_sec: float = DEFAULT_MAX_SEC) -> float:

@@ -1,6 +1,6 @@
 {#
   The waitlist form. waitlist.js posts it as JSON to POST /api/waitlist (docs/saas/CONTRACT.md):
-  {email, role?, channel_url?, ref?, ts, website, cf_turnstile_response?}, plus fp on the Python app,
+  {email, role?, channel_url?, ref?, ts, website, page_url, referrer?, cf_turnstile_response?}, plus fp on the Python app,
   where t.js fills input[name=fp] (an empty fp still submits, so an ad blocker never blocks joining).
   The static export (Cloudflare Pages) has no tracker, so it sends no fp.
 #}

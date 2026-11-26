@@ -1,5 +1,5 @@
 // Waitlist forms: validate, post JSON to POST /api/waitlist, then show /waitlist/thanks.
-import { RESULT_KEY, csrfHeaders, track } from "./site.js";
+import { RESULT_KEY, csrfHeaders, landing, track } from "./site.js";
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
@@ -62,6 +62,9 @@ function payload(form) {
     website: form.elements.website ? form.elements.website.value : "",
   };
   if (form.elements.fp) body.fp = value("fp"); // only the Python app's tracker fills it; the static site has none
+  const visit = landing(); // the first page of this visit and its external referrer (UTM tags survive /pricing)
+  body.page_url = visit.page_url;
+  if (visit.referrer) body.referrer = visit.referrer;
   if (value("role")) body.role = value("role");
   if (value("channel_url")) body.channel_url = value("channel_url");
   if (ref) body.ref = ref;

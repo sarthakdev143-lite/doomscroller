@@ -582,12 +582,14 @@ def _meme_sound(clip: memes.MemeClip, mood: str, language: str, taken: set[str])
     try:
         from .media import probe
 
-        if Path(clip.path).suffix.lower() not in _STILL_EXTS and probe(clip.path).has_audio:
+        if (Path(clip.path).suffix.lower() not in _STILL_EXTS and probe(clip.path).has_audio
+                and sfx.sting(clip.path) is not None):
             return clip.path
     except Exception:  # an unreadable header just means no audio of its own
         pass
     picked = sfx.mood_sting(mood, clip.meme_id, language=language, exclude=sorted(taken))
-    return str(picked) if picked is not None else sfx.IMPACT
+    # A pack file that will not decode would leave the meme silent, so it falls back to the hit too.
+    return str(picked) if picked is not None and sfx.sting(str(picked)) is not None else sfx.IMPACT
 
 
 def _cutaway_windows(plan: EditPlan) -> list[tuple[float, float]]:

@@ -63,6 +63,32 @@ function rememberReferral() {
   }
 }
 
+/** Where this visit started: the first page (with its UTM tags) and the site that sent the visitor.
+ *  Kept for the tab's session, so joining from /pricing still credits the original campaign. */
+export const LANDING_KEY = "ds_landing";
+
+function rememberLanding() {
+  try {
+    if (sessionStorage.getItem(LANDING_KEY)) return;
+    sessionStorage.setItem(LANDING_KEY, JSON.stringify({
+      page_url: location.href.slice(0, 2000),
+      referrer: document.referrer.slice(0, 2000),
+    }));
+  } catch (_) {
+    /* storage blocked: the join sends the current page instead */
+  }
+}
+
+export function landing() {
+  try {
+    const stored = JSON.parse(sessionStorage.getItem(LANDING_KEY) || "null");
+    if (stored && typeof stored.page_url === "string") return stored;
+  } catch (_) {
+    /* fall through */
+  }
+  return { page_url: location.href.slice(0, 2000), referrer: document.referrer.slice(0, 2000) };
+}
+
 function header() {
   const bar = document.querySelector("[data-site-header]");
   if (!bar) return;
@@ -161,6 +187,7 @@ function consentLinks() {
 // can be evaluated twice. Bind the page behaviour once.
 if (!window.__dsSiteReady) {
   window.__dsSiteReady = true;
+  rememberLanding();
   rememberReferral();
   header();
   tabs();

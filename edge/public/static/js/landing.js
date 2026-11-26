@@ -1,5 +1,5 @@
 // Landing page: the live clip demo and the source timeline under it.
-import { track } from "./site.js?v=a47487ae7d";
+import { track } from "./site.js?v=226f1320bb";
 
 const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 

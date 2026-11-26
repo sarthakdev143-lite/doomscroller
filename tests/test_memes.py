@@ -450,7 +450,7 @@ def test_slow_meme_overlay_renders_through_real_ffmpeg(tmp_path, monkeypatch):
     out = tmp_path / "clip.mp4"
     plan = render_moment(str(src), info, analyse(str(src), info), Moment(0.0, 5.0, kind="speech"),
                          [], str(out), edit=edit)
-    assert [round(s, 1) for s, _, _ in plan.memes] == [1.0]
+    assert [round(s, 1) for s, _, _, _ in plan.memes] == [1.0]
     assert probe(str(out)).duration == pytest.approx(plan.duration, abs=0.5)
 
 

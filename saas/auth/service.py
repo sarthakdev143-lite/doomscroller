@@ -86,27 +86,47 @@ def _new_referral_code(db: Session) -> str:
 
 # ---- account creation -----------------------------------------------------------------------------
 
-def create_account(db: Session, request: Request, *, email: str, password: Optional[str] = None, name: str = "",
-                   invite: Optional[str] = None, ref: Optional[str] = None, fingerprint: Optional[str] = None,
-                   honeypot: Any = None, form_ts: Any = None, turnstile_ok: Optional[bool] = None,
-                   method: str = "password", email_verified: bool = False) -> User:
-    """Create a user (caller has checked the email is free). Raises ApiError on refusal."""
-    from ..billing import ledger
+def signup_gates(db: Session, request: Request, *, email: str, invite: Optional[str], fingerprint: Optional[str],
+                 honeypot: Any = None, form_ts: Any = None, turnstile_ok: Optional[bool] = None,
+                 method: str = "password") -> tuple[Any, dict]:
+    """Invite redemption (waitlist mode) and the risk verdict. Raises ApiError on refusal.
 
+    Signup runs these *before* it looks at whether the email exists, so a new and an existing address
+    get the same refusals (no enumeration); the existing-email path then rolls back, so its invite is
+    not consumed. Returns (waitlist entry or None, verdict).
+    """
+    entry = None
     if settings.launch_mode == "waitlist":
         entry = compat.redeem_invite(db, (invite or "").strip() or None, email)
         if not entry:
             raise ApiError(403, "invite_required",
                            "Sign-ups are invite-only right now. Join the waitlist or use the link from your invite.")
-
     verdict = compat.assess_signup(db, request, email, fingerprint, honeypot=honeypot, form_ts=form_ts,
                                    turnstile_ok=turnstile_ok)
-    ip = client_ip(request)
     if verdict.get("block"):
-        compat.log_event(db, "signup_blocked", "warning", ip=ip, fingerprint=fingerprint,
+        compat.log_event(db, "signup_blocked", "warning", ip=client_ip(request), fingerprint=fingerprint,
                          detail={"reasons": verdict.get("reasons", [])[:10], "method": method})
         raise ApiError(403, "signup_blocked",
                        f"We couldn't create an account from here. Contact {settings.support_email} if this is a mistake.")
+    return entry, verdict
+
+
+def create_account(db: Session, request: Request, *, email: str, password: Optional[str] = None, name: str = "",
+                   invite: Optional[str] = None, ref: Optional[str] = None, fingerprint: Optional[str] = None,
+                   honeypot: Any = None, form_ts: Any = None, turnstile_ok: Optional[bool] = None,
+                   method: str = "password", email_verified: bool = False,
+                   gates: Optional[tuple[Any, dict]] = None) -> User:
+    """Create a user (caller has checked the email is free). Raises ApiError on refusal.
+
+    `gates` is the result of `signup_gates` when the caller already ran them; otherwise they run here.
+    """
+    from ..billing import ledger
+
+    if gates is None:
+        gates = signup_gates(db, request, email=email, invite=invite, fingerprint=fingerprint, honeypot=honeypot,
+                             form_ts=form_ts, turnstile_ok=turnstile_ok, method=method)
+    entry, verdict = gates
+    ip = client_ip(request)
 
     now = utcnow()
     user = User(
@@ -136,6 +156,8 @@ def create_account(db: Session, request: Request, *, email: str, password: Optio
     if ref:
         _link_referral(db, user, ref.strip().lower())
 
+    if entry is not None and entry is not True:
+        compat.mark_invite_redeemed(db, entry, user.id)
     compat.record_signup(db, user.id, email, ip, fingerprint)
     compat.link_identity(db, request, user.id)
     compat.log_event(db, "signup", "info", ip=ip, user_id=user.id, fingerprint=fingerprint,

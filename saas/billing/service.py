@@ -115,6 +115,9 @@ def start_checkout(db: Session, user: User, request: Request, *, kind: str, slug
 
     amount = price.amount_minor
     promo: Optional[PromoCode] = None
+    if promo_code and catalog.fixed_price_checkout(price.currency):
+        raise ApiError(400, "promo_not_applicable",
+                       "Discount codes can't be used with this payment method. Credit codes still work on the billing page.")
     if promo_code:
         promo = _checkout_promo(db, user, promo_code, kind)
         amount = max(0, amount - (amount * promo.percent_off) // 100)

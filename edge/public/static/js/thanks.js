@@ -1,5 +1,5 @@
 // /waitlist/thanks: the result of joining (sessionStorage) or a lookup by referral code (?code=).
-import { RESULT_KEY, track } from "./site.js?v=a47487ae7d";
+import { RESULT_KEY, track } from "./site.js?v=226f1320bb";
 
 const root = document.querySelector("[data-thanks]");
 

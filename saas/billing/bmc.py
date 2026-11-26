@@ -104,8 +104,10 @@ def find_verified_user(db: Session, email: Any) -> Optional[User]:
 # ---- catalog mapping ------------------------------------------------------------------------------
 
 def _prices(db: Session, kind: str) -> list[Price]:
+    """Default-tier prices only: BMC charges one fixed price, so a cheaper regional (PPP) price must never
+    be what a BMC payment is matched against."""
     catalog.ensure_seeded(db)
-    return db.query(Price).filter(Price.item_kind == kind, Price.active.is_(True)).all()
+    return db.query(Price).filter(Price.item_kind == kind, Price.active.is_(True), Price.tier == "default").all()
 
 
 def map_membership(db: Session, data: dict) -> Optional[tuple[Plan, Price]]:

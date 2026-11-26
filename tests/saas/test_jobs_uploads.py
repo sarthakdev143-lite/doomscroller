@@ -111,6 +111,40 @@ def test_uploads_are_private_to_their_owner(client, core, saas_db, probe_ok):
     assert client.delete(f"/api/uploads/{upload_id}", headers=h2).status_code == 404
 
 
+def test_consumed_upload_and_scratch_are_deleted_when_the_job_ends(client, core, saas_db, probe_ok, monkeypatch):
+    from saas.jobs import service, storage
+    from saas.jobs.engine import MockEngine
+    from saas.jobs.worker import Worker
+    from saas.models.jobs import Job, Upload
+
+    monkeypatch.setattr(core, "job_heartbeat_s", 3600)
+    make_user(saas_db, "consume@example.com", credits=20, plan="pro")
+    h = login(client, "consume@example.com")
+    upload_id = _upload(client, h).json()["upload_id"]
+    job_id = client.post("/api/jobs", json={"upload_id": upload_id}, headers=h).json()["id"]
+    up = saas_db.get(Upload, upload_id)
+    src = storage.resolve(up.path)
+    assert src.is_file()
+    Worker(engine=MockEngine()).run_one()
+    saas_db.expire_all()
+    assert saas_db.get(Upload, upload_id).deleted_at is not None and not src.exists()
+    job = saas_db.get(Job, job_id)
+    assert job.status == "done" and not (storage.job_dir(job.user_id, job.id) / "work").exists()
+
+    # Backstop: a worker that died mid-job leaves a consumed upload and scratch dir behind.
+    upload2 = _upload(client, h).json()["upload_id"]
+    job2 = client.post("/api/jobs", json={"upload_id": upload2}, headers=h).json()["id"]
+    j2 = saas_db.get(Job, job2)
+    work = storage.job_dir(j2.user_id, j2.id) / "work"
+    work.mkdir(parents=True)
+    (work / "source.mp4").write_bytes(b"x")
+    client.post(f"/api/jobs/{job2}/cancel", headers=h)  # queued -> canceled releases the upload itself
+    saas_db.expire_all()
+    out = service.cleanup_retention(saas_db)
+    assert not work.exists() and out["work_dirs"] >= 1
+    assert saas_db.get(Upload, upload2).deleted_at is not None
+
+
 def test_unverified_users_cannot_upload(client, core, saas_db, probe_ok):
     make_user(saas_db, "unv-up@example.com", verified=False)
     h = login(client, "unv-up@example.com")

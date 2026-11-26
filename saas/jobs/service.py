@@ -342,9 +342,29 @@ def purge_user_content(db: Session, user: User) -> None:
 
 
 def cleanup_retention(db: Session) -> dict:
-    """Delete clips past SAAS_CLIP_RETENTION_DAYS, unused uploads past their TTL, and job scratch dirs."""
+    """Delete clips past SAAS_CLIP_RETENTION_DAYS, unused uploads past their TTL, and, as a backstop for a
+    worker that died mid-job, consumed uploads and scratch dirs of finished jobs plus stale temp zips."""
+    import time as _time
+
     now = utcnow()
-    out = {"clips": 0, "uploads": 0}
+    out = {"clips": 0, "uploads": 0, "consumed_uploads": 0, "work_dirs": 0}
+    consumed = (db.query(Upload).join(Job, Job.id == Upload.job_id)
+                .filter(Upload.deleted_at.is_(None), Job.status.in_(FINAL_STATUSES)).limit(1000).all())
+    for up in consumed:
+        storage.remove_file(up.path)
+        up.deleted_at = now
+        out["consumed_uploads"] += 1
+    for work in storage.root().glob("*/jobs/*/work"):
+        job = db.get(Job, work.parent.name)
+        if job is None or job.status in FINAL_STATUSES:
+            storage.remove_tree(work)
+            out["work_dirs"] += 1
+    for stale in storage.tmp_dir().glob("*"):
+        try:
+            if stale.is_file() and _time.time() - stale.stat().st_mtime > 3600:
+                stale.unlink()
+        except OSError:
+            pass
     cutoff = now - timedelta(days=settings.clip_retention_days)
     for clip in db.query(Clip).filter(Clip.deleted_at.is_(None), Clip.created_at < cutoff).limit(1000).all():
         storage.remove_file(clip.path)

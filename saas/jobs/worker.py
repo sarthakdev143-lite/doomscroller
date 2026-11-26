@@ -31,7 +31,7 @@ from ..common import utcnow
 from ..config import settings
 from ..db import SessionLocal
 from ..models.core import User
-from ..models.jobs import RUNNING_STATUSES, Clip, Job, Upload
+from ..models.jobs import FINAL_STATUSES, RUNNING_STATUSES, Clip, Job, Upload
 from ..auth.errors import ApiError
 from . import brand, service, ssrf, storage
 from .engine import Engine, EngineError, JobCanceled, get_engine
@@ -161,7 +161,7 @@ class Worker:
         finally:
             hb_stop.set()
             hb.join(timeout=5)
-            storage.remove_tree(out_dir.parent / "work")
+            self._release_inputs(job_id)
 
     def _source(self, db: Session, job: Job) -> str:
         if job.source_kind == "url":
@@ -183,11 +183,33 @@ class Worker:
                 log.error("job %s exceeded %s minutes; failing it and restarting the worker", job_id,
                           settings.job_timeout_minutes)
                 self._fail(job_id, "timeout", "Your job took too long and was stopped. Your credits were returned.")
+                self._release_inputs(job_id)
                 if os.environ.get("SAAS_WORKER_EXIT_ON_TIMEOUT", "1") == "1":
                     os._exit(3)  # the engine thread can't be interrupted; the supervisor restarts us
                 return
 
     # ---- endings ----------------------------------------------------------------------------------
+
+    def _release_inputs(self, job_id: str) -> None:
+        """Once a job is final its inputs go: the engine's scratch dir (source download, transcript) and,
+        for an upload, the uploaded source file. Clips stay until retention."""
+        db = self.sessions()
+        try:
+            job = db.get(Job, job_id)
+            if job is None:
+                return
+            storage.remove_tree(storage.job_dir(job.user_id, job.id) / "work")
+            if job.status in FINAL_STATUSES and job.upload_id:
+                up = db.query(Upload).filter(Upload.id == job.upload_id, Upload.user_id == job.user_id).one_or_none()
+                if up is not None and up.deleted_at is None:
+                    storage.remove_file(up.path)
+                    up.deleted_at = utcnow()
+                    db.commit()
+        except Exception:
+            db.rollback()
+            log.exception("job %s: releasing inputs failed", job_id)
+        finally:
+            db.close()
 
     def _succeed(self, job_id: str, result: dict, out_dir: Path) -> None:
         clips_in = result.get("clips") if isinstance(result, dict) else None
@@ -284,6 +306,7 @@ class Worker:
             stuck = (db.query(Job).filter(Job.status.in_(RUNNING_STATUSES),
                                           or_(Job.heartbeat_at.is_(None), Job.heartbeat_at < cutoff)).limit(100).all())
             for job in stuck:
+                failed_now = False
                 old_hb = job.heartbeat_at
                 cond = [Job.id == job.id, Job.status.in_(RUNNING_STATUSES)]
                 cond.append(Job.heartbeat_at.is_(None) if old_hb is None else Job.heartbeat_at == old_hb)
@@ -295,10 +318,13 @@ class Worker:
                     res = db.execute(update(Job).where(*cond).values(
                         status="failed", stage="failed", finished_at=utcnow(), credits_charged=0,
                         error_code="worker_lost", error_message="Processing stopped unexpectedly. Your credits were returned."))
-                    if res.rowcount == 1:
+                    failed_now = res.rowcount == 1
+                    if failed_now:
                         ledger.release(db, job.id, note="Worker lost the job")
                         out["failed"] += 1
                 db.commit()
+                if failed_now:
+                    self._release_inputs(job.id)
         except Exception:
             db.rollback()
             log.exception("stuck-job recovery failed")

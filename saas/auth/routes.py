@@ -166,8 +166,13 @@ def signup(body: SignupIn, request: Request, db: Session = Depends(get_db)):
     if refusal:
         raise ApiError(400, refusal[0], refusal[1])
 
+    # Invite and risk gates run before the existence check, so a new and an existing address are refused
+    # (or accepted) identically.
+    gates = service.signup_gates(db, request, email=email, invite=body.invite, fingerprint=fp,
+                                 honeypot=body.website, form_ts=body.ts, turnstile_ok=True, method="password")
     existing = service.find_user_by_email(db, email)
     if existing is not None:
+        db.rollback()  # nothing from the gates (e.g. a redeemed invite) is kept for an existing account
         passwords.hash_password(body.password)  # same work as the new-account path
         if existing.status == "active" and compat.rate_hit(request, "signup_exists_mail", 2, 3600,
                                                            key=_email_bucket(email)):
@@ -177,8 +182,7 @@ def signup(body: SignupIn, request: Request, db: Session = Depends(get_db)):
         return resp
 
     user = service.create_account(db, request, email=email, password=body.password, name=body.name,
-                                  invite=body.invite, ref=body.ref, fingerprint=fp, honeypot=body.website,
-                                  form_ts=body.ts, turnstile_ok=True, method="password")
+                                  invite=body.invite, ref=body.ref, fingerprint=fp, method="password", gates=gates)
     raw = service.issue_email_token(db, user, "verify", ip=client_ip(request))
     db.commit()
     mailer.send_verify(email, raw)

@@ -245,9 +245,11 @@ def build_track(path: str, duration: float, cues: Sequence[Cue], seed: str = "",
             # Anything else is a meme sound's file.
             sound = sting(cue.sound, cue.max_sec) if Path(cue.sound).is_file() else None
             if sound is None:
-                continue
-            gain = cue.gain if math.isfinite(cue.gain) and cue.gain >= 0 else 1.0
-            sound = sound * min(1.0, gain)
+                # A sound that will not decode must not leave its meme silent: it becomes a hit.
+                sound = makers[IMPACT]() * _GAIN[IMPACT]
+            else:
+                gain = cue.gain if math.isfinite(cue.gain) and cue.gain >= 0 else 1.0
+                sound = sound * min(1.0, gain)
         else:
             clip = _decode_pack(pack[cue.sound]) if pack[cue.sound] is not None else None
             if clip is not None and len(clip):

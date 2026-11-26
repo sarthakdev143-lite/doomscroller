@@ -61,30 +61,9 @@ def _saas():
     return templates, routes
 
 
-def content_security_policy(ga4: str, clarity: str, turnstile: str) -> str:
-    script, connect, img, frame = ["'self'"], ["'self'"], ["'self'", "data:"], ["'none'"]
-    if ga4:
-        script.append("https://www.googletagmanager.com")
-        hosts = ["https://*.google-analytics.com", "https://*.analytics.google.com", "https://*.googletagmanager.com"]
-        connect += hosts
-        img += hosts
-    if clarity:
-        script.append("https://*.clarity.ms")
-        connect += ["https://*.clarity.ms", "https://c.bing.com"]
-        img += ["https://*.clarity.ms", "https://c.bing.com"]
-    if turnstile:
-        script.append("https://challenges.cloudflare.com")
-        frame = ["https://challenges.cloudflare.com"]
-    return "; ".join([
-        "default-src 'self'", f"script-src {' '.join(script)}", f"connect-src {' '.join(connect)}",
-        f"img-src {' '.join(img)}", "style-src 'self' 'unsafe-inline'", "font-src 'self'",
-        f"frame-src {' '.join(frame)}", "worker-src 'self' blob:", "manifest-src 'self'", "object-src 'none'",
-        "base-uri 'self'", "form-action 'self'", "frame-ancestors 'none'",
-    ])
-
-
-def headers_file(csp: str) -> str:
-    # Static assets only: Pages Functions (/api/*) set their own headers.
+def headers_file() -> str:
+    # No Content-Security-Policy here: functions/_middleware.js sets it per response with a nonce, and a second
+    # policy from this file would be enforced as well, blocking Turnstile, GA and Clarity.
     return "\n".join([
         "/*",
         "  X-Content-Type-Options: nosniff",
@@ -92,13 +71,21 @@ def headers_file(csp: str) -> str:
         "  Referrer-Policy: strict-origin-when-cross-origin",
         "  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()",
         "  Strict-Transport-Security: max-age=31536000",
-        f"  Content-Security-Policy: {csp}",
         "",
         "/static/*",
         # Pages link CSS/JS as ?v=<content hash>; fonts and icons are versioned by file name.
         "  Cache-Control: public, max-age=31536000, immutable",
         "",
     ])
+
+
+def routes_file(out: Path) -> str:
+    """_routes.json: every non-HTML file is served without invoking a Function, so it costs nothing against the
+    free plan's 100k Function requests a day. HTML pages still go through functions/_middleware.js (CSP nonce)."""
+    root_files = {f.name for f in out.iterdir() if f.is_file()} | {MANIFEST}
+    exclude = ["/static/*"] + sorted(f"/{name}" for name in root_files
+                                     if not name.endswith(".html") and name not in ("_headers", "_routes.json"))
+    return json.dumps({"version": 1, "include": ["/*"], "exclude": exclude}, indent=2) + "\n"
 
 
 def _clear_previous(out: Path) -> None:
@@ -211,11 +198,13 @@ def export(out: Path, *, brand: str, public_url: str, support_email: str = "", g
         "site.webmanifest": json.dumps(routes.manifest_body(brand), indent=2).encode(),
         "robots.txt": routes.robots_txt(public_url).encode(),
         "sitemap.xml": routes.sitemap_xml(public_url, SITEMAP).encode(),
-        "_headers": headers_file(content_security_policy(ga4, clarity, turnstile)).encode(),
+        "_headers": headers_file().encode(),
     }
     for name, data in extras.items():
         (out / name).write_bytes(data)
         written.append(out / name)
+    (out / "_routes.json").write_text(routes_file(out), encoding="utf-8")
+    written.append(out / "_routes.json")
     (out / MANIFEST).write_text(json.dumps(sorted(p.relative_to(out).as_posix() for p in written), indent=0),
                                 encoding="utf-8")
     return written
