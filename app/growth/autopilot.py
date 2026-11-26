@@ -336,6 +336,10 @@ def _send_clip(
         video.meta = {**(video.meta or {}), "growth_title_style": actual, "growth_title": final,
                       "growth_post": post_id}
     result = publish_task(video_id, meta={"title": final} if final else {})
+    if isinstance(result, dict):
+        for k in ("error", "skipped"):
+            if isinstance(result.get(k), str):
+                result = {**result, k: scrub_secrets(result[k])}
     return {**result, "title_style": actual}
 
 
@@ -381,7 +385,8 @@ def _fill_lost_posts(db, posts: list[dict], channel=None) -> None:
 
 def _note_missed(db, post: dict, channel=None) -> None:
     post["state"] = "missed"
-    why = post.get("last_error") or "the loop did not get to it in time, so the app may have been off or paused"
+    raw_why = post.get("last_error") or "the loop did not get to it in time, so the app may have been off or paused"
+    why = scrub_secrets(str(raw_why))
     db.add(GrowthEvent(kind="missed", data={"slot": post["slot"], "due": post["due"]}, channel_id=_ev_channel(channel),
                        summary=f"Missed window {post['slot']}: {why}"))
 
@@ -410,7 +415,8 @@ def _settle_post(post: dict, outcome: dict) -> None:
         post["attempts"] += 1
         post.update(state="posted", video_id=outcome.get("video_id"))
         return
-    post["last_error"] = outcome.get("error") or outcome.get("skipped")
+    raw_err = outcome.get("error") or outcome.get("skipped")
+    post["last_error"] = scrub_secrets(str(raw_err)) if raw_err else raw_err
     # None of these say anything about this window's clip. If they last, the late grace ends the window.
     if outcome.get("account_level") or outcome.get("retry") or outcome.get("retryable"):
         return
@@ -429,7 +435,8 @@ def _save_outcome(plan: dict, posts: list[dict], post: dict, outcome: dict, now:
                     safety.clear_hold(db, channel)
                     db.add(_posted_event(post, outcome.get("video_id"), outcome.get("title_style"), channel))
                 elif outcome.get("account_level"):
-                    safety.set_hold(db, now, outcome.get("error"), channel)
+                    hold_err = outcome.get("error")
+                    safety.set_hold(db, now, scrub_secrets(str(hold_err)) if hold_err else hold_err, channel)
                 elif post["state"] == "failed":
                     err_summary = scrub_secrets(str(outcome.get("error") or ""))
                     db.add(GrowthEvent(kind="publish_failed", channel_id=_ev_channel(channel),
@@ -481,64 +488,75 @@ def _recover_stuck(now: datetime) -> None:
 
 def _autopilot_one(channel, now: datetime, rng: Optional[random.Random]) -> dict:
     """Plan and post for one managed channel, to its own token at its own pace."""
-    now = aware(now)
-    if channel is not None and (channels.is_procedural(channel) or channels.uploads_per_day(channel) <= 0):
-        reason = "procedural channel" if channels.is_procedural(channel) else "Shorts uploads_per_day=0"
-        return {"skipped": reason}
-    if not settings.use_mock and isinstance(_publisher(channel), MockPublisher):
-        missing = ("YOUTUBE_CLIENT_SECRETS is not set" if channel is None or channels.is_default(channel)
-                   else f"channel {channel.slug} has no client_secrets in channels.json")
-        return {"error": f"{missing}, so uploads would be fake"}
-    with session_scope() as db:
-        _start_clock(db, channel)
-        paused = safety.pause_reason(db, channel)
-    if paused:
-        return {"skipped": f"paused until the owner resumes: {paused}"}
-    from . import approval
-    if channel is not None:
-        approval.auto_approve_sweep(channel)  # opt-in per-channel trust; 0 threshold = off
-    current = policy(now, rng, channel)
-    today = now.astimezone(channel_zone(channel)).date().isoformat()
-    key = _skey(channel, "plan")
-    with session_scope() as db:
-        state = db.get(GrowthState, key)
-        plan = dict(state.value) if state else {}
-        posts = [dict(p) for p in plan.get("posts", [])]
-        _fill_lost_posts(db, posts, channel)
-        if plan.get("day") != today:
-            plan, posts = _roll_over(db, posts, current, now, channel)
-        for post in posts:
-            if post["state"] == "waiting" and _past_grace(post, now):
-                _note_missed(db, post, channel)
-        due = next((p for p in posts if p["state"] == "waiting" and (d := _iso(p.get("due"))) is not None and d <= now), None)
-        held = _held_back(db, now, channel) if due else None
-        if held:  # kept on the post, so that a missed window can say why
-            due["last_error"] = next(iter(held.values()))
-        set_state(db, key, {**plan, "posts": posts})
-        if due is None:
-            return {"waiting": sum(p["state"] == "waiting" for p in posts), "day": today}
-        if held:
-            return held
-
-    # A window is due. If the shelf is empty but clips sit in review, the opted-in backstop posts the best one.
-    with session_scope() as db:
-        has_stock = bool(ready_clips(db, _scope(channel)))
-    if not has_stock and channel is not None:
-        approval.backstop_approve(channel)
     try:
-        outcome = _cannot_upload(channel) or _publish_next(current, now, _post_id(due), channel)
+        now = aware(now)
+        if channel is not None and (channels.is_procedural(channel) or channels.uploads_per_day(channel) <= 0):
+            reason = "procedural channel" if channels.is_procedural(channel) else "Shorts uploads_per_day=0"
+            return {"skipped": reason}
+        if not settings.use_mock and isinstance(_publisher(channel), MockPublisher):
+            missing = ("YOUTUBE_CLIENT_SECRETS is not set" if channel is None or channels.is_default(channel)
+                       else f"channel {channel.slug} has no client_secrets in channels.json")
+            return {"error": f"{missing}, so uploads would be fake"}
+        with session_scope() as db:
+            _start_clock(db, channel)
+            paused = safety.pause_reason(db, channel)
+        if paused:
+            return {"skipped": f"paused until the owner resumes: {scrub_secrets(str(paused))}"}
+        from . import approval
+        if channel is not None:
+            approval.auto_approve_sweep(channel)  # opt-in per-channel trust; 0 threshold = off
+        current = policy(now, rng, channel)
+        today = now.astimezone(channel_zone(channel)).date().isoformat()
+        key = _skey(channel, "plan")
+        with session_scope() as db:
+            state = db.get(GrowthState, key)
+            plan = dict(state.value) if state else {}
+            posts = [dict(p) for p in plan.get("posts", [])]
+            _fill_lost_posts(db, posts, channel)
+            if plan.get("day") != today:
+                plan, posts = _roll_over(db, posts, current, now, channel)
+            for post in posts:
+                if post["state"] == "waiting" and _past_grace(post, now):
+                    _note_missed(db, post, channel)
+            due = next((p for p in posts if p["state"] == "waiting" and (d := _iso(p.get("due"))) is not None and d <= now), None)
+            held = _held_back(db, now, channel) if due else None
+            if held:  # kept on the post, so that a missed window can say why
+                due["last_error"] = scrub_secrets(str(next(iter(held.values()))))
+                held = {k: scrub_secrets(v) if isinstance(v, str) else v for k, v in held.items()}
+            set_state(db, key, {**plan, "posts": posts})
+            if due is None:
+                return {"waiting": sum(p["state"] == "waiting" for p in posts), "day": today}
+            if held:
+                return held
+
+        # A window is due. If the shelf is empty but clips sit in review, the opted-in backstop posts the best one.
+        with session_scope() as db:
+            has_stock = bool(ready_clips(db, _scope(channel)))
+        if not has_stock and channel is not None:
+            approval.backstop_approve(channel)
+        try:
+            outcome = _cannot_upload(channel) or _publish_next(current, now, _post_id(due), channel)
+        except Exception as exc:
+            err = scrub_secrets(f"{type(exc).__name__}: {exc}")
+            log.error("growth: the publish step failed: %s", err)
+            outcome = {"ok": False, "error": err}
+        if isinstance(outcome, dict):
+            for k in ("error", "skipped"):
+                if isinstance(outcome.get(k), str):
+                    outcome = {**outcome, k: scrub_secrets(outcome[k])}
+        _settle_post(due, outcome)
+        _save_outcome(plan, posts, due, outcome, now, channel)
+        if outcome.get("skipped"):
+            return {"skipped": outcome["skipped"]}
+        out = {k: outcome[k] for k in ("ok", "video_id", "youtube_id", "error", "title_style") if k in outcome}
+        if isinstance(out.get("error"), str):
+            out["error"] = scrub_secrets(out["error"])
+        return out
     except Exception as exc:
         err = scrub_secrets(f"{type(exc).__name__}: {exc}")
-        log.error("growth: the publish step failed: %s", err)
-        outcome = {"ok": False, "error": err}
-    _settle_post(due, outcome)
-    _save_outcome(plan, posts, due, outcome, now, channel)
-    if outcome.get("skipped"):
-        return {"skipped": outcome["skipped"]}
-    out = {k: outcome[k] for k in ("ok", "video_id", "youtube_id", "error", "title_style") if k in outcome}
-    if isinstance(out.get("error"), str):
-        out["error"] = scrub_secrets(out["error"])
-    return out
+        slug = channel.slug if channel is not None else "default"
+        log.error("growth: autopilot failed for %s: %s", slug, err)
+        return {"ok": False, "error": err}
 
 
 def autopilot_job(now: Optional[datetime] = None, rng: Optional[random.Random] = None) -> dict:

@@ -14,6 +14,7 @@ Scheduled:
 from __future__ import annotations
 
 import logging
+import math
 import os
 import stat
 from datetime import datetime, timedelta, timezone
@@ -23,7 +24,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import desc, func, or_, select
 
-from .logging_config import last_run_times, record_job_run, scrub_secrets
+from .logging_config import _scrub_value, last_run_times, record_job_run, scrub_secrets
 from .config import settings
 from .db import session_scope, init_db
 from .models import ClipJob, Creator, LongJob, Video, VideoStatus
@@ -61,8 +62,8 @@ def instrumented(job_id: str, fn: "callable"):
             return {"error": err}
         elapsed = time.monotonic() - started
         # A job that returns {"error": ...} failed without raising.
-        if isinstance(result, dict) and isinstance(result.get("error"), str):
-            result = {**result, "error": scrub_secrets(result["error"])}
+        if isinstance(result, (dict, list, tuple, str)):
+            result = _scrub_value(result)
         ok = not (isinstance(result, dict) and result.get("error"))
         log.info("job[%s] done in %.1fs -> %s", job_id, elapsed, scrub_secrets(str(result)))
         record_job_run(job_id, result, duration_sec=elapsed, ok=ok,
@@ -311,11 +312,16 @@ def analytics_pull_job() -> dict:
                 stats = {}
             for v in vids:
                 info = stats.get(v.youtube_video_id, {}) if isinstance(stats, dict) else {}
-                if not info:
+                if not isinstance(info, dict) or not info:
                     continue
-                v.views = info.get("viewCount", v.views)
-                v.likes = info.get("likeCount", v.likes)
-                v.comments = info.get("commentCount", v.comments)
+                applied = False
+                for attr, key in (("views", "viewCount"), ("likes", "likeCount"), ("comments", "commentCount")):
+                    val = info.get(key)
+                    if isinstance(val, (int, float)) and not isinstance(val, bool) and math.isfinite(val):
+                        setattr(v, attr, int(val))
+                        applied = True
+                if not applied:
+                    continue
                 recompute_scores([v])
                 updated += 1
                 if v.author:

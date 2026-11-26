@@ -743,3 +743,146 @@ def test_autopilot_send_clip_returns_retry_when_video_missing(monkeypatch):
     current = autopilot.policy(START, random.Random(1))
     res = autopilot._send_clip(current, "nonexistent_video_id", "Title", "Spoken", "12-16@2026-11-02")
     assert res == {"ok": False, "retry": True, "error": "video not found"}
+
+
+def test_autopilot_scrubs_publish_task_outcome_errors_before_persisting_and_multi_channel_exceptions(
+    tmp_path, monkeypatch, caplog
+):
+    from app import logging_config, scheduler
+    from app.growth import autopilot
+    import tasks.pipeline as pipeline_mod
+
+    monkeypatch.setattr(logging_config, "LOG_DIR", tmp_path / "logs")
+    bearer = "CANARY_BEARER_M3_R2"
+    bot_tok = "666777:CANARY_BOT_M3_R2"
+    rev_tok = "CANARY_REV_M3_R2"
+    url_key = "CANARY_URL_M3_R2"
+    proxy_pw = "CANARY_PROXY_M3_R2"
+    monkeypatch.setattr(settings, "review_token", rev_tok)
+    monkeypatch.setattr(settings, "telegram_bot_token", bot_tok)
+    monkeypatch.setattr(settings, "proxy_url", f"http://u:{proxy_pw}@proxy:8080")
+    monkeypatch.setattr(settings, "growth_require_approval", False)
+    monkeypatch.setattr(settings, "growth_min_gap_minutes", 0)
+
+    secret_msg = (
+        f"Authorization: Bearer {bearer} bot{bot_tok} "
+        f"https://example.com/a?key={url_key} http://u:{proxy_pw}@proxy:8080 tok={rev_tok}"
+    )
+
+    def assert_clean(text: str) -> None:
+        for canary in (bearer, bot_tok, "CANARY_BOT_M3_R2", rev_tok, url_key, proxy_pw):
+            assert canary not in text
+
+    # 1. Single-channel: publish_task returns unscrubbed error -> GrowthState("plan").last_error & _note_missed scrubbed
+    monkeypatch.setattr(settings, "channels_file", str(tmp_path / "no_channels.json"))
+    clip_path = tmp_path / "clip_pt.mp4"
+    clip_path.write_bytes(b"mp4")
+    with session_scope() as db:
+        db.add(Video(
+            source="youtube",
+            source_id="pt_clip_1",
+            source_url="https://example.com/pt_1",
+            title="PT Clip 1",
+            author="@creator",
+            duration_sec=25,
+            transformed_path=str(clip_path),
+            local_path=str(clip_path),
+            status=VideoStatus.TRANSFORMED,
+            meta={"clip_rendered": True, "clip_kind": "speech", "clip_parent": "p_pt"},
+        ))
+
+    now = START + timedelta(hours=1)
+    due_iso = (now - timedelta(minutes=5)).isoformat()
+    ends_iso = (now + timedelta(hours=2)).isoformat()
+    with session_scope() as db:
+        db.add(GrowthState(
+            key="plan",
+            value={
+                "day": now.date().isoformat(),
+                "posts": [{"slot": "12-16", "due": due_iso, "ends": ends_iso, "state": "waiting", "attempts": 0}],
+            },
+        ))
+
+    class OkPub:
+        def check_ready(self):
+            return None
+
+    monkeypatch.setattr(autopilot, "_publisher", lambda ch: OkPub())
+    monkeypatch.setattr(pipeline_mod, "generate_metadata_for_video", lambda vid: None)
+    monkeypatch.setattr(
+        pipeline_mod,
+        "publish_task",
+        lambda vid, meta=None: {"ok": False, "account_level": True, "error": secret_msg},
+    )
+
+    res_err = autopilot.autopilot_job(now=now)
+    assert res_err["ok"] is False
+    assert "[REDACTED]" in res_err["error"]
+    assert_clean(res_err["error"])
+
+    with session_scope() as db:
+        plan_val = db.get(GrowthState, "plan").value
+        saved_err = plan_val["posts"][0]["last_error"]
+        assert "[REDACTED]" in saved_err
+        assert_clean(saved_err)
+
+        hold_val = db.get(GrowthState, "hold").value
+        assert "[REDACTED]" in hold_val["reason"]
+        assert_clean(hold_val["reason"])
+
+        # Defense-in-depth: even if a post had an unscrubbed last_error, _note_missed scrubs GrowthEvent.summary
+        dirty_post = {"slot": "16-20", "due": due_iso, "state": "waiting", "last_error": secret_msg}
+        autopilot._note_missed(db, dirty_post)
+        db.flush()
+        missed_ev = db.execute(select(GrowthEvent).where(GrowthEvent.kind == "missed")).scalar_one()
+        assert "[REDACTED]" in missed_ev.summary
+        assert_clean(missed_ev.summary)
+
+    # Also verify outcome["skipped"] returned from publish_task is scrubbed before persistence & return
+    with session_scope() as db:
+        db.execute(delete(GrowthState))
+        db.add(GrowthState(
+            key="plan",
+            value={
+                "day": now.date().isoformat(),
+                "posts": [{"slot": "12-16", "due": due_iso, "ends": ends_iso, "state": "waiting", "attempts": 0}],
+            },
+        ))
+    monkeypatch.setattr(
+        pipeline_mod,
+        "publish_task",
+        lambda vid, meta=None: {"ok": False, "retry": True, "skipped": secret_msg},
+    )
+    res_skip = autopilot.autopilot_job(now=now)
+    assert "[REDACTED]" in res_skip["skipped"]
+    assert_clean(res_skip["skipped"])
+    with session_scope() as db:
+        saved_skip = db.get(GrowthState, "plan").value["posts"][0]["last_error"]
+        assert "[REDACTED]" in saved_skip
+        assert_clean(saved_skip)
+
+    # 2. Multi-channel: pre-528 exception inside autopilot.policy via instrumented(growth_autopilot_job)
+    ch_file = tmp_path / "multi_channels.json"
+    ch_file.write_text(
+        json.dumps({"channels": [
+            {"slug": "ch_one", "name": "Channel One", "enabled": True, "uploads_per_day": 1},
+            {"slug": "ch_two", "name": "Channel Two", "enabled": True, "uploads_per_day": 1},
+        ]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "channels_file", str(ch_file))
+    with session_scope() as db:
+        channels.sync_channels(db)
+
+    monkeypatch.setattr(
+        autopilot,
+        "policy",
+        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError(secret_msg)),
+    )
+    with caplog.at_level("ERROR"):
+        multi_res = scheduler.instrumented("growth_autopilot", scheduler.growth_autopilot_job)()
+    dumped = json.dumps(multi_res)
+    assert "[REDACTED]" in multi_res["ch_one"]["error"]
+    assert "[REDACTED]" in multi_res["error"]
+    assert_clean(dumped)
+    assert_clean(caplog.text)

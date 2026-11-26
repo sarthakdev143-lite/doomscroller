@@ -253,3 +253,38 @@ def test_tunnel_supervisor_scrubs_secrets_in_tunnel_log_and_echoed_stdout(tmp_pa
         assert url_key not in text
 
 
+def test_tunnel_supervisor_echo_stdout_handles_none_sys_stdout(tmp_path, monkeypatch):
+    from scripts import tunnel
+
+    fake_cf = tmp_path / "fake_cf_nostdout.py"
+    fake_cf.write_text(
+        textwrap.dedent("""
+            import time
+            print("INF |  https://no-stdout-check.trycloudflare.com  |", flush=True)
+            time.sleep(0.2)
+        """),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(tunnel, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(tunnel, "LOG_DIR", "logs")
+    monkeypatch.setattr(tunnel, "tunnel_command", lambda binary, port: [sys.executable, str(fake_cf)])
+    monkeypatch.setattr(tunnel.sys, "stdout", None)
+
+    class NoWait(threading.Event):
+        def wait(self, timeout=None):
+            return self.is_set()
+
+    sup = tunnel.TunnelSupervisor(binary="cloudflared", ssh_bin=None, echo_stdout=True)
+    sup._stop = NoWait()
+    seen: list[str] = []
+    monkeypatch.setattr(sup, "_announce", lambda u: (seen.append(u), sup._stop.set()))
+    try:
+        sup.run_forever()
+    finally:
+        sup.stop()
+
+    assert seen == ["https://no-stdout-check.trycloudflare.com"]
+    tunnel_log = (tmp_path / "logs" / "tunnel.log").read_text(encoding="utf-8")
+    assert "no-stdout-check.trycloudflare.com" in tunnel_log
+
+

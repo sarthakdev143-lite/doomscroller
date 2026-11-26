@@ -221,7 +221,7 @@ class TunnelSupervisor:
                     safe_line = scrub_secrets(line)
                     log_file.write(safe_line)
                     log_file.flush()
-                    if self.echo_stdout:
+                    if self.echo_stdout and sys.stdout is not None:
                         try:
                             sys.stdout.write(safe_line)
                         except UnicodeEncodeError:

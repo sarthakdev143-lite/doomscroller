@@ -438,3 +438,85 @@ def test_analytics_pull_job_orders_newest_first_and_only_boosts_on_non_empty_sta
         assert scores["new_00"] == 10.0
         assert scores["old_0"] == 10.0
         assert scores["null_0"] == 10.0
+
+
+def test_instrumented_scrubs_nested_dicts_lists_and_secret_keys(tmp_path, monkeypatch):
+    from app import logging_config
+    from app.config import settings
+
+    monkeypatch.setattr(logging_config, "LOG_DIR", tmp_path / "logs")
+    bearer = "CANARY_BEARER_NESTED_42"
+    bot_tok = "123456:CANARY_BOT_NESTED_42"
+    rev_tok = "CANARY_REV_NESTED_42"
+    monkeypatch.setattr(settings, "review_token", rev_tok)
+
+    nested_payload = {
+        "ch_one": {"error": f"Authorization: Bearer {bearer} rev={rev_tok}"},
+        "details": [f"https://example.com/hook?key={rev_tok}", f"bot{bot_tok}"],
+        "access_token": "CANARY_ACCESS_TOK_42",
+        "ok": False,
+    }
+    res = scheduler.instrumented("growth_autopilot", lambda: nested_payload)()
+    dumped = repr(res)
+    for secret in (bearer, bot_tok, "CANARY_BOT_NESTED_42", rev_tok, "CANARY_ACCESS_TOK_42"):
+        assert secret not in dumped
+    assert "[REDACTED]" in res["ch_one"]["error"]
+    assert res["access_token"] == "[REDACTED]"
+
+
+def test_analytics_pull_job_skips_non_dict_and_none_counters_without_crashing(monkeypatch):
+    from datetime import datetime, timezone
+    from sqlalchemy import delete, select
+    from app.db import init_db, session_scope
+    from app.models import ClipJob, Creator, LongJob, Video, VideoStatus
+    import app.publishers.youtube_publisher as yt_pub_mod
+
+    init_db()
+    with session_scope() as db:
+        for tbl in (LongJob, ClipJob, Creator, Video):
+            db.execute(delete(tbl))
+
+        now = datetime(2026, 11, 20, 12, 0, tzinfo=timezone.utc)
+        db.add_all([
+            Video(
+                source="youtube", source_id="bad_1", source_url="https://youtu.be/bad_1",
+                title="Bad", author="@bad", status=VideoStatus.PUBLISHED,
+                youtube_video_id="yt_1", published_at=now, views=5, likes=1, comments=0,
+            ),
+            Video(
+                source="youtube", source_id="none_2", source_url="https://youtu.be/none_2",
+                title="None", author="@none", status=VideoStatus.PUBLISHED,
+                youtube_video_id="yt_2", published_at=now, views=42, likes=7, comments=2,
+            ),
+            Video(
+                source="youtube", source_id="good_3", source_url="https://youtu.be/good_3",
+                title="Good", author="@good", status=VideoStatus.PUBLISHED,
+                youtube_video_id="yt_3", published_at=now, views=1, likes=3, comments=4,
+            ),
+        ])
+        db.add_all([
+            Creator(platform="youtube", handle="bad", score=10.0),
+            Creator(platform="youtube", handle="none", score=10.0),
+            Creator(platform="youtube", handle="good", score=10.0),
+        ])
+
+    monkeypatch.setattr(
+        yt_pub_mod.YouTubePublisher,
+        "fetch_stats",
+        lambda self, ids: {
+            "yt_1": "corrupt_str",
+            "yt_2": {"viewCount": None, "likeCount": None, "commentCount": None},
+            "yt_3": {"viewCount": 10, "likeCount": None, "commentCount": True},
+        },
+    )
+    assert scheduler.analytics_pull_job() == {"updated": 1}
+
+    with session_scope() as db:
+        by_yt = {v.youtube_video_id: v for v in db.execute(select(Video)).scalars().all()}
+        assert (by_yt["yt_1"].views, by_yt["yt_1"].likes, by_yt["yt_1"].comments) == (5, 1, 0)
+        assert (by_yt["yt_2"].views, by_yt["yt_2"].likes, by_yt["yt_2"].comments) == (42, 7, 2)
+        assert (by_yt["yt_3"].views, by_yt["yt_3"].likes, by_yt["yt_3"].comments) == (10, 3, 4)
+        scores = {c.handle: c.score for c in db.execute(select(Creator)).scalars().all()}
+        assert scores["bad"] == 10.0
+        assert scores["none"] == 10.0
+        assert scores["good"] == 11.0
