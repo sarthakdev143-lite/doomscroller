@@ -226,6 +226,10 @@ API key scopes: `jobs:read`, `jobs:write`, `clips:read`, `clips:write`, `billing
   claims` / `claim`). Cancelling happens on BMC (`POST /api/billing/subscription/cancel` answers 409
   `cancel_on_provider` for BMC subscriptions). Stripe, Razorpay and Dodo stay dormant: selected only via
   `SAAS_PAYMENT_PROVIDER_DEFAULT` / `SAAS_PAYMENT_PROVIDER_INR` and configured keys (Dodo is a placeholder).
+  BMC pages charge one fixed price, so while BMC is the provider the catalog and checkout use the
+  default tier only (no INR/PPP prices), BMC payments are only matched against default-tier prices, and
+  percent-off codes are refused at checkout (catalog field `promo_codes_at_checkout: false`; credit
+  codes via `POST /api/billing/promo` still work). The catalog also reports `provider`.
 - `GET /api/billing/catalog?country=` (public) → the catalog. `POST /api/billing/checkout
   {kind: "plan"|"pack", slug, interval?: "month"|"year", promo?}` → `{redirect_url, payment_id, provider,
   amount}`.
@@ -288,7 +292,9 @@ API key scopes: `jobs:read`, `jobs:write`, `clips:read`, `clips:write`, `billing
 - Uploads: `POST /api/uploads` must be multipart with one file field `file`; the body is streamed and
   aborted at `SAAS_MAX_UPLOAD_MB` (413 `upload_too_large`). **The security middleware's request-size
   cap must exempt `POST /api/uploads`** (this route enforces its own, larger cap while streaming).
-  `DELETE /api/uploads/{id}` → `{ok}`.
+  `DELETE /api/uploads/{id}` → `{ok}`. An upload is single-use: once its job is final (done, failed or
+  canceled) the source file and the job's scratch dir are deleted; unused uploads expire after
+  `SAAS_UPLOAD_TTL_HOURS`; clips are kept `SAAS_CLIP_RETENTION_DAYS`.
 - `GET/POST/DELETE /api/keys` (API keys; secret shown once).
 - Public API: `/api/v1/*` mirrors jobs/clips/balance with Bearer keys. MCP at `/mcp` (streamable HTTP).
   - `GET /api/v1/balance` → `{balance, plan}`; `POST /api/v1/estimate {url}`; `POST /api/v1/jobs`;

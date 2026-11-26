@@ -18,6 +18,7 @@ os.environ["SAAS_SMTP_HOST"] = ""
 os.environ["SAAS_STRIPE_SECRET_KEY"] = ""
 os.environ["SAAS_RAZORPAY_KEY_ID"] = ""
 os.environ["SAAS_GOOGLE_CLIENT_ID"] = ""
+os.environ["SAAS_HIBP_ENABLED"] = "false"  # no test may reach the breached-password API
 
 import pytest  # noqa: E402
 

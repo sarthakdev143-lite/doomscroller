@@ -195,6 +195,7 @@ def test_a_silent_gif_gets_a_pack_sting_that_fits_its_mood(tmp_path, monkeypatch
     for name in ("haha-laugh-funny-moment.mp3", "bruh.mp3", "vine-boom-sound.mp3"):
         (pack / name).write_bytes(b"x")
     monkeypatch.setattr(settings, "clip_sfx_pack_dir", str(tmp_path / "sfx"))
+    monkeypatch.setattr(sfx, "sting", lambda path, max_sec=0.0: np.ones(100))
     gif = tmp_path / "g.mp4"
     gif.write_bytes(b"gif")
     monkeypatch.setattr(memes, "fetch", lambda q, s, *, exclude=(), language="": memes.MemeClip("giphy-9", str(gif), "LOL", memes.GIPHY))
@@ -214,6 +215,24 @@ def test_with_no_pack_a_meme_falls_back_to_a_synthesised_hit_never_silence(tmp_p
     plan = _one_reaction_plan()
     edit.attach_memes(plan)
     assert plan.meme_overlays and plan.meme_overlays[0].sound == sfx.IMPACT
+
+
+def test_a_pack_sound_that_will_not_decode_becomes_a_hit_never_silence(tmp_path, monkeypatch):
+    pack = tmp_path / "sfx" / "trending"
+    pack.mkdir(parents=True)
+    (pack / "bruh.mp3").write_bytes(b"not audio")
+    monkeypatch.setattr(settings, "clip_sfx_pack_dir", str(tmp_path / "sfx"))
+    monkeypatch.setattr(memes, "fetch", lambda q, s, *, exclude=(), language="": memes.MemeClip("giphy-9", "/nope.mp4", "T", memes.GIPHY))
+    plan = _one_reaction_plan(mood="fail")
+    edit.attach_memes(plan)
+    assert plan.meme_overlays[0].sound == sfx.IMPACT
+    # And if a file cue still fails at mix time, the track gets a hit there instead of nothing.
+    import wave
+    out = tmp_path / "t.wav"
+    sfx.build_track(str(out), 4.0, [sfx.Cue(1.0, str(pack / "bruh.mp3"), gain=0.5)])
+    with wave.open(str(out)) as handle:
+        samples = np.frombuffer(handle.readframes(handle.getnframes()), np.int16)
+    assert np.abs(samples[int(sfx.RATE * 1.0):int(sfx.RATE * 1.4)]).max() > 1000
 
 
 def test_a_clip_without_audio_gets_no_memes(monkeypatch):

@@ -10,3 +10,5 @@ user-agents==2.2.0
 geoip2==5.4.0
 email-validator==2.4.0
 mcp==2.3.0
+# AES-GCM sealing of TOTP secrets (saas.auth.crypto); pinned rather than relying on google-auth's pull.
+cryptography==50.0.2

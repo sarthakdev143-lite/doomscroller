@@ -480,8 +480,9 @@ def test_local_meme_pack_language_scoping_and_native_audio_cue(tmp_path, monkeyp
 
     plan_e = clip_edit.EditPlan(words=[], segments=[(0.0, 10.0)], speed=1.0,
                                 reactions=[clip_edit.Reaction(4.0, "shock")])
-    # The owner's file has its own audio, so that is its sound.
+    # The owner's file has its own audio (and it decodes), so that is its sound.
     monkeypatch.setattr(clip_media, "probe", lambda p: MediaInfo(duration=2.0, width=320, height=240, fps=30.0, has_audio=True))
+    monkeypatch.setattr(clip_edit.sfx, "sting", lambda path, max_sec=0.0: np.ones(100))
     clip_edit.attach_memes(plan_e, language="hi")
     assert len(plan_e.meme_overlays) == 1
     assert plan_e.meme_overlays[0].clip.path == str(hi_mp4)

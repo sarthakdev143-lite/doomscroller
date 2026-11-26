@@ -213,7 +213,7 @@ def test_openai_compatible_needs_a_model_and_a_base_url(monkeypatch):
 
 # ---------- cheaper speech-to-text ----------
 
-def _deepgram_reply(language="en", words=("Hello.",)):
+def _deepgram_reply(language="en", words=("Hello.",) * 60):
     return {"results": {"channels": [{"detected_language": language, "alternatives": [{"words": [
         {"word": w.strip("."), "punctuated_word": w, "start": i, "end": i + 0.4, "confidence": 0.99}
         for i, w in enumerate(words)]}]}]}}
@@ -232,13 +232,25 @@ def test_hindi_audio_skips_the_wasted_full_deepgram_pass(monkeypatch, tmp_path):
     from app.clipper import sarvam
     video = _stt(monkeypatch, tmp_path)
     sent = []
-    monkeypatch.setattr(tr, "_request", lambda path: sent.append(Path(path).name) or _deepgram_reply("hi", ("नमस्ते.",)))
+    monkeypatch.setattr(tr, "_request", lambda path: sent.append(Path(path).name) or _deepgram_reply("hi", ("नमस्ते.",) * 60))
     hindi = Transcript(words=[Word("नमस्ते", 0.0, 0.5)], language="hi", duration=600.0, engine="sarvam")
     monkeypatch.setattr(sarvam, "transcribe", lambda *a, **k: hindi)
     with metering.metered() as meter:
         got = tr.transcribe(str(video), INFO)
-    assert got is hindi and sent == ["sample.mp3"]
-    assert meter.summary()["stt_seconds"][f"deepgram:{settings.deepgram_model}"] == 30.0
+    assert got is hindi and sent == ["sample_0.mp3", "sample_1.mp3"]
+    assert meter.summary()["stt_seconds"][f"deepgram:{settings.deepgram_model}"] == 40.0
+
+
+def test_a_sample_that_is_not_clearly_hindi_speech_keeps_the_full_deepgram_pass(monkeypatch, tmp_path):
+    """Music or one code-switched window must never send an English video to Sarvam."""
+    from app.clipper import sarvam
+    video = _stt(monkeypatch, tmp_path)
+    replies = iter([_deepgram_reply("hi"), _deepgram_reply("hi", ("la",) * 3), _deepgram_reply("en", ("Hello.",) * 900)])
+    sent = []
+    monkeypatch.setattr(tr, "_request", lambda path: sent.append(Path(path).name) or next(replies))
+    monkeypatch.setattr(sarvam, "transcribe", lambda *a, **k: pytest.fail("not two clear Hindi samples"))
+    got = tr.transcribe(str(video), INFO)
+    assert got.is_english_speech and sent == ["sample_0.mp3", "sample_1.mp3", "audio.mp3"]
 
 
 def test_a_known_language_skips_the_sample_too(monkeypatch, tmp_path):
@@ -257,7 +269,7 @@ def test_english_audio_costs_a_sample_plus_one_full_pass_and_no_sarvam(monkeypat
     monkeypatch.setattr(tr, "_request", lambda path: sent.append(Path(path).name) or _deepgram_reply("en", ("Hello.",) * 900))
     monkeypatch.setattr(sarvam, "transcribe", lambda *a, **k: pytest.fail("English never goes to Sarvam"))
     got = tr.transcribe(str(video), INFO)
-    assert got.is_english_speech and sent == ["sample.mp3", "audio.mp3"]
+    assert got.is_english_speech and sent == ["sample_0.mp3", "audio.mp3"]
 
 
 def test_a_failed_sarvam_still_falls_back_to_deepgram_once(monkeypatch, tmp_path):
@@ -267,7 +279,7 @@ def test_a_failed_sarvam_still_falls_back_to_deepgram_once(monkeypatch, tmp_path
     monkeypatch.setattr(tr, "_request", lambda path: sent.append(Path(path).name) or _deepgram_reply("hi"))
     monkeypatch.setattr(sarvam, "transcribe", lambda *a, **k: asked.append(1) or None)
     tr.transcribe(str(video), INFO)
-    assert sent == ["sample.mp3", "audio.mp3"] and len(asked) == 1
+    assert sent == ["sample_0.mp3", "sample_1.mp3", "audio.mp3"] and len(asked) == 1
 
 
 def test_whisper_words_take_punctuation_from_their_segments():
