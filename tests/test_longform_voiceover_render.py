@@ -450,3 +450,58 @@ def test_voiceover_retries_transient_503_once_and_fails_fast_on_429(tmp_path, mo
         voiceover.synthesize_wav("Rate limit fail fast line", tmp_path / "out2.wav", language="hi")
     assert attempts_429 == 1
     assert "sk_sarvam_retry_test" not in str(exc_info.value)
+
+
+def test_render_compilation_cleans_up_partial_tmp_mp4_and_scrubs_warnings(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "sarvam_api_key", "sk_live_secret_12345")
+    monkeypatch.setattr(settings, "longform_voiceover", True)
+    monkeypatch.setattr(settings, "use_mock", False)
+
+    src = tmp_path / "src.mp4"
+    src.write_bytes(b"MP4" * 100)
+    seg = planner.SegmentPlan(
+        str(src), "https://youtu.be/1", "1", "@creator", "Creator", "Hot", 0.0, 20.0, 90.0, "Moment", "en"
+    )
+    plan = planner.CompilationPlan(
+        format_kind="best_of",
+        channel_slug="default",
+        part_number=1,
+        targets=("@creator",),
+        theme="",
+        title="Best",
+        description="Desc",
+        tags=("tag",),
+        language="en",
+        target_seconds=60.0,
+        cold_open=seg,
+        segments=(seg,),
+    )
+
+    monkeypatch.setattr("app.clipper.music.library", lambda: [])
+    monkeypatch.setattr(voiceover, "generate_commentary_script", lambda _p: (_ for _ in ()).throw(RuntimeError("Bearer sk_live_secret_12345")))
+    monkeypatch.setattr(lf_render, "_render_segment", lambda s, out_p, td, **kw: (Path(out_p).write_bytes(b"SEG" * 50), 10.0)[1])
+    monkeypatch.setattr(lf_render, "_render_stinger", lambda out_p, td: Path(out_p).write_bytes(b"STG" * 20))
+    monkeypatch.setattr(lf_render, "_probe_duration", lambda p, fb: fb)
+
+    def ok_ffmpeg(args, **kw):
+        Path(args[-1]).write_bytes(b"M" * 2000)
+
+    monkeypatch.setattr(lf_render, "run_ffmpeg", ok_ffmpeg)
+    monkeypatch.setattr(lf_render, "probe", lambda p: MediaInfo(20.0, 1920, 1080, 30.0, True))
+
+    out1 = tmp_path / "out1.mp4"
+    res = lf_render.render_compilation(plan, str(out1), include_end_screen=False, include_voiceover=True)
+    assert any("voiceover skipped" in w for w in res.warnings)
+    assert all("sk_live_secret_12345" not in w for w in res.warnings)
+    assert any("[REDACTED]" in w for w in res.warnings)
+
+    # Partial .tmp.mp4 must be cleaned up if probe fails after concat writes partial
+    def fail_probe(_p):
+        raise RuntimeError("probe boom")
+
+    monkeypatch.setattr(lf_render, "probe", fail_probe)
+    out2 = tmp_path / "out2.mp4"
+    with pytest.raises(RuntimeError, match="probe boom"):
+        lf_render.render_compilation(plan, str(out2), include_end_screen=False, include_voiceover=False)
+    assert not (tmp_path / "out2.mp4.tmp.mp4").exists()
+

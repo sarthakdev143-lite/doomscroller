@@ -14,6 +14,7 @@ from app.clipper.captions import font_family
 from app.clipper.media import MediaError, MediaInfo, probe, run_ffmpeg
 from app.clipper.render import _filter_path_arg
 from app.config import settings
+from app.logging_config import scrub_secrets
 from app.transformers.fonts import resolve_font
 from app.winproc import background_subprocess_kwargs, reclaim_memory
 
@@ -340,7 +341,7 @@ def _build_entry_sfx(
         if wav_path.is_file() and wav_path.stat().st_size > 44:
             return wav_path
     except Exception as exc:
-        log.debug("longform.render: sfx skipped (%s): %s", kind, exc)
+        log.debug("longform.render: sfx skipped (%s): %s", kind, scrub_secrets(str(exc)))
     return None
 
 
@@ -782,179 +783,182 @@ def render_compilation(
     owner_tracks = music.library()
     owner_music: Optional[Path] = owner_tracks[0] if owner_tracks else None
 
-    with tempfile.TemporaryDirectory(prefix="longform-render-", ignore_cleanup_errors=True) as td:
-        tmp_dir = Path(td)
-        stinger = tmp_dir / "trans.mp4"
-        stinger_created = False
+    try:
+        with tempfile.TemporaryDirectory(prefix="longform-render-", ignore_cleanup_errors=True) as td:
+            tmp_dir = Path(td)
+            stinger = tmp_dir / "trans.mp4"
+            stinger_created = False
 
-        voiceover = None
-        script: dict = {}
-        if use_vo:
-            missing_srcs = [str(s.source_path) for s in (plan.cold_open, *plan.segments) if not os.path.isfile(str(s.source_path))]
-            if missing_srcs:
-                warnings.append("voiceover skipped: missing source clip file")
-            else:
-                from . import voiceover as vo_mod
+            voiceover = None
+            script: dict = {}
+            if use_vo:
+                missing_srcs = [str(s.source_path) for s in (plan.cold_open, *plan.segments) if not os.path.isfile(str(s.source_path))]
+                if missing_srcs:
+                    warnings.append("voiceover skipped: missing source clip file")
+                else:
+                    from . import voiceover as vo_mod
 
+                    try:
+                        voiceover = vo_mod
+                        script = voiceover.generate_commentary_script(plan)
+                    except vo_mod.SarvamTTSQuotaError:
+                        raise
+                    except Exception as exc:
+                        warnings.append(f"voiceover skipped: {scrub_secrets(str(exc))}")
+                        voiceover = None
+
+            parts_to_concat: list[Path] = []
+            chapters: list[tuple[float, str]] = [(0.0, "Intro / Preview")]
+            thumb_stamps: list[float] = []
+            cursor = 0.0
+            climax = max(plan.segments, key=lambda s: s.score) if plan.segments else plan.cold_open
+
+            cold_file = tmp_dir / "part_00_cold_open.mp4"
+            cold_rendered_with_vo = False
+            hook_text = (script.get("hook") or script.get("intro") or "").strip() if voiceover is not None else ""
+            if voiceover is not None and hook_text:
+                hook_wav = tmp_dir / "hook.wav"
                 try:
-                    voiceover = vo_mod
-                    script = voiceover.generate_commentary_script(plan)
-                except vo_mod.SarvamTTSQuotaError:
-                    raise
-                except Exception as exc:
-                    warnings.append(f"voiceover skipped: {exc}")
-                    voiceover = None
-
-        parts_to_concat: list[Path] = []
-        chapters: list[tuple[float, str]] = [(0.0, "Intro / Preview")]
-        thumb_stamps: list[float] = []
-        cursor = 0.0
-        climax = max(plan.segments, key=lambda s: s.score) if plan.segments else plan.cold_open
-
-        cold_file = tmp_dir / "part_00_cold_open.mp4"
-        cold_rendered_with_vo = False
-        hook_text = (script.get("hook") or script.get("intro") or "").strip() if voiceover is not None else ""
-        if voiceover is not None and hook_text:
-            hook_wav = tmp_dir / "hook.wav"
-            try:
-                vo_dur = voiceover.synthesize_wav(hook_text, hook_wav, language=plan.language)
-            except voiceover.SarvamTTSQuotaError:
-                raise
-            except Exception as exc:
-                warnings.append(f"hook voiceover skipped: {exc}")
-                vo_dur = None
-            if vo_dur:
-                co_dur = _render_cold_open_with_hook(
-                    plan.cold_open,
-                    climax,
-                    hook_wav,
-                    vo_dur,
-                    cold_file,
-                    tmp_dir,
-                    format_kind=plan.format_kind,
-                    brand_name=brand_name,
-                    music_path=owner_music,
-                )
-                cold_rendered_with_vo = True
-
-        if not cold_rendered_with_vo:
-            co_dur = _render_segment(
-                plan.cold_open, cold_file, tmp_dir,
-                index=0, is_cold_open=True, format_kind=plan.format_kind, brand_name=brand_name,
-            )
-        parts_to_concat.append(cold_file)
-        cursor += co_dur
-
-        total_segs = len(plan.segments)
-        bridges = list(script.get("bridges") or [])
-        for idx, seg in enumerate(plan.segments, start=1):
-            rank = (total_segs - idx + 1) if plan.format_kind != "vs" else idx
-            prefix = f"Round {idx}" if plan.format_kind == "vs" else f"#{rank}"
-            cname = display_creator_name(seg.creator)
-            label = f"{prefix} {cname} — {seg.moment_title}".strip(" —")
-            clean_headline = _short_caption(seg.moment_title, max_words=6, max_chars=38) or "Key Moment"
-            badge = f"ROUND {idx} · {cname.upper()}" if plan.format_kind == "vs" else f"#{rank} · {cname.upper()}"
-
-            bridge_card: Optional[Path] = None
-            bridge_dur = 0.0
-            if voiceover is not None and idx - 1 < len(bridges) and bridges[idx - 1]:
-                b_wav = tmp_dir / f"bridge_{idx:02d}.wav"
-                try:
-                    vo_dur = voiceover.synthesize_wav(bridges[idx - 1], b_wav, language=plan.language)
+                    vo_dur = voiceover.synthesize_wav(hook_text, hook_wav, language=plan.language)
                 except voiceover.SarvamTTSQuotaError:
                     raise
                 except Exception as exc:
-                    warnings.append(f"bridge {idx} voiceover skipped: {exc}")
+                    warnings.append(f"hook voiceover skipped: {scrub_secrets(str(exc))}")
                     vo_dur = None
                 if vo_dur:
+                    co_dur = _render_cold_open_with_hook(
+                        plan.cold_open,
+                        climax,
+                        hook_wav,
+                        vo_dur,
+                        cold_file,
+                        tmp_dir,
+                        format_kind=plan.format_kind,
+                        brand_name=brand_name,
+                        music_path=owner_music,
+                    )
+                    cold_rendered_with_vo = True
+
+            if not cold_rendered_with_vo:
+                co_dur = _render_segment(
+                    plan.cold_open, cold_file, tmp_dir,
+                    index=0, is_cold_open=True, format_kind=plan.format_kind, brand_name=brand_name,
+                )
+            parts_to_concat.append(cold_file)
+            cursor += co_dur
+
+            total_segs = len(plan.segments)
+            bridges = list(script.get("bridges") or [])
+            for idx, seg in enumerate(plan.segments, start=1):
+                rank = (total_segs - idx + 1) if plan.format_kind != "vs" else idx
+                prefix = f"Round {idx}" if plan.format_kind == "vs" else f"#{rank}"
+                cname = display_creator_name(seg.creator)
+                label = f"{prefix} {cname} — {seg.moment_title}".strip(" —")
+                clean_headline = _short_caption(seg.moment_title, max_words=6, max_chars=38) or "Key Moment"
+                badge = f"ROUND {idx} · {cname.upper()}" if plan.format_kind == "vs" else f"#{rank} · {cname.upper()}"
+
+                bridge_card: Optional[Path] = None
+                bridge_dur = 0.0
+                if voiceover is not None and idx - 1 < len(bridges) and bridges[idx - 1]:
+                    b_wav = tmp_dir / f"bridge_{idx:02d}.wav"
                     try:
-                        cand_card = tmp_dir / f"part_{idx:02d}_vo.mp4"
-                        bridge_dur = voiceover.render_narrator_bridge(
-                            b_wav,
-                            Path(seg.source_path),
-                            cand_card,
-                            tmp_dir,
-                            badge_text=badge,
-                            headline=clean_headline,
-                            creator_label=display_creator_name(seg.creator),
-                            brand_name=brand_name,
-                            duration=vo_dur,
-                            preview_start=float(seg.start),
-                            preview_end=float(seg.end),
-                            music_path=owner_music,
-                        )
-                        bridge_card = cand_card
+                        vo_dur = voiceover.synthesize_wav(bridges[idx - 1], b_wav, language=plan.language)
+                    except voiceover.SarvamTTSQuotaError:
+                        raise
                     except Exception as exc:
-                        warnings.append(f"bridge {idx} render skipped: {exc}")
+                        warnings.append(f"bridge {idx} voiceover skipped: {scrub_secrets(str(exc))}")
+                        vo_dur = None
+                    if vo_dur:
+                        try:
+                            cand_card = tmp_dir / f"part_{idx:02d}_vo.mp4"
+                            bridge_dur = voiceover.render_narrator_bridge(
+                                b_wav,
+                                Path(seg.source_path),
+                                cand_card,
+                                tmp_dir,
+                                badge_text=badge,
+                                headline=clean_headline,
+                                creator_label=display_creator_name(seg.creator),
+                                brand_name=brand_name,
+                                duration=vo_dur,
+                                preview_start=float(seg.start),
+                                preview_end=float(seg.end),
+                                music_path=owner_music,
+                            )
+                            bridge_card = cand_card
+                        except Exception as exc:
+                            warnings.append(f"bridge {idx} render skipped: {scrub_secrets(str(exc))}")
 
-            if bridge_card is not None:
-                chapters.append((cursor, label))
-                parts_to_concat.append(bridge_card)
-                cursor += bridge_dur
-            else:
-                if not stinger_created:
-                    _render_stinger(stinger, tmp_dir)
-                    stinger_created = True
-                parts_to_concat.append(stinger)
-                cursor += _probe_duration(stinger, _TRANSITION_SEC)
-                chapters.append((cursor, label))
+                if bridge_card is not None:
+                    chapters.append((cursor, label))
+                    parts_to_concat.append(bridge_card)
+                    cursor += bridge_dur
+                else:
+                    if not stinger_created:
+                        _render_stinger(stinger, tmp_dir)
+                        stinger_created = True
+                    parts_to_concat.append(stinger)
+                    cursor += _probe_duration(stinger, _TRANSITION_SEC)
+                    chapters.append((cursor, label))
 
-            seg_file = tmp_dir / f"part_{idx:02d}.mp4"
-            dur = _render_segment(
-                seg, seg_file, tmp_dir,
-                index=idx, display_rank=rank, is_cold_open=False,
-                format_kind=plan.format_kind, brand_name=brand_name,
-                show_pill=(bridge_card is None),
+                seg_file = tmp_dir / f"part_{idx:02d}.mp4"
+                dur = _render_segment(
+                    seg, seg_file, tmp_dir,
+                    index=idx, display_rank=rank, is_cold_open=False,
+                    format_kind=plan.format_kind, brand_name=brand_name,
+                    show_pill=(bridge_card is None),
+                )
+                parts_to_concat.append(seg_file)
+                t_early = cursor + min(max(1.5, dur * 0.35), max(1.5, dur - 1.2))
+                t_late = cursor + min(max(2.0, dur * 0.65), max(2.0, dur - 0.8))
+                thumb_stamps.append(t_early)
+                if abs(t_late - t_early) >= 4.0:
+                    thumb_stamps.append(t_late)
+                cursor += dur
+                reclaim_memory()
+
+            if include_end_screen and parts_to_concat:
+                outro_wav_path: Optional[Path] = None
+                if voiceover is not None and script.get("outro"):
+                    cand_wav = tmp_dir / "outro.wav"
+                    try:
+                        if voiceover.synthesize_wav(script["outro"], cand_wav, language=plan.language):
+                            outro_wav_path = cand_wav
+                    except voiceover.SarvamTTSQuotaError:
+                        raise
+                    except Exception as exc:
+                        warnings.append(f"outro voiceover skipped: {scrub_secrets(str(exc))}")
+                tail_file = tmp_dir / "part_tail.mp4"
+                tail_src = Path(climax.source_path) if os.path.isfile(str(climax.source_path)) else parts_to_concat[-1]
+                tail_seek = max(float(climax.start), float(climax.start) + climax.duration * 0.45) if tail_src == Path(climax.source_path) else 0.0
+                _render_end_tail(
+                    tail_src,
+                    tail_file,
+                    tmp_dir,
+                    seconds=_END_SCREEN_SEC,
+                    outro_wav=outro_wav_path,
+                    seek_sec=tail_seek,
+                    music_path=owner_music,
+                    brand_name=brand_name,
+                    language=plan.language,
+                )
+                parts_to_concat.append(tail_file)
+
+            concat_txt = tmp_dir / "concat.txt"
+            concat_txt.write_text(
+                "\n".join(f"file '{str(p.resolve()).replace(chr(39), chr(39) + chr(92) + chr(39) + chr(39))}'" for p in parts_to_concat) + "\n",
+                encoding="utf-8",
             )
-            parts_to_concat.append(seg_file)
-            t_early = cursor + min(max(1.5, dur * 0.35), max(1.5, dur - 1.2))
-            t_late = cursor + min(max(2.0, dur * 0.65), max(2.0, dur - 0.8))
-            thumb_stamps.append(t_early)
-            if abs(t_late - t_early) >= 4.0:
-                thumb_stamps.append(t_late)
-            cursor += dur
-            reclaim_memory()
-
-        if include_end_screen and parts_to_concat:
-            outro_wav_path: Optional[Path] = None
-            if voiceover is not None and script.get("outro"):
-                cand_wav = tmp_dir / "outro.wav"
-                try:
-                    if voiceover.synthesize_wav(script["outro"], cand_wav, language=plan.language):
-                        outro_wav_path = cand_wav
-                except voiceover.SarvamTTSQuotaError:
-                    raise
-                except Exception as exc:
-                    warnings.append(f"outro voiceover skipped: {exc}")
-            tail_file = tmp_dir / "part_tail.mp4"
-            tail_src = Path(climax.source_path) if os.path.isfile(str(climax.source_path)) else parts_to_concat[-1]
-            tail_seek = max(float(climax.start), float(climax.start) + climax.duration * 0.45) if tail_src == Path(climax.source_path) else 0.0
-            _render_end_tail(
-                tail_src,
-                tail_file,
-                tmp_dir,
-                seconds=_END_SCREEN_SEC,
-                outro_wav=outro_wav_path,
-                seek_sec=tail_seek,
-                music_path=owner_music,
-                brand_name=brand_name,
-                language=plan.language,
+            run_ffmpeg(
+                ["-f", "concat", "-safe", "0", "-i", str(concat_txt), "-c", "copy", "-movflags", "+faststart", str(partial)],
+                cwd=str(tmp_dir),
             )
-            parts_to_concat.append(tail_file)
-
-        concat_txt = tmp_dir / "concat.txt"
-        concat_txt.write_text(
-            "\n".join(f"file '{str(p.resolve()).replace(chr(39), chr(39) + chr(92) + chr(39) + chr(39))}'" for p in parts_to_concat) + "\n",
-            encoding="utf-8",
-        )
-        run_ffmpeg(
-            ["-f", "concat", "-safe", "0", "-i", str(concat_txt), "-c", "copy", "-movflags", "+faststart", str(partial)],
-            cwd=str(tmp_dir),
-        )
-        if not partial.is_file() or partial.stat().st_size < 1000:
-            raise MediaError("longform render produced no usable output")
-        final_info = probe(str(partial))
-        os.replace(partial, out)
+            if not partial.is_file() or partial.stat().st_size < 1000:
+                raise MediaError("longform render produced no usable output")
+            final_info = probe(str(partial))
+            os.replace(partial, out)
+    finally:
+        partial.unlink(missing_ok=True)
 
     chapter_text = format_chapters(chapters)
     return RenderResult(

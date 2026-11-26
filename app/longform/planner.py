@@ -18,6 +18,7 @@ from app.clipper import ai, ingest, moments, signals, transcribe
 from app.clipper.media import Interrupted, MediaInfo, probe
 from app.config import settings
 from app.growth import safety
+from app.logging_config import scrub_secrets
 from app.metadata import compose, detect_language
 from app.models import Video, VideoStatus
 from app.winproc import background_subprocess_kwargs
@@ -259,10 +260,15 @@ def list_creator_videos(feed_url: str, *, limit: int = 30) -> list[dict]:
             **background_subprocess_kwargs(low_priority=True),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        log.warning("longform.planner: flat listing failed for %s: %s", url, exc)
+        log.warning("longform.planner: flat listing failed for %s: %s", scrub_secrets(url), scrub_secrets(str(exc)))
         return []
     if proc.returncode != 0 and not (proc.stdout or "").strip():
-        log.warning("longform.planner: yt-dlp exit %d for %s: %s", proc.returncode, url, (proc.stderr or "")[-240:])
+        log.warning(
+            "longform.planner: yt-dlp exit %d for %s: %s",
+            proc.returncode,
+            scrub_secrets(url),
+            scrub_secrets((proc.stderr or "")[-240:]),
+        )
         return []
     try:
         payload = json.loads(proc.stdout or "{}")
@@ -504,7 +510,7 @@ def _moments_from_source(
     try:
         transcript = transcribe.transcribe(src.path, info)
     except Exception as exc:
-        log.warning("longform.planner: transcription skipped for %s: %s", src.source_id, exc)
+        log.warning("longform.planner: transcription skipped for %s: %s", src.source_id, scrub_secrets(str(exc)))
     speech = transcript is not None and (transcript.is_english_speech or transcript.is_hindi_speech)
     words = [w for w in transcript.words if w.end <= info.duration] if speech else []
     lang = ("hi" if transcript.is_hindi_speech else "en") if speech else detect_language(f"{src.title} {src.description}")
@@ -963,7 +969,7 @@ def plan_compilation(
         try:
             src = cached_src or ingest.fetch(entry["url"])
         except Exception as exc:
-            warnings.append(f"skipped {entry.get('url', '')}: {exc}")
+            warnings.append(f"skipped {scrub_secrets(str(entry.get('url', '')))}: {scrub_secrets(str(exc))}")
             continue
         if src.source_id in fetched_ids:
             continue
@@ -975,8 +981,10 @@ def plan_compilation(
         except Interrupted:
             raise
         except Exception as exc:
-            log.warning("planner: skipping unreadable source %s: %s", entry.get("url", ""), exc)
-            warnings.append(f"skipped {entry.get('url', '')}: {exc}")
+            safe_url = scrub_secrets(str(entry.get("url", "")))
+            safe_exc = scrub_secrets(str(exc))
+            log.warning("planner: skipping unreadable source %s: %s", safe_url, safe_exc)
+            warnings.append(f"skipped {safe_url}: {safe_exc}")
             continue
         for seg in segs:
             collected.append(seg)

@@ -192,3 +192,78 @@ def test_headline_strips_emojis_split_fits_long_labels_and_job_uses_clean_names(
 
     job_src = (Path(__file__).resolve().parent.parent / "app" / "longform" / "job.py").read_text(encoding="utf-8")
     assert "creator_labels=[planner.display_creator_name(t) for t in plan.targets]" in job_src
+
+
+def test_save_custom_thumbnail_closes_image_handle_and_ai_errors_do_not_crash(tmp_path, monkeypatch, caplog):
+    import logging
+    from app.config import settings
+
+    # 1. Spy on Image.open in save_custom_thumbnail to confirm context manager enter/exit
+    orig_open = thumbnails.Image.open
+    ctx_counts = {"enter": 0, "exit": 0}
+
+    class SpyImageCtx:
+        def __init__(self, im):
+            self._im = im
+
+        def __enter__(self):
+            ctx_counts["enter"] += 1
+            return self._im.__enter__()
+
+        def __exit__(self, *args):
+            ctx_counts["exit"] += 1
+            return self._im.__exit__(*args)
+
+        def __getattr__(self, name):
+            return getattr(self._im, name)
+
+    monkeypatch.setattr(thumbnails.Image, "open", lambda *a, **k: SpyImageCtx(orig_open(*a, **k)))
+
+    buf = io.BytesIO()
+    Image.new("RGBA", (640, 360), (20, 120, 200, 180)).save(buf, format="PNG")
+    thumbnails.save_custom_thumbnail(tmp_path / "ctx_ok.jpg", buf.getvalue())
+
+    bad_buf = io.BytesIO()
+    bad_img = Image.new("RGB", (200, 200), (10, 20, 30))
+    for x in range(200):
+        bad_img.putpixel((x, x), (x % 255, (x * 3) % 255, 99))
+    bad_img.save(bad_buf, format="PNG")
+    raw_png = bad_buf.getvalue()
+    truncated = raw_png[: max(60, len(raw_png) // 2)]
+    with pytest.raises(ValueError):
+        thumbnails.save_custom_thumbnail(tmp_path / "ctx_bad.jpg", truncated)
+
+    assert ctx_counts["enter"] == 2 and ctx_counts["exit"] == 2
+
+    # 2. generate_ai_thumbnail must not crash with TypeError when OpenAI/Gemini raise Exception
+    hero = _make_jpg(tmp_path / "hero_err.jpg", (120, 40, 40))
+    monkeypatch.setattr(settings, "openai_api_key", "sk-thumb-secret")
+    monkeypatch.setattr(settings, "gemini_api_key", "AIza-thumb-secret")
+    monkeypatch.setattr(
+        thumbnails.httpx,
+        "post",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("Authorization: Bearer sk-thumb-secret?key=AIza-thumb-secret")),
+    )
+    with caplog.at_level(logging.WARNING):
+        res = thumbnails.generate_ai_thumbnail(hero, "prompt", tmp_path / "ai_err.jpg")
+    assert res is None
+    assert "sk-thumb-secret" not in caplog.text
+    assert "AIza-thumb-secret" not in caplog.text
+    assert "[REDACTED]" in caplog.text
+
+    # 3. generate_thumbnails_with_prompt cleans up _candidates even on exception
+    monkeypatch.setattr(thumbnails.Image, "open", orig_open)
+    out_dir = tmp_path / "cleanup_thumbs"
+
+    def fake_extract(vp, ts, cand_dir, **k):
+        cand_dir.mkdir(parents=True, exist_ok=True)
+        p = cand_dir / "cand_00.jpg"
+        _make_jpg(p, (50, 60, 70))
+        return [{"index": 0, "timestamp": 2.0, "path": str(p), "sharpness": 100.0, "faces": 0, "score": 100.0}]
+
+    monkeypatch.setattr(thumbnails, "extract_candidate_frames", fake_extract)
+    monkeypatch.setattr(thumbnails, "_render_variant_hero", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("render boom")))
+    with pytest.raises(RuntimeError, match="render boom"):
+        thumbnails.generate_thumbnails_with_prompt("dummy.mp4", out_dir=out_dir, title="Boom")
+    assert not (out_dir / "_candidates").exists()
+

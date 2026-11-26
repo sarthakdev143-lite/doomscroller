@@ -522,7 +522,7 @@ def run_next_long_job(*, now: Optional[datetime] = None) -> Optional[dict]:
                 prompt=ready_prompt,
             )
         except Exception as exc:
-            log.warning("longform.job: phone alert failed: %s", exc)
+            log.warning("longform.job: phone alert failed: %s", logging_config.scrub_secrets(str(exc)))
         return result_payload
     except Interrupted:
         if job_id is not None:
@@ -540,8 +540,8 @@ def run_next_long_job(*, now: Optional[datetime] = None) -> Optional[dict]:
                         job_row.started_at = None
         return {"ok": False, "interrupted": True, "job_id": job_id}
     except Exception as exc:
-        log.exception("longform.job: failed job %s", job_id)
         safe_exc = logging_config.scrub_secrets(f"{type(exc).__name__}: {exc}")[:1000]
+        log.warning("longform.job: failed job %s: %s", job_id, safe_exc)
         if job_id is not None:
             with session_scope() as db:
                 job_row = db.get(LongJob, job_id)
@@ -569,7 +569,7 @@ def start_long_worker() -> bool:
     try:
         recover_interrupted_long_jobs()
     except Exception as exc:
-        log.warning("longform.job: startup recovery failed: %s", exc)
+        log.warning("longform.job: startup recovery failed: %s", logging_config.scrub_secrets(str(exc)))
     with _worker_lock:
         if _worker_thread is not None and _worker_thread.is_alive():
             return False
@@ -609,70 +609,74 @@ def long_supply_job(*, now: Optional[datetime] = None) -> dict:
         pass
     with session_scope() as db:
         active = channels.long_supply_channels(db)
-        if not active:
-            return {"skipped": "no channels configured for long-form"}
-        def run_one(channel: Channel) -> dict:
-            with session_scope() as s:
-                ch = s.get(Channel, channel.id) or channel
-                is_proc = channels.is_procedural(ch)
-                if not is_proc:
-                    if not settings.longform_auto_supply:
-                        return {"skipped": "auto-supply disabled"}
-                    if safety.pause_reason(s, ch):
-                        return {"skipped": "paused"}
-                scope = channels.video_scope(ch)
-                waiting_rows = s.execute(
-                    select(Video).where(scope, Video.status.in_((VideoStatus.PENDING, VideoStatus.TRANSFORMED)))
-                ).scalars().all()
-                stock = sum(
-                    1 for v in waiting_rows
-                    if (v.meta or {}).get("long_form") and v.transformed_path and os.path.isfile(v.transformed_path)
+    if not active:
+        return {"skipped": "no channels configured for long-form"}
+
+    def run_one(channel: Channel) -> dict:
+        with session_scope() as s:
+            ch = s.get(Channel, channel.id) or channel
+            is_proc = channels.is_procedural(ch)
+            if not is_proc:
+                if not settings.longform_auto_supply:
+                    return {"skipped": "auto-supply disabled"}
+                if safety.pause_reason(s, ch):
+                    return {"skipped": "paused"}
+            scope = channels.video_scope(ch)
+            waiting_rows = s.execute(
+                select(Video).where(scope, Video.status.in_((VideoStatus.PENDING, VideoStatus.TRANSFORMED)))
+            ).scalars().all()
+            stock = sum(
+                1 for v in waiting_rows
+                if (v.meta or {}).get("long_form") and v.transformed_path and os.path.isfile(v.transformed_path)
+            )
+            active_jobs = s.scalar(
+                select(func.count(LongJob.id)).where(LongJob.channel_id == ch.id, LongJob.status.in_(("queued", "running")))
+            ) or 0
+            cap = channels.long_uploads_per_day(ch)
+            stock_cap = max(_STOCK_CAP, cap) if is_proc else 1
+            if stock >= stock_cap or active_jobs > 0:
+                return {"ok": True, "queued": False, "stock": stock, "active_jobs": active_jobs}
+            midnight_utc = now.astimezone(channel_zone(ch)).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            ).astimezone(timezone.utc)
+            created_today = s.scalar(
+                select(func.count(LongJob.id)).where(
+                    LongJob.channel_id == ch.id,
+                    LongJob.status != "failed",
+                    LongJob.created_at >= midnight_utc,
                 )
-                active_jobs = s.scalar(
-                    select(func.count(LongJob.id)).where(LongJob.channel_id == ch.id, LongJob.status.in_(("queued", "running")))
-                ) or 0
-                cap = channels.long_uploads_per_day(ch)
-                stock_cap = max(_STOCK_CAP, cap) if is_proc else 1
-                if stock >= stock_cap or active_jobs > 0:
-                    return {"ok": True, "queued": False, "stock": stock, "active_jobs": active_jobs}
-                midnight_utc = now.astimezone(channel_zone(ch)).replace(
-                    hour=0, minute=0, second=0, microsecond=0
-                ).astimezone(timezone.utc)
-                created_today = s.scalar(
-                    select(func.count(LongJob.id)).where(
-                        LongJob.channel_id == ch.id,
-                        LongJob.status != "failed",
-                        LongJob.created_at >= midnight_utc,
-                    )
-                ) or 0
-                if created_today >= cap:
-                    return {"ok": True, "queued": False, "stock": stock, "daily_cap": cap}
-                fmt, targets, theme = _pick_auto_format(s, ch)
-                if not is_proc and not targets and not theme and not channels.feeds_for(s, ch):
-                    return {"skipped": "no feeds"}
-                target_mins = (
-                    max(15, min(120, int(((ch.meta or {}).get("target_minutes") or 30))))
-                    if is_proc else 8
-                )
-                auto_pub = (
-                    False
-                    if (is_proc or not ch.enabled or bool(safety.pause_reason(s, ch)))
-                    else channels.long_auto_publish(ch)
-                )
-                job = LongJob(
-                    channel_id=ch.id,
-                    format=fmt,
-                    targets=targets,
-                    theme=theme,
-                    target_minutes=target_mins,
-                    auto_publish=auto_pub,
-                )
-                s.add(job)
-                s.flush()
-                jid = job.id
-            start_long_worker()
-            return {"ok": True, "queued": True, "job_id": jid, "format": fmt}
-        return channels.for_each(active, run_one)
+            ) or 0
+            if created_today >= cap:
+                return {"ok": True, "queued": False, "stock": stock, "daily_cap": cap}
+            fmt, targets, theme = _pick_auto_format(s, ch)
+            if not is_proc and not targets and not theme and not channels.feeds_for(s, ch):
+                return {"skipped": "no feeds"}
+            target_mins = (
+                max(15, min(120, int(((ch.meta or {}).get("target_minutes") or 30))))
+                if is_proc else 8
+            )
+            auto_pub = (
+                False
+                if (is_proc or not ch.enabled or bool(safety.pause_reason(s, ch)))
+                else channels.long_auto_publish(ch)
+            )
+            job = LongJob(
+                channel_id=ch.id,
+                format=fmt,
+                targets=targets,
+                theme=theme,
+                target_minutes=target_mins,
+                auto_publish=auto_pub,
+            )
+            s.add(job)
+            s.flush()
+            jid = job.id
+        return {"ok": True, "queued": True, "job_id": jid, "format": fmt}
+
+    results = channels.for_each(active, run_one)
+    if any(isinstance(r, dict) and r.get("queued") for r in results.values()):
+        start_long_worker()
+    return results
 
 
 def long_autopilot_job(*, now: Optional[datetime] = None) -> dict:
@@ -710,7 +714,7 @@ def long_autopilot_job(*, now: Optional[datetime] = None) -> dict:
                         return {"skipped": "credentials missing"}
                     if channels.is_procedural(ch) and not (ch.youtube_channel_id or "").strip():
                         return {"skipped": "channel not linked"}
-            if quota.remaining(db, ch.id) <= 0:
+            if quota.remaining(db, channels.event_channel(ch)) <= 0:
                 return {"skipped": "daily quota exhausted"}
             scope = channels.video_scope(ch)
             midnight_utc = now.astimezone(channel_zone(ch)).replace(
@@ -749,6 +753,10 @@ def long_autopilot_job(*, now: Optional[datetime] = None) -> dict:
             vtitle = target_video.title or ""
 
         res = publish_task(vid)
+        if isinstance(res, dict):
+            for k in ("error", "skipped"):
+                if isinstance(res.get(k), str):
+                    res = {**res, k: logging_config.scrub_secrets(res[k])}
         if res.get("ok") and res.get("youtube_id"):
             with session_scope() as db:
                 db.add(GrowthEvent(
@@ -879,7 +887,7 @@ def re_render_ambient_with_portrait(video_id: str, raw_bytes: bytes) -> dict:
     except ValueError:
         raise
     except Exception as exc:
-        raise ValueError(f"invalid portrait image: {exc}") from exc
+        raise ValueError(f"invalid portrait image: {logging_config.scrub_secrets(str(exc))}") from exc
 
     with session_scope() as db:
         video = _long_video(db, video_id)
@@ -931,6 +939,11 @@ def re_render_ambient_with_portrait(video_id: str, raw_bytes: bytes) -> dict:
         meta["selected_thumbnail"] = selected["path"] if selected else meta.get("selected_thumbnail")
         meta["selected_thumbnail_id"] = selected["id"] if selected else meta.get("selected_thumbnail_id")
         meta["thumb_version"] = ver
+        meta["ambient_ab_arms"] = ab.record_arms(
+            preset=str(meta.get("ambient_preset") or meta.get("long_format") or preset),
+            thumb_id=str(meta.get("selected_thumbnail_id") or ""),
+            portrait_path=str(custom_portrait),
+        )
         if amb.chapters:
             meta["chapters"] = [{"sec": round(sec, 2), "title": lbl} for sec, lbl in amb.chapters]
         video.transformed_path = amb.output_path
@@ -1146,7 +1159,7 @@ def long_panel_data() -> dict:
             for c in ch_rows
         ]
         proc_ch = next((c for c in ch_rows if channels.is_procedural(c)), None)
-        ambient_ab = ab.evaluate_ambient_ab(db, proc_ch) if proc_ch is not None else None
+        ambient_ab = ab.evaluate_ambient_ab(db, proc_ch, persist=False) if proc_ch is not None else None
     from . import ambient, voiceover
     tracks = ambient.list_ambient_tracks()
     portraits = ambient.list_ambient_portraits()

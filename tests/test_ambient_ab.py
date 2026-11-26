@@ -257,3 +257,117 @@ def test_unprefixed_universal_portraits_participate_in_ab_selection(tmp_path):
         assert exp["portrait"] == "Girl_portrait_at_night_1"
         assert exp["portrait_path"] == universal[0]["path"]
 
+
+def test_re_render_ambient_with_portrait_syncs_ambient_ab_arms(tmp_path, monkeypatch):
+    import io
+    from types import SimpleNamespace
+    from PIL import Image
+    from app.longform import ambient
+
+    with session_scope() as db:
+        channels.sync_channels(db)
+        ch = channels.channel_by_slug(db, "ambient")
+        assert ch is not None
+        old_mp4 = tmp_path / "amb_vid.mp4"
+        old_mp4.write_bytes(b"MP4")
+        vid = Video(
+            source="longform",
+            source_id="amb_rerender",
+            source_url="",
+            title="Midnight Rain",
+            status=VideoStatus.PENDING,
+            duration_sec=1800,
+            channel_id=ch.id,
+            transformed_path=str(old_mp4),
+            meta={
+                "long_form": True,
+                "procedural_ambient": True,
+                "ambient_preset": "lofi_chill",
+                "selected_thumbnail_id": "v2",
+                "portrait_path": str(tmp_path / "old_scene.jpg"),
+                "ambient_ab_arms": ab.record_arms(
+                    preset="lofi_chill", thumb_id="v2", portrait_path="old_scene.jpg"
+                ),
+            },
+        )
+        db.add(vid)
+        db.flush()
+        video_id = vid.id
+
+    thumb_v1 = tmp_path / "v1.jpg"
+    Image.new("RGB", (1280, 720), (30, 40, 50)).save(thumb_v1, format="JPEG")
+    hero_jpg = tmp_path / "hero_raw.jpg"
+    Image.new("RGB", (1280, 720), (10, 20, 30)).save(hero_jpg, format="JPEG")
+
+    monkeypatch.setattr(
+        ambient,
+        "generate_ambient_video",
+        lambda **kw: SimpleNamespace(
+            thumbnails=[{"id": "v1", "label": "V1", "path": str(thumb_v1)}],
+            output_path=kw["output_path"],
+            duration=1800.0,
+            hero_frame=str(hero_jpg),
+            thumbnail_prompt="prompt",
+            chapters=[],
+        ),
+    )
+
+    buf = io.BytesIO()
+    Image.new("RGB", (640, 360), (90, 100, 110)).save(buf, format="JPEG")
+    res = long_job.re_render_ambient_with_portrait(video_id, buf.getvalue())
+    assert res["ok"] is True
+
+    with session_scope() as db:
+        row = db.get(Video, video_id)
+        assert row is not None
+        assert row.meta["ambient_ab_arms"] == {
+            "preset": "lofi_chill",
+            "thumb": "v1",
+            "portrait": f"{video_id}_custom",
+        }
+
+
+def test_get_long_videos_does_not_write_ambient_ab_growth_state():
+    from fastapi.testclient import TestClient
+    from app.review import review_app
+
+    now = datetime.now(timezone.utc)
+    with session_scope() as db:
+        channels.sync_channels(db)
+        ch = channels.channel_by_slug(db, "ambient")
+        assert ch is not None
+        state_key = channels.state_key(ch, "ambient_ab")
+        db.add(Video(
+            source="longform",
+            source_id="amb_pub_1",
+            source_url="",
+            youtube_video_id="yt_real_1",
+            title="Real Published Ambient",
+            status=VideoStatus.PUBLISHED,
+            published_at=now,
+            views=500,
+            channel_id=ch.id,
+            meta={
+                "long_form": True,
+                "procedural_ambient": True,
+                "ambient_ab_arms": ab.record_arms(preset="lofi_chill", thumb_id="v1", portrait_path="p1.jpg"),
+            },
+        ))
+        db.flush()
+        assert db.get(GrowthState, state_key) is None
+
+    client = TestClient(review_app)
+    assert client.get("/?key=ab-test-secret", follow_redirects=False).status_code == 303
+    resp = client.get("/api/long/videos")
+    assert resp.status_code == 200
+    assert resp.json()["ambient_ab"]["tested"] == 1
+
+    with session_scope() as db:
+        ch = channels.channel_by_slug(db, "ambient")
+        assert ch is not None
+        state_key = channels.state_key(ch, "ambient_ab")
+        assert db.get(GrowthState, state_key) is None
+        ab.evaluate_ambient_ab(db, ch)
+        assert db.get(GrowthState, state_key) is not None
+
+

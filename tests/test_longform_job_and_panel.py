@@ -1421,3 +1421,190 @@ vm.runInContext("""
     assert proc.returncode == 0, f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
     assert "ALL_OK" in proc.stdout
 
+
+def test_long_autopilot_uses_event_channel_for_default_quota(tmp_path, monkeypatch):
+    from app import quota
+
+    monkeypatch.setattr(settings, "enable_publish", True)
+    monkeypatch.setattr(settings, "max_uploads_per_day", 1)
+    monkeypatch.setattr(settings, "use_mock", True)
+
+    with session_scope() as db:
+        channels.sync_channels(db)
+        ch_def = channels.channel_by_slug(db, "default")
+        ch_ind = channels.channel_by_slug(db, "indianvlogs")
+        assert ch_def is not None and ch_ind is not None
+
+        for slug, ch in (("default", ch_def), ("indianvlogs", ch_ind)):
+            mp4 = tmp_path / f"{slug}_long.mp4"
+            mp4.write_bytes(b"MP4" * 500)
+            db.add(Video(
+                source="longform",
+                source_id=f"lf_q_{slug}",
+                source_url="",
+                title=f"Ready {slug}",
+                status=VideoStatus.TRANSFORMED,
+                channel_id=ch.id,
+                transformed_path=str(mp4),
+                meta={"long_form": True, "long_format": "best_of", "owner_approved": True},
+            ))
+        # Exhaust legacy/default quota bucket (channel_id=None) used by Shorts/autopilot.
+        quota.consume_one(db, channel_id=None)
+
+    res = long_job.long_autopilot_job()
+    assert res["default"] == {"skipped": "daily quota exhausted"}
+    assert res["indianvlogs"]["ok"] is True
+
+
+def test_long_supply_job_no_nested_session_scope_and_starts_worker_after_commit(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+
+    monkeypatch.setattr(settings, "longform_auto_supply", True)
+    (tmp_path / "channels_supply.json").write_text(json.dumps({
+        "channels": [
+            {"slug": "default", "niche": "comedy", "long_uploads_per_day": 1, "long_auto_publish": False,
+             "feeds": ["https://www.youtube.com/@MrBeast"]},
+            {"slug": "indianvlogs", "name": "Mr Indian Vlogs", "niche": "hindi", "uploads_per_day": 3,
+             "long_uploads_per_day": 1, "long_auto_publish": False, "timezone": "Asia/Kolkata",
+             "feeds": ["https://www.youtube.com/@souravjvlogs"]},
+        ]
+    }), encoding="utf-8")
+    monkeypatch.setattr(settings, "channels_file", str(tmp_path / "channels_supply.json"))
+    with session_scope() as db:
+        channels.sync_channels(db)
+
+    orig_scope = long_job.session_scope
+    active_depth = 0
+    max_depth = 0
+    events: list[str] = []
+
+    @contextmanager
+    def tracked_scope():
+        nonlocal active_depth, max_depth
+        active_depth += 1
+        max_depth = max(max_depth, active_depth)
+        events.append(f"enter:{active_depth}")
+        try:
+            with orig_scope() as db:
+                yield db
+            events.append(f"commit:{active_depth}")
+        finally:
+            active_depth -= 1
+
+    monkeypatch.setattr(long_job, "session_scope", tracked_scope)
+    monkeypatch.setattr(long_job, "recover_interrupted_long_jobs", lambda: None)
+    monkeypatch.setattr(
+        long_job,
+        "start_long_worker",
+        lambda: (events.append(f"start_worker:{active_depth}") or True),
+    )
+
+    res = long_job.long_supply_job()
+    assert res["default"]["queued"] is True
+    assert res["indianvlogs"]["queued"] is True
+    assert max_depth == 1
+    assert events.count("start_worker:0") == 1
+    assert events[-1] == "start_worker:0"
+
+
+def test_longform_job_scrubs_secrets_in_notify_recovery_and_portrait_errors(tmp_path, monkeypatch, caplog):
+    import io
+    import logging
+    from PIL import Image, ImageOps
+    from tasks import pipeline
+    from app.longform import thumbnails as lf_thumbs
+
+    monkeypatch.setattr(settings, "sarvam_api_key", "sk_secret_job_audit")
+    monkeypatch.setattr(settings, "enable_publish", True)
+    monkeypatch.setattr(settings, "max_uploads_per_day", 5)
+
+    with session_scope() as db:
+        channels.sync_channels(db)
+        ch = channels.channel_by_slug(db, "indianvlogs")
+        assert ch is not None
+        mp4 = tmp_path / "ready_scrub.mp4"
+        mp4.write_bytes(b"MP4" * 400)
+        v = Video(
+            source="longform",
+            source_id="lf_scrub_pub",
+            source_url="",
+            title="Scrub Pub",
+            status=VideoStatus.TRANSFORMED,
+            channel_id=ch.id,
+            transformed_path=str(mp4),
+            meta={"long_form": True, "long_format": "best_of", "owner_approved": True},
+        )
+        db.add(v)
+
+    # 1. run_next_long_job: phone alert error + failed job exception scrubbing
+    long_job.enqueue_long_job("indianvlogs", format_kind="best_of", target="@souravjvlogs", target_minutes=8)
+    seg = planner.SegmentPlan("s.mp4", "https://youtu.be/abc", "abc", "@souravjvlogs", "Sourav", "Vlog 1", 5.0, 45.0, 90.0, "Moment", "hi")
+    fake_plan = planner.CompilationPlan(
+        format_kind="best_of", channel_slug="indianvlogs", part_number=1, targets=("@souravjvlogs",), theme="",
+        title="Best", description="Desc", tags=("vlog",), language="hi", target_seconds=480.0, cold_open=seg, segments=(seg,),
+    )
+    monkeypatch.setattr(planner, "plan_compilation", lambda **k: fake_plan)
+    monkeypatch.setattr(
+        lf_render,
+        "render_compilation",
+        lambda plan, out_path, **k: (
+            Path(out_path).parent.mkdir(parents=True, exist_ok=True),
+            Path(out_path).write_bytes(b"MP4" * 400),
+            lf_render.RenderResult(output_path=out_path, duration=300.0, chapters=((0.0, "Intro"),), chapter_text="0:00 Intro", timestamps_for_thumbs=(5.0,)),
+        )[-1],
+    )
+    monkeypatch.setattr(
+        lf_thumbs,
+        "generate_thumbnails_with_prompt",
+        lambda vp, *, out_dir, **k: (
+            Path(out_dir).mkdir(parents=True, exist_ok=True),
+            (Path(out_dir) / "hero_raw.jpg").write_bytes(b"\xff\xd8\xff\xe0" + b"H" * 50),
+            ([{"id": "v1", "label": "V1", "path": str(Path(out_dir) / "hero_raw.jpg")}], "Prompt"),
+        )[-1],
+    )
+    monkeypatch.setattr(long_job.notify, "send_long_ready", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("key=sk_secret_job_audit")))
+
+    with caplog.at_level(logging.WARNING):
+        res1 = long_job.run_next_long_job()
+        assert res1["ok"] is True
+
+        # Failed job path without configure_logging() must also keep caplog clean
+        long_job.enqueue_long_job("indianvlogs", format_kind="best_of", target="@souravjvlogs", target_minutes=8)
+        monkeypatch.setattr(planner, "plan_compilation", lambda **k: (_ for _ in ()).throw(RuntimeError("Bearer sk_secret_job_audit")))
+        res_fail = long_job.run_next_long_job()
+        assert res_fail["ok"] is False
+        assert "sk_secret_job_audit" not in res_fail["error"]
+
+        # 2. start_long_worker recovery warning scrubbing
+        monkeypatch.setattr(long_job, "recover_interrupted_long_jobs", lambda: (_ for _ in ()).throw(RuntimeError("key=sk_secret_job_audit")))
+        class DummyThread:
+            def __init__(self, *a, **k):
+                pass
+            def start(self):
+                pass
+            def is_alive(self):
+                return False
+        monkeypatch.setattr(long_job.threading, "Thread", DummyThread)
+        long_job._worker_thread = None
+        long_job.start_long_worker()
+
+    assert "sk_secret_job_audit" not in caplog.text
+    assert "[REDACTED]" in caplog.text
+
+    # 3. re_render_ambient_with_portrait image decode error scrubbing
+    buf = io.BytesIO()
+    Image.new("RGB", (640, 360), (10, 20, 30)).save(buf, format="JPEG")
+    monkeypatch.setattr(ImageOps, "exif_transpose", lambda _im: (_ for _ in ()).throw(RuntimeError("key=sk_secret_job_audit")))
+    with pytest.raises(ValueError) as exc_info:
+        long_job.re_render_ambient_with_portrait("any-id", buf.getvalue())
+    assert "sk_secret_job_audit" not in str(exc_info.value)
+    assert "[REDACTED]" in str(exc_info.value)
+
+    # 4. long_autopilot_job scrubs error/skipped from publish_task
+    monkeypatch.setattr(pipeline, "publish_task", lambda vid: {"ok": False, "error": "Authorization: Bearer sk_secret_job_audit", "skipped": "key=sk_secret_job_audit"})
+    auto_res = long_job.long_autopilot_job()
+    assert "sk_secret_job_audit" not in auto_res["indianvlogs"]["error"]
+    assert "sk_secret_job_audit" not in auto_res["indianvlogs"]["skipped"]
+    assert "[REDACTED]" in auto_res["indianvlogs"]["error"]
+
+

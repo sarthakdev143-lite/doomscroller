@@ -34,7 +34,7 @@ def _extract_arms(meta: dict) -> dict[str, str]:
     return {"preset": preset, "thumb": thumb, "portrait": portrait}
 
 
-def evaluate_ambient_ab(db, channel: Channel) -> dict:
+def evaluate_ambient_ab(db, channel: Channel, *, persist: bool = True) -> dict:
     """Score published non-MOCK procedural ambient videos per preset, thumbnail, and portrait."""
     published = db.execute(
         select(Video).where(channels.video_scope(channel), Video.status == VideoStatus.PUBLISHED)
@@ -99,8 +99,9 @@ def evaluate_ambient_ab(db, channel: Channel) -> dict:
 
     best = {f: rows[0]["arm"] for f, rows in factors.items() if rows}
     summary = {"tested": len(vids), "factors": factors, "best": best}
-    learn.set_state(db, channels.state_key(channel, "ambient_ab"), summary)
-    db.flush()
+    if persist:
+        learn.set_state(db, channels.state_key(channel, "ambient_ab"), summary)
+        db.flush()
     return summary
 
 

@@ -655,3 +655,106 @@ def test_plan_compilation_skips_unreadable_source_and_uses_next(tmp_path, monkey
     )
     assert plan.segments and all(s.source_id == "good1" for s in plan.segments)
     assert any("bad1" in w and "corrupt moov atom" in w for w in plan.warnings)
+
+
+def test_planner_scrubs_secrets_from_warnings_and_logs(tmp_path, monkeypatch, caplog):
+    import logging
+
+    monkeypatch.setattr(settings, "sarvam_api_key", "sk_planner_secret_99")
+    monkeypatch.setattr(settings, "content_dir", str(tmp_path / "content"))
+
+    with caplog.at_level(logging.WARNING):
+        # 1. list_creator_videos stderr & OSError scrubbing
+        monkeypatch.setattr(
+            planner.subprocess,
+            "run",
+            lambda *a, **k: subprocess.CompletedProcess(
+                a[0], 1, stdout="", stderr="proxy http://user:pass123@proxy:8080 failed"
+            ),
+        )
+        assert planner.list_creator_videos("https://youtube.com/@c?key=AIzaPlanSecret") == []
+
+        monkeypatch.setattr(
+            planner.subprocess,
+            "run",
+            lambda *a, **k: (_ for _ in ()).throw(OSError("proxy http://user:pass123@proxy:8080")),
+        )
+        assert planner.list_creator_videos("https://youtube.com/@c?key=AIzaPlanSecret") == []
+
+        # 2. _moments_from_source transcription warning scrubbing
+        src_mp4 = tmp_path / "src.mp4"
+        src_mp4.write_bytes(b"MP4")
+        monkeypatch.setattr(planner, "probe", lambda _p: MediaInfo(300.0, 1920, 1080, 30.0, True))
+        monkeypatch.setattr(
+            planner.signals,
+            "analyse",
+            lambda _p, _info: Signals(300.0, np.zeros(300), np.zeros(300), np.zeros(300), np.ones(300), np.ones(300), []),
+        )
+        monkeypatch.setattr(
+            planner.transcribe,
+            "transcribe",
+            lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("key=sk_planner_secret_99")),
+        )
+        monkeypatch.setattr(
+            planner.moments,
+            "pick_visual",
+            lambda *a, **k: [moments.Moment(50.0, 95.0, kind="visual", score=80.0)],
+        )
+        src_obj = ingest.SourceVideo(
+            source="youtube",
+            source_id="src1",
+            url="https://youtu.be/src1",
+            title="Test Vlog",
+            description="Test",
+            author="Creator",
+            path=str(src_mp4),
+        )
+        assert planner._moments_from_source(src_obj, "@Creator", [])
+
+        # 3. plan_compilation fetch & moments exception scrubbing
+        monkeypatch.setattr(
+            planner,
+            "_pick_source_candidates",
+            lambda **k: (
+                ["@Creator"],
+                [
+                    {"id": "bad_fetch", "url": "https://youtube.com/watch?v=bad_fetch&key=AIzaPlanSecret", "creator": "@Creator", "duration": 600},
+                    {"id": "bad_moments", "url": "https://youtube.com/watch?v=bad_moments&key=AIzaPlanSecret", "creator": "@Creator", "duration": 600},
+                    {"id": "good1", "url": "https://youtube.com/watch?v=good1", "creator": "@Creator", "duration": 600},
+                ],
+            ),
+        )
+        long_dir = tmp_path / "content" / "long"
+        long_dir.mkdir(parents=True)
+        (long_dir / "Youtube_bad_moments.mp4").write_bytes(b"M" * 60_000)
+        (long_dir / "Youtube_good1.mp4").write_bytes(b"M" * 60_000)
+
+        monkeypatch.setattr(
+            planner.ingest,
+            "fetch",
+            lambda url: (_ for _ in ()).throw(RuntimeError("Bearer sk_planner_secret_99")),
+        )
+
+        def fake_moments(src, creator, already, max_needed=5):
+            if src.source_id == "bad_moments":
+                raise RuntimeError("Bearer sk_planner_secret_99")
+            return [_seg("good1", creator, 50.0 + i * 70.0, 95.0 + i * 70.0, 92.0 - i) for i in range(4)]
+
+        monkeypatch.setattr(planner, "_moments_from_source", fake_moments)
+        monkeypatch.setattr(planner.ai, "available", lambda: False)
+
+        plan = planner.plan_compilation(
+            format_kind="best_of",
+            channel_slug="default",
+            targets=["@Creator"],
+            target_minutes=6,
+            min_total_sec=100.0,
+        )
+
+    assert len(plan.warnings) == 2
+    combined = "\n".join([*plan.warnings, caplog.text])
+    assert "sk_planner_secret_99" not in combined
+    assert "AIzaPlanSecret" not in combined
+    assert "pass123" not in combined
+    assert "[REDACTED]" in combined
+

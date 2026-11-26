@@ -82,7 +82,7 @@ def extract_candidate_frames(
         try:
             run_ffmpeg(["-ss", f"{stamp:.2f}", "-i", os.path.abspath(video_path), "-frames:v", "1", "-q:v", "2", str(frame_path)])
         except Exception as exc:
-            log.debug("longform.thumbnails: frame extract failed at %.2fs: %s", stamp, exc)
+            log.debug("longform.thumbnails: frame extract failed at %.2fs: %s", stamp, scrub_secrets(str(exc)))
             continue
         if not frame_path.is_file() or frame_path.stat().st_size == 0:
             continue
@@ -370,7 +370,7 @@ def generate_ai_thumbnail(hero_path: str, prompt: str, dest: Path) -> Optional[t
                         return ("ChatGPT AI", save_custom_thumbnail(dest, dl.content))
             log.warning("longform.thumbnails: OpenAI image edit HTTP %s: %s", resp.status_code, scrub_secrets(resp.text[:240]))
         except Exception as exc:
-            log.warning("longform.thumbnails: OpenAI thumbnail failed: %s", scrub_secrets(exc))
+            log.warning("longform.thumbnails: OpenAI thumbnail failed: %s", scrub_secrets(str(exc)))
 
     if gemini_key:
         try:
@@ -399,7 +399,7 @@ def generate_ai_thumbnail(hero_path: str, prompt: str, dest: Path) -> Optional[t
                         return ("Gemini AI", save_custom_thumbnail(dest, base64.b64decode(inline["data"])))
             log.warning("longform.thumbnails: Gemini image HTTP %s: %s", resp.status_code, scrub_secrets(resp.text[:240]))
         except Exception as exc:
-            log.warning("longform.thumbnails: Gemini thumbnail failed: %s", scrub_secrets(exc))
+            log.warning("longform.thumbnails: Gemini thumbnail failed: %s", scrub_secrets(str(exc)))
     return None
 
 
@@ -419,52 +419,61 @@ def generate_thumbnails_with_prompt(
     out_dir.mkdir(parents=True, exist_ok=True)
     stamps = list(timestamps) or [t for t, _ in chapters[1:7]] or [3.0, 12.0, 24.0]
     cand_dir = out_dir / "_candidates"
-    candidates = extract_candidate_frames(video_path, stamps, cand_dir)
-    if not candidates:
-        raise RuntimeError(f"no candidate frames could be extracted from {video_path}")
-    ordered = pick_hero_frames(candidates, title=title, format_kind=format_kind)
-    hero = ordered[0]["path"]
-    second = ordered[1]["path"] if len(ordered) > 1 else hero
-
-    if format_kind == "best_of" and part_number:
-        badge = f"PART {part_number}"
-    elif format_kind == "vs":
-        badge = "SHOWDOWN"
-    else:
-        badge = f"TOP {max(2, len(chapters) - 1)}" if len(chapters) > 2 else "BEST OF"
-
-    with Image.open(hero) as raw_im:
-        _save_under_2mb(raw_im.convert("RGB"), out_dir / "hero_raw.jpg")
-
-    v1 = _render_variant_hero(hero, out_dir / "thumb_v1.jpg", title=title, badge=badge)
-    v2 = _render_variant_split(
-        hero, second, out_dir / "thumb_v2.jpg",
-        format_kind=format_kind, creators=creator_labels,
-    )
-    v3 = _render_variant_clean(hero, out_dir / "thumb_v3.jpg", badge=badge)
-    prompt = generate_thumbnail_prompt(hero, title=title, format_kind=format_kind, creator_labels=creator_labels)
-    ai_res = generate_ai_thumbnail(hero, prompt, out_dir / "thumb_v4.jpg")
-
-    variants = [
-        {"id": "v1", "label": "Hero + Hook", "path": v1},
-        {"id": "v2", "label": "VS Split" if format_kind == "vs" else "Reaction Diptych", "path": v2},
-        {"id": "v3", "label": "Clean Color-Pop", "path": v3},
-    ]
-    if ai_res is not None:
-        variants.append({"id": "v4", "label": ai_res[0], "path": ai_res[1]})
-
-    # Clean up temporary candidate frames after rendering variants.
-    for cand in candidates:
-        try:
-            os.remove(cand["path"])
-        except OSError:
-            pass
+    candidates: list[dict] = []
     try:
-        cand_dir.rmdir()
-    except OSError:
-        pass
-    reclaim_memory()
-    return variants, prompt
+        candidates = extract_candidate_frames(video_path, stamps, cand_dir)
+        if not candidates:
+            raise RuntimeError(f"no candidate frames could be extracted from {video_path}")
+        ordered = pick_hero_frames(candidates, title=title, format_kind=format_kind)
+        hero = ordered[0]["path"]
+        second = ordered[1]["path"] if len(ordered) > 1 else hero
+
+        if format_kind == "best_of" and part_number:
+            badge = f"PART {part_number}"
+        elif format_kind == "vs":
+            badge = "SHOWDOWN"
+        else:
+            badge = f"TOP {max(2, len(chapters) - 1)}" if len(chapters) > 2 else "BEST OF"
+
+        with Image.open(hero) as raw_im:
+            _save_under_2mb(raw_im.convert("RGB"), out_dir / "hero_raw.jpg")
+
+        v1 = _render_variant_hero(hero, out_dir / "thumb_v1.jpg", title=title, badge=badge)
+        v2 = _render_variant_split(
+            hero, second, out_dir / "thumb_v2.jpg",
+            format_kind=format_kind, creators=creator_labels,
+        )
+        v3 = _render_variant_clean(hero, out_dir / "thumb_v3.jpg", badge=badge)
+        prompt = generate_thumbnail_prompt(hero, title=title, format_kind=format_kind, creator_labels=creator_labels)
+        ai_res = generate_ai_thumbnail(hero, prompt, out_dir / "thumb_v4.jpg")
+
+        variants = [
+            {"id": "v1", "label": "Hero + Hook", "path": v1},
+            {"id": "v2", "label": "VS Split" if format_kind == "vs" else "Reaction Diptych", "path": v2},
+            {"id": "v3", "label": "Clean Color-Pop", "path": v3},
+        ]
+        if ai_res is not None:
+            variants.append({"id": "v4", "label": ai_res[0], "path": ai_res[1]})
+
+        reclaim_memory()
+        return variants, prompt
+    finally:
+        # Clean up temporary candidate frames after rendering variants or on failure.
+        for cand in candidates:
+            try:
+                os.remove(cand["path"])
+            except OSError:
+                pass
+        if cand_dir.is_dir():
+            for leftover in cand_dir.iterdir():
+                try:
+                    leftover.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            try:
+                cand_dir.rmdir()
+            except OSError:
+                pass
 
 
 def generate_thumbnails(
@@ -499,15 +508,15 @@ def save_custom_thumbnail(out_path: Path, raw_bytes: bytes) -> str:
     if len(raw_bytes) > _MAX_UPLOAD_BYTES:
         raise ValueError("thumbnail exceeds 10 MB upload limit")
     try:
-        img = Image.open(io.BytesIO(raw_bytes))
-        img.load()
+        with Image.open(io.BytesIO(raw_bytes)) as img:
+            img.load()
+            if img.mode in ("RGBA", "LA", "P"):
+                rgba = img.convert("RGBA")
+                bg = Image.new("RGBA", rgba.size, (12, 12, 16, 255))
+                rgb = Image.alpha_composite(bg, rgba).convert("RGB")
+            else:
+                rgb = img.convert("RGB")
+            fitted = ImageOps.fit(rgb, (THUMB_W, THUMB_H), method=Image.Resampling.LANCZOS)
     except Exception as exc:
-        raise ValueError(f"invalid image file: {exc}") from exc
-    if img.mode in ("RGBA", "LA", "P"):
-        rgba = img.convert("RGBA")
-        bg = Image.new("RGBA", rgba.size, (12, 12, 16, 255))
-        img = Image.alpha_composite(bg, rgba).convert("RGB")
-    else:
-        img = img.convert("RGB")
-    fitted = ImageOps.fit(img, (THUMB_W, THUMB_H), method=Image.Resampling.LANCZOS)
+        raise ValueError(f"invalid image file: {scrub_secrets(str(exc))}") from exc
     return _save_under_2mb(fitted, Path(out_path))
