@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% from "partials/auth_fields.html" import identity_fields with context %}
+{% block robots %}<meta name="robots" content="noindex">{% endblock %}
+{% block styles %}{{ super() }}<link rel="stylesheet" href="{{ asset('/static/css/app.css') }}">{% endblock %}
+{% block head_extra %}
+{% if turnstile_site_key %}<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>{% endif %}
+{% endblock %}
+{% block scripts %}<script type="module" src="{{ asset('/static/js/auth.js') }}"></script>{% endblock %}
+{% block site_footer %}{% include "partials/footer_slim.html" %}{% endblock %}
+
+{% block content %}
+<section class="auth" data-track-section="{{ auth_section }}" aria-labelledby="auth-title">
+  <div class="wrap auth__grid">
+    <div class="auth__main">
+      {% block auth %}{% endblock %}
+    </div>
+    <aside class="auth__aside" aria-label="What you get">
+      {% block aside %}
+      <h2>What an account gets you</h2>
+      <ul role="list">
+        <li><strong>Free to start.</strong> {{ free_shorts }} Shorts or {{ free_minutes }} minutes of video, whichever comes first. No card.</li>
+        <li><strong>Cuts on sentence boundaries,</strong> captioned word by word, framed on the speaker.</li>
+        <li><strong>A package for every Short:</strong> the MP4, thumbnail, title, description, hashtags and suggested times to post.</li>
+        <li><strong>Pay as you go, or monthly.</strong> You pay for minutes of video you send, nothing else.</li>
+      </ul>
+      {% endblock %}
+    </aside>
+  </div>
+</section>
+{% endblock %}

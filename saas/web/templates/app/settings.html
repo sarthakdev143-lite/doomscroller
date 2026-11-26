@@ -1,0 +1,126 @@
+{% extends "app/_layout.html" %}
+{% block title %}Settings | {{ brand_name }}{% endblock %}
+{% block page_script %}<script type="module" src="{{ asset('/static/js/app-settings.js') }}"></script>{% endblock %}
+
+{% block app %}
+<section data-track-section="app-settings" aria-labelledby="settings-title">
+  <header class="app-head">
+    <div>
+      <h1 id="settings-title">Settings</h1>
+      <p>Your profile, how you sign in, and your data.</p>
+    </div>
+  </header>
+
+  <section class="app-section panel" aria-labelledby="profile-title" data-track-section="app-settings-profile">
+    <h2 class="panel__title" id="profile-title">Profile</h2>
+    <form class="stack-form" data-profile-form novalidate>
+      <div class="field">
+        <label class="label" for="set-email">Email</label>
+        <input class="input" id="set-email" type="email" value="{{ user_email }}" readonly>
+        <p class="hint" data-email-state>{% if user_verified %}Confirmed.{% else %}Not confirmed yet.{% endif %}</p>
+      </div>
+      <div class="field">
+        <label class="label" for="set-name">Name</label>
+        <input class="input" id="set-name" name="name" autocomplete="name" maxlength="120" value="{{ user_name or '' }}">
+      </div>
+      <div class="field">
+        <label class="label" for="set-tz">Time zone</label>
+        <select class="select" id="set-tz" name="timezone" data-tz-select data-track="settings-timezone"></select>
+        <p class="hint">Suggested posting times in your packages use this.</p>
+      </div>
+      <div class="cluster"><button class="btn" type="submit" data-track="settings-profile-save"><span class="spinner" aria-hidden="true"></span>Save</button><span class="save-state" data-profile-state role="status"></span></div>
+    </form>
+  </section>
+
+  <section class="app-section panel" aria-labelledby="pw-title" data-track-section="app-settings-password">
+    <h2 class="panel__title" id="pw-title" data-pw-title>Password</h2>
+    <form class="stack-form" data-password-form novalidate>
+      <div class="field" data-current-pw>
+        <label class="label" for="set-current">Current password</label>
+        <input class="input" id="set-current" name="current_password" type="password" autocomplete="current-password" maxlength="256">
+      </div>
+      <div class="field">
+        <label class="label" for="set-new">New password</label>
+        <input class="input" id="set-new" name="new_password" type="password" autocomplete="new-password" minlength="{{ password_min }}" maxlength="256">
+        <p class="hint">At least {{ password_min }} characters. Other devices are signed out.</p>
+      </div>
+      <p class="error-text" data-form-error role="alert"></p>
+      <button class="btn" type="submit" data-track="settings-password-save"><span class="spinner" aria-hidden="true"></span>Change password</button>
+    </form>
+  </section>
+
+  <section class="app-section panel" aria-labelledby="mfa-title" data-track-section="app-settings-2fa">
+    <h2 class="panel__title" id="mfa-title">Two-factor authentication</h2>
+    <div data-mfa-off hidden>
+      <p class="muted">Ask for a code from an authenticator app (1Password, Google Authenticator, Authy) when you sign in.</p>
+      <p><button class="btn" type="button" data-mfa-start data-track="settings-2fa-start"><span class="spinner" aria-hidden="true"></span>Turn on two-factor</button></p>
+    </div>
+    <div data-mfa-setup hidden>
+      <div class="qr">
+        <img alt="QR code to add this account to your authenticator app" data-mfa-qr>
+        <div>
+          <p>Scan the code with your authenticator app, or type this key into it:</p>
+          <div class="copy-field">
+            <label class="visually-hidden" for="mfa-secret">Setup key</label>
+            <input id="mfa-secret" type="text" readonly data-mfa-secret data-track-mask>
+            <button class="btn" type="button" data-copy="#mfa-secret" data-track="settings-2fa-copy-key">Copy</button>
+          </div>
+          <form class="form-row" data-mfa-confirm novalidate>
+            <div class="field">
+              <label class="label" for="mfa-code">The six-digit code it shows</label>
+              <input class="input mono" id="mfa-code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="8">
+            </div>
+            <button class="btn btn--accent" type="submit" data-track="settings-2fa-confirm"><span class="spinner" aria-hidden="true"></span>Turn on</button>
+          </form>
+          <p class="error-text" data-mfa-error role="alert"></p>
+        </div>
+      </div>
+    </div>
+    <div data-mfa-codes hidden>
+      <div class="secret">
+        <p><strong>Save these recovery codes now.</strong> Each one signs you in once if you lose your phone. They are not shown again.</p>
+        <div class="codes" data-codes></div>
+        <p><button class="btn btn--sm" type="button" data-codes-copy data-track="settings-2fa-copy-codes">Copy all</button>
+          <button class="btn btn--ghost btn--sm" type="button" data-codes-done data-track="settings-2fa-codes-done">I saved them</button></p>
+      </div>
+    </div>
+    <div data-mfa-on hidden>
+      <p><span class="badge badge--ok">On</span> You are asked for a code when you sign in.</p>
+      <div class="cluster">
+        <button class="btn btn--ghost btn--sm" type="button" data-mfa-new-codes data-track="settings-2fa-new-codes">New recovery codes</button>
+        <button class="btn btn--ghost btn--sm" type="button" data-mfa-disable data-track="settings-2fa-disable">Turn off</button>
+      </div>
+      <p class="error-text" data-mfa-on-error role="alert"></p>
+    </div>
+  </section>
+
+  <section class="app-section panel" aria-labelledby="sessions-title" data-track-section="app-settings-sessions">
+    <div class="app-section__head">
+      <h2 class="panel__title" id="sessions-title">Where you are signed in</h2>
+      <button class="btn btn--ghost btn--sm" type="button" data-revoke-others data-track="settings-revoke-others">Sign out everywhere else</button>
+    </div>
+    <div class="table-wrap">
+      <table class="table">
+        <thead><tr><th scope="col">Device</th><th scope="col">Last seen</th><th scope="col">IP</th><th scope="col" class="actions"><span class="visually-hidden">Actions</span></th></tr></thead>
+        <tbody data-sessions><tr><td colspan="4"><span class="skeleton skeleton--text"></span></td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="app-section panel danger-zone" aria-labelledby="data-title" data-track-section="app-settings-data">
+    <h2 class="panel__title" id="data-title">Your data</h2>
+    <p class="muted">Download everything we hold about you as JSON, or delete the account. Deleting removes your clips, uploads and keys, and can’t be undone.</p>
+    <div class="cluster">
+      <a class="btn btn--ghost" href="/api/me/export" download data-track="settings-export">Download my data</a>
+    </div>
+    <form class="form-row delete-form" data-delete-form novalidate>
+      <div class="field">
+        <label class="label" for="delete-confirm">Type DELETE to delete your account</label>
+        <input class="input mono" id="delete-confirm" name="confirm" autocomplete="off" maxlength="10">
+      </div>
+      <button class="btn btn--danger" type="submit" data-track="settings-delete"><span class="spinner" aria-hidden="true"></span>Delete account</button>
+    </form>
+    <p class="error-text" data-delete-error role="alert"></p>
+  </section>
+</section>
+{% endblock %}

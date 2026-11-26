@@ -1,0 +1,53 @@
+{% extends "auth/_layout.html" %}
+{% block title %}Sign in | {{ brand_name }}{% endblock %}
+{% block description %}Sign in to {{ brand_name }}.{% endblock %}
+
+{% block auth %}
+<div data-login-page data-next="{{ next_path }}" data-mfa-token="{{ mfa_token }}">
+  <h1 id="auth-title">Sign in</h1>
+  <p class="auth__lede">Welcome back. Your clips are where you left them.</p>
+
+  {% if verified %}<p class="notice notice--ok app-notice-inline">Email confirmed. Sign in to start making clips.</p>{% endif %}
+  {% if reset %}<p class="notice notice--ok app-notice-inline">Password changed. Sign in with the new one.</p>{% endif %}
+  {% if error_message %}<p class="notice notice--error app-notice-inline">{{ error_message }}</p>{% endif %}
+
+  <form data-login-form novalidate>
+    <div class="field">
+      <label class="label" for="login-email">Email</label>
+      <input class="input" id="login-email" name="email" type="email" autocomplete="email" inputmode="email" required maxlength="254" data-track-mask>
+    </div>
+    <div class="field">
+      <div class="label-row"><label class="label" for="login-password">Password</label>
+        <a class="small" href="/forgot" data-track="login-forgot">Forgot it?</a></div>
+      <input class="input" id="login-password" name="password" type="password" autocomplete="current-password" required maxlength="256">
+    </div>
+    {{ identity_fields("login") }}
+    <p class="error-text" data-form-error role="alert"></p>
+    <button class="btn btn--accent btn--block btn--lg" type="submit" data-track="login-submit"><span class="spinner" aria-hidden="true"></span>Sign in</button>
+  </form>
+
+  <form data-mfa-form hidden novalidate>
+    <div class="field">
+      <label class="label" for="login-code">Code from your authenticator app</label>
+      <input class="input mono" id="login-code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="32" required>
+      <p class="hint">Six digits. Lost your phone? Enter one of your recovery codes instead.</p>
+    </div>
+    <p class="error-text" data-form-error role="alert"></p>
+    <button class="btn btn--accent btn--block btn--lg" type="submit" data-track="login-mfa-submit"><span class="spinner" aria-hidden="true"></span>Verify and sign in</button>
+  </form>
+
+  <div class="done-state" data-magic-done hidden role="status">
+    <h2>Check your inbox.</h2>
+    <p>If <strong data-magic-email></strong> has an account, a sign-in link is on its way. It works once.</p>
+  </div>
+
+  <div class="auth__alt" data-login-alt>
+    <p><button class="link-btn" type="button" data-magic-link data-track="login-magic">Email me a sign-in link instead</button></p>
+    {% if google_enabled %}
+    <div class="divider">or</div>
+    <a class="btn btn--google btn--block" href="/auth/google/start?next={{ next_path|urlencode }}" data-track="login-google">Continue with Google</a>
+    {% endif %}
+    <p>New here? <a href="/signup{% if next_path != '/app' %}?next={{ next_path|urlencode }}{% endif %}" data-track="login-to-signup">Create an account</a></p>
+  </div>
+</div>
+{% endblock %}

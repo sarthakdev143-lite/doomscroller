@@ -50,11 +50,11 @@
 </head>
 <body class="{% block body_class %}{% endblock %}">
   <a class="skip-link" href="#main" data-track="skip-to-content">Skip to content</a>
-  {% include "partials/header.html" %}
+  {% block site_header %}{% include "partials/header.html" %}{% endblock %}
   <main id="main" tabindex="-1">
     {% block content %}{% endblock %}
   </main>
-  {% include "partials/footer.html" %}
+  {% block site_footer %}{% include "partials/footer.html" %}{% endblock %}
   <div class="toasts" data-toasts role="status" aria-live="polite"></div>
   {% if static_export and (analytics.ga4 or analytics.clarity) %}
   <div class="consent" data-consent role="region" aria-labelledby="consent-title" hidden>

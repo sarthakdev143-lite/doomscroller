@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% from "partials/marks.html" import mark %}
+{% block robots %}<meta name="robots" content="noindex, nofollow">{% endblock %}
+{% block styles %}{{ super() }}<link rel="stylesheet" href="{{ asset('/static/css/app.css') }}">{% endblock %}
+{% block body_class %}app-body{% endblock %}
+{% block scripts %}
+{# Each page module imports app-shell.js itself, so it is evaluated once; plain pages load it directly. #}
+{% block page_script %}<script type="module" src="{{ asset('/static/js/app-shell.js') }}"></script>{% endblock %}
+{% endblock %}
+
+{% block site_header %}
+{% set items = [
+  ("dashboard", "/app", "Dashboard"),
+  ("clips", "/app/clips", "Clips"),
+  ("brand", "/app/brand", "Brand kit"),
+  ("billing", "/app/billing", "Billing"),
+  ("developers", "/app/developers", "Developers"),
+  ("settings", "/app/settings", "Settings"),
+] %}
+<aside class="app-side" data-app-side aria-label="Account" data-free-minutes="{{ free_grant.minutes }}" data-free-shorts="{{ free_grant.shorts }}">
+  <div class="app-side__top">
+    <a class="wordmark" href="/app" data-track="app-home" aria-label="{{ brand_name }} dashboard">{{ mark() }}<span>{{ brand_name }}</span></a>
+    <button class="icon-btn menu-btn" type="button" aria-expanded="false" aria-controls="app-nav" data-app-menu data-track="app-menu-toggle">
+      <span class="visually-hidden">Menu</span>
+      <svg viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 6h14M3 10h14M3 14h14"/></svg>
+    </button>
+  </div>
+  <div class="app-side__nav-wrap" id="app-nav">
+    <nav class="app-nav" aria-label="App">
+      <div class="app-nav__new"><a class="btn" href="/app/new" data-track="app-nav-new"{% if nav == "new" %} aria-current="page"{% endif %}>New job</a></div>
+      <ul role="list">
+        {% for key, href, label in items %}
+        <li><a href="{{ href }}" data-track="app-nav-{{ key }}"{% if nav == key %} aria-current="page"{% endif %}>{{ label }}</a></li>
+        {% endfor %}
+      </ul>
+    </nav>
+    <div class="app-side__foot">
+      <div class="app-side__balance" data-shell-balance>
+        <span class="muted">Balance</span>
+        <strong data-shell-minutes>&nbsp;</strong>
+        <span class="small muted" data-shell-free></span>
+      </div>
+      <div>
+        <div class="app-side__email" title="{{ user_email }}">{{ user_email }}</div>
+        <button class="link-btn" type="button" data-sign-out data-track="app-sign-out">Sign out</button>
+      </div>
+    </div>
+  </div>
+</aside>
+{% endblock %}
+
+{% block content %}
+<div class="app-main">
+  <div class="app-main__inner">
+    {% if not user_verified and nav != "settings" %}
+    <div class="app-notice">
+      <p class="notice" data-verify-banner>
+        <span><strong>Confirm your email to start.</strong> We sent a link to {{ user_email }}. Your free Shorts unlock when you open it.</span>
+        <button class="btn btn--sm btn--ghost" type="button" data-resend-verify data-track="app-resend-verify">Send it again</button>
+      </p>
+    </div>
+    {% endif %}
+    {% block app %}{% endblock %}
+  </div>
+</div>
+
+<dialog class="modal" data-reauth aria-labelledby="reauth-title">
+  <form novalidate>
+    <div class="modal__head">
+      <p class="modal__title" id="reauth-title">Confirm it’s you</p>
+      <button class="icon-btn" type="button" data-modal-close data-track="reauth-close"><span class="visually-hidden">Close</span><svg viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 5l10 10M15 5L5 15"/></svg></button>
+    </div>
+    <div class="modal__body">
+      <p class="muted small">This change needs your password, or a code from your authenticator app if you use one.</p>
+      <div class="field">
+        <label class="label" for="reauth-password">Password</label>
+        <input class="input" id="reauth-password" name="password" type="password" autocomplete="current-password">
+      </div>
+      <div class="field">
+        <label class="label" for="reauth-code">Or a 2FA code <span class="optional">(optional)</span></label>
+        <input class="input mono" id="reauth-code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="32">
+      </div>
+      <p class="error-text" data-form-error role="alert"></p>
+    </div>
+    <div class="modal__foot">
+      <button class="btn btn--ghost" type="button" data-modal-close data-track="reauth-cancel">Cancel</button>
+      <button class="btn" type="submit" data-track="reauth-confirm">Confirm</button>
+    </div>
+  </form>
+</dialog>
+{% endblock %}
+
+{% block site_footer %}{% endblock %}

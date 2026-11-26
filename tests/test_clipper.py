@@ -3822,3 +3822,27 @@ def test_clip_source_passes_managed_channel_to_recipes(tmp_path, monkeypatch):
     res = job.clip_source(src, count=1, auto_queue=False, channel_id=ch_id)
     assert res["ok"] is True
     assert seen == [ch_id]
+
+
+def test_clip_jobs_remember_their_memes_so_the_next_job_never_reuses_one(tmp_path, monkeypatch):
+    """The same GIF went into every video because nothing remembered across jobs; now clip_source does."""
+    from app.clipper import memes, produce
+    _stub_pipeline(monkeypatch)
+    seen_recent = []
+
+    def fake_produce(src, info, signals, moment, words, out_path, **kw):
+        seen_recent.append(set(kw["mstock"].recent))
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(out_path).write_bytes(b"v" * 2000)
+        plan = render.ClipPlan([(moment.start, moment.end)], moment.duration, True, 404, "0", False, "1", False)
+        return produce.Produced(plan=plan, edit=None, memes_used=[f"giphy-{len(seen_recent)}"],
+                                meme_keys=[[f"giphy-{len(seen_recent)}", f"sha1:{len(seen_recent)}"]])
+
+    monkeypatch.setattr(job, "produce_clip", fake_produce)
+    for name, body in (("first.mp4", b"a" * 50), ("second.mp4", b"b" * 70)):
+        source = tmp_path / name
+        source.write_bytes(body)
+        assert job.clip_source(str(source), count=1, auto_queue=False)["ok"] is True
+    assert seen_recent[0] == set()
+    assert {"giphy-1", "sha1:1"} <= seen_recent[1]
+    assert memes.history_path().is_file() and "giphy-2" in memes.load_history()

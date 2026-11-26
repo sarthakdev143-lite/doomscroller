@@ -1,0 +1,23 @@
+{% extends "auth/_layout.html" %}
+{% block title %}Reset your password | {{ brand_name }}{% endblock %}
+
+{% block auth %}
+<div data-forgot-page>
+  <h1 id="auth-title">Reset your password</h1>
+  <p class="auth__lede">Enter the email you signed up with. If it has an account, we will send a link to choose a new password.</p>
+  <form data-forgot-form novalidate>
+    <div class="field">
+      <label class="label" for="forgot-email">Email</label>
+      <input class="input" id="forgot-email" name="email" type="email" autocomplete="email" inputmode="email" required maxlength="254" data-track-mask>
+    </div>
+    {{ identity_fields("forgot") }}
+    <p class="error-text" data-form-error role="alert"></p>
+    <button class="btn btn--accent btn--block btn--lg" type="submit" data-track="forgot-submit"><span class="spinner" aria-hidden="true"></span>Send the link</button>
+  </form>
+  <div class="done-state" data-forgot-done hidden role="status" tabindex="-1">
+    <h2>Check your inbox.</h2>
+    <p>If <strong data-forgot-email></strong> has an account, a reset link is on its way. It works once.</p>
+  </div>
+  <div class="auth__alt"><p>Remembered it? <a href="/login" data-track="forgot-to-login">Sign in</a></p></div>
+</div>
+{% endblock %}

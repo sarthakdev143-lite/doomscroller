@@ -537,6 +537,17 @@
   color: var(--night-muted);
 }
 
+/* Copy buttons sit on the dark code bar wherever the code block is, not only in .on-dark sections. */
+.code .btn--ghost {
+  --btn-fg: var(--night-text);
+  --btn-border: var(--night-rule);
+}
+
+.code .btn--ghost:hover {
+  --btn-bg: var(--night-3);
+  --btn-border: var(--night-muted);
+}
+
 .code__bar {
   display: flex;
   align-items: center;
@@ -551,6 +562,7 @@
 /* ---- table ----------------------------------------------------------------------------------- */
 
 .table-wrap {
+  position: relative; /* visually-hidden cells stay inside the scroll box, not the page */
   overflow-x: auto;
   border: var(--border);
   border-radius: var(--radius-3);

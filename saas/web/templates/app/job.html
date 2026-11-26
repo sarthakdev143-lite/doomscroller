@@ -1,0 +1,87 @@
+{% extends "app/_layout.html" %}
+{% block title %}Job | {{ brand_name }}{% endblock %}
+{% block page_script %}<script type="module" src="{{ asset('/static/js/app-job.js') }}"></script>{% endblock %}
+
+{% block app %}
+<section data-track-section="app-job" aria-labelledby="job-title" data-job="{{ job_id }}">
+  <header class="app-head">
+    <div>
+      <p class="small"><a href="/app" data-track="job-back">Dashboard</a></p>
+      <h1 id="job-title" data-job-title><span class="skeleton skeleton--title"></span></h1>
+      <dl class="job-facts" data-job-facts></dl>
+    </div>
+    <div class="cluster">
+      <span data-job-status></span>
+      <button class="btn btn--ghost btn--sm" type="button" data-job-cancel hidden data-track="job-cancel">Cancel job</button>
+    </div>
+  </header>
+
+  <div data-job-live hidden>
+    <ol class="stages" role="list" data-stages>
+      <li data-stage="queued">Queued</li>
+      <li data-stage="fetching">Fetching</li>
+      <li data-stage="transcribing">Transcribing</li>
+      <li data-stage="selecting">Choosing moments</li>
+      <li data-stage="rendering">Rendering</li>
+      <li data-stage="done">Done</li>
+    </ol>
+    <div class="progress" role="progressbar" aria-label="Job progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" data-job-progress><span class="progress__fill" data-job-bar></span></div>
+    <p class="hint" data-job-hint>Most jobs take 2 to 15 minutes. You can leave this page; the job keeps running.</p>
+  </div>
+
+  <p class="notice notice--error" data-job-error hidden></p>
+  <p class="notice" data-job-watermark hidden>Made on the free tier, so each clip carries a small watermark. Clips made with paid minutes don’t.</p>
+
+  <section class="app-section" aria-labelledby="clips-title" data-job-clips-section data-track-section="app-job-clips" hidden>
+    <div class="app-section__head">
+      <h2 id="clips-title" data-clips-heading>Clips</h2>
+      <span class="small muted">Edit the text, then download the clip or its whole package.</span>
+    </div>
+    <div class="clip-grid" data-clip-grid></div>
+  </section>
+
+  <div class="empty" data-job-missing hidden>
+    <p class="empty__title">This job isn’t here.</p>
+    <p>It may have been deleted, or it belongs to another account.</p>
+    <a class="btn" href="/app" data-track="job-missing-back">Back to the dashboard</a>
+  </div>
+</section>
+
+<template data-clip-template>
+  <article class="clip-card" data-track-section="app-job-clip">
+    <div>
+      <div class="player">
+        <video controls preload="metadata" playsinline data-video></video>
+        <div class="player__fallback" data-player-fallback hidden>Preview not available in this browser. The download still works.</div>
+      </div>
+    </div>
+    <div>
+      <div class="clip-card__head" data-clip-head></div>
+      <form data-clip-form novalidate>
+        <div class="field">
+          <div class="label-row"><label class="label" data-for="title">Title</label><span class="count" data-count="title"></span></div>
+          <input class="input" name="title" maxlength="100" data-limit="100">
+        </div>
+        <div class="field">
+          <div class="label-row"><label class="label" data-for="description">Description</label><span class="count" data-count="description"></span></div>
+          <textarea class="textarea" name="description" rows="3" maxlength="5000" data-limit="5000"></textarea>
+        </div>
+        <div class="field">
+          <label class="label" data-for="hashtags">Hashtags</label>
+          <input class="input mono" name="hashtags" maxlength="600">
+          <p class="hint">Separate them with spaces.</p>
+        </div>
+        <div class="clip-card__actions">
+          <button class="btn btn--sm" type="submit" data-track="clip-save"><span class="spinner" aria-hidden="true"></span>Save text</button>
+          <span class="save-state" data-save-state role="status"></span>
+        </div>
+      </form>
+      <div class="clip-card__actions">
+        <a class="btn btn--accent btn--sm" data-download data-track="clip-download">Download MP4</a>
+        <button class="btn btn--ghost btn--sm" type="button" aria-expanded="false" data-package-toggle data-track="clip-package-toggle">Publish package</button>
+      </div>
+      <div class="package" data-package hidden></div>
+    </div>
+  </article>
+</template>
+{% endblock %}

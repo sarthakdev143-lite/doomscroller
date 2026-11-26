@@ -1,0 +1,13 @@
+{# Hidden fields every identity-creating form posts (CONTRACT: fp, ts, website, cf_turnstile_response).
+   t.js fills fp; auth.js refreshes ts and reads the Turnstile token. #}
+{% macro identity_fields(id) -%}
+<input type="hidden" name="fp" value="">
+<input type="hidden" name="ts" value="{{ now_ms }}">
+<div class="hp" aria-hidden="true">
+  <label for="{{ id }}-website">Leave this empty</label>
+  <input id="{{ id }}-website" name="website" type="text" tabindex="-1" autocomplete="off">
+</div>
+{% if turnstile_site_key %}
+<div class="cf-turnstile" data-sitekey="{{ turnstile_site_key }}" data-theme="light" data-size="flexible"></div>
+{% endif %}
+{%- endmacro %}

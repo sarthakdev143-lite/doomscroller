@@ -1,0 +1,28 @@
+{% extends "auth/_layout.html" %}
+{% block title %}Confirm your email | {{ brand_name }}{% endblock %}
+
+{% block auth %}
+<div data-verify-page>
+  {% if status == "invalid" %}
+  <h1 id="auth-title">That link didn’t work.</h1>
+  <p class="auth__lede">Confirmation links work once and expire after {{ verify_hours }} hours. Sign in and we can send a fresh one.</p>
+  {% else %}
+  <h1 id="auth-title">Confirm your email.</h1>
+  <p class="auth__lede">Open the link we sent you to confirm your address. Your free Shorts unlock as soon as you do.</p>
+  {% endif %}
+
+  {% if signed_in %}
+  <div class="done-state">
+    <h2>Send it again</h2>
+    <p>We will send a new link to <strong>{{ signed_in_email }}</strong>.</p>
+    <p><button class="btn" type="button" data-resend data-track="verify-resend"><span class="spinner" aria-hidden="true"></span>Send a new link</button></p>
+    <p class="error-text" data-form-error role="alert"></p>
+  </div>
+  {% else %}
+  <div class="auth__alt">
+    <p><a class="btn btn--accent" href="/login?next=/verify-email" data-track="verify-sign-in">Sign in to get a new link</a></p>
+    <p>Used the wrong address? <a href="/signup" data-track="verify-signup">Create the account again</a>.</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

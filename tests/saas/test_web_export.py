@@ -73,6 +73,20 @@ def test_every_page_and_extra_is_written(site):
     assert not (out / "styleguide").exists() and not (out / "app").exists()
 
 
+def test_signed_in_app_stays_off_the_static_site(site):
+    exporter, out = site
+    for page in ("login", "signup", "forgot", "verify-email", "reset", "app"):
+        assert not (out / page).exists(), page
+    shipped = {p.relative_to(out / "static").as_posix() for p in (out / "static").rglob("*") if p.is_file()}
+    assert not [p for p in shipped if exporter.app_only(p)], "app-only scripts and styles are not published"
+    for name in ("css/app.css", "js/api.js", "js/auth.js", "js/app-shell.js", "js/app-job.js"):
+        assert exporter.app_only(name) and name not in shipped
+    assert "js/site.js" in shipped and "css/components.css" in shipped
+    for html in out.rglob("*.html"):
+        text = html.read_text(encoding="utf-8")
+        assert 'href="/login"' not in text and "/static/js/auth.js" not in text, html.name
+
+
 def test_pages_have_no_request_time_dependencies(site):
     _exporter_module, out = site
     for page in out.rglob("*.html"):

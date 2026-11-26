@@ -60,7 +60,7 @@ def test_captions_ass_font_and_style_prevent_header_injection():
     )
     lines = ass.splitlines()
     style_lines = [ln for ln in lines if ln.startswith("Style: ")]
-    assert len(style_lines) == 6  # Caption, Hook, Brand, Credit, Watermark, Beat
+    assert len(style_lines) == 5  # Caption, Hook, Brand, Credit, Beat (Watermark only when one is drawn)
     for style_line in style_lines:
         # Format has 23 fields -> exactly 22 commas per Style row.
         assert style_line.count(",") == 22

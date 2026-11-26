@@ -1,0 +1,51 @@
+{% extends "auth/_layout.html" %}
+{% block title %}Create an account | {{ brand_name }}{% endblock %}
+{% block description %}Create a {{ brand_name }} account. Your first {{ free_shorts }} Shorts or {{ free_minutes }} minutes are free.{% endblock %}
+
+{% block auth %}
+<div data-signup-page>
+  <h1 id="auth-title">Create an account</h1>
+  <p class="auth__lede">Your first {{ free_shorts }} Shorts or {{ free_minutes }} minutes of video are free, once you confirm your email.</p>
+
+  <form data-signup-form novalidate>
+    {% if launch_mode == "waitlist" %}
+    <div class="field">
+      <label class="label" for="signup-invite">Invite code</label>
+      <input class="input mono" id="signup-invite" name="invite" type="text" autocomplete="off" required maxlength="64" value="{{ invite }}">
+      <p class="hint">We are opening in batches. Your code is in your invite email. <a href="/#join" data-track="signup-waitlist">No code yet? Join the waitlist.</a></p>
+    </div>
+    {% endif %}
+    <div class="field">
+      <label class="label" for="signup-name">Name <span class="optional">(optional)</span></label>
+      <input class="input" id="signup-name" name="name" type="text" autocomplete="name" maxlength="120">
+    </div>
+    <div class="field">
+      <label class="label" for="signup-email">Email</label>
+      <input class="input" id="signup-email" name="email" type="email" autocomplete="email" inputmode="email" required maxlength="254" data-track-mask>
+    </div>
+    <div class="field">
+      <label class="label" for="signup-password">Password</label>
+      <input class="input" id="signup-password" name="password" type="password" autocomplete="new-password" required minlength="{{ password_min }}" maxlength="256" aria-describedby="signup-password-hint">
+      <p class="hint" id="signup-password-hint">At least {{ password_min }} characters. A short phrase works well.</p>
+    </div>
+    <input type="hidden" name="ref" value="{{ ref }}">
+    {{ identity_fields("signup") }}
+    <p class="error-text" data-form-error role="alert"></p>
+    <button class="btn btn--accent btn--block btn--lg" type="submit" data-track="signup-submit"><span class="spinner" aria-hidden="true"></span>Create account</button>
+    <p class="hint">By creating an account you agree to the <a href="/terms" data-track="signup-terms">terms</a> and the <a href="/privacy" data-track="signup-privacy">privacy policy</a>.</p>
+  </form>
+
+  <div class="done-state" data-signup-done hidden role="status" tabindex="-1">
+    <h2>Check your inbox.</h2>
+    <p>We sent a link to <strong data-signup-email></strong>. Open it on this device to confirm your address and sign in. It expires in {{ verify_hours }} hours.</p>
+    <p>Nothing there after a few minutes? Look in spam, or <a href="/signup" data-track="signup-again">try again</a> with the right address.</p>
+  </div>
+
+  <div class="auth__alt">
+    {% if google_enabled and launch_mode != "waitlist" %}
+    <a class="btn btn--google btn--block" href="/auth/google/start?next=/app" data-track="signup-google">Continue with Google</a>
+    {% endif %}
+    <p>Already have an account? <a href="/login" data-track="signup-to-login">Sign in</a></p>
+  </div>
+</div>
+{% endblock %}

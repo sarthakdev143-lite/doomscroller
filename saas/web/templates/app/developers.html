@@ -1,0 +1,118 @@
+{% extends "app/_layout.html" %}
+{% block title %}Developers | {{ brand_name }}{% endblock %}
+{% block page_script %}<script type="module" src="{{ asset('/static/js/app-developers.js') }}"></script>{% endblock %}
+
+{% block app %}
+<section data-track-section="app-developers" aria-labelledby="dev-title">
+  <header class="app-head">
+    <div>
+      <h1 id="dev-title">Developers</h1>
+      <p>Make clips from your own code with the API, or from Claude, Cursor and other assistants over MCP. Both use the same keys.</p>
+    </div>
+  </header>
+
+  <section class="app-section" aria-labelledby="keys-title" data-track-section="app-developers-keys">
+    <div class="app-section__head"><h2 id="keys-title">API keys</h2></div>
+    <form class="panel key-form" data-key-form novalidate>
+      <div class="field">
+        <label class="label" for="key-name">Name it after where it will live</label>
+        <input class="input" id="key-name" name="name" maxlength="80" placeholder="Laptop, Zapier, Claude Code" autocomplete="off">
+      </div>
+      <fieldset class="field key-scopes">
+        <legend class="label">What it may do</legend>
+        <div class="cluster">
+          {% for scope in ["jobs:read", "jobs:write", "clips:read", "clips:write", "billing:read"] %}
+          <label class="check"><input type="checkbox" name="scopes" value="{{ scope }}" checked data-track="dev-scope-{{ scope|replace(':', '-') }}"> <span class="mono small">{{ scope }}</span></label>
+          {% endfor %}
+        </div>
+      </fieldset>
+      <button class="btn" type="submit" data-track="dev-key-create"><span class="spinner" aria-hidden="true"></span>Create key</button>
+    </form>
+    <p class="notice notice--error" data-key-error hidden></p>
+
+    <div class="secret" data-key-new hidden>
+      <p><strong>Copy this key now. It is shown once.</strong> Anyone with it can spend your minutes, so keep it out of code you share.</p>
+      <div class="copy-field">
+        <label class="visually-hidden" for="new-key">New API key</label>
+        <input id="new-key" type="text" readonly data-key-value data-track-mask>
+        <button class="btn" type="button" data-copy="#new-key" data-track="dev-key-copy">Copy</button>
+      </div>
+    </div>
+
+    <div class="table-wrap app-section-gap">
+      <table class="table">
+        <thead><tr><th scope="col">Name</th><th scope="col">Key</th><th scope="col">Scopes</th><th scope="col">Last used</th><th scope="col" class="actions"><span class="visually-hidden">Actions</span></th></tr></thead>
+        <tbody data-keys><tr><td colspan="5"><span class="skeleton skeleton--text"></span></td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="app-section" aria-labelledby="mcp-title" data-track-section="app-developers-mcp">
+    <div class="app-section__head">
+      <h2 id="mcp-title">Connect an assistant (MCP)</h2>
+      <span class="small muted mono">{{ mcp_url }}</span>
+    </div>
+    <p class="muted dev-intro">Add the server with your key in the <span class="mono">Authorization</span> header, then ask in plain words, for example “check what it costs to clip this video, then make three Shorts and give me the download links.”</p>
+    <div class="tabs" data-tabs>
+      <div class="tabs__list" role="tablist" aria-label="Assistant">
+        <button class="tabs__tab" role="tab" type="button" id="mcp-tab-cc" aria-controls="mcp-cc" aria-selected="true" data-track="dev-mcp-claude-code">Claude Code</button>
+        <button class="tabs__tab" role="tab" type="button" id="mcp-tab-cd" aria-controls="mcp-cd" aria-selected="false" tabindex="-1" data-track="dev-mcp-claude-desktop">Claude Desktop</button>
+        <button class="tabs__tab" role="tab" type="button" id="mcp-tab-cursor" aria-controls="mcp-cursor" aria-selected="false" tabindex="-1" data-track="dev-mcp-cursor">Cursor</button>
+        <button class="tabs__tab" role="tab" type="button" id="mcp-tab-vscode" aria-controls="mcp-vscode" aria-selected="false" tabindex="-1" data-track="dev-mcp-vscode">VS Code</button>
+        <button class="tabs__tab" role="tab" type="button" id="mcp-tab-curl" aria-controls="mcp-curl" aria-selected="false" tabindex="-1" data-track="dev-mcp-curl">HTTP</button>
+      </div>
+      <div class="tabs__panel" role="tabpanel" id="mcp-cc" aria-labelledby="mcp-tab-cc" tabindex="0">
+        <div class="code"><div class="code__bar"><span>Terminal</span><button class="btn btn--ghost btn--sm" type="button" data-copy="#snip-cc" data-track="dev-copy-cc">Copy</button></div>
+<pre id="snip-cc"><code>claude mcp add --transport http {{ mcp_name }} {{ mcp_url }} \
+  --header "Authorization: Bearer dsk_live_YOUR_KEY"</code></pre></div>
+        <p class="hint">Check it with <span class="mono">claude mcp list</span>.</p>
+      </div>
+      <div class="tabs__panel" role="tabpanel" id="mcp-cd" aria-labelledby="mcp-tab-cd" tabindex="0" hidden>
+        <p class="hint">Settings → Connectors → Add custom connector → <span class="mono">{{ mcp_url }}</span>. If your build can’t send a header, use the <span class="mono">mcp-remote</span> bridge in <span class="mono">claude_desktop_config.json</span> (needs Node.js):</p>
+        <div class="code"><div class="code__bar"><span>claude_desktop_config.json</span><button class="btn btn--ghost btn--sm" type="button" data-copy="#snip-cd" data-track="dev-copy-cd">Copy</button></div>
+<pre id="snip-cd"><code>{
+  "mcpServers": {
+    "{{ mcp_name }}": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "{{ mcp_url }}",
+               "--header", "Authorization:Bearer ${CLIPPER_API_KEY}"],
+      "env": { "CLIPPER_API_KEY": "dsk_live_YOUR_KEY" }
+    }
+  }
+}</code></pre></div>
+      </div>
+      <div class="tabs__panel" role="tabpanel" id="mcp-cursor" aria-labelledby="mcp-tab-cursor" tabindex="0" hidden>
+        <div class="code"><div class="code__bar"><span>~/.cursor/mcp.json</span><button class="btn btn--ghost btn--sm" type="button" data-copy="#snip-cursor" data-track="dev-copy-cursor">Copy</button></div>
+<pre id="snip-cursor"><code>{
+  "mcpServers": {
+    "{{ mcp_name }}": {
+      "url": "{{ mcp_url }}",
+      "headers": { "Authorization": "Bearer dsk_live_YOUR_KEY" }
+    }
+  }
+}</code></pre></div>
+      </div>
+      <div class="tabs__panel" role="tabpanel" id="mcp-vscode" aria-labelledby="mcp-tab-vscode" tabindex="0" hidden>
+        <div class="code"><div class="code__bar"><span>.vscode/mcp.json</span><button class="btn btn--ghost btn--sm" type="button" data-copy="#snip-vscode" data-track="dev-copy-vscode">Copy</button></div>
+<pre id="snip-vscode"><code>{
+  "inputs": [{ "type": "promptString", "id": "clipper-key", "description": "API key", "password": true }],
+  "servers": {
+    "{{ mcp_name }}": {
+      "type": "http",
+      "url": "{{ mcp_url }}",
+      "headers": { "Authorization": "Bearer ${input:clipper-key}" }
+    }
+  }
+}</code></pre></div>
+      </div>
+      <div class="tabs__panel" role="tabpanel" id="mcp-curl" aria-labelledby="mcp-tab-curl" tabindex="0" hidden>
+        <div class="code"><div class="code__bar"><span>Terminal</span><button class="btn btn--ghost btn--sm" type="button" data-copy="#snip-curl" data-track="dev-copy-curl">Copy</button></div>
+<pre id="snip-curl"><code>curl -s {{ public_url }}/api/v1/balance \
+  -H "Authorization: Bearer dsk_live_YOUR_KEY"</code></pre></div>
+        <p class="hint">REST base URL: <span class="mono">{{ public_url }}/api/v1</span>. Jobs, clips, links and publish packages, the same as the app.</p>
+      </div>
+    </div>
+    <p class="hint dev-intro">ChatGPT connectors can’t send a fixed header yet; use the REST API from a GPT Action with API-key auth instead.</p>
+  </section>
+</section>
+{% endblock %}

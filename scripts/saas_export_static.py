@@ -47,6 +47,12 @@ GA4_ID = re.compile(r"^G-[A-Z0-9]{4,20}$")
 CLARITY_ID = re.compile(r"^[a-z0-9]{6,20}$", re.IGNORECASE)
 TURNSTILE_KEY = re.compile(r"^[0-9A-Za-z_-]{10,100}$")
 JS_IMPORT = re.compile(r"""(\bfrom\s+["'])(\./[\w.-]+\.js)(\?v=[0-9a-f]+)?(["'])""")
+# Assets only the signed-in app and the sign-in pages load (paths relative to saas/web/static).
+APP_ONLY = re.compile(r"^(css/app\.css|js/api\.js|js/auth\.js|js/app-[\w-]+\.js)$")
+
+
+def app_only(rel: str) -> bool:
+    return bool(APP_ONLY.match(rel))
 
 
 def _saas():
@@ -123,6 +129,8 @@ def _copy_static(src: Path, dst: Path) -> list[Path]:
     for f in sorted(src.rglob("*")):
         if not f.is_file() or f.suffix == ".md" or "__pycache__" in f.parts:
             continue
+        if app_only(f.relative_to(src).as_posix()):
+            continue  # the signed-in app is served by the Python app, never from the static site
         target = dst / f.relative_to(src)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(f, target)

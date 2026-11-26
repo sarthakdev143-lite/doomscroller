@@ -9,6 +9,7 @@
         <a href="/pricing" data-track="nav-pricing">Pricing</a>
         <a href="/#api" data-track="nav-api">API</a>
         <a href="/#faq" data-track="nav-faq">FAQ</a>
+        {% if not static_export %}<a href="/login" data-track="nav-sign-in">Sign in</a>{% endif %}
       </div>
       {% if launch_mode == "waitlist" %}
       <a class="btn btn--sm" href="/#join" data-track="nav-cta-waitlist">Join the waitlist</a>

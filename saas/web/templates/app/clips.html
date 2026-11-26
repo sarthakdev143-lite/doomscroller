@@ -1,0 +1,25 @@
+{% extends "app/_layout.html" %}
+{% block title %}Clips | {{ brand_name }}{% endblock %}
+{% block page_script %}<script type="module" src="{{ asset('/static/js/app-clips.js') }}"></script>{% endblock %}
+
+{% block app %}
+<section data-track-section="app-clips" aria-labelledby="clips-title">
+  <header class="app-head">
+    <div>
+      <h1 id="clips-title">Clips</h1>
+      <p>Every clip you have made, newest first. Clips are kept for {{ retention_days }} days, then deleted.</p>
+    </div>
+    <a class="btn btn--accent" href="/app/new" data-track="clips-new-job">New job</a>
+  </header>
+  <div class="thumb-grid" data-clips aria-busy="true">
+    <span class="skeleton skeleton--clip"></span><span class="skeleton skeleton--clip"></span><span class="skeleton skeleton--clip"></span><span class="skeleton skeleton--clip"></span>
+  </div>
+  <div class="empty" data-clips-empty hidden>
+    <p class="empty__title">No clips yet.</p>
+    <p>Finished clips from every job show up here, ready to edit and download.</p>
+    <a class="btn btn--accent" href="/app/new" data-track="clips-empty-new">Make your first clips</a>
+  </div>
+  <p class="notice notice--error" data-clips-error hidden></p>
+  <p class="app-more"><button class="btn btn--ghost" type="button" data-clips-more hidden data-track="clips-more">Show more</button></p>
+</section>
+{% endblock %}

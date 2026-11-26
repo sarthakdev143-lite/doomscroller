@@ -1,0 +1,50 @@
+{% extends "app/_layout.html" %}
+{% block title %}Brand kit | {{ brand_name }}{% endblock %}
+{% block page_script %}<script type="module" src="{{ asset('/static/js/app-brand.js') }}"></script>{% endblock %}
+
+{% block app %}
+<section data-track-section="app-brand" aria-labelledby="brand-title">
+  <header class="app-head">
+    <div>
+      <h1 id="brand-title">Brand kit</h1>
+      <p>Your logo goes on every clip. Your memes are offered first on reaction beats. Both can be switched off per job.</p>
+    </div>
+  </header>
+
+  <section class="app-section panel" aria-labelledby="logo-title" data-track-section="app-brand-logo">
+    <h2 class="panel__title" id="logo-title">Logo</h2>
+    <div class="logo-box">
+      <div class="logo-box__preview" data-logo-preview><span class="muted small">No logo yet</span></div>
+      <div>
+        <p class="small muted" data-logo-rules>PNG, JPEG or WebP. A transparent PNG looks best; it is shown up to 220×88 on the clip.</p>
+        <div class="cluster">
+          <input type="file" id="logo-file" accept="image/png,image/jpeg,image/webp,image/svg+xml" class="visually-hidden" data-logo-input>
+          <label class="btn btn--sm" for="logo-file" data-track="brand-logo-choose" data-logo-choose>Upload a logo</label>
+          <button class="btn btn--ghost btn--sm" type="button" data-logo-delete hidden data-track="brand-logo-delete">Remove</button>
+        </div>
+        <p class="error-text" data-logo-error role="alert"></p>
+      </div>
+    </div>
+  </section>
+
+  <section class="app-section panel" aria-labelledby="memes-title" data-track-section="app-brand-memes">
+    <div class="app-section__head">
+      <h2 class="panel__title" id="memes-title">Your memes <span class="muted small" data-meme-count></span></h2>
+      <div>
+        <input type="file" id="meme-file" accept="image/gif,image/png,video/mp4,video/quicktime,video/webm" multiple class="visually-hidden" data-meme-input>
+        <label class="btn btn--sm" for="meme-file" data-track="brand-meme-choose">Add memes</label>
+      </div>
+    </div>
+    <div class="dropzone" data-meme-drop>
+      <p class="dropzone__title">Drop GIFs or short videos here</p>
+      <p class="hint" data-meme-rules>GIF, PNG, MP4, MOV or WebM.</p>
+    </div>
+    <div class="upload-progress" data-meme-progress hidden>
+      <div class="upload-progress__row"><span data-meme-progress-name></span><span class="mono tabular" data-meme-progress-pct></span></div>
+      <div class="progress"><span class="progress__fill" data-meme-progress-bar></span></div>
+    </div>
+    <p class="error-text" data-meme-error role="alert"></p>
+    <div class="meme-grid" data-meme-grid></div>
+  </section>
+</section>
+{% endblock %}

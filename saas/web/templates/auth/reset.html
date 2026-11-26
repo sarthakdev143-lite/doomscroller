@@ -1,0 +1,22 @@
+{% extends "auth/_layout.html" %}
+{% block title %}Choose a new password | {{ brand_name }}{% endblock %}
+
+{% block auth %}
+<div data-reset-page data-token="{{ token }}">
+  <h1 id="auth-title">Choose a new password</h1>
+  <p class="auth__lede">This signs you out everywhere else. You sign in again with the new password.</p>
+  <form data-reset-form novalidate>
+    <div class="field">
+      <label class="label" for="reset-password">New password</label>
+      <input class="input" id="reset-password" name="password" type="password" autocomplete="new-password" required minlength="{{ password_min }}" maxlength="256" aria-describedby="reset-hint">
+      <p class="hint" id="reset-hint">At least {{ password_min }} characters.</p>
+    </div>
+    <div class="field">
+      <label class="label" for="reset-confirm">Type it again</label>
+      <input class="input" id="reset-confirm" name="confirm" type="password" autocomplete="new-password" required maxlength="256">
+    </div>
+    <p class="error-text" data-form-error role="alert"></p>
+    <button class="btn btn--accent btn--block btn--lg" type="submit" data-track="reset-submit"><span class="spinner" aria-hidden="true"></span>Save the new password</button>
+  </form>
+</div>
+{% endblock %}

@@ -1,4 +1,4 @@
-"""SaaS settings. Separate from app.config on purpose.
+﻿"""SaaS settings. Separate from app.config on purpose.
 
 app.config.settings belongs to the owner's single-tenant growth loop, and its .env turns real
 YouTube uploads on. Nothing in saas/ may read that file: every value here comes from SAAS_* env vars
@@ -26,7 +26,7 @@ class SaasSettings(BaseSettings):
 
     # ---- core (integrator) -------------------------------------------------------------------
     env: str = "dev"  # dev | prod. prod turns on Secure cookies, HSTS and strict checks.
-    brand_name: str = "Doomscroller"  # working name; the owner has not picked the final one
+    brand_name: str = "doomscroller"  # the owner's name and spelling (lowercase)
     public_url: str = "http://127.0.0.1:8700"
     host: str = "127.0.0.1"
     port: int = 8700

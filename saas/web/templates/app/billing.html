@@ -1,0 +1,75 @@
+{% extends "app/_layout.html" %}
+{% block title %}Billing | {{ brand_name }}{% endblock %}
+{% block page_script %}<script type="module" src="{{ asset('/static/js/app-billing.js') }}"></script>{% endblock %}
+
+{% block app %}
+<section data-track-section="app-billing" aria-labelledby="billing-title" data-billing data-status="{{ pay_status }}">
+  <header class="app-head">
+    <div>
+      <h1 id="billing-title">Billing</h1>
+      <p>You pay for minutes of source video, rounded up per job. Pay as you go, or monthly.</p>
+    </div>
+  </header>
+
+  {% if pay_status == "paid" %}<div class="app-notice"><p class="notice notice--ok">Payment received. Your minutes are in your balance.</p></div>
+  {% elif pay_status == "pending" %}<div class="app-notice"><p class="notice">Your payment is being confirmed. Minutes arrive as soon as it clears; this page updates when you reload it.</p></div>
+  {% elif pay_status == "failed" %}<div class="app-notice"><p class="notice notice--error">That payment didn’t go through. Nothing was charged.</p></div>{% endif %}
+
+  <div class="stats">
+    <div class="stat">
+      <span class="stat__label">Balance</span>
+      <span class="stat__value tabular" data-bill-balance><span class="skeleton skeleton--text"></span></span>
+      <p class="stat__note" data-bill-free></p>
+    </div>
+    <div class="stat">
+      <span class="stat__label">Plan</span>
+      <span class="stat__value" data-bill-plan><span class="skeleton skeleton--text"></span></span>
+      <p class="stat__note" data-bill-sub></p>
+      <p><button class="link-btn" type="button" data-bill-cancel hidden data-track="billing-cancel">Cancel at the end of the period</button></p>
+    </div>
+  </div>
+
+  <section class="app-section" aria-labelledby="buy-title" data-track-section="app-billing-buy">
+    <div class="app-section__head">
+      <h2 id="buy-title">Pay as you go</h2>
+      <span class="small muted">Minutes you buy stay in your balance.</span>
+    </div>
+    <div class="offer-grid" data-packs><span class="skeleton skeleton--title"></span></div>
+    <p class="hint" data-pay-note hidden></p>
+  </section>
+
+  <section class="app-section" aria-labelledby="plans-title" data-track-section="app-billing-plans">
+    <div class="app-section__head">
+      <h2 id="plans-title">Monthly</h2>
+      <div class="seg" role="radiogroup" aria-label="Billing period" data-interval hidden>
+        <label data-track="billing-interval-month"><input type="radio" name="interval" value="month" checked><span>Monthly</span></label>
+        <label data-track="billing-interval-year"><input type="radio" name="interval" value="year"><span>Yearly</span></label>
+      </div>
+    </div>
+    <div class="offer-grid" data-plans><span class="skeleton skeleton--title"></span></div>
+  </section>
+
+  <section class="app-section panel" aria-labelledby="promo-title" data-track-section="app-billing-promo">
+    <h2 class="panel__title" id="promo-title">Promo code</h2>
+    <form class="form-row" data-promo-form novalidate>
+      <div class="field">
+        <label class="visually-hidden" for="promo-code">Promo code</label>
+        <input class="input mono" id="promo-code" name="code" autocomplete="off" maxlength="64" placeholder="CODE">
+      </div>
+      <button class="btn" type="submit" data-track="billing-promo"><span class="spinner" aria-hidden="true"></span>Apply</button>
+    </form>
+    <p class="error-text" data-promo-error role="alert"></p>
+  </section>
+
+  <section class="app-section" aria-labelledby="ledger-title" data-track-section="app-billing-ledger">
+    <div class="app-section__head"><h2 id="ledger-title">History</h2></div>
+    <div class="table-wrap">
+      <table class="table">
+        <thead><tr><th scope="col">When</th><th scope="col">What</th><th scope="col" class="num">Minutes</th><th scope="col" class="num">Free</th><th scope="col" class="num">Balance</th></tr></thead>
+        <tbody data-ledger><tr><td colspan="5"><span class="skeleton skeleton--text"></span></td></tr></tbody>
+      </table>
+    </div>
+    <p class="app-more"><button class="btn btn--ghost" type="button" data-ledger-more hidden data-track="billing-ledger-more">Show older</button></p>
+  </section>
+</section>
+{% endblock %}

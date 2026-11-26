@@ -1,0 +1,127 @@
+{% extends "app/_layout.html" %}
+{% block title %}New job | {{ brand_name }}{% endblock %}
+{% block page_script %}<script type="module" src="{{ asset('/static/js/app-new.js') }}"></script>{% endblock %}
+
+{% block app %}
+<section data-track-section="app-new-job" aria-labelledby="new-title">
+  <header class="app-head">
+    <div>
+      <h1 id="new-title">New job</h1>
+      <p>Send a long video. You see its length and what it costs before anything runs.</p>
+    </div>
+  </header>
+
+  <form class="new-grid" data-new-form data-max-upload-mb="{{ max_upload_mb }}" novalidate>
+    <div>
+      <section class="panel" aria-labelledby="src-title" data-track-section="app-new-source">
+        <h2 class="panel__title" id="src-title">1. The video</h2>
+        <div class="tabs" data-tabs>
+          <div class="tabs__list" role="tablist" aria-label="Where the video comes from">
+            <button class="tabs__tab" role="tab" type="button" id="tab-link" aria-controls="panel-link" aria-selected="true" data-source-tab="link" data-track="new-tab-link">Paste a link</button>
+            <button class="tabs__tab" role="tab" type="button" id="tab-upload" aria-controls="panel-upload" aria-selected="false" tabindex="-1" data-source-tab="upload" data-track="new-tab-upload">Upload a file</button>
+          </div>
+          <div class="tabs__panel" role="tabpanel" id="panel-link" aria-labelledby="tab-link">
+            <label class="label" for="new-url">Link to the video</label>
+            <div class="inline-form">
+              <input class="input" id="new-url" name="url" type="url" inputmode="url" autocomplete="off" placeholder="https://www.youtube.com/watch?v=…" maxlength="2000">
+              <button class="btn" type="button" data-estimate data-track="new-estimate"><span class="spinner" aria-hidden="true"></span>Check it</button>
+            </div>
+            <p class="hint">{{ sources|join(", ") }}. Private videos: upload the file instead.</p>
+          </div>
+          <div class="tabs__panel" role="tabpanel" id="panel-upload" aria-labelledby="tab-upload" hidden>
+            <div class="dropzone" data-dropzone>
+              <p class="dropzone__title">Drop a video file here</p>
+              <p class="hint">MP4, MOV, MKV or WebM, up to {{ max_upload }}.</p>
+              <input type="file" id="new-file" accept="video/*" data-file-input>
+              <label class="btn btn--ghost btn--sm" for="new-file" data-track="new-choose-file">Choose a file</label>
+            </div>
+            <div class="upload-progress" data-upload-progress hidden>
+              <div class="upload-progress__row"><span data-upload-name></span><span class="mono tabular" data-upload-pct>0%</span></div>
+              <div class="progress"><span class="progress__fill" data-upload-bar></span></div>
+              <p class="hint"><button class="link-btn" type="button" data-upload-cancel data-track="new-upload-cancel">Cancel upload</button></p>
+            </div>
+          </div>
+        </div>
+        <p class="error-text" data-source-error role="alert"></p>
+        <div class="source-result" data-source-result hidden>
+          <div data-source-thumb></div>
+          <div>
+            <p class="source-result__title" data-source-title></p>
+            <p class="source-result__facts" data-source-facts></p>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="opt-title" data-track-section="app-new-options">
+        <h2 class="panel__title" id="opt-title">2. The clips</h2>
+        <div class="options">
+          <div class="field">
+            <label class="label" for="opt-clips">How many clips</label>
+            <div class="range-row">
+              <input class="range" id="opt-clips" name="clips" type="range" min="1" max="20" step="1" value="5" data-track="new-opt-clips">
+              <output for="opt-clips" data-out="clips">5</output>
+            </div>
+          </div>
+          <div class="field">
+            <label class="label" for="opt-length">Longest a clip may run</label>
+            <div class="range-row">
+              <input class="range" id="opt-length" name="max_clip_seconds" type="range" min="15" max="90" step="5" value="60" data-track="new-opt-length">
+              <output for="opt-length" data-out="max_clip_seconds">60 s</output>
+            </div>
+          </div>
+          <div class="field">
+            <span class="label" id="opt-lang-label">Language</span>
+            <div class="seg" role="radiogroup" aria-labelledby="opt-lang-label">
+              <label data-track="new-opt-lang-auto"><input type="radio" name="language" value="auto" checked><span>Auto</span></label>
+              <label data-track="new-opt-lang-en"><input type="radio" name="language" value="en"><span>English</span></label>
+              <label data-track="new-opt-lang-hi"><input type="radio" name="language" value="hi"><span>Hindi</span></label>
+            </div>
+          </div>
+          <div class="field">
+            <span class="label" id="opt-layout-label">Layout</span>
+            <div class="seg" role="radiogroup" aria-labelledby="opt-layout-label">
+              <label data-track="new-opt-layout-framed"><input type="radio" name="layout" value="framed" checked><span>Framed</span></label>
+              <label data-track="new-opt-layout-fill"><input type="radio" name="layout" value="fill"><span>Fill the screen</span></label>
+            </div>
+            <p class="hint">Framed keeps the whole picture over a dimmed copy of itself. Fill crops to the speaker.</p>
+          </div>
+          <div class="span-2">
+            <div class="switches">
+              <label class="switch"><span class="switch__text"><strong>Word captions</strong><span>English and Hindi</span></span><input type="checkbox" name="captions" checked data-track="new-opt-captions"></label>
+              <label class="switch"><span class="switch__text"><strong>B-roll</strong><span>Stock footage where it fits</span></span><input type="checkbox" name="broll" checked data-track="new-opt-broll"></label>
+              <label class="switch"><span class="switch__text"><strong>Reaction memes</strong><span>Up to three per clip</span></span><input type="checkbox" name="memes" checked data-track="new-opt-memes"></label>
+              <label class="switch"><span class="switch__text"><strong>Sound effects</strong><span>On the emphasis</span></span><input type="checkbox" name="sfx" checked data-track="new-opt-sfx"></label>
+              <label class="switch"><span class="switch__text"><strong>Music</strong><span>Ducked under the voice</span></span><input type="checkbox" name="music" data-track="new-opt-music"></label>
+            </div>
+          </div>
+          <div class="span-2" data-brand-pick>
+            <span class="label">Brand kit</span>
+            <div class="brand-pick" data-brand-has hidden>
+              <img class="brand-pick__logo" alt="Your logo" data-brand-logo>
+              <div class="switches">
+                <label class="switch"><span class="switch__text"><strong>Put my logo on the clips</strong><span data-brand-logo-name></span></span><input type="checkbox" name="logo" checked data-track="new-opt-logo"></label>
+                <label class="switch" data-brand-memes-row><span class="switch__text"><strong>Use my memes first</strong><span data-brand-memes-count></span></span><input type="checkbox" name="custom_memes" checked data-track="new-opt-custom-memes"></label>
+              </div>
+            </div>
+            <p class="hint" data-brand-none hidden>No logo or memes yet. <a href="/app/brand" data-track="new-brand-link">Add them in your brand kit</a>.</p>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <aside class="panel summary" aria-labelledby="sum-title" data-summary>
+      <h2 class="panel__title" id="sum-title">3. Cost</h2>
+      <dl>
+        <div><dt>Video length</dt><dd data-sum-length>&ndash;</dd></div>
+        <div><dt>Clips asked</dt><dd data-sum-clips>5</dd></div>
+        <div class="summary__total"><dt>This job</dt><dd data-sum-cost>&ndash;</dd></div>
+        <div><dt>You have</dt><dd data-sum-balance>&ndash;</dd></div>
+      </dl>
+      <p class="hint" data-sum-note>Check a link or upload a file to see the cost.</p>
+      <p class="notice notice--error" data-sum-short hidden></p>
+      <button class="btn btn--accent btn--lg" type="submit" data-submit disabled data-track="new-submit"><span class="spinner" aria-hidden="true"></span><span data-submit-label>Make 5 clips</span></button>
+      <p class="error-text" data-submit-error role="alert"></p>
+    </aside>
+  </form>
+</section>
+{% endblock %}

@@ -50,6 +50,11 @@ video {
   max-width: 100%;
 }
 
+/* `hidden` must win over any component's display rule, or JS-toggled states show at once. */
+[hidden] {
+  display: none !important;
+}
+
 input,
 button,
 select,

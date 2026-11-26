@@ -1,0 +1,68 @@
+{% extends "app/_layout.html" %}
+{% block title %}Dashboard | {{ brand_name }}{% endblock %}
+{% block page_script %}<script type="module" src="{{ asset('/static/js/app-dashboard.js') }}"></script>{% endblock %}
+
+{% block app %}
+<section data-track-section="app-dashboard" aria-labelledby="dash-title">
+  {% if verified_now %}
+  <div class="app-notice"><p class="notice notice--ok">Email confirmed. Your free Shorts are ready: paste a link to start.</p></div>
+  {% endif %}
+
+  <header class="app-head">
+    <div>
+      <h1 id="dash-title">Dashboard</h1>
+      <p>{% if user_name %}{{ user_name }}, here{% else %}Here{% endif %} is what you have left and what is running.</p>
+    </div>
+    <a class="btn btn--accent" href="/app/new" data-track="dash-new-job">New job</a>
+  </header>
+
+  <div class="stats" data-dash-stats>
+    <div class="stat">
+      <span class="stat__label">Paid minutes</span>
+      <span class="stat__value tabular" data-stat-balance><span class="skeleton skeleton--text"></span></span>
+      <p class="stat__note">Each minute of video you send uses one, rounded up per job.</p>
+    </div>
+    <div class="stat">
+      <span class="stat__label">Free tier</span>
+      <div class="meter">
+        <div class="meter__row"><span>Shorts</span><span class="mono tabular" data-free-shorts-text>&nbsp;</span></div>
+        <div class="meter__track"><span class="meter__fill" data-free-shorts-bar></span></div>
+      </div>
+      <div class="meter">
+        <div class="meter__row"><span>Minutes of video</span><span class="mono tabular" data-free-minutes-text>&nbsp;</span></div>
+        <div class="meter__track"><span class="meter__fill" data-free-minutes-bar></span></div>
+      </div>
+      <p class="stat__note" data-free-note>Whichever runs out first ends the free tier.</p>
+    </div>
+    <div class="stat">
+      <span class="stat__label">Plan</span>
+      <span class="stat__value" data-stat-plan><span class="skeleton skeleton--text"></span></span>
+      <p class="stat__note"><a href="/app/billing" data-track="dash-billing">Buy minutes or change plan</a></p>
+    </div>
+  </div>
+
+  <section class="app-section" aria-labelledby="recent-title" data-track-section="app-recent-jobs">
+    <div class="app-section__head">
+      <h2 id="recent-title">Recent jobs</h2>
+      <a class="small" href="/app/clips" data-track="dash-all-clips">All clips</a>
+    </div>
+    <div data-jobs aria-busy="true">
+      <span class="skeleton skeleton--text"></span><span class="skeleton skeleton--text"></span><span class="skeleton skeleton--text"></span>
+    </div>
+    <div class="teach" data-jobs-empty hidden>
+      <div>
+        <h2>Make your first Shorts.</h2>
+        <p>Paste a link to a long video, or upload one. You see the length and the cost before anything runs.</p>
+        <p class="small muted" data-teach-free></p>
+        <a class="btn btn--accent" href="/app/new" data-track="dash-empty-new">Start a job</a>
+      </div>
+      <ol role="list">
+        <li><span class="mono">01</span><span><strong>Send a video.</strong> A YouTube, Vimeo, Twitch or Loom link, or a file.</span></li>
+        <li><span class="mono">02</span><span><strong>Pick how many clips</strong> and how long each may run.</span></li>
+        <li><span class="mono">03</span><span><strong>Edit and download.</strong> Each Short comes with its title, hashtags, thumbnail and times to post.</span></li>
+      </ol>
+    </div>
+    <p class="notice notice--error" data-jobs-error hidden></p>
+  </section>
+</section>
+{% endblock %}

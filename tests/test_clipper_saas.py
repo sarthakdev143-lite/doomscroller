@@ -326,6 +326,8 @@ def test_whisper_is_used_when_configured_and_deepgram_is_not(monkeypatch, tmp_pa
 class _Plan:
     def __init__(self, duration):
         self.duration = duration
+        self.tail = 0.0
+        self.music = ""
 
 
 def _seam(monkeypatch, tmp_path, *, moments=None, fail=None):
@@ -406,9 +408,10 @@ def test_options_reach_settings_only_during_the_run(monkeypatch, tmp_path):
 
 
 def test_logo_and_custom_memes_reach_the_render(monkeypatch, tmp_path):
+    from PIL import Image
     calls = _seam(monkeypatch, tmp_path)
     logo = tmp_path / "logo.png"
-    logo.write_bytes(b"png")
+    Image.new("RGBA", (40, 20), (0, 0, 0, 255)).save(logo)
     mine = tmp_path / "my_reaction.gif"
     mine.write_bytes(b"GIF89a")
     standalone.clip_to_directory("x", tmp_path / "job3", count=1, logo_path=str(logo),
@@ -417,6 +420,35 @@ def test_logo_and_custom_memes_reach_the_render(monkeypatch, tmp_path):
     assert kw["logo"] == str(logo)
     custom = kw["mstock"].custom
     assert [c.link for c in custom] == [str(mine)] and custom[0].provider == memes.CUSTOM
+
+
+def test_a_logo_that_is_not_an_image_is_dropped_once_with_a_warning(monkeypatch, tmp_path):
+    calls = _seam(monkeypatch, tmp_path)
+    bad = tmp_path / "logo.png"
+    bad.write_bytes(b"<html>not a png</html>")
+    result = standalone.clip_to_directory("x", tmp_path / "j", count=2, logo_path=str(bad))
+    assert [c["logo"] for c in calls["produce"]] == ["", ""] and len(result["clips"]) == 2
+    assert any("logo" in w for w in result["warnings"])
+
+
+def test_a_logo_that_fails_in_the_render_costs_only_the_logo(monkeypatch, tmp_path):
+    from app.clipper import produce
+    from app.clipper.ingest import SourceVideo
+    from app.clipper.media import MediaError
+    seen = []
+
+    def render_moment(*a, **kw):
+        seen.append(kw.get("logo"))
+        if kw.get("logo"):
+            raise MediaError("logo will not decode")
+        return _Plan(20.0)
+
+    steps = produce.Steps(render_moment=render_moment)
+    warnings = []
+    made = produce.produce_clip(SourceVideo(path="s.mp4", title="t"), INFO, object(), Moment(1.0, 20.0, kind="visual"), [],
+                                str(tmp_path / "c.mp4"), timed=True, language="", burned_in=False, stings={},
+                                stock=None, mstock=memes.MemeSession(), warn=warnings.append, logo="logo.png", steps=steps)
+    assert seen == ["logo.png", None] and made.plan.duration == 20.0 and "logo" in warnings[0]
 
 
 def test_no_moments_and_a_failed_fetch_raise_clip_errors(monkeypatch, tmp_path):

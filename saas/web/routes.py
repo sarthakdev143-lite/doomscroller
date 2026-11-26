@@ -445,3 +445,7 @@ def og_png(brand: str) -> bytes:
 def og_image():
     return Response(og_png(settings.brand_name), media_type="image/png",
                     headers={"Cache-Control": "public, max-age=86400"})
+
+
+# The signed-in product and sign-in pages register on this router (Python app only, never exported).
+from . import app_pages  # noqa: E402,F401
