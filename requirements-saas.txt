@@ -1,0 +1,12 @@
+# SaaS layer (saas/). Installed on top of requirements.txt into its own venv (.venv-saas),
+# so the live single-owner app's venv never changes under it.
+#   python -m venv .venv-saas && .venv-saas/Scripts/python.exe -m pip install -r requirements-saas.txt
+-r requirements.txt
+Jinja2==3.1.6
+argon2-cffi==25.1.0
+PyOTP==2.12.1
+segno==1.6.6
+user-agents==2.2.0
+geoip2==5.4.0
+email-validator==2.4.0
+mcp==2.3.0

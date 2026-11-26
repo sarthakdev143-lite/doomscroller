@@ -42,3 +42,11 @@ channels.json
 # Browser cookies for yt-dlp give access to a Google account.
 cookies*.txt
 .*.swp
+
+# SaaS runtime
+.venv-saas/
+.env.saas
+saas.db
+saas.db-wal
+saas.db-shm
+saas_data/
