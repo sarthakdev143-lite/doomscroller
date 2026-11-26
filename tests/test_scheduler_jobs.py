@@ -151,3 +151,290 @@ def test_cleanup_reclaims_expired_rejected_distinct_transform_protects_active_lo
     res2 = scheduler.cleanup_job()
     assert not cached_src.exists()
     assert res2["cache_deleted"] >= 1
+
+
+def test_scheduler_errors_scrub_secrets_in_returns_history_and_logs(tmp_path, monkeypatch, caplog):
+    from sqlalchemy import delete
+    from app import logging_config
+    from app.config import settings
+    from app.db import init_db, session_scope
+    from app.models import ClipJob, LongJob, Video, VideoStatus
+
+    init_db()
+    with session_scope() as db:
+        for tbl in (LongJob, ClipJob, Video):
+            db.execute(delete(tbl))
+
+    rev = "rv_sched_canary_99"
+    proxy_pw = "PROXY_CANARY_88"
+    url_key = "URL_CANARY_77"
+    proxy_url = f"http://u:{proxy_pw}@proxy:8080"
+    secret_msg = f"boom token={rev} {proxy_url} https://api.example/x?key={url_key}"
+
+    monkeypatch.setattr(logging_config, "LOG_DIR", tmp_path / "logs")
+    monkeypatch.setattr(settings, "review_token", rev)
+    monkeypatch.setattr(settings, "proxy_url", proxy_url)
+
+    def assert_clean(text: str) -> None:
+        assert rev not in text
+        assert proxy_pw not in text
+        assert url_key not in text
+
+    with caplog.at_level("INFO"):
+        # 1. instrumented() on crash & on returned error dict
+        def crash_fn():
+            raise RuntimeError(secret_msg)
+
+        res_crash = scheduler.instrumented("scrape", crash_fn)()
+        assert "[REDACTED]" in res_crash["error"]
+        assert_clean(res_crash["error"])
+
+        res_ret = scheduler.instrumented("discovery", lambda: {"error": secret_msg})()
+        assert "[REDACTED]" in res_ret["error"]
+        assert_clean(res_ret["error"])
+
+        history_text = logging_config.get_job_history_path().read_text(encoding="utf-8")
+        assert_clean(history_text)
+
+        # 2. scrape_job
+        monkeypatch.setattr(scheduler, "_scraper_pending", lambda db: 0)
+        import tasks.pipeline as pipeline_mod
+        monkeypatch.setattr(pipeline_mod, "scrape_task", lambda **kw: (_ for _ in ()).throw(RuntimeError(secret_msg)))
+        res = scheduler.scrape_job()
+        assert "[REDACTED]" in res["error"]
+        assert_clean(res["error"])
+
+        # 3. discovery_job
+        monkeypatch.setattr(scheduler.discovery, "discover_creators", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError(secret_msg)))
+        res = scheduler.discovery_job()
+        assert "[REDACTED]" in res["error"]
+        assert_clean(res["error"])
+
+        # 4. transform_job (inner)
+        with session_scope() as db:
+            db.add(Video(
+                source="youtube",
+                source_id="tr_err_1",
+                source_url="https://youtu.be/tr_err_1",
+                title="Tr Err",
+                local_path=str(tmp_path / "x.mp4"),
+                status=VideoStatus.APPROVED,
+            ))
+        monkeypatch.setattr(pipeline_mod, "transform_task", lambda vid: (_ for _ in ()).throw(RuntimeError(secret_msg)))
+        res = scheduler.transform_job()
+        assert len(res["errors"]) == 1
+        assert "[REDACTED]" in res["errors"][0]["error"]
+        assert_clean(res["errors"][0]["error"])
+
+        # 5. analytics_pull_job (inner)
+        with session_scope() as db:
+            db.add(Video(
+                source="youtube",
+                source_id="an_err_1",
+                source_url="https://youtu.be/an_err_1",
+                title="An Err",
+                status=VideoStatus.PUBLISHED,
+                youtube_video_id="yt_an_err_1",
+            ))
+        import app.publishers.youtube_publisher as yt_pub_mod
+        monkeypatch.setattr(
+            yt_pub_mod.YouTubePublisher,
+            "fetch_stats",
+            lambda self, ids: (_ for _ in ()).throw(RuntimeError(secret_msg)),
+        )
+        scheduler.analytics_pull_job()
+
+        # 6. publish_job (metadata warning) + _recover_stuck_publishes
+        ready_file = tmp_path / "ready.mp4"
+        ready_file.write_bytes(b"mp4")
+        with session_scope() as db:
+            db.add(Video(
+                source="youtube",
+                source_id="pub_err_1",
+                source_url="https://youtu.be/pub_err_1",
+                title="Pub Err",
+                transformed_path=str(ready_file),
+                status=VideoStatus.TRANSFORMED,
+            ))
+        monkeypatch.setattr(settings, "enable_publish", True)
+        monkeypatch.setattr(settings, "growth_enabled", False)
+        monkeypatch.setattr(settings, "auto_publish", True)
+        monkeypatch.setattr(settings, "upload_jitter_minutes", 0)
+        monkeypatch.setattr(pipeline_mod, "recover_stuck_publishes", lambda: (_ for _ in ()).throw(RuntimeError(secret_msg)))
+        monkeypatch.setattr(pipeline_mod, "generate_metadata_for_video", lambda vid: (_ for _ in ()).throw(RuntimeError(secret_msg)))
+        monkeypatch.setattr(pipeline_mod, "publish_task", lambda vid, meta=None: {"ok": True})
+        scheduler.publish_job()
+
+        # 7. recompute_scores_job
+        monkeypatch.setattr(scheduler, "recompute_scores", lambda rows: (_ for _ in ()).throw(RuntimeError(secret_msg)))
+        res = scheduler.recompute_scores_job()
+        assert "[REDACTED]" in res["error"]
+        assert_clean(res["error"])
+
+        # 8. reschedule_publish
+        class BadSched:
+            def get_job(self, job_id):
+                raise RuntimeError(secret_msg)
+
+        monkeypatch.setattr(scheduler, "_scheduler", None)
+        res = scheduler.reschedule_publish(BadSched())
+        assert "[REDACTED]" in res["error"]
+        assert_clean(res["error"])
+
+        # 9. Outer failures for transform_job, auto_approve_job, analytics_pull_job, publish_job, cleanup_job
+        monkeypatch.setattr(settings, "auto_approve", True)
+        def boom_scope():
+            raise RuntimeError(secret_msg)
+
+        monkeypatch.setattr(scheduler, "session_scope", boom_scope)
+        for fn in (scheduler.transform_job, scheduler.auto_approve_job, scheduler.publish_job, scheduler.cleanup_job):
+            r = fn()
+            assert "[REDACTED]" in r["error"]
+            assert_clean(r["error"])
+
+        monkeypatch.setattr(
+            yt_pub_mod,
+            "YouTubePublisher",
+            lambda: (_ for _ in ()).throw(RuntimeError(secret_msg)),
+        )
+        r_an = scheduler.analytics_pull_job()
+        assert "[REDACTED]" in r_an["error"]
+        assert_clean(r_an["error"])
+
+    assert_clean(caplog.text)
+
+
+def test_overdue_jobs_respects_feature_gates_and_clamps_intervals(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from app import logging_config
+    from app.config import settings
+
+    monkeypatch.setattr(logging_config, "LOG_DIR", tmp_path / "logs")
+    monkeypatch.setattr(settings, "growth_enabled", False)
+    monkeypatch.setattr(settings, "auto_discovery", False)
+    monkeypatch.setattr(settings, "enable_publish", False)
+    monkeypatch.setattr(settings, "scrape_interval_hours", 0)
+    monkeypatch.setattr(settings, "discovery_interval_hours", -2)
+    monkeypatch.setattr(settings, "growth_watch_minutes", 0)
+
+    for job_id in ("scrape", "discovery", "publish", "growth_watch", "growth_autopilot"):
+        logging_config.record_job_run(job_id, {"ok": True}, ok=True)
+
+    now_late = datetime.now(timezone.utc) + timedelta(hours=30)
+    stale_classic = scheduler.overdue_jobs(now=now_late)
+    assert "scrape" in stale_classic
+    assert "discovery" not in stale_classic
+    assert "publish" not in stale_classic
+
+    monkeypatch.setattr(settings, "growth_enabled", True)
+    stale_growth = scheduler.overdue_jobs(now=datetime.now(timezone.utc) + timedelta(hours=2))
+    assert "growth_autopilot" in stale_growth
+    assert "growth_watch" not in stale_growth
+
+    # Clamped triggers & intervals when <= 0
+    monkeypatch.setattr(settings, "growth_enabled", False)
+    monkeypatch.setattr(settings, "auto_discovery", True)
+    sched = scheduler._make_scheduler()
+    try:
+        assert sched.get_job("scrape").trigger.interval.total_seconds() >= 3600
+        assert sched.get_job("discovery").trigger.interval.total_seconds() >= 3600
+    finally:
+        if sched.running:
+            sched.shutdown(wait=False)
+
+    stale_30m = scheduler.overdue_jobs(now=datetime.now(timezone.utc) + timedelta(minutes=30))
+    assert "scrape" not in stale_30m
+    assert "discovery" not in stale_30m
+
+
+def test_analytics_pull_job_orders_newest_first_and_only_boosts_on_non_empty_stats(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import delete, select
+    from app.db import init_db, session_scope
+    from app.models import ClipJob, Creator, LongJob, Video, VideoStatus
+    import app.publishers.youtube_publisher as yt_pub_mod
+
+    init_db()
+    with session_scope() as db:
+        for tbl in (LongJob, ClipJob, Creator, Video):
+            db.execute(delete(tbl))
+
+        base = datetime(2026, 11, 1, 0, 0, tzinfo=timezone.utc)
+        for i in range(3):
+            db.add(Video(
+                source="youtube",
+                source_id=f"null_src_{i}",
+                source_url=f"https://youtu.be/null_{i}",
+                title=f"Null {i}",
+                author=f"@null_{i}",
+                status=VideoStatus.PUBLISHED,
+                youtube_video_id=f"yt_null_{i}",
+                published_at=None,
+                scraped_at=base - timedelta(days=10, hours=i),
+            ))
+        for i in range(2):
+            db.add(Video(
+                source="youtube",
+                source_id=f"old_src_{i}",
+                source_url=f"https://youtu.be/old_{i}",
+                title=f"Old {i}",
+                author=f"@old_{i}",
+                status=VideoStatus.PUBLISHED,
+                youtube_video_id=f"yt_old_{i}",
+                published_at=base - timedelta(days=5, hours=i),
+                scraped_at=base - timedelta(days=5),
+            ))
+        for i in range(50):
+            db.add(Video(
+                source="youtube",
+                source_id=f"new_src_{i:02d}",
+                source_url=f"https://youtu.be/new_{i:02d}",
+                title=f"New {i:02d}",
+                author=f"@new_{i:02d}",
+                status=VideoStatus.PUBLISHED,
+                youtube_video_id=f"yt_new_{i:02d}",
+                published_at=base + timedelta(hours=i),
+                scraped_at=base,
+            ))
+
+        for handle in ("null_0", "old_0", "new_00", "new_49"):
+            db.add(Creator(platform="youtube", handle=handle, score=10.0))
+
+    # 1. Empty stats -> 0 updates, 0 creator boosts
+    monkeypatch.setattr(yt_pub_mod.YouTubePublisher, "fetch_stats", lambda self, ids: {})
+    assert scheduler.analytics_pull_job() == {"updated": 0}
+    with session_scope() as db:
+        scores = {c.handle: c.score for c in db.execute(select(Creator)).scalars().all()}
+        assert all(v == 10.0 for v in scores.values())
+
+    # 2. Fetch raises -> 0 updates, 0 creator boosts
+    monkeypatch.setattr(
+        yt_pub_mod.YouTubePublisher,
+        "fetch_stats",
+        lambda self, ids: (_ for _ in ()).throw(RuntimeError("api down")),
+    )
+    assert scheduler.analytics_pull_job() == {"updated": 0}
+    with session_scope() as db:
+        scores = {c.handle: c.score for c in db.execute(select(Creator)).scalars().all()}
+        assert all(v == 10.0 for v in scores.values())
+
+    # 3. Non-empty stats for 1 video -> newest 50 queried, only that video's creator boosted
+    seen_ids: list[str] = []
+
+    def fake_fetch(self, ids):
+        seen_ids.extend(ids)
+        return {"yt_new_49": {"viewCount": 500, "likeCount": 25, "commentCount": 5}}
+
+    monkeypatch.setattr(yt_pub_mod.YouTubePublisher, "fetch_stats", fake_fetch)
+    assert scheduler.analytics_pull_job() == {"updated": 1}
+    assert len(seen_ids) == 50
+    assert all(f"yt_null_{i}" not in seen_ids for i in range(3))
+    assert all(f"yt_old_{i}" not in seen_ids for i in range(2))
+    assert "yt_new_49" in seen_ids and "yt_new_00" in seen_ids
+
+    with session_scope() as db:
+        scores = {c.handle: c.score for c in db.execute(select(Creator)).scalars().all()}
+        assert scores["new_49"] == 11.0
+        assert scores["new_00"] == 10.0
+        assert scores["old_0"] == 10.0
+        assert scores["null_0"] == 10.0

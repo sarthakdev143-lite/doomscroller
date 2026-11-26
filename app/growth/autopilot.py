@@ -16,6 +16,7 @@ from sqlalchemy import or_, select
 from app import quota
 from app.config import settings
 from app.db import session_scope
+from app.logging_config import scrub_secrets
 from app.models import GrowthEvent, GrowthState, MetadataDraft, Video, VideoStatus
 from app.publishers import MockPublisher, get_publisher
 from app.publishers.base import TokenProblem
@@ -307,9 +308,10 @@ def _publish_next(current: Policy, now: datetime, post_id: str, channel=None) ->
     try:
         return _send_clip(current, video_id, title, spoken, post_id, context=context, language=video_lang)
     except Exception as exc:
-        log.exception("growth: the publish step failed for %s", video_id[:8])
+        err = scrub_secrets(f"{type(exc).__name__}: {exc}")
+        log.error("growth: the publish step failed for %s: %s", video_id[:8], err)
         count_publish_failure(video_id)
-        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {"ok": False, "error": err}
 
 
 def _send_clip(
@@ -329,6 +331,8 @@ def _send_clip(
         final, actual = titles.styled_title(style, title, spoken, context=context, language=language)
     with session_scope() as db:
         video = db.get(Video, video_id)
+        if video is None:
+            return {"ok": False, "retry": True, "error": "video not found"}
         video.meta = {**(video.meta or {}), "growth_title_style": actual, "growth_title": final,
                       "growth_post": post_id}
     result = publish_task(video_id, meta={"title": final} if final else {})
@@ -427,14 +431,15 @@ def _save_outcome(plan: dict, posts: list[dict], post: dict, outcome: dict, now:
                 elif outcome.get("account_level"):
                     safety.set_hold(db, now, outcome.get("error"), channel)
                 elif post["state"] == "failed":
+                    err_summary = scrub_secrets(str(outcome.get("error") or ""))
                     db.add(GrowthEvent(kind="publish_failed", channel_id=_ev_channel(channel),
-                                       summary=f"Gave up on window {post['slot']}: {outcome.get('error')}"))
+                                       summary=f"Gave up on window {post['slot']}: {err_summary}"))
             return
         except Exception as exc:
-            log.warning("growth: saving the plan failed (attempt %d): %s", attempt, exc)
+            log.warning("growth: saving the plan failed (attempt %d): %s", attempt, scrub_secrets(str(exc)))
             if attempt < _SAVE_ATTEMPTS:
                 time.sleep(attempt)
-    log.error("growth: the plan could not be saved after window %s: %s", post["slot"], outcome)
+    log.error("growth: the plan could not be saved after window %s: %s", post["slot"], scrub_secrets(str(outcome)))
 
 
 def _cannot_upload(channel=None) -> Optional[dict]:
@@ -449,7 +454,7 @@ def _cannot_upload(channel=None) -> Optional[dict]:
             if wrong:
                 raise TokenProblem(wrong)
     except Exception as exc:
-        return {"ok": False, "error": str(exc), **classify_publish_error(exc)}
+        return {"ok": False, "error": scrub_secrets(str(exc)), **classify_publish_error(exc)}
     return None
 
 
@@ -471,7 +476,7 @@ def _recover_stuck(now: datetime) -> None:
     try:
         recover_stuck_publishes(now)
     except Exception as exc:
-        log.warning("publish recovery failed: %s", exc)
+        log.warning("publish recovery failed: %s", scrub_secrets(str(exc)))
 
 
 def _autopilot_one(channel, now: datetime, rng: Optional[random.Random]) -> dict:
@@ -523,13 +528,17 @@ def _autopilot_one(channel, now: datetime, rng: Optional[random.Random]) -> dict
     try:
         outcome = _cannot_upload(channel) or _publish_next(current, now, _post_id(due), channel)
     except Exception as exc:
-        log.exception("growth: the publish step failed")
-        outcome = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        err = scrub_secrets(f"{type(exc).__name__}: {exc}")
+        log.error("growth: the publish step failed: %s", err)
+        outcome = {"ok": False, "error": err}
     _settle_post(due, outcome)
     _save_outcome(plan, posts, due, outcome, now, channel)
     if outcome.get("skipped"):
         return {"skipped": outcome["skipped"]}
-    return {k: outcome[k] for k in ("ok", "video_id", "youtube_id", "error", "title_style") if k in outcome}
+    out = {k: outcome[k] for k in ("ok", "video_id", "youtube_id", "error", "title_style") if k in outcome}
+    if isinstance(out.get("error"), str):
+        out["error"] = scrub_secrets(out["error"])
+    return out
 
 
 def autopilot_job(now: Optional[datetime] = None, rng: Optional[random.Random] = None) -> dict:

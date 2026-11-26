@@ -205,3 +205,51 @@ def test_wave17_tunnel_announce_error_does_not_kill_supervisor_and_atomic_tmp_cl
     assert list(tmp_path.glob("*.tmp")) == []
 
 
+def test_tunnel_supervisor_scrubs_secrets_in_tunnel_log_and_echoed_stdout(tmp_path, monkeypatch, capsys):
+    from app.config import settings
+    from scripts import tunnel
+
+    proxy_pw = "CANARY_PROXY_PW_99"
+    rev_tok = "CANARY_REV_TOK_99"
+    url_key = "CANARY_URL_KEY_99"
+    monkeypatch.setattr(settings, "proxy_url", f"http://u:{proxy_pw}@proxy:8080")
+    monkeypatch.setattr(settings, "review_token", rev_tok)
+
+    fake_cf = tmp_path / "fake_cf_scrub.py"
+    fake_cf.write_text(
+        textwrap.dedent(f"""
+            import time
+            print("INF proxy=http://u:{proxy_pw}@proxy:8080 tok={rev_tok} https://x/a?key={url_key}", flush=True)
+            print("INF |  https://scrub-check-one.trycloudflare.com  |", flush=True)
+            time.sleep(0.3)
+        """),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(tunnel, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(tunnel, "LOG_DIR", "logs")
+    monkeypatch.setattr(tunnel, "tunnel_command", lambda binary, port: [sys.executable, str(fake_cf)])
+
+    class NoWait(threading.Event):
+        def wait(self, timeout=None):
+            return self.is_set()
+
+    sup = tunnel.TunnelSupervisor(binary="cloudflared", ssh_bin=None, echo_stdout=True)
+    sup._stop = NoWait()
+    seen: list[str] = []
+    monkeypatch.setattr(sup, "_announce", lambda u: (seen.append(u), sup._stop.set()))
+    try:
+        sup.run_forever()
+    finally:
+        sup.stop()
+
+    assert seen == ["https://scrub-check-one.trycloudflare.com"]
+    tunnel_log = (tmp_path / "logs" / "tunnel.log").read_text(encoding="utf-8")
+    out = capsys.readouterr().out
+    for text in (tunnel_log, out):
+        assert "scrub-check-one.trycloudflare.com" in text
+        assert "[REDACTED]" in text
+        assert proxy_pw not in text
+        assert rev_tok not in text
+        assert url_key not in text
+
+

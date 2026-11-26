@@ -23,7 +23,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import desc, func, or_, select
 
-from .logging_config import last_run_times, record_job_run
+from .logging_config import last_run_times, record_job_run, scrub_secrets
 from .config import settings
 from .db import session_scope, init_db
 from .models import ClipJob, Creator, LongJob, Video, VideoStatus
@@ -54,14 +54,17 @@ def instrumented(job_id: str, fn: "callable"):
             result = fn(*args, **kwargs)
         except Exception as exc:
             elapsed = time.monotonic() - started
-            log.exception("job[%s] crashed after %.1fs", job_id, elapsed)
+            err = scrub_secrets(str(exc))
+            log.error("job[%s] crashed after %.1fs: %s", job_id, elapsed, err)
             record_job_run(job_id, None, duration_sec=elapsed, ok=False,
-                           error=str(exc))
-            return {"error": str(exc)}
+                           error=err)
+            return {"error": err}
         elapsed = time.monotonic() - started
         # A job that returns {"error": ...} failed without raising.
+        if isinstance(result, dict) and isinstance(result.get("error"), str):
+            result = {**result, "error": scrub_secrets(result["error"])}
         ok = not (isinstance(result, dict) and result.get("error"))
-        log.info("job[%s] done in %.1fs -> %s", job_id, elapsed, result)
+        log.info("job[%s] done in %.1fs -> %s", job_id, elapsed, scrub_secrets(str(result)))
         record_job_run(job_id, result, duration_sec=elapsed, ok=ok,
                        error=(result or {}).get("error") if isinstance(result, dict) else None)
         return result
@@ -120,8 +123,9 @@ def scrape_job(handles: list[str] | None = None,
         log.info("scrape_job: finished attempts=%s created=%s pending=%s/%s", attempts, total_created, final_pending, target)
         return {"created": total_created, "skipped": total_skipped, "fetched": total_fetched, "attempts": attempts, "pending": final_pending, "target": target}
     except Exception as e:
-        log.exception("scrape_job failed: %s", e)
-        return {"error": str(e)}
+        err = scrub_secrets(str(e))
+        log.error("scrape_job failed: %s", err)
+        return {"error": err}
 
 
 def discovery_job() -> dict:
@@ -132,8 +136,9 @@ def discovery_job() -> dict:
         log.info("discovery_job: discovered=%d", len(new))
         return {"discovered": len(new)}
     except Exception as e:
-        log.exception("discovery_job failed: %s", e)
-        return {"error": str(e)}
+        err = scrub_secrets(str(e))
+        log.error("discovery_job failed: %s", err)
+        return {"error": err}
 
 
 def transform_job() -> dict:
@@ -164,14 +169,16 @@ def transform_job() -> dict:
                 processed += 1
                 log.info("transform_job: video=%s ok=%s", vid, result.get("ok"))
             except Exception as e:
-                log.exception("transform_job: video=%s error=%s", vid, e)
-                errors.append({"video_id": vid, "error": str(e)})
+                err = scrub_secrets(str(e))
+                log.error("transform_job: video=%s error=%s", vid, err)
+                errors.append({"video_id": vid, "error": err})
 
         log.info("transform_job: transformed=%d errors=%d", processed, len(errors))
         return {"transformed": processed, "errors": errors}
     except Exception as e:
-        log.exception("transform_job outer failure: %s", e)
-        return {"error": str(e), "transformed": 0}
+        err = scrub_secrets(str(e))
+        log.error("transform_job outer failure: %s", err)
+        return {"error": err, "transformed": 0}
 
 
 def auto_approve_job() -> dict:
@@ -272,8 +279,9 @@ def auto_approve_job() -> dict:
         log.info("auto_approve_job: approved=%d reasons=%s", approved, reasons or {})
         return {"approved": approved, "reasons": reasons}
     except Exception as exc:
-        log.exception("auto_approve_job failure: %s", exc)
-        return {"error": str(exc), "approved": approved}
+        err = scrub_secrets(str(exc))
+        log.error("auto_approve_job failure: %s", err)
+        return {"error": err, "approved": approved}
 
 
 def analytics_pull_job() -> dict:
@@ -286,7 +294,12 @@ def analytics_pull_job() -> dict:
         # This will fail gracefully if no token; we just log
         updated = 0
         with _ss() as db:
-            vids = db.execute(_sel(Video).where(Video.status == VideoStatus.PUBLISHED, Video.youtube_video_id.isnot(None)).limit(50)).scalars().all()
+            vids = db.execute(
+                _sel(Video)
+                .where(Video.status == VideoStatus.PUBLISHED, Video.youtube_video_id.isnot(None))
+                .order_by(desc(Video.published_at).nulls_last(), desc(Video.scraped_at), Video.id)
+                .limit(50)
+            ).scalars().all()
             ids = [v.youtube_video_id for v in vids if v.youtube_video_id and not v.youtube_video_id.startswith("MOCK_")]
             if not ids:
                 return {"skipped": "no published youtube ids"}
@@ -294,17 +307,17 @@ def analytics_pull_job() -> dict:
             try:
                 stats = pub.fetch_stats(ids)  # may not exist, fallback to boost
             except Exception as e:
-                log.warning("analytics fetch failed: %s", e)
+                log.warning("analytics fetch failed: %s", scrub_secrets(str(e)))
                 stats = {}
             for v in vids:
-                info = stats.get(v.youtube_video_id, {})
-                if info:
-                    v.views = info.get("viewCount", v.views)
-                    v.likes = info.get("likeCount", v.likes)
-                    v.comments = info.get("commentCount", v.comments)
-                    recompute_scores([v])
-                    updated += 1
-                # boost creator regardless of stats (published = success)
+                info = stats.get(v.youtube_video_id, {}) if isinstance(stats, dict) else {}
+                if not info:
+                    continue
+                v.views = info.get("viewCount", v.views)
+                v.likes = info.get("likeCount", v.likes)
+                v.comments = info.get("commentCount", v.comments)
+                recompute_scores([v])
+                updated += 1
                 if v.author:
                     try:
                         discovery.boost_creator(db, v.source, v.author, amount=1.0)
@@ -312,8 +325,9 @@ def analytics_pull_job() -> dict:
                         pass
         return {"updated": updated}
     except Exception as e:
-        log.exception("analytics_pull_job failure: %s", e)
-        return {"error": str(e)}
+        err = scrub_secrets(str(e))
+        log.error("analytics_pull_job failure: %s", err)
+        return {"error": err}
 
 
 def clip_queue_job() -> dict:
@@ -328,7 +342,7 @@ def _recover_stuck_publishes() -> None:
         from tasks.pipeline import recover_stuck_publishes
         recover_stuck_publishes()
     except Exception as exc:
-        log.warning("publish recovery failed: %s", exc)
+        log.warning("publish recovery failed: %s", scrub_secrets(str(exc)))
 
 
 def publish_job() -> dict:
@@ -389,15 +403,16 @@ def publish_job() -> dict:
         try:
             generate_metadata_for_video(video_id)
         except Exception as e:
-            log.warning("publish_job: metadata gen failed %s: %s", video_id, e)
+            log.warning("publish_job: metadata gen failed %s: %s", video_id, scrub_secrets(str(e)))
 
         result = publish_task(video_id, meta={})
-        log.info("publish_job: video=%s result=%s", video_id, result)
+        log.info("publish_job: video=%s result=%s", video_id, scrub_secrets(str(result)))
         return result
 
     except Exception as e:
-        log.exception("publish_job failure: %s", e)
-        return {"error": str(e)}
+        err = scrub_secrets(str(e))
+        log.error("publish_job failure: %s", err)
+        return {"error": err}
 
 
 # Files younger than this are never treated as orphans -- a download in flight
@@ -528,7 +543,7 @@ def _remove(path: str) -> int:
         os.remove(path)
         return size
     except OSError as exc:
-        log.warning("cleanup: could not delete %s: %s", path, exc)
+        log.warning("cleanup: could not delete %s: %s", path, scrub_secrets(str(exc)))
         return 0
 
 
@@ -734,8 +749,9 @@ def cleanup_job(dry_run: bool = False) -> dict:
         log.info("cleanup_job: %s", result)
         return result
     except Exception as exc:
-        log.exception("cleanup_job failure: %s", exc)
-        return {"error": str(exc)}
+        err = scrub_secrets(str(exc))
+        log.error("cleanup_job failure: %s", err)
+        return {"error": err}
 
 
 def storage_report() -> dict:
@@ -790,8 +806,9 @@ def recompute_scores_job() -> dict:
             db.commit()
         return {"updated": len(rows)}
     except Exception as e:
-        log.exception("recompute_scores_job failure: %s", e)
-        return {"error": str(e)}
+        err = scrub_secrets(str(e))
+        log.error("recompute_scores_job failure: %s", err)
+        return {"error": err}
 
 
 def growth_autopilot_job() -> dict:
@@ -899,7 +916,7 @@ def reschedule_publish(sched: BackgroundScheduler | None = None) -> dict:
                 return {"added": True, "interval_hours": interval_h}
         return {"skipped": "no publish job"}
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": scrub_secrets(str(e))}
 
 
 def _make_scheduler() -> BackgroundScheduler:
@@ -917,9 +934,9 @@ def _make_scheduler() -> BackgroundScheduler:
 
     # The growth loop posts finished clips only, so classic scraping/repurpose jobs stay unscheduled.
     if not settings.growth_enabled:
-        sched.add_job(instrumented("scrape", scrape_job), IntervalTrigger(hours=settings.scrape_interval_hours), id="scrape", next_run_time=now + timedelta(seconds=10), max_instances=1, coalesce=True, replace_existing=True)
+        sched.add_job(instrumented("scrape", scrape_job), IntervalTrigger(hours=max(1, settings.scrape_interval_hours)), id="scrape", next_run_time=now + timedelta(seconds=10), max_instances=1, coalesce=True, replace_existing=True)
         if settings.auto_discovery:
-            sched.add_job(instrumented("discovery", discovery_job), IntervalTrigger(hours=settings.discovery_interval_hours), id="discovery", next_run_time=now + timedelta(minutes=2), max_instances=1, coalesce=True, replace_existing=True)
+            sched.add_job(instrumented("discovery", discovery_job), IntervalTrigger(hours=max(1, settings.discovery_interval_hours)), id="discovery", next_run_time=now + timedelta(minutes=2), max_instances=1, coalesce=True, replace_existing=True)
         sched.add_job(instrumented("auto_approve", auto_approve_job), IntervalTrigger(minutes=15), id="auto_approve", next_run_time=now + timedelta(minutes=1), max_instances=1, coalesce=True, replace_existing=True)
         sched.add_job(instrumented("transform", transform_job), IntervalTrigger(hours=1), id="transform", next_run_time=now + timedelta(minutes=3), max_instances=1, coalesce=True, replace_existing=True)
         if settings.enable_publish:
@@ -941,7 +958,7 @@ def _make_scheduler() -> BackgroundScheduler:
                                      ("long_autopilot", timedelta(minutes=15), timedelta(minutes=9))):
             sched.add_job(instrumented(job_id, JOB_FUNCTIONS[job_id]), IntervalTrigger(seconds=int(every.total_seconds())), id=job_id, next_run_time=now + first, max_instances=1, coalesce=True, replace_existing=True)
         if settings.growth_watch_minutes > 0:
-            sched.add_job(instrumented("growth_watch", growth_watch_job), IntervalTrigger(minutes=settings.growth_watch_minutes), id="growth_watch", next_run_time=now + timedelta(minutes=2), max_instances=1, coalesce=True, replace_existing=True)
+            sched.add_job(instrumented("growth_watch", growth_watch_job), IntervalTrigger(minutes=max(1, settings.growth_watch_minutes)), id="growth_watch", next_run_time=now + timedelta(minutes=2), max_instances=1, coalesce=True, replace_existing=True)
     return sched
 
 
@@ -952,8 +969,8 @@ _CATCHUP_MAX_LATE = timedelta(hours=48)
 # Nominal interval per job id, used only to decide what is overdue.
 def _job_intervals() -> dict[str, timedelta]:
     return {
-        "scrape": timedelta(hours=settings.scrape_interval_hours),
-        "discovery": timedelta(hours=settings.discovery_interval_hours),
+        "scrape": timedelta(hours=max(1, settings.scrape_interval_hours)),
+        "discovery": timedelta(hours=max(1, settings.discovery_interval_hours)),
         "auto_approve": timedelta(minutes=15),
         "transform": timedelta(hours=1),
         "publish": timedelta(hours=max(1, 24 / max(1, settings.uploads_per_day))),
@@ -991,6 +1008,12 @@ def overdue_jobs(now: datetime | None = None) -> list[str]:
         classic_jobs = ("scrape", "discovery", "auto_approve", "transform", "publish", "recompute", "analytics_pull")
         if ((job_id.startswith("growth_") or job_id.startswith("long_")) and not settings.growth_enabled) or (
                 job_id in classic_jobs and settings.growth_enabled):
+            continue
+        if job_id == "growth_watch" and settings.growth_watch_minutes <= 0:
+            continue
+        if job_id == "discovery" and not settings.auto_discovery:
+            continue
+        if job_id == "publish" and not settings.enable_publish:
             continue
         last = history.get(job_id)
         if last is None:
@@ -1041,7 +1064,7 @@ def start_scheduler() -> BackgroundScheduler:
     try:
         schedule_catchup(sched)
     except Exception as exc:
-        log.warning("catch-up scheduling failed: %s", exc)
+        log.warning("catch-up scheduling failed: %s", scrub_secrets(str(exc)))
 
     interval = 24 / max(1, settings.uploads_per_day) if settings.enable_publish else 0
     log.info("Scheduler started: scrape=%dh discovery=%s auto_approve=%s transform=1h publish=%.1fh±%dm (%d/day jitter) cleanup=24h recompute=1h analytics=6h (enable_publish=%s auto_discovery=%s)", settings.scrape_interval_hours, "auto" if settings.auto_discovery else "manual", "on" if settings.auto_approve else "off", interval, settings.upload_jitter_minutes, settings.uploads_per_day, settings.enable_publish, settings.auto_discovery)
@@ -1054,6 +1077,6 @@ def stop_scheduler() -> None:
         try:
             _scheduler.shutdown(wait=False)
         except Exception as e:
-            log.warning("Scheduler shutdown error: %s", e)
+            log.warning("Scheduler shutdown error: %s", scrub_secrets(str(e)))
         _scheduler = None
         log.info("Scheduler stopped")

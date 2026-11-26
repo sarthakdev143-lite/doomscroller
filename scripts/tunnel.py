@@ -218,14 +218,15 @@ class TunnelSupervisor:
             with open(log_path, "a", encoding="utf-8", errors="replace") as log_file:
                 assert proc.stdout is not None
                 for line in proc.stdout:
-                    log_file.write(line)
+                    safe_line = scrub_secrets(line)
+                    log_file.write(safe_line)
                     log_file.flush()
                     if self.echo_stdout:
                         try:
-                            sys.stdout.write(line)
+                            sys.stdout.write(safe_line)
                         except UnicodeEncodeError:
                             enc = sys.stdout.encoding or "utf-8"
-                            sys.stdout.write(line.encode(enc, errors="replace").decode(enc, errors="replace"))
+                            sys.stdout.write(safe_line.encode(enc, errors="replace").decode(enc, errors="replace"))
                         sys.stdout.flush()
                     url = extract_tunnel_url(line)
                     if url:

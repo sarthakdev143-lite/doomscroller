@@ -610,3 +610,136 @@ def test_notify_redact_scrubs_tts_ai_keys_and_bearer_tokens(monkeypatch):
     clean = notify._redact(raw)
     for secret in ("sk_sarvam_secret_987", "el_secret_654", "sk-proj-openai-321", "tok_abc_123", "999888:SECRET_TG"):
         assert secret not in clean
+
+
+def test_autopilot_scrubs_secrets_from_error_dicts_and_logs_and_guards_missing_video(tmp_path, monkeypatch, caplog):
+    from app.growth import autopilot
+    from app.models import GrowthState
+
+    bot_secret = "777888:AUTOPILOT_BOT_SECRET"
+    rev_secret = "AUTOPILOT_REV_SECRET_99"
+    url_secret = "AUTOPILOT_URL_SECRET_77"
+    monkeypatch.setattr(settings, "telegram_bot_token", bot_secret)
+    monkeypatch.setattr(settings, "review_token", rev_secret)
+    monkeypatch.setattr(settings, "growth_require_approval", False)
+    monkeypatch.setattr(settings, "growth_min_gap_minutes", 0)
+
+    monkeypatch.setattr(settings, "channels_file", str(tmp_path / "no_channels.json"))
+
+    clip_path = tmp_path / "clip_auto.mp4"
+    clip_path.write_bytes(b"mp4")
+    with session_scope() as db:
+        v = Video(
+            source="youtube",
+            source_id="auto_clip_1",
+            source_url="https://example.com/auto_1",
+            title="Auto Clip 1",
+            author="@creator",
+            duration_sec=25,
+            transformed_path=str(clip_path),
+            local_path=str(clip_path),
+            status=VideoStatus.TRANSFORMED,
+            meta={"clip_rendered": True, "clip_kind": "speech", "clip_parent": "p_auto"},
+        )
+        db.add(v)
+
+    now = START + timedelta(hours=1)
+    due_iso = (now - timedelta(minutes=5)).isoformat()
+    ends_iso = (now + timedelta(hours=2)).isoformat()
+    secret_err = f"upload fail bot{bot_secret} tok={rev_secret} https://x?key={url_secret}"
+
+    def assert_clean(text: str) -> None:
+        assert bot_secret not in text
+        assert "AUTOPILOT_BOT_SECRET" not in text
+        assert rev_secret not in text
+        assert url_secret not in text
+
+    with caplog.at_level("WARNING"):
+        # Case A: _cannot_upload raises with secrets -> autopilot_job scrubs returned error & GrowthEvent summary
+        with session_scope() as db:
+            db.add(GrowthState(
+                key="plan",
+                value={
+                    "day": now.date().isoformat(),
+                    "posts": [{"slot": "12-16", "due": due_iso, "ends": ends_iso, "state": "waiting", "attempts": 2}],
+                },
+            ))
+
+        class BadPub:
+            def check_ready(self):
+                raise RuntimeError(secret_err)
+
+        monkeypatch.setattr(autopilot, "_publisher", lambda ch: BadPub())
+        res_a = autopilot.autopilot_job(now=now)
+        assert res_a["ok"] is False
+        assert "[REDACTED]" in res_a["error"]
+        assert_clean(res_a["error"])
+
+        with session_scope() as db:
+            plan_val = db.get(GrowthState, "plan").value
+            assert_clean(plan_val["posts"][0]["last_error"])
+
+        # Case B: _publish_next (_send_clip raises with secrets, attempts=2 -> failed GrowthEvent)
+        with session_scope() as db:
+            db.get(GrowthState, "plan").value = {
+                "day": now.date().isoformat(),
+                "posts": [{"slot": "12-16", "due": due_iso, "ends": ends_iso, "state": "waiting", "attempts": 2}],
+            }
+
+        class OkPub:
+            def check_ready(self):
+                return None
+
+        monkeypatch.setattr(autopilot, "_publisher", lambda ch: OkPub())
+        monkeypatch.setattr(
+            autopilot,
+            "_send_clip",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError(secret_err)),
+        )
+        res_b = autopilot.autopilot_job(now=now)
+        assert res_b["ok"] is False
+        assert "[REDACTED]" in res_b["error"]
+        assert_clean(res_b["error"])
+
+        with session_scope() as db:
+            ev = db.execute(select(GrowthEvent).where(GrowthEvent.kind == "publish_failed")).scalar_one()
+            assert "[REDACTED]" in ev.summary
+            assert_clean(ev.summary)
+
+        # _recover_stuck & _autopilot_one outer catch
+        import tasks.pipeline as pipeline_mod
+        monkeypatch.setattr(pipeline_mod, "recover_stuck_publishes", lambda *a: (_ for _ in ()).throw(RuntimeError(secret_err)))
+        autopilot._recover_stuck(now)
+
+        with session_scope() as db:
+            db.get(GrowthState, "plan").value = {
+                "day": now.date().isoformat(),
+                "posts": [{"slot": "12-16", "due": due_iso, "ends": ends_iso, "state": "waiting", "attempts": 0}],
+            }
+        monkeypatch.setattr(autopilot, "_cannot_upload", lambda ch: (_ for _ in ()).throw(RuntimeError(secret_err)))
+        res_c = autopilot.autopilot_job(now=now)
+        assert res_c["ok"] is False
+        assert "[REDACTED]" in res_c["error"]
+        assert_clean(res_c["error"])
+
+        # _save_outcome failure logs
+        monkeypatch.setattr(autopilot, "set_state", lambda *a: (_ for _ in ()).throw(RuntimeError(secret_err)))
+        monkeypatch.setattr(autopilot.time, "sleep", lambda s: None)
+        autopilot._save_outcome(
+            {"day": now.date().isoformat()},
+            [],
+            {"slot": "12-16", "due": due_iso, "state": "failed"},
+            {"ok": False, "error": secret_err},
+            now,
+        )
+
+    assert_clean(caplog.text)
+
+
+def test_autopilot_send_clip_returns_retry_when_video_missing(monkeypatch):
+    import random
+    from app.growth import autopilot
+
+    current = autopilot.policy(START, random.Random(1))
+    res = autopilot._send_clip(current, "nonexistent_video_id", "Title", "Spoken", "12-16@2026-11-02")
+    assert res == {"ok": False, "retry": True, "error": "video not found"}
