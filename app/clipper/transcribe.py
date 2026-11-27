@@ -23,6 +23,7 @@ from typing import Optional
 
 import httpx
 
+from app import apikeys
 from app.config import settings
 from app.logging_config import scrub_secrets
 
@@ -151,18 +152,27 @@ def _request(audio_path: str) -> dict:
         "punctuate": "true",
         "detect_language": "true",
     }
-    headers = {
-        "Authorization": f"Token {(settings.deepgram_api_key or '').strip()}",
-        "Content-Type": "audio/mpeg",
-    }
-    try:
-        with open(audio_path, "rb") as audio:
-            response = httpx.post(
-                _LISTEN_URL, params=params, headers=headers, content=audio,
-                timeout=httpx.Timeout(900, connect=30),
-            )
-    except httpx.HTTPError as exc:
-        raise TranscribeError(f"could not reach Deepgram: {scrub_secrets(str(exc))}") from exc
+    raw_keys = settings.deepgram_api_key
+    keys = apikeys.candidates(raw_keys) or [""]
+    for index, key in enumerate(keys):
+        headers = {"Authorization": f"Token {key}", "Content-Type": "audio/mpeg"}
+        try:
+            with open(audio_path, "rb") as audio:
+                response = httpx.post(
+                    _LISTEN_URL, params=params, headers=headers, content=audio,
+                    timeout=httpx.Timeout(900, connect=30),
+                )
+        except httpx.HTTPError as exc:
+            raise TranscribeError(f"could not reach Deepgram: {scrub_secrets(str(exc))}") from exc
+        if response.status_code not in apikeys.REFUSED_STATUSES:
+            if response.status_code == 200:
+                apikeys.accept(key)
+            break
+        # DEEPGRAM_API_KEY may hold a backup key ("key1,key2"): a refused key passes the request to the next.
+        apikeys.refuse(key)
+        if index + 1 < len(keys):
+            log.warning("transcribe: Deepgram refused %s (HTTP %s); trying %s", apikeys.label(key, raw_keys),
+                        response.status_code, apikeys.label(keys[index + 1], raw_keys))
     if response.status_code != 200:
         raise TranscribeError(f"Deepgram returned {response.status_code}: {scrub_secrets(response.text[:300])}")
     try:

@@ -69,13 +69,16 @@ _SECRET_DICT_KEYS = frozenset({
 _BOT_TOKEN_RE = re.compile(r"bot\d+:[A-Za-z0-9_-]{4,}")
 _ENV_SECRET_RE = re.compile(
     r"(\b(?:REVIEW_TOKEN|TELEGRAM_BOT_TOKEN|PIXABAY_API_KEY|PEXELS_API_KEY|TENOR_API_KEY|GIPHY_API_KEY|FREESOUND_API_KEY|"
-    r"DEEPGRAM_API_KEY|SARVAM_API_KEY|ELEVENLABS_API_KEY|ELEVEN_LABS_API_KEY|CARTESIA_API_KEY|OPENAI_API_KEY|GEMINI_API_KEY)\s*[=:]\s*)([^\s,;'\">&]+)",
+    r"DEEPGRAM_API_KEY|SARVAM_API_KEY|ELEVENLABS_API_KEY|ELEVEN_LABS_API_KEY|CARTESIA_API_KEY|OPENAI_API_KEY|GEMINI_API_KEY|"
+    r"ANTHROPIC_API_KEY|CLIP_AI_API_KEY|CLIP_STT_API_KEY)\s*[=:]\s*)"
+    # A key setting may list backup keys ("k1,k2", app/apikeys.py), so commas inside the value are redacted too.
+    r"([^\s;'\">&]+(?:,[^\s,;'\">&]+)*)",
     re.IGNORECASE,
 )
 _JSON_SECRET_RE = re.compile(
     r'("(?:review_token|telegram_bot_token|pixabay_api_key|pexels_api_key|tenor_api_key|giphy_api_key|freesound_api_key|'
     r'deepgram_api_key|sarvam_api_key|elevenlabs_api_key|eleven_labs_api_key|cartesia_api_key|openai_api_key|gemini_api_key|'
-    r'access_token|refresh_token|client_secret)"\s*:\s*")([^"]*)(")',
+    r'anthropic_api_key|clip_ai_api_key|clip_stt_api_key|access_token|refresh_token|client_secret)"\s*:\s*")([^"]*)(")',
     re.IGNORECASE,
 )
 _URL_PARAM_SECRET_RE = re.compile(
@@ -92,6 +95,7 @@ _PROXY_CRED_RE = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]*://[^/\s:@]+:)[^@\s/]+@")
 
 def _configured_secret_values() -> list[str]:
     try:
+        from .apikeys import parse as parse_keys
         from .config import settings
     except Exception:
         return []
@@ -102,6 +106,8 @@ def _configured_secret_values() -> list[str]:
             cleaned = raw.strip()
             if len(cleaned) >= 3:
                 vals.append(cleaned)
+            # Each backup key on its own too ("k1,k2"): a log line names the one key it used, not the whole value.
+            vals.extend(part for part in parse_keys(cleaned) if len(part) >= 3 and part != cleaned)
     # Longest first so overlapping secrets never leave suffix fragments behind.
     vals.sort(key=len, reverse=True)
     return vals

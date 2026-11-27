@@ -23,6 +23,7 @@ from typing import Optional
 
 import httpx
 
+from app import apikeys
 from app.config import settings
 from app.logging_config import scrub_secrets
 
@@ -127,16 +128,27 @@ def _fitted(words: list[Word], piece: str, offset: float) -> list[Word]:
 
 def _request(path: str) -> dict:
     base = str(settings.clip_stt_base_url or "").strip().rstrip("/")
-    key = str(settings.clip_stt_api_key or "").strip()
-    with open(path, "rb") as audio:
-        response = httpx.post(
-            f"{base}/audio/transcriptions",
-            headers={"authorization": f"Bearer {key}"},
-            data={"model": settings.clip_stt_model, "response_format": "verbose_json",
-                  "timestamp_granularities[]": ["word", "segment"]},
-            files={"file": (os.path.basename(path), audio, "audio/mpeg")},
-            timeout=_TIMEOUT,
-        )
+    raw_keys = settings.clip_stt_api_key
+    keys = apikeys.candidates(raw_keys) or [""]
+    for index, key in enumerate(keys):
+        with open(path, "rb") as audio:
+            response = httpx.post(
+                f"{base}/audio/transcriptions",
+                headers={"authorization": f"Bearer {key}"},
+                data={"model": settings.clip_stt_model, "response_format": "verbose_json",
+                      "timestamp_granularities[]": ["word", "segment"]},
+                files={"file": (os.path.basename(path), audio, "audio/mpeg")},
+                timeout=_TIMEOUT,
+            )
+        if response.status_code not in apikeys.REFUSED_STATUSES:
+            if response.status_code == 200:
+                apikeys.accept(key)
+            break
+        # A revoked or mistyped key: try the backup key in the same setting, if there is one.
+        apikeys.refuse(key)
+        if index + 1 < len(keys):
+            log.warning("whisper: %s was refused (HTTP %s); trying %s", apikeys.label(key, raw_keys),
+                        response.status_code, apikeys.label(keys[index + 1], raw_keys))
     if response.status_code != 200:
         raise RuntimeError(f"transcription returned {response.status_code}: {scrub_secrets(response.text[:200])}")
     body = response.json()

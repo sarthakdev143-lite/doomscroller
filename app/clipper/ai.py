@@ -46,6 +46,7 @@ from typing import Optional, Sequence
 
 import httpx
 
+from app import apikeys
 from app.config import settings
 from app.metadata import _extract_json
 from app.winproc import background_subprocess_kwargs
@@ -190,11 +191,16 @@ def api_provider() -> str:
     return OPENAI_COMPATIBLE if raw in ("openai_compatible", "openai", "gemini", "groq") else ANTHROPIC
 
 
-def _api_key() -> str:
+def _api_keys_raw() -> str:
+    """The key setting as written: it may hold several keys, a main one and backups (app/apikeys.py)."""
     generic = str(getattr(settings, "clip_ai_api_key", "") or "").strip()
     if api_provider() == ANTHROPIC:
         return generic or (settings.anthropic_api_key or "").strip()
     return generic
+
+
+def _api_key() -> str:
+    return apikeys.first(_api_keys_raw())
 
 
 def _api_base() -> str:
@@ -281,7 +287,9 @@ def _openai_content(prompt: str, files: Sequence[str]) -> object:
 
 def _api_scrub(text: object) -> str:
     out = str(text or "")
-    for key in {(settings.anthropic_api_key or "").strip(), str(getattr(settings, "clip_ai_api_key", "") or "").strip()}:
+    raw = [(settings.anthropic_api_key or "").strip(), str(getattr(settings, "clip_ai_api_key", "") or "").strip()]
+    # Each key on its own as well as the whole value: a backup key must not survive the scrub.
+    for key in sorted({*raw, *apikeys.parts_of(raw)}, key=len, reverse=True):
         if len(key) >= 3:
             out = out.replace(key, "[REDACTED]")
     return out
@@ -464,7 +472,9 @@ def _fit_images(prompt: str, files: Sequence[str], cap: int, out_dir: str) -> tu
 
 
 def _ask_api_with(prompt: str, files: Sequence[str], sheets_dir: str = "") -> Optional[str]:
-    key, base, provider = _api_key(), _api_base(), api_provider()
+    raw_keys = _api_keys_raw()
+    key, base, provider = apikeys.first(raw_keys), _api_base(), api_provider()
+    tried = {key}
     model = _api_model(files)
     if not key or not base or not model:
         return None
@@ -503,6 +513,19 @@ def _ask_api_with(prompt: str, files: Sequence[str], sheets_dir: str = "") -> Op
             spent(False)
             return None
         status = response.status_code
+        if status in apikeys.REFUSED_STATUSES:
+            # A revoked or mistyped key: the next backup key in the setting, if there is one, gets the same request.
+            apikeys.refuse(key)
+            spare = next((k for k in apikeys.candidates(raw_keys) if k not in tried), "")
+            if spare:
+                log.warning("%s api refused %s (HTTP %s); trying %s", provider, apikeys.label(key, raw_keys), status,
+                            apikeys.label(spare, raw_keys))
+                key = spare
+                tried.add(key)
+                _, headers, _ = build(sent_prompt, sent, model, key, base)
+                continue
+        elif status == 200:
+            apikeys.accept(key)
         smaller = _fitted_max_tokens(response, body.get("max_tokens")) if status in (413, 429) else None
         if smaller and not shrunk:
             # Groq reserves the reply budget against its per-minute token limit, so a request can be "too
