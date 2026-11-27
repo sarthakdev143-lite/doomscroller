@@ -6,8 +6,8 @@
     python scripts/saas_manage.py set-plan someone@example.com studio
     python scripts/saas_manage.py promo LAUNCH50 --percent 50 --max 100 --days 30
     python scripts/saas_manage.py promo WELCOME20 --credits 20 --max 500
-    python scripts/saas_manage.py bmc-map plan starter --level-id 123456 --url https://buymeacoffee.com/you/membership
-    python scripts/saas_manage.py bmc-map pack pack-300 --extra-id 98765 --url https://buymeacoffee.com/you/e/98765
+    python scripts/saas_manage.py bmc-map plan creator --level-id 123456 --bmc-amount 3.25 --bmc-currency USD --url https://buymeacoffee.com/you/membership
+    python scripts/saas_manage.py bmc-map pack pack-m --extra-id 98765 --url https://buymeacoffee.com/you/e/98765
     python scripts/saas_manage.py claims                  # Buy Me a Coffee payments not yet matched to an account
     python scripts/saas_manage.py claim CLAIM_ID someone@example.com   # credit one to a verified account
     python scripts/saas_manage.py import-waitlist waitlist-202611270130.csv --dry-run   # the edge /admin/export.csv
@@ -95,7 +95,9 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("bmc-map"); p.add_argument("kind", choices=["plan", "pack"]); p.add_argument("slug")  # noqa: E702
     p.add_argument("--interval", choices=["month", "year"], default="month")
     p.add_argument("--level-id"); p.add_argument("--level-name"); p.add_argument("--extra-id")  # noqa: E702
-    p.add_argument("--url"); p.add_argument("--currency", default="USD")  # noqa: E702
+    p.add_argument("--url"); p.add_argument("--currency", default=None)  # noqa: E702  (default: SAAS_DEFAULT_CURRENCY)
+    p.add_argument("--bmc-amount", help="what the BMC page charges, in major units, e.g. 3.25")
+    p.add_argument("--bmc-currency", help="the BMC page's currency, e.g. USD (BMC accounts default to USD)")
     sub.add_parser("claims")
     p = sub.add_parser("claim"); p.add_argument("claim_id"); p.add_argument("email")  # noqa: E702
     p = sub.add_parser("import-waitlist", help="upsert the edge waitlist export; optionally issue invites")
@@ -174,14 +176,23 @@ def main(argv: list[str] | None = None) -> int:
                              expires_at=utcnow() + timedelta(days=args.days) if args.days else None))
             print(f"promo {args.code.upper()} created")
         elif args.cmd == "bmc-map":
+            from saas.config import settings
             from saas.models.billing import Price
 
             interval = args.interval if args.kind == "plan" else "once"
             row = (db.query(Price).filter_by(item_kind=args.kind, item_slug=args.slug, interval=interval,
-                                             currency=args.currency.upper(), tier="default").one_or_none())
+                                             currency=(args.currency or settings.default_currency).upper(),
+                                             tier="default").one_or_none())
             if row is None:
                 raise SystemExit("no matching default-tier price; seed the catalog or add the price first")
             refs = dict(row.provider_refs or {})
+            if bool(args.bmc_amount) != bool(args.bmc_currency):
+                raise SystemExit("give --bmc-amount and --bmc-currency together")
+            if args.bmc_amount:
+                from saas.billing.bmc import to_minor
+
+                refs["bmc_amount_minor"] = to_minor(args.bmc_amount, args.bmc_currency)
+                refs["bmc_currency"] = args.bmc_currency.upper()
             for k, v in (("bmc_level_id", args.level_id), ("bmc_level_name", args.level_name),
                          ("bmc_extra_id", args.extra_id), ("bmc_url", args.url)):
                 if v:

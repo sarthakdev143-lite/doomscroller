@@ -110,7 +110,7 @@ def authenticate(db: Session, raw: Optional[str], request: Optional[Request], sc
     if user is None or user.status != "active":
         raise invalid
     if not plan_allows_api(db, user):
-        raise ApiError(403, "plan_required", "API and MCP access are part of the Studio plan.")
+        raise ApiError(403, "plan_required", "API and MCP access come with any paid plan.")
     missing = [s for s in scopes if s not in (key.scopes or [])]
     if missing:
         raise ApiError(403, "insufficient_scope", f"This key lacks the '{missing[0]}' scope.", required=missing)

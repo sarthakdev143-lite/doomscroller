@@ -4,7 +4,7 @@ The clipper is available as a remote **MCP server** at `https://<your-domain>/mc
 `http://127.0.0.1:8700/mcp`). It speaks the MCP *streamable HTTP* transport (stateless, JSON
 responses) and authenticates with the same API keys as the REST API.
 
-1. Get a key: **Settings → Developers → Create key** (Studio plan). Copy the `dsk_live_...` value; it is
+1. Get a key: **Settings → Developers → Create key** (any paid plan). Copy the `dsk_live_...` value; it is
    shown once. Pick scopes: `jobs:read`, `jobs:write`, `clips:read`, `clips:write`, `billing:read`
    (all by default). A read-only assistant only needs `jobs:read` + `clips:read`.
 2. Add the server to your client with the header `Authorization: Bearer dsk_live_...` (snippets below).

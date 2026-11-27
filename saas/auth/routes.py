@@ -698,7 +698,7 @@ def create_key(body: KeyIn, request: Request, user: User = Depends(require_verif
                db: Session = Depends(get_db)):
     compat.rate_limit(request, "key_create", 10, 3600, key=f"user:{user.id}")
     if not keys_mod.plan_allows_api(db, user):
-        raise ApiError(403, "plan_required", "API and MCP access are part of the Studio plan.")
+        raise ApiError(403, "plan_required", "API and MCP access come with any paid plan.")
     key, raw = keys_mod.create(db, user, body.name, body.scopes)
     compat.log_event(db, "api_key_created", "info", ip=client_ip(request), user_id=user.id, detail={"key": key.id})
     db.commit()

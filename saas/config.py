@@ -113,6 +113,9 @@ class SaasSettings(BaseSettings):
     backup_dir: str = ""  # SQLite backups; default: a "backups" folder next to the database file
     backup_keep: int = 14  # newest N backups kept
     backup_every_hours: int = 24  # saas_serve runs one when the newest is older than this
+    # A job costs max(ceil(source minutes), N x ceil(finished minutes)): a finished minute costs us ~16x a source
+    # minute, so many long clips from a short source pay for what they use (memo section 4.3). 0 disables it.
+    finished_minute_multiplier: int = 3
     rerender_free_per_clip: int = 5  # editor re-renders included per clip
     rerender_credit_cost: int = 1  # credits per re-render after the free ones
 
