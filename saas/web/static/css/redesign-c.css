@@ -1,0 +1,1688 @@
+/* Direction C, "the cut". A dark room with one light: caption yellow. The page is plain, complete DOM first; the
+   WebGL layer (static/js/c/) sits behind it on a fixed canvas and tells the same story as you scroll.
+
+   States, set on <html> by static/js/c/main.js:
+     (none)       JS not run yet, or no JS at all: normal flow. <noscript> shows the poster.
+     .rc-motion   WebGL available and motion allowed: chapters become tall, with a sticky 100vh pin each.
+     .rc-live     the story is running: reveal styles apply (text waits for JS only from here on).
+     .rc-gl       the first WebGL frame is on screen: the canvas fades in.
+     .rc-static   no WebGL, a failure, or prefers-reduced-motion: the still poster, normal flow. */
+
+.page-rc {
+  --rc-bg: #0b0b0a;
+  --rc-bg-2: #131312;
+  --rc-panel: rgba(20, 20, 19, 0.72);
+  --rc-fg: #f2f1ea;
+  --rc-muted: #a6a69d;
+  --rc-faint: #75756c;
+  --rc-rule: rgba(242, 241, 234, 0.12);
+  --rc-rule-2: rgba(242, 241, 234, 0.24);
+  --rc-display: "Archivo", "Arial Narrow", Arial, sans-serif;
+  --rc-ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --rc-ease-io: cubic-bezier(0.65, 0, 0.35, 1);
+  background: var(--rc-bg);
+  color: var(--rc-fg);
+  color-scheme: dark;
+  overflow-x: clip;
+}
+
+.page-rc ::selection {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.page-rc :focus-visible {
+  outline-color: var(--accent);
+}
+
+.page-rc main {
+  position: relative;
+  z-index: 1;
+}
+
+/* Rupee figures: U+20B9 is outside the Archivo and Plex subsets, so it comes from the Devanagari face the site
+   already ships (its unicode-range includes U+20B9) rather than whatever the system has. */
+.page-rc .rc-rupee,
+.page-rc .rc-strip__svg text,
+.page-rc .rc-rows__per,
+.page-rc .rc-table .num {
+  font-family: "Archivo", "Noto Sans Devanagari", "Nirmala UI", sans-serif;
+}
+
+.page-rc .rc-rows__per,
+.page-rc .rc-table .num {
+  font-family: "IBM Plex Mono", "Noto Sans Devanagari", ui-monospace, monospace;
+}
+
+/* ---- shared header and footer, re-lit ------------------------------------------------------------------- */
+.page-rc .site-header {
+  position: fixed;
+  left: 0;
+  right: 0;
+  background: transparent;
+  color: var(--rc-fg);
+  border-bottom: 1px solid transparent;
+  transition: background-color 400ms var(--rc-ease), border-color 400ms var(--rc-ease);
+}
+
+.page-rc .site-header[data-scrolled="true"] {
+  background: rgba(11, 11, 10, 0.72);
+  -webkit-backdrop-filter: blur(14px) saturate(1.2);
+  backdrop-filter: blur(14px) saturate(1.2);
+  border-bottom-color: var(--rc-rule);
+}
+
+.page-rc .wordmark svg > rect:first-child {
+  fill: var(--rc-bg);
+  stroke: var(--rc-fg);
+  stroke-width: 1.4;
+}
+
+.page-rc .site-nav__links a {
+  color: var(--rc-muted);
+}
+
+.page-rc .site-nav__links a:hover {
+  background: rgba(242, 241, 234, 0.08);
+  color: var(--rc-fg);
+}
+
+.page-rc .site-nav .btn {
+  --btn-bg: var(--accent);
+  --btn-fg: var(--accent-ink);
+  --btn-border: var(--accent);
+  border-radius: var(--radius-pill);
+}
+
+.page-rc .menu-btn {
+  color: var(--rc-fg);
+}
+
+@media (max-width: 860px) {
+  .page-rc .site-nav__links {
+    background: var(--rc-bg);
+    border-bottom: 1px solid var(--rc-rule);
+  }
+}
+
+.page-rc .site-footer {
+  position: relative;
+  z-index: 1;
+  background: var(--rc-bg);
+  color: var(--rc-muted);
+  border-top: 1px solid var(--rc-rule);
+}
+
+.page-rc .site-footer a {
+  color: var(--rc-fg);
+}
+
+/* ---- the stage, HUD and sound toggle ---------------------------------------------------------------------- */
+.rc-stage {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 1.4s var(--rc-ease);
+}
+
+.rc-gl .rc-stage {
+  opacity: var(--rc-stage-o, 1);
+}
+
+.rc-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.rc-hud {
+  position: fixed;
+  z-index: 2;
+  right: calc(var(--gutter) + 8rem);
+  bottom: 1.1rem;
+  display: flex;
+  gap: 1.25rem;
+  align-items: center;
+  font-size: 0.6875rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--rc-muted);
+  pointer-events: none;
+  opacity: var(--rc-hud-o, 1);
+  transition: opacity 600ms var(--rc-ease);
+}
+
+.rc-hud[hidden] {
+  display: none;
+}
+
+.rc-hud__tc {
+  color: var(--rc-fg);
+  min-width: 10.5ch;
+}
+
+.rc-hud__ch {
+  color: var(--accent);
+}
+
+/* Bottom right, beside the HUD: the bottom left is where the hero form and its Turnstile sit. */
+.rc-sound {
+  position: fixed;
+  z-index: 3;
+  right: var(--gutter);
+  bottom: 0.6rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-height: var(--tap);
+  padding: 0 0.25rem;
+  border: 0;
+  background: none;
+  color: var(--rc-muted);
+  font-size: 0.6875rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  opacity: var(--rc-hud-o, 1);
+  transition: opacity 600ms var(--rc-ease), color 200ms linear;
+}
+
+.rc-sound:hover,
+.rc-sound[aria-pressed="true"] {
+  color: var(--rc-fg);
+}
+
+.rc-sound[hidden] {
+  display: none;
+}
+
+.rc-sound__bars {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 12px;
+}
+
+.rc-sound__bars i {
+  display: block;
+  width: 2px;
+  height: 3px;
+  background: currentColor;
+  transition: height 300ms var(--rc-ease);
+}
+
+.rc-sound[aria-pressed="true"] .rc-sound__bars i {
+  background: var(--accent);
+  animation: rc-eq 900ms var(--rc-ease-io) infinite alternate;
+}
+
+.rc-sound[aria-pressed="true"] .rc-sound__bars i:nth-child(2) { animation-delay: -300ms; }
+.rc-sound[aria-pressed="true"] .rc-sound__bars i:nth-child(3) { animation-delay: -600ms; }
+.rc-sound[aria-pressed="true"] .rc-sound__bars i:nth-child(4) { animation-delay: -150ms; }
+
+@keyframes rc-eq {
+  from { height: 3px; }
+  to { height: 12px; }
+}
+
+/* ---- type ------------------------------------------------------------------------------------------------- */
+.rc-kicker,
+.rc-eyebrow,
+.rc-ch__n {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  margin: 0;
+  font-size: 0.75rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--rc-muted);
+}
+
+.rc-ch__n span {
+  color: var(--accent);
+}
+
+.rc-rec {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 4px rgba(255, 229, 0, 0.16);
+}
+
+.page-rc h2 {
+  margin: 0;
+  font-family: var(--rc-display);
+  font-weight: 430;
+  font-stretch: 108%;
+  font-size: clamp(2.1rem, 1.2rem + 3.1vw, 4.4rem);
+  line-height: 0.98;
+  letter-spacing: -0.032em;
+  text-wrap: balance;
+}
+
+/* ---- hero ------------------------------------------------------------------------------------------------- */
+.rc-hero {
+  position: relative;
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+  padding-top: calc(var(--header-h) + clamp(1rem, 0.5rem + 3vh, 4.5rem));
+  padding-bottom: clamp(4rem, 3rem + 4vh, 6rem);
+}
+
+.rc-hero__inner {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: clamp(1.5rem, 1rem + 2vw, 2.5rem);
+}
+
+.rc-hero__title {
+  margin: 0.9rem 0 0;
+  font-family: var(--rc-display);
+  font-weight: 420;
+  font-stretch: 112%;
+  /* by width, but never so tall that a short laptop screen pushes the form below the fold */
+  font-size: min(clamp(3rem, 1.35rem + 7.1vw, 9.25rem), max(3rem, 13.5vh));
+  line-height: 0.9;
+  letter-spacing: -0.045em;
+}
+
+.rc-line {
+  display: block;
+  overflow: clip;
+  overflow-clip-margin: 0.18em;
+  padding-bottom: 0.04em;
+}
+
+.rc-line > span {
+  display: inline-block;
+}
+
+.rc-mark {
+  position: relative;
+  white-space: nowrap;
+}
+
+/* The caption highlight: a bar of caption yellow behind the last words, like the renderer's active word. */
+.rc-mark::after {
+  content: "";
+  position: absolute;
+  left: -0.04em;
+  right: -0.06em;
+  bottom: 0.06em;
+  height: 0.1em;
+  background: var(--accent);
+  transform-origin: left center;
+  transform: scaleX(var(--rc-mark, 1));
+}
+
+.rc-hero__body {
+  display: grid;
+  gap: 1.25rem;
+  max-width: 34rem;
+}
+
+.rc-lede {
+  margin: 0;
+  font-size: clamp(1.0625rem, 1rem + 0.3vw, 1.25rem);
+  line-height: 1.5;
+  color: var(--rc-muted);
+  text-wrap: pretty;
+}
+
+.rc-fine {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--rc-faint);
+}
+
+.rc-cue {
+  position: relative;
+  z-index: 1;
+  display: none;
+  align-items: center;
+  gap: 0.8rem;
+  margin: auto 0 0;
+  padding-inline: var(--gutter);
+  font-size: 0.6875rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--rc-faint);
+}
+
+.rc-motion .rc-cue {
+  display: flex;
+}
+
+.rc-cue__line {
+  width: 3rem;
+  height: 1px;
+  background: var(--rc-rule-2);
+  overflow: hidden;
+  position: relative;
+}
+
+.rc-cue__line::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--accent);
+  transform: translateX(-100%);
+  animation: rc-cue 2.4s var(--rc-ease-io) infinite;
+}
+
+@keyframes rc-cue {
+  60%, 100% { transform: translateX(100%); }
+}
+
+@media (min-width: 900px) {
+  .rc-hero__inner {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .rc-hero__body {
+    margin-top: clamp(0.5rem, 2vh, 2.5rem);
+  }
+}
+
+/* The waitlist form docks on paper: its fields and Turnstile are drawn for a light surface. */
+.rc-dock {
+  margin: 0;
+}
+
+.rc-dock .waitlist {
+  padding: 0.5rem;
+  border-radius: 14px;
+  background: var(--paper);
+  color: var(--ink);
+  box-shadow: 0 30px 80px -30px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+.rc-dock--hero .waitlist .label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.rc-dock--hero .inline-form .input {
+  border-color: transparent;
+  background: transparent;
+  font-size: var(--text-md);
+}
+
+.rc-dock--hero .inline-form .btn {
+  border-radius: 9px;
+}
+
+.rc-dock .waitlist .error-text {
+  margin: 0.5rem 0.5rem 0.25rem;
+}
+
+.rc-dock .waitlist__turnstile {
+  margin: 0.5rem 0.25rem 0;
+}
+
+.rc-dock--end .waitlist {
+  padding: clamp(1.25rem, 1rem + 1.5vw, 2rem);
+  border-radius: 18px;
+}
+
+.page-rc .rd-count {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--rc-muted);
+}
+
+/* ---- the poster (no WebGL, or reduced motion) ------------------------------------------------------------- */
+.rc-poster {
+  display: none;
+  position: relative;
+  margin-top: clamp(2.5rem, 2rem + 3vw, 4rem);
+  padding-inline: var(--gutter);
+}
+
+.rc-static .rc-poster {
+  display: block;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rc-poster {
+    display: block;
+  }
+}
+
+.rc-poster__strip {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 3px;
+  max-width: 88rem;
+  margin-inline: auto;
+  transform: perspective(1400px) rotateX(18deg) rotateZ(-3deg);
+  opacity: 0.55;
+}
+
+.rc-poster__frame {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border-radius: 3px;
+  filter: saturate(0.3) brightness(0.7);
+}
+
+.rc-poster__frame .scene {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.rc-poster__frame.is-cut {
+  filter: none;
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.rc-poster__shorts {
+  display: flex;
+  justify-content: center;
+  gap: clamp(0.75rem, 2vw, 2rem);
+  margin-top: clamp(-6rem, -4vw, -2rem);
+  position: relative;
+}
+
+.rc-poster__short {
+  width: clamp(7.5rem, 17vw, 15rem);
+  box-shadow: 0 40px 80px -30px rgba(0, 0, 0, 0.9);
+  border-radius: var(--radius-3);
+}
+
+.rc-poster__short--1 { transform: rotate(-6deg) translateY(1.5rem); }
+.rc-poster__short--2 { transform: translateY(-0.5rem); z-index: 1; }
+.rc-poster__short--3 { transform: rotate(6deg) translateY(1.5rem); }
+
+/* On a wide screen the still takes the place the moving picture would: beside the words, under the headline. */
+@media (min-width: 1100px) {
+  .rc-static .rc-poster {
+    position: absolute;
+    right: var(--gutter);
+    top: 58vh;
+    width: min(38vw, 36rem);
+    margin: 0;
+    padding: 0;
+  }
+
+  .rc-static .rc-poster__strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    transform: perspective(1200px) rotateY(-16deg) rotateZ(-2deg);
+  }
+
+  .rc-static .rc-poster__frame:nth-child(n + 4) {
+    display: none;
+  }
+
+  .rc-static .rc-poster__short {
+    width: clamp(7.5rem, 10vw, 10rem);
+  }
+}
+
+@media (min-width: 1100px) and (prefers-reduced-motion: reduce) {
+  .rc-poster {
+    position: absolute;
+    right: var(--gutter);
+    top: 58vh;
+    width: min(38vw, 36rem);
+    margin: 0;
+    padding: 0;
+  }
+
+  .rc-poster__strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    transform: perspective(1200px) rotateY(-16deg) rotateZ(-2deg);
+  }
+
+  .rc-poster__frame:nth-child(n + 4) {
+    display: none;
+  }
+
+  .rc-poster__short {
+    width: clamp(7.5rem, 10vw, 10rem);
+  }
+}
+
+/* ---- story chapters: plain flow by default ---------------------------------------------------------------- */
+.rc-ch {
+  position: relative;
+  padding-block: clamp(3.5rem, 2.5rem + 4vw, 7rem);
+  border-top: 1px solid var(--rc-rule);
+}
+
+.rc-ch__grid {
+  display: grid;
+  gap: clamp(2rem, 1rem + 3vw, 4rem);
+  align-items: start;
+}
+
+@media (min-width: 900px) {
+  .rc-ch__grid {
+    grid-template-columns: minmax(0, 6fr) minmax(0, 5fr);
+  }
+}
+
+.rc-ch__text {
+  display: grid;
+  gap: 1.1rem;
+  max-width: 34rem;
+}
+
+.rc-ch__text p:not(.rc-ch__n) {
+  margin: 0;
+  color: var(--rc-muted);
+  font-size: clamp(1rem, 0.96rem + 0.25vw, 1.1875rem);
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+
+.rc-ch__text .rc-ch__aside {
+  font-size: var(--text-sm);
+  color: var(--rc-faint);
+  padding-left: 1rem;
+  border-left: 1px solid var(--rc-rule-2);
+}
+
+/* transcript */
+.rc-tx {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.15rem;
+  max-width: 30rem;
+}
+
+.rc-tx__s {
+  display: grid;
+  grid-template-columns: 6.2rem minmax(0, 1fr);
+  gap: 0.75rem;
+  padding: 0.45rem 0;
+}
+
+.rc-tx__s p {
+  margin: 0;
+  font-size: var(--text-md);
+  line-height: 1.4;
+  color: var(--rc-fg);
+}
+
+.rc-tx__s.is-out p {
+  color: var(--rc-faint);
+}
+
+.rc-tx__meta {
+  padding-top: 0.2rem;
+  font-size: 0.6875rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--rc-faint);
+}
+
+.rc-tx__cut {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.6875rem;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+}
+
+.rc-tx__cut::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--accent);
+  opacity: 0.7;
+}
+
+.rc-w {
+  transition: color 240ms linear, background-color 240ms linear;
+}
+
+/* cut timecodes */
+.rc-cuts {
+  margin: 0;
+  display: grid;
+  gap: 1.5rem;
+}
+
+.rc-cuts__row {
+  display: grid;
+  grid-template-columns: 3.5rem minmax(0, 1fr);
+  align-items: baseline;
+  padding-top: 1rem;
+  border-top: 1px solid var(--accent);
+}
+
+.rc-cuts dt {
+  font-size: 0.75rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.rc-cuts dd {
+  margin: 0;
+  display: grid;
+  gap: 0.3rem;
+}
+
+.rc-cuts__tc {
+  font-size: clamp(2.5rem, 1.6rem + 3vw, 4.75rem);
+  line-height: 1;
+  letter-spacing: -0.04em;
+}
+
+.rc-cuts__s {
+  color: var(--rc-muted);
+  font-size: var(--text-sm);
+}
+
+/* anatomy */
+.rc-anatomy {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0;
+  max-width: 22rem;
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--rc-muted);
+}
+
+.rc-anatomy li {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.85rem 0;
+  border-bottom: 1px solid var(--rc-rule);
+}
+
+.rc-anatomy li::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  border: 1px solid var(--accent);
+}
+
+/* the three shorts */
+.rc-shorts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  max-width: 30rem;
+}
+
+.rc-shorts__item {
+  display: grid;
+  grid-template-columns: 2rem minmax(0, 1fr);
+  gap: 0.25rem 0.75rem;
+  padding: 1rem 0;
+  border-bottom: 1px solid var(--rc-rule);
+}
+
+.rc-shorts__n {
+  grid-row: span 2;
+  font-size: 0.75rem;
+  color: var(--accent);
+  padding-top: 0.3rem;
+}
+
+.rc-shorts__hook {
+  font-size: clamp(1.125rem, 1rem + 0.5vw, 1.4rem);
+  font-stretch: 104%;
+  letter-spacing: -0.01em;
+}
+
+.rc-shorts__tc {
+  font-size: 0.75rem;
+  color: var(--rc-muted);
+}
+
+/* the package, as a spec card */
+.rc-spec {
+  border: 1px solid var(--rc-rule-2);
+  border-radius: 16px;
+  background: var(--rc-panel);
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
+  padding: 0.5rem 1.25rem 0.75rem;
+  max-width: 32rem;
+}
+
+.rc-spec__head {
+  display: flex;
+  justify-content: space-between;
+  margin: 0;
+  padding: 0.85rem 0;
+  font-size: 0.6875rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent);
+  border-bottom: 1px solid var(--rc-rule-2);
+}
+
+.rc-spec dl {
+  margin: 0;
+}
+
+.rc-spec dl > div {
+  display: grid;
+  grid-template-columns: 7.5rem minmax(0, 1fr);
+  gap: 1rem;
+  padding: 0.8rem 0;
+  border-bottom: 1px solid var(--rc-rule);
+}
+
+.rc-spec dl > div:last-child {
+  border-bottom: 0;
+}
+
+.rc-spec dt {
+  font-size: 0.6875rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--rc-faint);
+  padding-top: 0.15rem;
+}
+
+.rc-spec dd {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.rc-spec dd.mono {
+  font-size: 0.8125rem;
+}
+
+.rc-spec__muted {
+  color: var(--rc-muted);
+}
+
+/* ---- story chapters with motion: tall sections, a sticky pin each ---------------------------------------- */
+.rc-motion .rc-ch {
+  height: var(--rc-h, 200vh);
+  padding: 0;
+  border-top: 0;
+}
+
+.rc-motion .rc-ch--listen { --rc-h: 230vh; }
+.rc-motion .rc-ch--cut { --rc-h: 210vh; }
+.rc-motion .rc-ch--frame { --rc-h: 210vh; }
+.rc-motion .rc-ch--caption { --rc-h: 200vh; }
+.rc-motion .rc-ch--shorts { --rc-h: 210vh; }
+.rc-motion .rc-ch--package { --rc-h: 190vh; }
+
+.rc-motion .rc-ch__pin {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  height: 100svh;
+  display: flex;
+  align-items: flex-start;
+  padding-top: calc(var(--header-h) + clamp(1rem, 5vh, 3.5rem));
+}
+
+.rc-motion .rc-ch__grid {
+  width: 100%;
+}
+
+/* Chapters whose picture fills the middle keep their words to the top and the edges. */
+.rc-motion .rc-ch--listen .rc-ch__grid,
+.rc-motion .rc-ch--cut .rc-ch__grid {
+  grid-template-columns: minmax(0, 6fr) minmax(0, 5fr);
+}
+
+.rc-motion .rc-ch--frame .rc-ch__text,
+.rc-motion .rc-ch--caption .rc-ch__text {
+  margin-top: clamp(0rem, 10vh, 6rem);
+}
+
+.rc-motion .rc-ch--caption .rc-ch__grid {
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+}
+
+.rc-motion .rc-ch--caption .rc-anatomy {
+  display: none;
+}
+
+.rc-motion .rc-ch--shorts .rc-ch__pin,
+.rc-motion .rc-ch--package .rc-ch__pin {
+  align-items: stretch;
+}
+
+.rc-motion .rc-ch--shorts .rc-ch__grid {
+  grid-template-columns: minmax(0, 1fr);
+  align-content: space-between;
+  padding-bottom: 4.5rem;
+}
+
+.rc-motion .rc-shorts {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1.5rem;
+  max-width: none;
+}
+
+/* package: words left, the deck of Shorts in the middle (WebGL), the spec card right */
+.rc-motion .rc-ch--package .rc-ch__grid {
+  grid-template-columns: minmax(0, 4fr) minmax(0, 3fr) minmax(0, 4fr);
+  align-items: center;
+  padding-bottom: 3rem;
+}
+
+.rc-motion .rc-ch--package .rc-spec {
+  grid-column: 3;
+  justify-self: end;
+  width: 100%;
+}
+
+/* Words sit over the picture, so they get a quiet shade to stand on. */
+.rc-motion .rc-ch__text,
+.rc-motion .rc-tx,
+.rc-motion .rc-cuts,
+.rc-motion .rc-shorts {
+  position: relative;
+}
+
+.rc-motion .rc-ch__text::before {
+  content: "";
+  position: absolute;
+  inset: -3rem -4rem -3rem -40vw;
+  z-index: -1;
+  background: radial-gradient(closest-side, rgba(11, 11, 10, 0.78), rgba(11, 11, 10, 0));
+  pointer-events: none;
+}
+
+/* Reveal states, only once the story runs (rc-live), so a failed script never hides a word. */
+.rc-live .rc-ch [data-rc-in] {
+  opacity: 0;
+  transform: translate3d(0, 1.6rem, 0);
+  transition: opacity 900ms var(--rc-ease), transform 1100ms var(--rc-ease);
+  transition-delay: calc(var(--rc-d, 0) * 70ms);
+}
+
+.rc-live .rc-ch.is-on [data-rc-in] {
+  opacity: 1;
+  transform: none;
+}
+
+.rc-live .rc-w {
+  color: var(--rc-faint);
+}
+
+.rc-live .rc-w.is-lit {
+  color: var(--rc-fg);
+}
+
+.rc-live .rc-w.is-now {
+  color: var(--accent-ink);
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.rc-live .rc-tx__cut {
+  opacity: 0.25;
+  transition: opacity 400ms linear;
+}
+
+.rc-live .rc-tx.is-cut .rc-tx__cut {
+  opacity: 1;
+}
+
+.rc-live .rc-tx.is-cut .rc-tx__s.is-out {
+  opacity: 0.3;
+}
+
+.rc-live .rc-cuts__row {
+  border-top-color: var(--rc-rule-2);
+  transition: border-color 300ms linear;
+}
+
+.rc-live .rc-cuts__row.is-snapped {
+  border-top-color: var(--accent);
+}
+
+.rc-live .rc-spec dl > div {
+  opacity: 0.08;
+  transform: translate3d(1.25rem, 0, 0);
+  transition: opacity 500ms var(--rc-ease), transform 800ms var(--rc-ease);
+}
+
+.rc-live .rc-spec dl > div.is-set {
+  opacity: 1;
+  transform: none;
+}
+
+/* ---- pricing: the lights come up -------------------------------------------------------------------------- */
+.rc-price {
+  position: relative;
+  z-index: 1;
+  /* laid out only when it comes near: the rupee glyphs come from a 121 KB face that need not load with the hero */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 2200px;
+  background: var(--paper);
+  color: var(--ink);
+  padding-block: clamp(4.5rem, 3rem + 6vw, 9rem);
+  border-radius: clamp(18px, 3vw, 36px) clamp(18px, 3vw, 36px) 0 0;
+  color-scheme: light;
+}
+
+.rc-price ::selection {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.rc-price :focus-visible {
+  outline-color: var(--ink);
+}
+
+.rc-price__head {
+  display: grid;
+  gap: 1.25rem;
+  max-width: 60rem;
+}
+
+.rc-price .rc-eyebrow {
+  color: var(--ink-3);
+}
+
+.rc-price h2 {
+  font-size: clamp(2.6rem, 1.4rem + 5vw, 6.75rem);
+  font-stretch: 110%;
+  letter-spacing: -0.045em;
+  line-height: 0.92;
+}
+
+.rc-price h2 .rc-rupee {
+  font-weight: 560;
+  white-space: nowrap;
+  background: linear-gradient(transparent 62%, var(--accent) 62%, var(--accent) 92%, transparent 92%);
+}
+
+.rc-price__lede {
+  margin: 0;
+  max-width: 44rem;
+  font-size: clamp(1.0625rem, 1rem + 0.35vw, 1.3125rem);
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+
+/* The strip: every price on one log scale. Ours highlighted, everyone else's grey. */
+.rc-strip {
+  margin: clamp(2.5rem, 2rem + 3vw, 4.5rem) 0 0;
+  padding: clamp(1rem, 0.75rem + 1vw, 1.75rem);
+  border: 1px solid var(--rule);
+  border-radius: 18px;
+  background: var(--surface);
+}
+
+.rc-strip__cap {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.5rem 1.5rem;
+  font-size: var(--text-sm);
+}
+
+.rc-strip__title {
+  font-weight: 650;
+}
+
+.rc-strip__legend {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.6rem;
+  color: var(--ink-2);
+}
+
+.rc-key {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+}
+
+.rc-key--us {
+  background: var(--accent);
+  box-shadow: inset 0 0 0 1.5px var(--ink);
+}
+
+.rc-key--them {
+  margin-left: 0.6rem;
+  background: #9a9a92;
+}
+
+.rc-strip__plot {
+  position: relative;
+  margin-top: 1rem;
+}
+
+.rc-strip__svg {
+  display: block;
+  width: 100%;
+  height: 170px;
+  overflow: visible;
+}
+
+.rc-strip__base {
+  stroke: var(--ink);
+  stroke-width: 1;
+}
+
+.rc-strip__grid {
+  stroke: var(--rule);
+  stroke-width: 1;
+  stroke-dasharray: 2 4;
+}
+
+.rc-strip__tick {
+  fill: var(--ink-3);
+  font-size: 12px;
+}
+
+.rc-strip__band {
+  fill: var(--accent-wash);
+  stroke: var(--accent);
+  stroke-width: 1;
+}
+
+.rc-dot {
+  stroke: var(--surface);
+  stroke-width: 2;
+  transition: r 160ms var(--rc-ease);
+}
+
+.rc-dot--us {
+  fill: var(--accent);
+  stroke: var(--ink);
+  stroke-width: 1.5;
+}
+
+.rc-dot--them {
+  fill: #9a9a92;
+}
+
+.rc-dot:hover,
+.rc-dot.is-hot {
+  r: 8.5;
+}
+
+.rc-strip__labels text {
+  font-size: 12.5px;
+  fill: var(--ink-2);
+}
+
+.rc-strip__us {
+  font-weight: 700;
+  fill: var(--ink) !important;
+}
+
+.rc-strip__note {
+  margin: 0.75rem 0 0;
+  max-width: 62rem;
+  font-size: var(--text-xs);
+  color: var(--ink-3);
+}
+
+.rc-strip__tip {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  left: 0;
+  margin: 0;
+  padding: 0.5rem 0.7rem;
+  border-radius: 8px;
+  background: var(--ink);
+  color: var(--paper);
+  font-size: 0.75rem;
+  line-height: 1.4;
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translate(-50%, calc(-100% - 12px));
+}
+
+.rc-strip__tip strong {
+  display: block;
+  font-family: "IBM Plex Mono", "Noto Sans Devanagari", monospace;
+  font-size: 0.875rem;
+  color: var(--accent);
+}
+
+.rc-strip__tip[hidden] {
+  display: none;
+}
+
+/* the plans */
+.rc-plans {
+  display: grid;
+  gap: 1rem;
+  margin-top: clamp(1.5rem, 1rem + 2vw, 2.5rem);
+}
+
+@media (min-width: 980px) {
+  .rc-plans {
+    grid-template-columns: minmax(0, 3fr) minmax(0, 4fr) minmax(0, 5fr);
+  }
+}
+
+.rc-plans__col {
+  display: grid;
+  align-content: start;
+  gap: 0.9rem;
+  padding: clamp(1.25rem, 1rem + 1vw, 1.75rem);
+  border-radius: 18px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+}
+
+.rc-plans__col:first-child {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
+}
+
+.rc-plans__top {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.rc-plans__h {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: 650;
+}
+
+.rc-plans__tag {
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.rc-plans__big {
+  margin: 0;
+  font-family: var(--rc-display);
+  font-size: clamp(1.75rem, 1.3rem + 1.4vw, 2.5rem);
+  font-weight: 450;
+  font-stretch: 108%;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+}
+
+.rc-plans__or {
+  color: #8f8f86;
+}
+
+.rc-plans__note {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--ink-3);
+}
+
+.rc-plans__col:first-child .rc-plans__note {
+  color: #b9b9b0;
+}
+
+.rc-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.rc-rows li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 0.25rem 1rem;
+  padding: 0.75rem 0;
+  border-top: 1px solid var(--rule);
+}
+
+.rc-rows li:first-child {
+  border-top: 0;
+}
+
+[data-rc-billing] .rc-rows li {
+  grid-template-columns: 4.5rem auto minmax(0, 1fr) auto;
+}
+
+.rc-rows__name {
+  font-weight: 650;
+}
+
+.rc-rows__price {
+  font-size: clamp(1.375rem, 1.15rem + 0.7vw, 1.75rem);
+  font-weight: 560;
+  font-stretch: 104%;
+  letter-spacing: -0.02em;
+}
+
+.rc-rows__price small {
+  font-size: 0.55em;
+  font-weight: 450;
+  color: var(--ink-3);
+  letter-spacing: 0;
+}
+
+.rc-rows__min {
+  color: var(--ink-2);
+  font-size: var(--text-sm);
+}
+
+.rc-rows__per {
+  font-size: 0.8125rem;
+  color: var(--ink);
+  padding: 0.1rem 0.4rem;
+  border-radius: 5px;
+  background: var(--accent-wash);
+}
+
+@media (max-width: 520px) {
+  [data-rc-billing] .rc-rows li {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  [data-rc-billing] .rc-rows__min {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+}
+
+.rc-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-height: var(--tap);
+  padding: 0 0.25rem;
+  border: 0;
+  background: none;
+  color: var(--ink-2);
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.rc-switch[hidden] {
+  display: none;
+}
+
+.rc-switch__track {
+  position: relative;
+  width: 2.25rem;
+  height: 1.25rem;
+  border-radius: 999px;
+  background: var(--surface-sunk);
+  border: 1px solid var(--rule-strong);
+  transition: background-color 250ms var(--rc-ease);
+}
+
+.rc-switch__track span {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: calc(1.25rem - 6px);
+  height: calc(1.25rem - 6px);
+  border-radius: 50%;
+  background: var(--ink);
+  transition: transform 450ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.rc-switch[aria-checked="true"] .rc-switch__track {
+  background: var(--accent);
+  border-color: var(--ink);
+}
+
+.rc-switch[aria-checked="true"] .rc-switch__track span {
+  transform: translateX(1rem);
+}
+
+.rc-terms {
+  list-style: none;
+  margin: clamp(2rem, 1.5rem + 2vw, 3rem) 0 0;
+  padding: 0;
+  display: grid;
+  gap: 1rem;
+  max-width: 72rem;
+}
+
+@media (min-width: 980px) {
+  .rc-terms {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 2rem;
+  }
+}
+
+.rc-terms li {
+  font-size: var(--text-sm);
+  color: var(--ink-2);
+  padding-top: 1rem;
+  border-top: 1px solid var(--ink);
+}
+
+.rc-terms strong {
+  display: block;
+  color: var(--ink);
+  margin-bottom: 0.25rem;
+}
+
+.rc-sources {
+  margin-top: clamp(2rem, 1.5rem + 2vw, 3rem);
+  font-size: var(--text-sm);
+  color: var(--ink-2);
+}
+
+.rc-sources summary {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--tap);
+  cursor: pointer;
+  font-weight: 650;
+  color: var(--ink);
+}
+
+.rc-sources > p {
+  max-width: 60rem;
+}
+
+.rc-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 1rem;
+}
+
+.rc-table th,
+.rc-table td {
+  text-align: left;
+  padding: 0.5rem 0.75rem 0.5rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.rc-table .num {
+  text-align: right;
+}
+
+.rc-ref {
+  margin-left: 0.3rem;
+  font-size: 0.6875rem;
+  color: var(--ink-3);
+}
+
+.rc-sources__list {
+  list-style: none;
+  margin: 1.25rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.35rem;
+}
+
+/* ---- founder (the shared note, re-set for this page) ------------------------------------------------------ */
+.page-rc .rd-founder {
+  position: relative;
+  z-index: 1;
+  background: var(--paper);
+  color: var(--ink);
+  padding-block: 0 clamp(4.5rem, 3rem + 5vw, 8rem);
+}
+
+.page-rc .rd-founder__inner {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: clamp(1rem, 0.5rem + 2vw, 2.5rem);
+  align-items: start;
+  padding-top: clamp(3rem, 2rem + 3vw, 5rem);
+  border-top: 1px solid var(--ink);
+}
+
+.page-rc .rd-founder__mark {
+  display: grid;
+  place-items: center;
+  width: clamp(3.5rem, 3rem + 2vw, 5rem);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: var(--ink);
+  color: var(--accent);
+  font-size: 0.875rem;
+  letter-spacing: 0.06em;
+}
+
+.page-rc .rd-founder .rd-eyebrow {
+  margin: 0 0 1rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.page-rc .rd-founder__quote {
+  margin: 0;
+  max-width: 52rem;
+  font-family: var(--rc-display);
+  font-size: clamp(1.35rem, 1.1rem + 1vw, 2.1rem);
+  font-weight: 400;
+  font-stretch: 100%;
+  line-height: 1.3;
+  letter-spacing: -0.015em;
+  text-wrap: pretty;
+}
+
+.page-rc .rd-founder__quote p {
+  margin: 0;
+}
+
+.page-rc .rd-founder__sig {
+  margin: 1.5rem 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  color: var(--ink-3);
+}
+
+.page-rc .rd-founder__sig strong {
+  color: var(--ink);
+}
+
+/* ---- the dock: join ------------------------------------------------------------------------------------- */
+.rc-join {
+  position: relative;
+  z-index: 1;
+  padding-block: clamp(5rem, 3rem + 8vw, 10rem);
+  background: radial-gradient(120% 90% at 70% 100%, rgba(255, 229, 0, 0.09), rgba(255, 229, 0, 0) 60%), var(--rc-bg);
+}
+
+.rc-join__inner {
+  display: grid;
+  gap: clamp(2rem, 1rem + 3vw, 4rem);
+  align-items: center;
+}
+
+@media (min-width: 980px) {
+  .rc-join__inner {
+    grid-template-columns: minmax(0, 6fr) minmax(0, 5fr);
+  }
+}
+
+.rc-join__text {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.rc-join h2 {
+  font-size: clamp(2.6rem, 1.4rem + 5vw, 6.5rem);
+  font-stretch: 112%;
+  letter-spacing: -0.045em;
+  line-height: 0.92;
+}
+
+.rc-join__text > p:not(.rc-eyebrow) {
+  margin: 0;
+  max-width: 32rem;
+  color: var(--rc-muted);
+  font-size: clamp(1rem, 0.96rem + 0.25vw, 1.1875rem);
+}
+
+/* With the stage on, the closing section is lit by it: the episode lies under the form. */
+.rc-gl .rc-join {
+  background: radial-gradient(90% 70% at 50% 100%, rgba(11, 11, 10, 0) 0%, rgba(11, 11, 10, 0.55) 70%);
+}
+
+.rc-live .rc-dock--end {
+  opacity: 0;
+}
+
+/* ---- magnetic buttons: the label trails the button --------------------------------------------------------- */
+[data-rc-magnetic] {
+  will-change: transform;
+}
+
+/* ---- consent banner on a dark page: it is a paper card, so it takes paper's ink ------------------------------- */
+.page-rc .consent {
+  z-index: 50;
+  color: var(--ink);
+  color-scheme: light;
+}
+
+/* ---- small screens ----------------------------------------------------------------------------------------- */
+@media (max-width: 899px) {
+  .rc-motion .rc-ch--listen { --rc-h: 210vh; }
+  .rc-motion .rc-ch--cut { --rc-h: 190vh; }
+  .rc-motion .rc-ch--frame { --rc-h: 190vh; }
+  .rc-motion .rc-ch--caption { --rc-h: 180vh; }
+  .rc-motion .rc-ch--shorts { --rc-h: 190vh; }
+  .rc-motion .rc-ch--package { --rc-h: 180vh; }
+
+  .rc-motion .rc-ch__grid,
+  .rc-motion .rc-ch--listen .rc-ch__grid,
+  .rc-motion .rc-ch--cut .rc-ch__grid,
+  .rc-motion .rc-ch--caption .rc-ch__grid,
+  .rc-motion .rc-ch--package .rc-ch__grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1.25rem;
+  }
+
+  .rc-motion .rc-ch__pin {
+    padding-top: calc(var(--header-h) + 0.75rem);
+  }
+
+  .rc-motion .rc-ch--frame .rc-ch__text,
+  .rc-motion .rc-ch--caption .rc-ch__text {
+    margin-top: 0;
+  }
+
+  .rc-motion .rc-ch__text {
+    gap: 0.7rem;
+  }
+
+  .rc-motion .rc-ch__text p:not(.rc-ch__n) {
+    font-size: 0.9375rem;
+  }
+
+  .rc-motion .rc-ch__aside {
+    display: none;
+  }
+
+  .rc-motion .rc-ch__text::before {
+    inset: -6rem -2rem -3rem -2rem;
+    background: linear-gradient(rgba(11, 11, 10, 0.92) 55%, rgba(11, 11, 10, 0));
+  }
+
+  /* The transcript and the shorts list stay in the text for readers; on a phone the picture shows them. */
+  .rc-motion .rc-tx,
+  .rc-motion .rc-shorts {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+
+  .rc-motion .rc-cuts {
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+  }
+
+  .rc-motion .rc-cuts__tc {
+    font-size: 1.75rem;
+  }
+
+  .rc-motion .rc-cuts__row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.3rem;
+  }
+
+  .rc-motion .rc-ch--package .rc-ch__grid {
+    align-content: start;
+  }
+
+  .rc-motion .rc-ch--package .rc-spec {
+    grid-column: auto;
+  }
+
+  /* on a phone the card says it; the sentence stays for screen readers */
+  .rc-motion .rc-ch--package .rc-ch__text > p:not(.rc-ch__n) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+
+  .rc-motion .rc-spec {
+    padding: 0.25rem 0.9rem 0.4rem;
+  }
+
+  .rc-motion .rc-spec dl > div {
+    grid-template-columns: 6rem minmax(0, 1fr);
+    padding: 0.5rem 0;
+  }
+
+  .rc-motion .rc-spec dl > div:nth-child(4) {
+    display: none;
+  }
+
+  .rc-hud__file,
+  .rc-hud__ch {
+    display: none;
+  }
+
+  .rc-strip__svg {
+    height: 190px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rc-cue__line::after,
+  .rc-sound[aria-pressed="true"] .rc-sound__bars i {
+    animation: none;
+  }
+
+  .rc-switch__track span {
+    transition: none;
+  }
+}

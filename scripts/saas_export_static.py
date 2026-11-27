@@ -52,6 +52,7 @@ SITEMAP = ["/", "/pricing/", "/privacy/", "/terms/", "/refunds/", "/cookies/"]
 PREVIEWS = [
     ("redesign/a.html", "preview/a/index.html", "/preview/a/"),
     ("redesign/b.html", "preview/b/index.html", "/preview/b/"),
+    ("redesign/c.html", "preview/c/index.html", "/preview/c/"),
 ]
 
 GA4_ID = re.compile(r"^G-[A-Z0-9]{4,20}$")
@@ -254,7 +255,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allow-placeholder", action="store_true",
                         help="build even though SAAS_SUPPORT_EMAIL is unset or an example address (preview only)")
     parser.add_argument("--previews", action="store_true",
-                        help="also write the landing directions to preview/a/ and preview/b/ (scratch --out only)")
+                        help="also write the landing directions to preview/{a,b,c}/ (scratch --out only)")
     args = parser.parse_args(argv)
     support = os.environ.get("SAAS_SUPPORT_EMAIL", "").strip()
     if is_placeholder_email(support) and not args.allow_placeholder:

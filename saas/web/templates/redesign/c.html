@@ -1,0 +1,412 @@
+{% extends "base.html" %}
+{% from "partials/waitlist_form.html" import waitlist_form with context %}
+{% from "partials/clip.html" import clip_frame %}
+{% from "partials/marks.html" import scene %}
+{% from "redesign/_parts.html" import waitlist_count, founder_note with context %}
+
+{#
+  Direction C, "the cut". A preview for the owner; never linked, never in the sitemap.
+
+  The page is complete as plain DOM: every word here is real content, in reading order, for search engines and screen
+  readers. static/js/c/ adds a decorative WebGL layer (aria-hidden) that tells the same story as you scroll: a long
+  source ribbon is read word by word, cut between sentences into 9:16 shards, and the shards lock into three Shorts.
+  Without WebGL, or with prefers-reduced-motion, the page stays as written and shows the still poster below.
+
+  Prices: docs/saas/pricing.md (27 November 2026, the owner's launch prices). Competitor figures: the same file's
+  sourced table, clipping tools only (the two editors it lists "for completeness" are left out). x is the dot's
+  position on the chart's log scale, 0.2 to 12 rupees a minute; tests/saas/test_web_redesign_c.py checks every
+  figure against pricing.md and every x against the formula.
+#}
+{% set packs = [
+  {"name": "250 minutes", "price": "₹99", "minutes": "250", "per_min": 0.396, "x": 16.68, "r": 0},
+  {"name": "1,000 minutes", "price": "₹349", "minutes": "1,000", "per_min": 0.349, "x": 13.6, "r": 0},
+  {"name": "5,000 minutes", "price": "₹1,499", "minutes": "5,000", "per_min": 0.300, "x": 9.9, "r": 0},
+] %}
+{% set plans = [
+  {"name": "Creator", "month": "₹299", "year": "₹2,990", "minutes": "1,000", "per_min": 0.299, "per_min_year": 0.249, "x": 9.82, "x_year": 5.35, "r": -1, "r_year": 0, "note": ""},
+  {"name": "Pro", "month": "₹799", "year": "₹7,990", "minutes": "3,000", "per_min": 0.266, "per_min_year": 0.222, "x": 6.97, "x_year": 2.55, "r": -1, "r_year": 0, "note": ""},
+  {"name": "Studio", "month": "₹2,499", "year": "₹24,990", "minutes": "10,000", "per_min": 0.250, "per_min_year": 0.208, "x": 5.45, "x_year": 0.96, "r": 1, "r_year": -1, "note": "Priority queue"},
+] %}
+{% set rivals = [
+  {"tool": "WayinVideo", "plan": "Pro yearly, Black Friday sale", "inr": "0.89", "r": 0, "x": 36.46, "ref": "C16", "label": true},
+  {"tool": "WayinVideo", "plan": "Starter yearly, Black Friday sale", "inr": "1.03", "r": 0, "x": 40.03, "ref": "C16"},
+  {"tool": "WayinVideo", "plan": "Scale yearly, Black Friday sale", "inr": "1.08", "r": -1, "x": 41.19, "ref": "C16"},
+  {"tool": "2short.ai", "plan": "Premium monthly", "inr": "1.54", "r": 0, "x": 49.85, "ref": "C7"},
+  {"tool": "Reap", "plan": "Creator yearly", "inr": "1.54", "r": -1, "x": 49.85, "ref": "C17", "label": true},
+  {"tool": "2short.ai", "plan": "Pro monthly", "inr": "2.05", "r": 0, "x": 56.84, "ref": "C7"},
+  {"tool": "Reap", "plan": "Studio yearly", "inr": "2.24", "r": 0, "x": 59.01, "ref": "C17"},
+  {"tool": "Vizard", "plan": "Creator yearly (second-hand)", "inr": "2.24", "r": -1, "x": 59.01, "ref": "C2"},
+  {"tool": "WayinVideo", "plan": "Pro monthly, list price", "inr": "2.50", "r": 0, "x": 61.69, "ref": "C16"},
+  {"tool": "WayinVideo", "plan": "Starter monthly, list price", "inr": "2.96", "r": 0, "x": 65.81, "ref": "C16"},
+  {"tool": "2short.ai", "plan": "Lite monthly", "inr": "3.06", "r": -1, "x": 66.62, "ref": "C7"},
+  {"tool": "Klap", "plan": "Basic yearly (per clip, 8 clips per 30 min)", "inr": "3.61", "r": 0, "x": 70.66, "ref": "C3"},
+  {"tool": "Reap", "plan": "Creator monthly", "inr": "3.71", "r": -1, "x": 71.33, "ref": "C17"},
+  {"tool": "Quso", "plan": "Growth yearly", "inr": "3.78", "r": 1, "x": 71.79, "ref": "C6"},
+  {"tool": "Spikes Studio", "plan": "PRO+ yearly", "inr": "4.35", "r": 0, "x": 75.22, "ref": "C8"},
+  {"tool": "Submagic", "plan": "Starter yearly (per video, 30-min videos)", "inr": "4.44", "r": -1, "x": 75.72, "ref": "C4"},
+  {"tool": "Opus Clip", "plan": "Pro yearly (minutes second-hand)", "inr": "4.48", "r": 1, "x": 75.94, "ref": "C1", "label": true},
+  {"tool": "Vizard", "plan": "Creator monthly (second-hand)", "inr": "4.48", "r": -2, "x": 75.94, "ref": "C2"},
+  {"tool": "Submagic", "plan": "Starter monthly (per video, 30-min videos)", "inr": "5.33", "r": 0, "x": 80.18, "ref": "C4"},
+  {"tool": "Munch", "plan": "Premium", "inr": "5.56", "r": -1, "x": 81.21, "ref": "C5"},
+  {"tool": "Choppity", "plan": "Creator yearly", "inr": "6.92", "r": 0, "x": 86.55, "ref": "C9"},
+  {"tool": "Munch", "plan": "Essential", "inr": "7.04", "r": -1, "x": 86.97, "ref": "C5"},
+  {"tool": "Klap", "plan": "Basic monthly (per clip, 8 clips per 30 min)", "inr": "7.14", "r": 1, "x": 87.32, "ref": "C3"},
+  {"tool": "Quso", "plan": "Growth monthly", "inr": "7.57", "r": 0, "x": 88.75, "ref": "C6"},
+  {"tool": "Opus Clip", "plan": "Pro monthly (minutes second-hand)", "inr": "8.96", "r": 0, "x": 92.86, "ref": "C1"},
+  {"tool": "Opus Clip", "plan": "Starter monthly (minutes second-hand)", "inr": "9.27", "r": -1, "x": 93.7, "ref": "C1", "label": true},
+  {"tool": "Choppity", "plan": "Creator monthly", "inr": "9.88", "r": 0, "x": 95.25, "ref": "C9"},
+  {"tool": "Spikes Studio", "plan": "PRO+ monthly", "inr": "10.19", "r": -1, "x": 96.01, "ref": "C8"},
+] %}
+{% set rival_sources = [
+  ("C1", "Opus Clip", "https://www.opus.pro/pricing"),
+  ("C2", "Vizard", "https://vizard.ai/pricing"),
+  ("C3", "Klap", "https://klap.app/pricing"),
+  ("C4", "Submagic", "https://www.submagic.co/pricing"),
+  ("C5", "Munch", "https://www.munchstudio.com/pricing"),
+  ("C6", "Quso", "https://quso.ai/pricing"),
+  ("C7", "2short.ai", "https://www.2short.ai/pricing"),
+  ("C8", "Spikes Studio", "https://spikes.studio/pricing"),
+  ("C9", "Choppity", "https://www.choppity.com/pricing"),
+  ("C16", "WayinVideo", "https://wayin.ai/pricing/"),
+  ("C17", "Reap", "https://reap.video/pricing"),
+] %}
+{# Clip 1's sentences, as the model sees them: numbered, with who said each. #}
+{% set sentences = [
+  {"n": 213, "who": "Guest", "text": "…which was most of year two, honestly.", "in": false},
+  {"n": 214, "who": "Host", "text": "Nobody tells you the first hundred videos are practice.", "in": true},
+  {"n": 215, "who": "Guest", "text": "So what changed at video one hundred and one?", "in": true},
+  {"n": 216, "who": "Host", "text": "I stopped guessing what people wanted,", "in": true},
+  {"n": 217, "who": "Host", "text": "and started reading where they stopped watching.", "in": true},
+  {"n": 218, "who": "Guest", "text": "Wait, where do they stop?", "in": false},
+] %}
+
+{% block title %}{{ brand_name }}: Shorts that end where the sentence ends{% endblock %}
+{% block robots %}<meta name="robots" content="noindex, nofollow">{% endblock %}
+{% block styles %}
+<link rel="stylesheet" href="{{ asset('/static/css/landing.css') }}">
+<link rel="stylesheet" href="{{ asset('/static/css/redesign-c.css') }}">
+<noscript><style>.rc-poster{display:block}</style></noscript>
+{% endblock %}
+{% block head_extra %}
+<meta name="theme-color" content="#0b0b0a">
+{% if turnstile_site_key %}<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>{% endif %}
+{% endblock %}
+{% block scripts %}
+<script type="module" src="{{ asset('/static/js/waitlist.js') }}"></script>
+<script type="module" src="{{ asset('/static/js/redesign.js') }}"></script>
+<script type="module" src="{{ asset('/static/js/c/main.js') }}"></script>
+{% endblock %}
+{% block body_class %}page-rc{% endblock %}
+
+{% block content %}
+{# The WebGL layer. Decorative: everything it shows is also said in the text. #}
+<div class="rc-stage" data-rc-stage aria-hidden="true" data-rc-tiles='{{ demo_tiles|tojson }}'{% if demo_videos %} data-rc-clips="{{ demo_videos|map(attribute='src')|join('|') }}"{% endif %}>
+  <canvas class="rc-canvas" data-rc-canvas></canvas>
+</div>
+<div class="rc-hud mono" data-rc-hud aria-hidden="true" hidden>
+  <span class="rc-hud__file">episode-41-final.mp4</span>
+  <span class="rc-hud__tc tabular" data-rc-timecode>00:00:00.0</span>
+  <span class="rc-hud__ch" data-rc-chapter>Source</span>
+</div>
+<button class="rc-sound mono" type="button" data-rc-sound aria-pressed="false" hidden data-track="rc-sound">
+  <span class="rc-sound__bars" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span data-rc-sound-label>Sound off</span>
+</button>
+
+{# ---- hero ------------------------------------------------------------------------------------------------- #}
+<section class="rc-hero" data-track-section="hero" aria-labelledby="hero-title">
+  <div class="wrap rc-hero__inner">
+    <p class="rc-kicker mono"><span class="rc-rec" aria-hidden="true"></span>Long video in, Shorts out</p>
+    <h1 class="rc-hero__title" id="hero-title">
+      <span class="rc-line"><span>Shorts that end</span></span>
+      <span class="rc-line"><span>where the</span></span>
+      <span class="rc-line"><span class="rc-mark">sentence&nbsp;ends.</span></span>
+    </h1>
+    <div class="rc-hero__body">
+      <p class="rc-lede">Send a podcast, stream or talk. {{ brand_name }} finds the moments worth posting, cuts each one
+        between two sentences, captions it word by word and keeps the speaker in frame. You get back the MP4, a title,
+        description, hashtags, a thumbnail and times to post.</p>
+      {% if launch_mode == "waitlist" %}
+      <div class="rc-dock rc-dock--hero" id="join-hero">{{ waitlist_form("hero") }}</div>
+      {% else %}
+      <p class="rc-dock rc-dock--hero"><a class="btn btn--accent btn--lg" href="/signup" data-track="hero-cta-signup" data-rc-magnetic>Start free</a></p>
+      {% endif %}
+      {{ waitlist_count() }}
+      <p class="rc-fine">Free for your first {{ free_shorts }} Shorts or {{ free_minutes }} minutes of video,
+        whichever comes first.</p>
+    </div>
+  </div>
+  <p class="rc-cue mono" aria-hidden="true"><span class="rc-cue__line"></span>Scroll: one episode becomes three Shorts</p>
+
+  {# The still: shown without WebGL and under reduced motion. Drawn from the product's own clip frame. #}
+  <div class="rc-poster" aria-hidden="true">
+    <div class="rc-poster__strip">
+      {% for i in range(6) %}<div class="rc-poster__frame{% if i in (2, 3) %} is-cut{% endif %}">{{ scene() }}</div>{% endfor %}
+    </div>
+    <div class="rc-poster__shorts">
+      {% for t in demo_tiles %}
+      <div class="rc-poster__short rc-poster__short--{{ t.n }}">
+        {{ clip_frame(t.groups[0].split(" "), active=loop.index0 % 3, hook=t.hook, focus=t.focus, credit="@yourchannel") }}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+
+{# ---- the story: six beats, each a section of its own ---------------------------------------------------- #}
+<div class="rc-story" data-rc-story>
+
+  <section class="rc-ch rc-ch--listen" id="listen" data-rc-ch="listen" data-track-section="listen" aria-labelledby="ch-listen">
+    <div class="rc-ch__pin">
+      <div class="wrap rc-ch__grid">
+        <div class="rc-ch__text">
+          <p class="rc-ch__n mono"><span>01</span> Listen</p>
+          <h2 id="ch-listen">It reads every word before it cuts one.</h2>
+          <p>Paste a link or upload the file. The video is transcribed word by word, each word with its own timestamp,
+            in English or Hindi. When nobody is talking, it is read for motion, loudness and scene changes instead.</p>
+        </div>
+        <ol class="rc-tx" role="list" aria-label="Sentences 213 to 218 of the episode" data-rc-tx>
+          {% for s in sentences %}
+          {% if s.n == 214 %}<li class="rc-tx__cut" aria-hidden="true"><span class="mono">IN 14:02.3</span></li>{% endif %}
+          <li class="rc-tx__s{% if s.in %} is-in{% else %} is-out{% endif %}">
+            <span class="rc-tx__meta mono">{{ s.n }} &middot; {{ s.who }}</span>
+            <p>{% for w in s.text.split(" ") %}<span class="rc-w">{{ w }}</span>{% if not loop.last %} {% endif %}{% endfor %}</p>
+          </li>
+          {% if s.n == 217 %}<li class="rc-tx__cut" aria-hidden="true"><span class="mono">OUT 14:17.9</span></li>{% endif %}
+          {% endfor %}
+        </ol>
+      </div>
+    </div>
+  </section>
+
+  <section class="rc-ch rc-ch--cut" id="cut" data-rc-ch="cut" data-track-section="cut" aria-labelledby="ch-cut">
+    <div class="rc-ch__pin">
+      <div class="wrap rc-ch__grid">
+        <div class="rc-ch__text">
+          <p class="rc-ch__n mono"><span>02</span> Cut</p>
+          <h2 id="ch-cut">A cut can only fall between two sentences.</h2>
+          <p>The transcript goes to the model as numbered sentences and comes back as sentence numbers, not timestamps.
+            So no clip starts or stops halfway through one. You choose how many clips (1 to {{ max_clips }}) and the
+            longest each may run ({{ clip_seconds[0] }} to {{ clip_seconds[1] }} seconds).</p>
+        </div>
+        <dl class="rc-cuts" aria-label="Where clip 1 was cut">
+          <div class="rc-cuts__row"><dt class="mono">In</dt><dd><span class="rc-cuts__tc mono tabular">14:02.3</span><span class="rc-cuts__s">before sentence 214</span></dd></div>
+          <div class="rc-cuts__row"><dt class="mono">Out</dt><dd><span class="rc-cuts__tc mono tabular">14:17.9</span><span class="rc-cuts__s">after sentence 217</span></dd></div>
+        </dl>
+      </div>
+    </div>
+  </section>
+
+  <section class="rc-ch rc-ch--frame" id="frame" data-rc-ch="frame" data-track-section="frame" aria-labelledby="ch-frame">
+    <div class="rc-ch__pin">
+      <div class="wrap rc-ch__grid">
+        <div class="rc-ch__text">
+          <p class="rc-ch__n mono"><span>03</span> Frame</p>
+          <h2 id="ch-frame">Then each one is edited, not just trimmed.</h2>
+          <p>Weak sentences are dropped. Stutters, filler words and long pauses are cut. Wide footage sits full width over
+            a dimmed copy of itself, and the picture moves in on whoever is speaking, changing every 1 to 2.4 seconds,
+            only on a cut or a beat.</p>
+          <p class="rc-ch__aside">Emphasis gets a quick zoom, a shake and a sound. The effects are synthesised, so there
+            is nothing to license; music is optional and ducks under the voice.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="rc-ch rc-ch--caption" id="caption" data-rc-ch="caption" data-track-section="caption" aria-labelledby="ch-caption">
+    <div class="rc-ch__pin">
+      <div class="wrap rc-ch__grid">
+        <div class="rc-ch__text">
+          <p class="rc-ch__n mono"><span>04</span> Caption</p>
+          <h2 id="ch-caption">Captions keep time with the voice.</h2>
+          <p>One word lights up at a time, timed to the voice. A hook title holds the first 2.5 seconds, written from
+            what is actually said, and the creator’s name stays on screen for the whole clip.</p>
+          <p class="rc-ch__aside">If the source already has captions burned in, ours are left off so nothing shows
+            twice.</p>
+        </div>
+        <ul class="rc-anatomy mono" role="list" aria-label="What is on screen in a finished Short">
+          <li data-rc-part="bar">Progress bar</li>
+          <li data-rc-part="hook">Hook, first 2.5 s</li>
+          <li data-rc-part="picture">Picture, on the speaker</li>
+          <li data-rc-part="credit">Credit line</li>
+          <li data-rc-part="words">Word captions</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="rc-ch rc-ch--shorts" id="shorts" data-rc-ch="shorts" data-track-section="shorts" aria-labelledby="ch-shorts">
+    <div class="rc-ch__pin">
+      <div class="wrap rc-ch__grid">
+        <div class="rc-ch__text">
+          <p class="rc-ch__n mono"><span>05</span> Three Shorts</p>
+          <h2 id="ch-shorts">A 72-minute episode in. Three Shorts out.</h2>
+          <p>The source collapses to the three moments worth posting, each 1080&times;1920 with stereo sound, for
+            Shorts, Reels or TikTok.</p>
+        </div>
+        <ol class="rc-shorts" role="list" aria-label="The three Shorts cut from episode 41">
+          {% for t in demo_tiles %}{% set c = demo.clips[loop.index0] %}
+          <li class="rc-shorts__item">
+            <span class="rc-shorts__n mono">{{ t.n }}</span>
+            <span class="rc-shorts__hook">{{ t.hook }}</span>
+            <span class="rc-shorts__tc mono tabular">{{ c.start_label }} &rarr; {{ c.end_label }} &middot; {{ c.length }}</span>
+          </li>
+          {% endfor %}
+        </ol>
+      </div>
+    </div>
+  </section>
+
+  <section class="rc-ch rc-ch--package" id="package" data-rc-ch="package" data-track-section="package" aria-labelledby="ch-package">
+    <div class="rc-ch__pin">
+      <div class="wrap rc-ch__grid">
+        <div class="rc-ch__text">
+          <p class="rc-ch__n mono"><span>06</span> Package</p>
+          <h2 id="ch-package">Each one comes back ready to post.</h2>
+          <p>Choose before the job starts whether your logo and memes go in. When the clips are ready, rewrite any
+            title, description or hashtags in the browser, then download and post wherever you post.</p>
+        </div>
+        <div class="rc-spec" data-rc-spec>
+          <p class="rc-spec__head mono"><span>Package</span><span>Short 1 of 3</span></p>
+          <dl>
+            <div><dt class="mono">Video</dt><dd class="mono">clip-01.mp4 &middot; 1080&times;1920 &middot; 0:15.6</dd></div>
+            <div><dt class="mono">Thumbnail</dt><dd class="mono">clip-01.jpg</dd></div>
+            <div><dt class="mono">Title</dt><dd>The first 100 videos are practice</dd></div>
+            <div><dt class="mono">Description</dt><dd>Why the first hundred uploads matter less than what you learn from them. <span class="rc-spec__muted">Credit: @yourchannel</span></dd></div>
+            <div><dt class="mono">Hashtags</dt><dd class="mono">#shorts #podcast #creator</dd></div>
+            <div><dt class="mono">When to post</dt><dd class="mono">Tue 18:00 &middot; Thu 12:30 &middot; Sat 10:00</dd></div>
+          </dl>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+
+{# ---- pricing: the lights come up ------------------------------------------------------------------------ #}
+<section class="rc-price" id="pricing" data-track-section="pricing" aria-labelledby="price-title" data-rc-price>
+  <div class="wrap">
+    <header class="rc-price__head">
+      <p class="rc-eyebrow mono">Pricing, in rupees</p>
+      <h2 id="price-title">Our dearest minute is <span class="rc-rupee">₹0.40</span>.</h2>
+      <p class="rc-price__lede">One credit is one minute of the video you send. The smallest pack works out at
+        <span class="rc-rupee">₹0.40</span> a minute, a yearly Studio plan at <span class="rc-rupee">₹0.21</span>. The cheapest
+        of the {{ rivals|length }} clipping plans we priced is <span class="rc-rupee">₹0.89</span>, and that is a sale.</p>
+    </header>
+
+    <figure class="rc-strip" data-rc-strip>
+      <figcaption class="rc-strip__cap">
+        <span class="rc-strip__title">Price per minute of source video, at full use</span>
+        <span class="rc-strip__legend"><span class="rc-key rc-key--us" aria-hidden="true"></span>{{ brand_name }}, {{ packs|length + plans|length * 2 }} options
+          <span class="rc-key rc-key--them" aria-hidden="true"></span>11 other clipping tools, {{ rivals|length }} plans</span>
+      </figcaption>
+      {# SVG with percentage coordinates: positions never depend on style="" (the app can run a strict style CSP).
+         Rows (r) dodge dots that share a price; static/js/c/pricing.js re-dodges for the real width. #}
+      <div class="rc-strip__plot" data-rc-plot>
+        <svg class="rc-strip__svg" role="img" aria-label="On a scale from 20 paise to 12 rupees a minute, every {{ brand_name }} option sits between ₹0.21 and ₹0.40. The {{ rivals|length }} plans from other clipping tools start at ₹0.89 and run to ₹10.19." focusable="false">
+          <g class="rc-strip__axis" aria-hidden="true">
+            <line class="rc-strip__base" x1="0%" x2="100%" y1="84%" y2="84%"/>
+            {% for t, x in [("₹0.25", 5.45), ("₹0.50", 22.38), ("₹1", 39.31), ("₹2", 56.24), ("₹5", 78.62), ("₹10", 95.55)] %}
+            <line class="rc-strip__grid" x1="{{ x }}%" x2="{{ x }}%" y1="18%" y2="84%"/>
+            <text class="rc-strip__tick" x="{{ x }}%" y="97%" text-anchor="middle">{{ t }}</text>
+            {% endfor %}
+          </g>
+          <rect class="rc-strip__band" x="0.2%" y="22%" width="17.3%" height="56%" rx="10"/>
+          <g class="rc-strip__dots">
+            {% for p in packs %}<circle class="rc-dot rc-dot--us" cx="{{ p.x }}%" cy="{{ 50 + p.r * 11 }}%" r="6.5" data-row="{{ p.r }}" data-tip="{{ brand_name }}: {{ p.name }} pack, {{ p.price }}|₹{{ '%.2f' % p.per_min }} a minute"/>{% endfor %}
+            {% for p in plans %}<circle class="rc-dot rc-dot--us" cx="{{ p.x }}%" cy="{{ 50 + p.r * 11 }}%" r="6.5" data-row="{{ p.r }}" data-tip="{{ brand_name }}: {{ p.name }} monthly, {{ p.month }}|₹{{ '%.2f' % p.per_min }} a minute"/><circle class="rc-dot rc-dot--us" cx="{{ p.x_year }}%" cy="{{ 50 + p.r_year * 11 }}%" r="6.5" data-row="{{ p.r_year }}" data-tip="{{ brand_name }}: {{ p.name }} yearly, {{ p.year }}|₹{{ '%.2f' % p.per_min_year }} a minute"/>{% endfor %}
+            {% for r in rivals %}<circle class="rc-dot rc-dot--them" cx="{{ r.x }}%" cy="{{ 50 + r.r * 11 }}%" r="5.5" data-row="{{ r.r }}" data-tip="{{ r.tool }}: {{ r.plan }}|₹{{ r.inr }} a minute [{{ r.ref }}]"/>{% endfor %}
+          </g>
+          <g class="rc-strip__labels" aria-hidden="true">
+            <text class="rc-strip__us" x="0.6%" y="12%">{{ brand_name }} ₹0.21–₹0.40</text>
+            {% for r in rivals if r.label %}<text class="rc-strip__them" x="{{ r.x }}%" y="12%" text-anchor="middle">{{ r.tool }} ₹{{ r.inr }}</text>{% endfor %}
+          </g>
+        </svg>
+        <p class="rc-strip__tip mono" data-rc-tip hidden></p>
+      </div>
+      <p class="rc-strip__note">Our figures are for a job charged on the length of the video you send, which is most
+        jobs. A short video cut into many long clips is charged on what comes out instead (see below), so its minute
+        costs more.</p>
+    </figure>
+
+    <div class="rc-plans">
+      <div class="rc-plans__col">
+        <h3 class="rc-plans__h">Free</h3>
+        <p class="rc-plans__big"><span class="tabular">{{ free_shorts }}</span> Shorts <span class="rc-plans__or">or</span> <span class="tabular">{{ free_minutes }}</span> minutes</p>
+        <p class="rc-plans__note">Whichever comes first, once per person.</p>
+      </div>
+      <div class="rc-plans__col">
+        <h3 class="rc-plans__h">Packs <span class="rc-plans__tag mono">never expire</span></h3>
+        <ul class="rc-rows" role="list">
+          {% for p in packs %}
+          <li><span class="rc-rows__price rc-rupee tabular">{{ p.price }}</span><span class="rc-rows__min tabular">{{ p.minutes }} min</span><span class="rc-rows__per mono tabular">₹{{ '%.2f' % p.per_min }}/min</span></li>
+          {% endfor %}
+        </ul>
+      </div>
+      <div class="rc-plans__col" data-rc-billing="month">
+        <div class="rc-plans__top">
+          <h3 class="rc-plans__h">Monthly plans</h3>
+          <button class="rc-switch mono" type="button" role="switch" aria-checked="false" data-rc-yearly hidden data-track="pricing-yearly">
+            <span class="rc-switch__track" aria-hidden="true"><span></span></span>Yearly: 2 months free
+          </button>
+        </div>
+        <ul class="rc-rows" role="list">
+          {% for p in plans %}
+          <li><span class="rc-rows__name">{{ p.name }}</span><span class="rc-rows__price rc-rupee tabular"><span data-rc-month>{{ p.month }}<small>/mo</small></span><span data-rc-year hidden>{{ p.year }}<small>/yr</small></span></span><span class="rc-rows__min tabular">{{ p.minutes }} min a month</span><span class="rc-rows__per mono tabular"><span data-rc-month>₹{{ '%.2f' % p.per_min }}/min</span><span data-rc-year hidden>₹{{ '%.2f' % p.per_min_year }}/min</span></span></li>
+          {% endfor %}
+        </ul>
+        <p class="rc-plans__note">Yearly costs ten months: {% for p in plans %}{{ p.name }} {{ p.year }}{% if not loop.last %}, {% endif %}{% endfor %}. Unused minutes roll over for one month. Studio jobs go to the front of the queue.</p>
+      </div>
+    </div>
+
+    <ul class="rc-terms" role="list">
+      <li><strong>One unit.</strong> A credit is a minute of the video you send, rounded up once per job. A job that cuts
+        many long clips from a short video is charged three credits per finished minute instead, whichever is more.</li>
+      <li><strong>A failed job costs nothing.</strong> Its minutes come back on their own.</li>
+      <li><strong>API and MCP on every paid plan.</strong> No fee per clip, per export or per call.</li>
+    </ul>
+
+    <details class="rc-sources" data-track="pricing-sources">
+      <summary>All {{ rivals|length }} plans, how they were worked out, and sources</summary>
+      <p>Per minute = the plan’s price ÷ the minutes of source video it includes, at full use, from each tool’s pricing
+        page as recorded on 27 November 2026; where a page does not state the minutes, they are second-hand, and the
+        row says so. Dollar prices converted at $1 = ₹92.67 (FRED DEXINUS, 20 November 2026).
+        Klap is priced per clip and Submagic per video, so those assume 8 clips and one video per 30 minutes. Prices
+        change; check the page before you compare.</p>
+      <div class="table-wrap">
+        <table class="rc-table">
+          <caption class="visually-hidden">Price per minute of source video, by tool and plan</caption>
+          <thead><tr><th scope="col">Tool</th><th scope="col">Plan</th><th scope="col" class="num">₹ per minute</th></tr></thead>
+          <tbody>
+            {% for r in rivals %}<tr><td>{{ r.tool }} <a class="rc-ref mono" href="#src-{{ r.ref }}" data-track="price-ref-{{ r.ref|lower }}">{{ r.ref }}</a></td><td>{{ r.plan }}</td><td class="num mono tabular">₹{{ r.inr }}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <ol class="rc-sources__list" role="list">
+        {% for ref, tool, url in rival_sources %}
+        <li id="src-{{ ref }}"><span class="mono">{{ ref }}</span> {{ tool }}: <a href="{{ url }}" rel="nofollow noopener" target="_blank" data-track="price-source-{{ ref|lower }}">{{ url.split("//")[1].rstrip("/") }}</a></li>
+        {% endfor %}
+      </ol>
+    </details>
+  </div>
+</section>
+
+{{ founder_note() }}
+
+{# ---- the dock ------------------------------------------------------------------------------------------------ #}
+<section class="rc-join" id="join" data-track-section="join" aria-labelledby="join-title">
+  <div class="wrap rc-join__inner">
+    <div class="rc-join__text">
+      <p class="rc-eyebrow mono">Waitlist</p>
+      <h2 id="join-title">Send us the long one.</h2>
+      <p>We open in batches from the waitlist. Your first {{ free_shorts }} Shorts or {{ free_minutes }} minutes of video
+        are free, whichever comes first.</p>
+      {{ waitlist_count() }}
+    </div>
+    {% if launch_mode == "waitlist" %}
+    <div class="rc-dock rc-dock--end" data-rc-dock>{{ waitlist_form("end", full=true) }}</div>
+    {% else %}
+    <p class="rc-dock rc-dock--end"><a class="btn btn--accent btn--lg" href="/signup" data-track="join-cta-signup" data-rc-magnetic>Start free</a></p>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}

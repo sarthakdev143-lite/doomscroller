@@ -1,0 +1,16 @@
+GSAP 3.15.1 (gsap-core.js, CSSPlugin.js, index.js, Observer.js, ScrollTrigger.js)
+Copyright 2008-2026, GreenSock. All rights reserved. GSAP is owned by Webflow.
+
+Used under the Standard "No Charge" GSAP License:
+  https://gsap.com/standard-license
+  (effective 30 April 2025, last modified 30 May 2025, as read on 27 November 2026)
+
+What that licence says, in short (the page above is the licence; this note is not):
+  - Commercial use on a website or web application is permitted at no charge.
+  - Not permitted without Webflow's written consent: using GSAP in a tool that lets its users build visual
+    animations without code in competition with Webflow, or reverse engineering GSAP to build such a product.
+  - Proprietary notices and branding in the files must not be removed or altered. The @license headers in each
+    file here are kept exactly; the files were only minified (esbuild --minify --legal-comments=inline).
+  - Webflow may terminate the licence; on termination GSAP must be removed.
+
+Used here only on the marketing site (landing preview C) for scroll-driven page animation.
