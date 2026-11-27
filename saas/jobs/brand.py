@@ -292,7 +292,8 @@ def logo_file(user: User = Depends(require_user), db: Session = Depends(get_db))
     p = storage.resolve(logo.path) if logo else None
     if p is None or not p.is_file():
         raise ApiError(404, "not_found", "No logo uploaded.")
-    return FileResponse(p, media_type="image/png", headers={"Cache-Control": "private, max-age=300"})
+    # One URL for whichever logo is current, so the browser revalidates (ETag) rather than show a replaced one.
+    return FileResponse(p, media_type="image/png", headers={"Cache-Control": "private, no-cache"})
 
 
 @router.post("/api/brand/memes", status_code=201)

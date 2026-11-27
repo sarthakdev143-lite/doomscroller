@@ -89,7 +89,8 @@ class MockEngine:
             video.write_bytes(_MOCK_MP4 + i.to_bytes(4, "big"))
             thumb.write_bytes(_MOCK_JPG)
             length = min(float(options.get("max_clip_seconds", 60)), 30.0 + i)
-            manifest, excerpt = _mock_bundle(video, length)
+            manifest, excerpt = _mock_bundle(video, length, options=options, watermark_text=watermark_text,
+                                             logo_path=logo_path)
             clips.append({"path": str(video), "thumbnail_path": str(thumb), "duration_s": length,
                           "start_s": 60.0 * i, "end_s": 60.0 * i + length, "title": f"Mock clip {i + 1}",
                           "description": "A mock clip for testing.", "hashtags": ["#shorts", "#mock"],
@@ -121,21 +122,33 @@ class MockEngine:
                 "meter": {"wall_seconds": 0.01, "render": {"calls": 1}}}
 
 
-def _mock_bundle(video: Path, length: float) -> tuple[Path, Path]:
-    """What app.clipper.editor.write_bundle leaves beside a clip, in miniature."""
+def _mock_bundle(video: Path, length: float, *, options: Optional[dict] = None, watermark_text: Optional[str] = None,
+                 logo_path: Optional[str] = None) -> tuple[Path, Path]:
+    """What app.clipper.editor.write_bundle leaves beside a clip, in miniature (same keys and time fields:
+    every clip-timeline time is `*_s` seconds from the clip's first frame)."""
+    options = options or {}
     stem = video.stem
     excerpt = video.with_name(f"{stem}_source.mp4")
     excerpt.write_bytes(_MOCK_MP4)
     assets = video.with_name(f"{stem}_assets")
     assets.mkdir(exist_ok=True)
     (assets / "meme_0.gif").write_bytes(b"GIF89a")
+    logo = None
+    if logo_path and Path(logo_path).is_file():
+        (assets / "logo.png").write_bytes(Path(logo_path).read_bytes())
+        logo = f"{stem}_assets/logo.png"
     words = ["this", "is", "the", "moment"]
     manifest = {
         "version": 1, "clip": video.name, "excerpt": excerpt.name, "excerpt_offset_s": 0.0, "duration_s": length,
-        "moment": {"hook": "Watch this", "title": "Mock"}, "words": [], "layout": "framed", "options": {},
-        "logo": None, "captions": [{"i": n, "text": w, "start": n * 0.5, "end": n * 0.5 + 0.4} for n, w in enumerate(words)],
+        "moment": {"hook": "Watch this", "title": "Mock"}, "words": [], "layout": "framed",
+        "options": {"captions": bool(options.get("captions", True)), "broll": False,
+                    "memes": bool(options.get("memes", True)), "sfx": True, "music": False,
+                    "max_clip_seconds": int(options.get("max_clip_seconds", 60))},
+        "watermark_text": (watermark_text or "").strip(), "logo": logo,
+        "edit": {"segments": [[0.0, length]], "speed": 1.0},  # cut from speech, so memes can be placed
+        "captions": [{"i": n, "text": w, "start_s": n * 0.5, "end_s": n * 0.5 + 0.4} for n, w in enumerate(words)],
         "memes": [{"id": "giphy-mock1", "start_s": 2.0, "duration_s": 1.5}],
-        "cutaways": [], "beats": [{"at": 1.0, "text": "", "style": "punch"}],
+        "cutaways": [], "beats": [{"start_s": 1.0, "style": "punch", "text": ""}],
         "memes_available": [{"id": "giphy-mock1", "path": f"{stem}_assets/meme_0.gif", "title": "lol",
                              "provider": "giphy", "mood": "funny", "sound": None}],
     }

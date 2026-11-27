@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import signal
@@ -33,7 +34,7 @@ from ..db import SessionLocal
 from ..models.core import User
 from ..models.jobs import FINAL_STATUSES, RUNNING_STATUSES, Clip, ClipVersion, Job, Upload
 from ..auth.errors import ApiError
-from . import brand, service, ssrf, storage
+from . import brand, editor, service, ssrf, storage
 from .engine import Engine, EngineError, JobCanceled, get_engine
 
 log = logging.getLogger("saas.jobs.worker")
@@ -187,11 +188,28 @@ class Worker:
             manifest = storage.resolve(clip.manifest_path)
             if manifest is None or not manifest.is_file():
                 raise EngineError("not_editable", "This clip can't be edited (it was made before editing existed).")
+            try:
+                bundle = json.loads(manifest.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                bundle = None
+            if not isinstance(bundle, dict):
+                raise EngineError("not_editable", "This clip's edit data is unreadable.")
+            user = db.get(User, job.user_id)
+            if user is None:
+                raise EngineError("clip_gone", "That clip was deleted.")
             version = int(clip.version or 1) + 1
             stem = manifest.name[: -len("_manifest.json")] if manifest.name.endswith("_manifest.json") else manifest.stem
             out_path = manifest.parent / f"{stem}_v{version}.mp4"
-            spec = dict((job.options or {}).get("spec") or {})
-            logo_path, custom_memes = brand.engine_assets(db, job.user_id, {"logo": True, "custom_memes": True})
+            # What the customer asked for (stored on the version) never carries a watermark; the render gets
+            # the one the customer's plan says, always explicitly, so the engine never falls back to the
+            # watermark the clip was first made with.
+            spec = editor.customer_spec((job.options or {}).get("spec"))
+            watermark = editor.plan_watermark(db, user)
+            render_spec = {**spec, "watermark_text": watermark}
+            logo_path, custom_memes = brand.engine_assets(
+                db, job.user_id, {"logo": editor.logo_wanted(bundle, spec), "custom_memes": True})
+            db.execute(update(Job).where(Job.id == job_id).values(watermark=bool(watermark)))
+            db.commit()
             started = time.monotonic()
         except EngineError as exc:
             db.close()
@@ -205,7 +223,7 @@ class Worker:
         db.close()
         hb_stop, hb = self._start_heartbeat(job_id, started)
         try:
-            result = self.engine.rerender(manifest_path=str(manifest), spec=spec, out_path=out_path,
+            result = self.engine.rerender(manifest_path=str(manifest), spec=render_spec, out_path=out_path,
                                           on_stage=self._stage_callback(job_id), logo_path=logo_path,
                                           custom_memes=custom_memes)
             self._succeed_rerender(job_id, result, manifest.parent, version, spec)

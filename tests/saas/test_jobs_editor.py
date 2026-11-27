@@ -40,7 +40,7 @@ def test_edit_view_shows_words_memes_logo_and_limits(client, core, saas_db, made
     ids = [m["id"] for m in view["memes"]["available"]]
     assert ids[0] == "giphy-mock1" and ids[1].startswith("custom-") and len(ids[1]) == len("custom-") + 20
     assert "path" not in view["memes"]["available"][0]  # internal file paths never leave the server
-    assert view["logo"] == {"available": False, "url": None}
+    assert view["logo"] == {"available": False, "url": None, "in_clip": False, "showing": False}
     assert view["limits"]["free_left"] == core.rerender_free_per_clip and view["limits"]["max_memes"] == 10
 
 
@@ -61,7 +61,9 @@ def test_rerender_makes_a_new_version_and_keeps_the_old(client, core, saas_db, m
         "rerender_in_progress"
     w = worker(eng)
     assert w.run_one() == job["id"]
-    assert eng.rerenders[0]["spec"] == spec and eng.rerenders[0]["logo_path"].endswith(".png")
+    # Pro: no watermark, set by the server. The clip was made before the logo existed and the spec doesn't
+    # turn one on, so the re-render doesn't get it.
+    assert eng.rerenders[0]["spec"] == {**spec, "watermark_text": ""} and eng.rerenders[0]["logo_path"] is None
     assert client.get(f"/api/jobs/{job['id']}").json()["status"] == "done"
     saas_db.expire_all()
     clip = saas_db.get(Clip, clip_id)
@@ -130,8 +132,9 @@ def test_editor_has_no_idor(client, core, saas_db, made):
     checks = [client.get(f"/api/clips/{clip_id}/edit"),
               client.post(f"/api/clips/{clip_id}/render", json={"spec": {}}, headers=h2),
               client.get(f"/api/clips/{clip_id}/versions"),
-              client.get(f"/api/clips/{clip_id}/versions/1/video")]
-    assert [r.status_code for r in checks] == [404, 404, 404, 404]
+              client.get(f"/api/clips/{clip_id}/versions/1/video"),
+              client.get(f"/api/clips/{clip_id}/memes/giphy-mock1/file")]
+    assert [r.status_code for r in checks] == [404, 404, 404, 404, 404]
 
 
 def test_delete_removes_versions_and_bundle(client, core, saas_db, made):
@@ -174,3 +177,171 @@ def test_limits_mirror_the_pipeline():
     assert tuple(SPEC_LIMITS["logo_scale"]) == editor._LOGO_SCALE_RANGE
     assert tuple(SPEC_LIMITS["music_volume_db"]) == editor._MUSIC_DB_RANGE
     csrf  # noqa: B018
+
+
+# ---- round 7: what the browser editor needs, and what it must not control ----------------------------
+
+def _job(client, h, clips: int = 1):
+    """A finished job made now (so with whatever brand kit the customer has); -> (first clip id, engine)."""
+    from saas.jobs.engine import MockEngine
+
+    r = client.post("/api/jobs", json={"source_url": URL, "options": {"clips": clips}}, headers=h)
+    assert r.status_code == 201, r.text
+    eng = MockEngine()
+    assert worker(eng).run_one() == r.json()["id"]
+    return client.get(f"/api/jobs/{r.json()['id']}").json()["clips"][0]["id"], eng
+
+
+def _rerender(client, h, clip_id: str, spec: dict, eng):
+    """Post a spec and run it; -> (job id, what the engine was handed)."""
+    r = client.post(f"/api/clips/{clip_id}/render", json={"spec": spec}, headers=h)
+    assert r.status_code == 202, r.text
+    assert worker(eng).run_one() == r.json()["id"]
+    assert client.get(f"/api/jobs/{r.json()['id']}").json()["status"] == "done"
+    return r.json()["id"], eng.rerenders[-1]
+
+
+def test_the_watermark_comes_from_the_plan_never_the_spec(client, core, saas_db, sources):
+    from saas.common import utcnow
+    from saas.models.core import User
+    from saas.models.jobs import Clip
+
+    make_user(saas_db, "free@example.com", credits=10)  # granted credits, not bought: still the free tier
+    h = login(client, "free@example.com")
+    clip_id, eng = _job(client, h)
+    for posted in ("", None, "Totally legit"):
+        job_id, call = _rerender(client, h, clip_id, {"watermark_text": posted, "sfx": {"enabled": False}}, eng)
+        assert call["spec"]["watermark_text"] == core.brand_name, posted  # the free tier keeps its watermark
+        assert call["spec"]["sfx"] == {"enabled": False}
+        assert client.get(f"/api/jobs/{job_id}").json()["watermark"] is True
+    saas_db.expire_all()
+    assert saas_db.get(Clip, clip_id).spec == {"sfx": {"enabled": False}}  # never stored, so never re-posted
+    assert all("watermark_text" not in v["spec"]
+               for v in client.get(f"/api/clips/{clip_id}/versions").json()["versions"])
+    # A spec stored before this rule doesn't come back through the editor either.
+    saas_db.get(Clip, clip_id).spec = {"watermark_text": "", "hook": {"text": "x"}}
+    saas_db.commit()
+    view = client.get(f"/api/clips/{clip_id}/edit").json()
+    assert view["spec"] == {"hook": {"text": "x"}} and "max_watermark_chars" not in view["limits"]
+    # Once they've paid (credits, no subscription) there's no watermark, and their own text isn't one either.
+    user = saas_db.query(User).filter_by(email="free@example.com").one()
+    user.first_paid_at = utcnow()
+    saas_db.commit()
+    job_id, call = _rerender(client, h, clip_id, {"watermark_text": "Anything I like"}, eng)
+    assert call["spec"]["watermark_text"] == ""
+    assert client.get(f"/api/jobs/{job_id}").json()["watermark"] is False
+
+
+def test_paid_plans_never_get_a_watermark_or_their_own(client, core, saas_db, made, monkeypatch):
+    from saas.billing import catalog
+    from saas.jobs import editor
+    from saas.models.core import User
+
+    clip_id, h, eng = made  # Pro
+    for posted in ("Evil Corp", "", None):
+        _job_id, call = _rerender(client, h, clip_id, {"watermark_text": posted}, eng)
+        assert call["spec"] == {"watermark_text": ""}, posted
+    # A plan that doesn't say fails closed.
+    user = saas_db.query(User).filter_by(email="editor@example.com").one()
+    real = catalog.features_for
+    monkeypatch.setattr(catalog, "features_for",
+                        lambda db, u: {k: v for k, v in real(db, u).items() if k != "watermark"})
+    assert editor.plan_watermark(saas_db, user) == core.brand_name
+
+
+def test_a_rerender_never_adds_a_logo_nobody_asked_for(client, core, saas_db, made):
+    clip_id, h, eng = made  # made before the customer had a logo
+    client.post("/api/brand/logo", files={"file": ("logo.png", _png(), "image/png")}, headers=h)
+    logo = client.get(f"/api/clips/{clip_id}/edit").json()["logo"]
+    assert logo == {"available": True, "url": "/api/brand/logo/file", "in_clip": False, "showing": False}
+    _, call = _rerender(client, h, clip_id, {}, eng)
+    assert call["logo_path"] is None
+    _, call = _rerender(client, h, clip_id, {"logo": {"enabled": True, "position": "top-left"}}, eng)
+    assert call["logo_path"].endswith(".png")
+    assert client.get(f"/api/clips/{clip_id}/edit").json()["logo"]["showing"] is True
+    # A clip made with a logo gets the current one again, unless the spec turns it off.
+    clip2, eng2 = _job(client, h)
+    assert client.get(f"/api/clips/{clip2}/edit").json()["logo"]["in_clip"] is True
+    _, call = _rerender(client, h, clip2, {}, eng2)
+    assert call["logo_path"].endswith(".png")
+    _, call = _rerender(client, h, clip2, {"logo": {"enabled": False}}, eng2)
+    assert call["logo_path"] is None
+    assert client.get(f"/api/clips/{clip2}/edit").json()["logo"] == {
+        "available": True, "url": "/api/brand/logo/file", "in_clip": True, "showing": False}
+
+
+def test_logo_specs_that_cannot_render_are_refused_early(client, core, saas_db, made):
+    clip_id, h, _eng = made  # no logo in the clip or the brand kit
+    for spec in ({"logo": {"enabled": True}}, {"logo": {"position": "top-left"}}, {"logo": "x"}, {"logo": None}):
+        r = client.post(f"/api/clips/{clip_id}/render", json={"spec": spec}, headers=h)
+        assert r.status_code == 400 and r.json()["error"] == "invalid_spec", spec
+    r = client.post(f"/api/clips/{clip_id}/render", json={"spec": {"logo": {"enabled": False}}}, headers=h)
+    assert r.status_code == 202
+
+
+def test_edit_view_has_what_the_editor_needs(client, core, saas_db, made):
+    import json
+
+    from saas.jobs import storage
+    from saas.models.jobs import Clip
+
+    clip_id, h, eng = made
+    client.post("/api/brand/memes", files={"file": ("lol.gif", _gif(), "image/gif")}, headers=h)
+    view = client.get(f"/api/clips/{clip_id}/edit").json()
+    assert view["options"]["captions"] is True and {"sfx", "music", "broll", "memes"} <= set(view["options"])
+    assert set(view["words"][0]) == {"i", "text", "start_s", "end_s"} and view["words"][1]["start_s"] == 0.5
+    assert view["beats"][0]["start_s"] == 1.0
+    assert view["memes"]["editable"] is True
+    lib, custom = view["memes"]["available"]
+    assert lib["media_type"] == "image/gif" and lib["thumb_url"] == f"/api/clips/{clip_id}/memes/giphy-mock1/file"
+    assert custom["provider"] == "custom" and custom["media_type"] == "image/gif" and custom["url"]
+    r = client.get(lib["thumb_url"])
+    assert r.status_code == 200 and r.headers["content-type"] == "image/gif" and r.content == b"GIF89a"
+    # A reload while a re-render runs finds it and resumes the progress view.
+    assert view["active_job_id"] is None
+    job = client.post(f"/api/clips/{clip_id}/render", json={"spec": {}}, headers=h).json()
+    assert client.get(f"/api/clips/{clip_id}/edit").json()["active_job_id"] == job["id"]
+    worker(eng).run_one()
+    assert client.get(f"/api/clips/{clip_id}/edit").json()["active_job_id"] is None
+    # A clip cut without speech has no edit plan, so memes can't go on it.
+    path = storage.resolve(saas_db.get(Clip, clip_id).manifest_path)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["edit"] = None
+    path.write_text(json.dumps(data), encoding="utf-8")
+    assert client.get(f"/api/clips/{clip_id}/edit").json()["memes"]["editable"] is False
+
+
+def test_meme_files_are_only_the_clips_own_library(client, core, saas_db, made):
+    import json
+
+    from saas.jobs import storage
+    from saas.models.jobs import Clip
+
+    clip_id, h, _eng = made
+    path = storage.resolve(saas_db.get(Clip, clip_id).manifest_path)
+    (path.parent / "outside.gif").write_bytes(b"GIF89a")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    clip_file = data["clip"]
+    data["memes_available"] += [{"id": "out1", "path": "outside.gif"}, {"id": "out2", "path": "../../../x.gif"},
+                                {"id": "out3", "path": clip_file}, {"id": "out4", "path": str(path.parent / "outside.gif")}]
+    path.write_text(json.dumps(data), encoding="utf-8")
+    view = client.get(f"/api/clips/{clip_id}/edit").json()
+    assert [m["thumb_url"] for m in view["memes"]["available"][1:5]] == [None] * 4
+    for meme_id in ("out1", "out2", "out3", "out4", "nope", "..%2F..%2Fx.gif"):
+        assert client.get(f"/api/clips/{clip_id}/memes/{meme_id}/file").status_code == 404, meme_id
+
+
+def test_clip_files_are_never_cached_by_the_browser(client, core, saas_db, made):
+    from saas.jobs import storage
+
+    clip_id, h, eng = made
+    kinds = ("video", "download", "thumbnail")
+    before = {k: client.get(f"/api/clips/{clip_id}/{k}") for k in kinds}
+    _rerender(client, h, clip_id, {"sfx": {"enabled": False}}, eng)
+    after = {k: client.get(f"/api/clips/{clip_id}/{k}") for k in kinds}
+    signed = client.get(storage.signed_file_url(clip_id, "video")[0])
+    for r in [*before.values(), *after.values(), signed]:
+        assert r.status_code == 200 and r.headers["cache-control"] == "private, no-store"
+    assert after["video"].content != before["video"].content and signed.content == after["video"].content
+    # A numbered version never changes, so it may be cached.
+    assert client.get(f"/api/clips/{clip_id}/versions/1/video").headers["cache-control"] == "private, max-age=3600"

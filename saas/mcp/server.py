@@ -44,7 +44,7 @@ MAX_BODY = 1024 * 1024
 INSTRUCTIONS = (
     "Turns a long video (a YouTube/Vimeo/Twitch/etc. link the user has rights to) into finished vertical "
     "Shorts (1080x1920) with captions, framing, B-roll, sound effects and AI titles. Billing is in credits: "
-    "1 credit = 1 minute of SOURCE video, rounded up per job. Typical flow: get_balance -> estimate_video(url) "
+    "a job costs max(source minutes, 3 x finished minutes), each rounded up. Typical flow: get_balance -> estimate_video(url) "
     "-> create_clips(url) -> poll get_job(job_id) every 30-60 s until status is done/failed/canceled -> "
     "get_clip_links(clip_id) for download URLs. Jobs usually take 2-15 minutes. Always tell the user the "
     "credit cost from estimate_video before calling create_clips."
@@ -136,8 +136,8 @@ def build_server() -> MCPServer:
         return await _call(ctx, ("jobs:read",), fn)
 
     @server.tool(description=(
-        "Start a clipping job for one video link. Reserves credits (ceil of source minutes) immediately; unused "
-        "credits are returned if the job fails or is canceled. Returns the job (status 'queued'); poll get_job. "
+        "Start a clipping job for one video link. Reserves the most the job can cost (estimate_video's credits) "
+        "immediately; what the finished clips don't use is returned, and all of it if the job fails or is canceled. Returns the job (status 'queued'); poll get_job. "
         "Ask the user to confirm the cost from estimate_video first."),
         annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True))
     async def create_clips(

@@ -355,21 +355,47 @@ must also carry `/webhooks/*`** (BMC etc. can then only reach the origin through
   - The engine leaves `<clip>_manifest.json`, `<clip>_source.mp4` and `<clip>_assets/` beside each clip
     (clip dict keys `manifest_path`, `source_excerpt_path`). They are stored on the clip and deleted with
     it (delete or retention), together with every version.
-  - `GET /api/clips/{id}/edit` → `{clip_id, version, duration_s, spec, words, memes: {in_clip,
-    available}, cutaways, beats, hook, layout, logo: {available, url}, limits}`.
-    - `words` are the manifest's caption words `{i, text, start, end}` (what `captions.edits[].i` refers to).
-    - `memes.available` holds the clip's own library memes `{id, title, provider, mood}`, plus brand-kit
-      memes `{id: "custom-<sha1 of the stored file[:20]>", title, provider: "custom", url}`. That id is
-      the engine's custom-meme id; internal file paths are never returned.
-    - `limits` = `{max_memes 10, max_caption_chars 40, max_hook_chars 80, max_watermark_chars 40,
-      min_clip_s 3, meme_duration_s [0.5, 4], logo_scale [0.06, 0.25], music_volume_db [-30, -6],
-      free_rerenders, rerenders_used, free_left, credit_cost_after_free, balance}`. The spec limits mirror
+  - `GET /api/clips/{id}/edit` → `{clip_id, version, duration_s, spec, options, words, memes: {in_clip,
+    available, editable}, cutaways, beats, hook, layout, logo: {available, url, in_clip, showing},
+    active_job_id, limits}`.
+    - Every clip-timeline time is `*_s` seconds from the clip's first frame, in the manifest, the
+      MockEngine bundle and this view alike: `words` are the manifest's caption words
+      `{i, text, start_s, end_s}` (what `captions.edits[].i` refers to); `memes.in_clip` and `cutaways`
+      are `{…, start_s, duration_s}`; `beats` are `{start_s, style, text}`.
+    - `spec` is the clip's current spec (what differs from the first render), `options` the first
+      render's options from the manifest (`captions, broll, memes, sfx, music, max_clip_seconds`).
+    - `memes.editable` is false when the clip has no edit plan (not cut from speech): the engine refuses
+      memes on it. `memes.available` holds the clip's own library memes `{id, title, provider, mood,
+      thumb_url, media_type}` (provider lower-cased; `thumb_url`/`media_type` null when the file can't be
+      served), plus brand-kit memes `{id: "custom-<sha1 of the stored file[:20]>", title, provider:
+      "custom", media_type, url}` (an id already in the library is listed once). That id is the engine's
+      custom-meme id; internal file paths are never returned.
+    - `GET /api/clips/{id}/memes/{meme_id}/file` serves a library meme (`Cache-Control: private,
+      max-age=3600`): only an id the manifest lists, only a file inside the clip's `<stem>_assets/`, only
+      GIF/PNG/JPEG/WebP/MP4/WebM/MOV by suffix; anything else is 404.
+    - `logo.in_clip`: the first render had a logo; `logo.showing`: the current version shows one
+      (`spec.logo.enabled` when set, else `in_clip`); `logo.available`: there is a logo to show (the
+      brand kit's, at `url`, or the clip's own).
+    - `active_job_id`: the queued or running re-render of this clip, if any (a reload resumes following
+      `GET /api/jobs/{id}`).
+    - `limits` = `{max_memes 10, max_caption_chars 40, max_hook_chars 80, min_clip_s 3,
+      meme_duration_s [0.5, 4], logo_scale [0.06, 0.25], music_volume_db [-30, -6], free_rerenders,
+      rerenders_used, free_left, credit_cost_after_free, balance}`. The spec limits mirror
       app/clipper/editor.py, and a test keeps them in step.
     - A clip without a manifest answers 409 `not_editable`.
   - `POST /api/clips/{id}/render {spec}` → 202 job (`kind: "rerender"`, `clip_id`). The spec is the
     pipeline's: top-level keys ⊆ `trim, captions, hook, logo, memes, sfx, music, broll, watermark_text`,
     at most 32 KB (400 `invalid_spec` / 413 `spec_too_large` here). The engine validates the rest; a
     spec it can't apply fails the job with error `invalid_spec` and a customer-safe message.
+    - **The watermark is never the customer's.** `watermark_text` is dropped from every posted spec (and
+      from stored specs when shown); the worker always sends the engine an explicit `watermark_text` from
+      the customer's plan at render time: `SAAS_BRAND_NAME` on the free tier, `""` once they pay (a plan
+      without the flag keeps it). The job's `watermark` field says which.
+    - **A re-render never gains a logo by accident.** The brand-kit logo is passed (`logo_path`) only
+      when the first render had a logo or the spec sets `logo.enabled: true`, never when it says
+      `false`. Refused here with 400 `invalid_spec`: `logo` that isn't an object, `logo.enabled: true`
+      with no logo in the clip or the brand kit, and `position`/`scale` without `enabled` on a clip that
+      had no logo.
     - The first `SAAS_RERENDER_FREE_PER_CLIP`=5 re-renders that haven't failed are `funding: "included"`.
       After that each one reserves `SAAS_RERENDER_CREDIT_COST`=1 paid credit, charged on success and
       released on failure (402 `insufficient_credits`).
@@ -381,7 +407,11 @@ must also carry `/webhooks/*`** (BMC etc. can then only reach the origin through
     earlier versions are kept until the clip's retention ends.
   - `GET /api/clips/{id}/versions` → `{clip_id, current, versions: [{version, current, created_at,
     duration_s, size_bytes, spec, credits_charged, job_id, video_url}]}`.
-  - `GET /api/clips/{id}/versions/{n}/video` streams a version.
+  - `GET /api/clips/{id}/versions/{n}/video` streams a version (`private, max-age=3600`: a numbered
+    version never changes).
+  - `/api/clips/{id}/video|download|thumbnail` and the signed `/files/clips/{id}/{kind}` always name the
+    newest version, so they answer `Cache-Control: private, no-store` (a browser must never hand back a
+    copy cached before a re-render). `/api/brand/logo/file` is `private, no-cache`.
   - Every editor route is owner-scoped (404 for anyone else's clip).
 - **Brand kit** (per user, under `SAAS_DATA_DIR/<user>/brand/`): `GET /api/brand` → `{logo, memes, limits}`;
   `POST /api/brand/logo` (multipart `file`; PNG/JPEG/WebP, SVG only when a server-side renderer is

@@ -68,10 +68,13 @@ async def serve_package_zip(clip: Clip, tz: Optional[str]) -> FileResponse:
 
 
 def serve_clip_file(clip: Clip, kind: str) -> FileResponse:
+    # These URLs always name the clip's newest version, and a re-render can replace it at any moment (even
+    # the first one, cached before any edit existed), so a browser must never keep a copy. Fixed versions
+    # are cacheable at /api/clips/{id}/versions/{n}/video.
     path = service.clip_file(clip, kind)
+    headers = {"Cache-Control": "private, no-store"}
     if kind == "thumbnail":
-        return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})
-    headers = {"Cache-Control": "private, max-age=3600"}
+        return FileResponse(path, media_type="image/jpeg", headers=headers)
     if kind == "download":
         return FileResponse(path, media_type="video/mp4", filename=_download_name(clip), headers=headers)
     return FileResponse(path, media_type="video/mp4", headers=headers)  # Starlette answers Range with 206
