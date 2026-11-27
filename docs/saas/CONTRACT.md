@@ -218,7 +218,12 @@ must also carry `/webhooks/*`** (BMC etc. can then only reach the origin through
   come from `edge/functions/_middleware.js`, which replaces any CSP in `public/_headers` on HTML pages.
 
 ### Billing (core agent) — `saas.billing`
-- Credits are **minutes of source video**, rounded up per job; 1 credit = 1 source minute.
+- Credits are **minutes of source video**; 1 credit = 1 source minute. **A job costs
+  max(ceil(source minutes), 3 x ceil(finished minutes))** (`SAAS_FINISHED_MINUTE_MULTIPLIER`=3; 0 = source
+  minutes only). It reserves the most the options allow (finished = clips x max_clip_seconds) and settles on
+  the real finished length, never above the reservation; `job.charge_basis` records which term won. Normal jobs
+  pay source minutes (23 min, 3 x 25 s -> 23); a short source cut into many long clips pays for the output
+  (5 min, 10 x 60 s -> 30). The free meters use the same number. See docs/saas/pricing.md.
 - **Free tier**: once per verified identity (one inbox after Gmail dot/+tag folding, one device
   fingerprint, and the risk verdict must allow it), **10 shorts OR 10 source minutes, whichever runs out
   first**, watermarked. Two meters on the account (`free_minutes`, `free_shorts`), separate from paid
@@ -226,20 +231,18 @@ must also carry `/webhooks/*`** (BMC etc. can then only reach the origin through
   they are admin-editable. A job is funded entirely by the free meters when they cover its minutes
   *and* its requested clip count, otherwise entirely by paid credits; settling a free job charges the
   minutes used and the clips actually produced and returns the rest. Granted when the email is verified.
-- **Prices are provisional and unpublished.** `seed_catalog.json` holds the memo's section-0 table:
-  - Packs: S 250 credits/$4, M 1,000/$12, L 5,000/$49.
-  - Plans, monthly / annual: Creator 1,000/mo $10/$100, Pro 3,000 $27/$270, Studio 10,000 $89/$890,
-    Pro BYOK 3,000 $13/$130.
-  - India (INR tier): Lite 300 ₹299/₹2,990 (India only), Creator ₹849/₹8,490, Pro ₹2,499/₹24,990,
-    Studio ₹8,399/₹83,990.
+- **Prices (owner-approved, published, rupees only)** in `seed_catalog.json`, comparison in
+  docs/saas/pricing.md:
+  - Packs (never expire): ₹99 = 250 min, ₹349 = 1,000 min, ₹1,499 = 5,000 min.
+  - Plans, monthly / yearly (10x monthly, 1-month rollover): Creator 1,000/mo ₹299 / ₹2,990, Pro 3,000/mo
+    ₹799 / ₹7,990, Studio 10,000/mo ₹2,499 / ₹24,990.
+  - API + MCP on every paid plan; priority queue on Studio (paid plans also queue ahead of the free tier).
+  - No USD, PPP or BYOK rows; the code paths for regional tiers and other currencies remain.
 
-  Every paid plan and pack has `published=false` (`billing_plans.published`, `billing_packs.published`).
-  The catalog API lists only published items and checkout refuses unpublished ones (404), until the owner
-  approves and they're flipped to true. Payments that arrive anyway (e.g. BMC) are still honoured. Not
-  implemented: the memo's charging rule `max(source minutes, 3 x finished minutes)`; charging is still
-  source minutes. **Web agent:** `saas/web/routes.py` falls back to reading `seed_catalog.json` when the
-  live catalog is empty, so it must skip `"published": false` items too, or the provisional prices show
-  on the dynamic landing page. The static export uses no prices, so it is unaffected.
+  `billing_plans.published` / `billing_packs.published` still gate listing and checkout (404), so an item
+  can be hidden by flipping it. If `SAAS_DEFAULT_CURRENCY` isn't INR, the catalog still shows and sells the
+  rupee prices (single-currency fallback); the owner's `.env.saas` sets INR. **Web agent:** the landing page's
+  seed-file fallback (`saas/web/routes.py`) should also skip `"published": false` items.
 - `catalog.public_catalog(db, country: str | None) -> {"currency", "plans": [...], "packs": [...],
   "free": {minutes, shorts, rule, features}}` —
   plans and packs are DB rows editable in admin (seeded from `saas/billing/seed_catalog.json`), with
@@ -273,7 +276,10 @@ must also carry `/webhooks/*`** (BMC etc. can then only reach the origin through
   `current_period_start`. Mapping is catalog data on `Price.provider_refs`: `bmc_level_id` /
   `bmc_level_name` (membership level -> plan price, same `duration_type`), `bmc_extra_id` (extra -> pack
   price, x quantity); fallback is an exact amount+currency match. Amounts are BMC major units; paid amount
-  must cover our price or the payment is rejected and flagged. Events handled: `donation.created`,
+  must cover what BMC charges for the item or the payment is rejected and flagged. BMC accounts default to
+  USD while our catalog is in rupees, so an item can record the BMC page's exact charge in `provider_refs`
+  (`bmc_amount_minor` + `bmc_currency`, set with `saas_manage.py bmc-map ... --bmc-amount 1.07 --bmc-currency
+  USD`). BMC checkouts and webhooks are then checked against it, and otherwise against our own price. Events handled: `donation.created`,
   `extra_purchase.created` (credit a pack), `membership.started`/`membership.updated` (an active
   membership with a new `current_period_start` = a paid period: monthly credits with the rollover cap),
   `membership.cancelled` (ends at period end), `membership.paused`, `donation.refunded`,
@@ -307,8 +313,11 @@ must also carry `/webhooks/*`** (BMC etc. can then only reach the origin through
   and a `flags["chargeback"|"refund"]` note, and new jobs are refused until an admin clears the hold.
 
 ### Jobs (core agent) — `saas.jobs`
-- `POST /api/jobs/estimate {url}` → `{ok, title, duration_s, thumbnail, credits, balance, free: {minutes,
-  shorts}, funding: "free"|"credits", reason?, message?}` (a refused link answers 200 with `ok:false`).
+- `POST /api/jobs/estimate {url, clips?=3, max_clip_seconds?=60}` → `{ok, title, duration_s, thumbnail,
+  credits, basis: "source"|"finished", credits_source, credits_finished_max, clips, max_clip_seconds, balance,
+  free: {minutes, shorts}, funding: "free"|"credits", reason?, message?}`. `credits` is what the job would
+  reserve under the charge rule (see Billing); a refused link answers 200 with `ok:false`. Same body and
+  fields on `/api/v1/estimate` and the MCP `estimate_video` tool. Job objects carry `charge_basis`.
 - `POST /api/uploads` (multipart, streamed, size-capped, ffprobe-validated) → `{upload_id, duration_s, credits}`.
 - `POST /api/jobs {source_url | upload_id, options}` with options
   `{clips: 1-20, language: "auto"|"en"|"hi", layout: "framed"|"fill", captions: bool, broll: bool,
@@ -427,7 +436,14 @@ def clip_to_directory(source: str, out_dir: Path, *, count: int = 3, language: s
                       music_dir: Path | None = None, shared_cache_dir: Path | None = None) -> dict
 # -> {"source": {"title", "duration_s", "author"}, "clips": [{"path", "thumbnail_path", "duration_s",
 #     "start_s", "end_s", "title", "description", "hashtags", "score", "language", "memes_used",
-#     "kind", "hook"}], "warnings": [str], "meter": <metering summary>}
+#     "kind", "hook", "manifest_path", "source_excerpt_path"}], "warnings": [str], "meter": <metering summary>}
+
+def rerender_clip(manifest_path: str | Path, spec: dict | None, out_path: str | Path, *,
+                  custom_memes: Sequence[str] = (), logo_path: str | None = None,
+                  sfx_pack_dir: Path | None = None, music_dir: Path | None = None,
+                  cache_dir: Path | None = None,
+                  on_stage: Callable[[str, float], None] | None = None) -> dict
+# -> the same clip dict (+ "manifest_path", "source_excerpt_path" of the ORIGINAL bundle, + "meter")
 ```
 Landed (pipeline agent). No DB writes, no reads of channel/growth state, every file under `out_dir`
 (downloads, stock/meme caches and transcripts go to `out_dir/.cache` unless `cache_dir` is given).
@@ -448,12 +464,88 @@ the caller opened one, else its own; `meter` is its summary.
 - `custom_memes`: the customer's GIF/MP4/WebM/MOV/PNG/JPG/WebP files, offered before the meme library on
   each reaction beat, deduped and given a sound like library memes. Not credited in the description.
 - `language`: `"en"`/`"hi"` is a hint (Hindi skips the Deepgram pass and goes to Sarvam); clips follow
-  the detected speech. `sfx_pack_dir` defaults to the deployment's configured pack; `music_dir` defaults
-  to an empty folder, i.e. the zero-copyright synthesised bed.
+  the detected speech. Hindi clips carry no word-by-word captions (`timed` is false): they show the
+  hook and short summary lines, so their manifest's `captions` list is empty. `music_dir` defaults to an
+  empty folder, i.e. the zero-copyright synthesised bed.
+- Sound licensing: `sfx_pack_dir` defaults to the **CC0-only pack** (`CLIP_CC0_SFX_DIR`, default
+  `CONTENT_DIR/sfx_cc0`), never the owner's meme-sound pack. It is synthesised on first use if missing;
+  rebuild it with `python scripts/fetch_sfx.py --cc0` (CC0 Freesound sounds per reaction mood when
+  `FREESOUND_API_KEY` is set, else synthesised; `--source synth` forces synthesis). Its `MANIFEST.json`
+  names every file's source URL, author and licence; `content/` is gitignored, so a deployment builds it.
 - AI calls in a SaaS process should use `CLIP_AI_BACKEND=api` with `CLIP_AI_API_PROVIDER=anthropic`
   (`ANTHROPIC_API_KEY`) or `openai_compatible` (`CLIP_AI_API_BASE_URL`, `CLIP_AI_API_KEY`,
-  `CLIP_AI_API_MODEL`; Gemini and Groq free tiers work). Optional STT: `CLIP_STT_PROVIDER=openai_compatible`
-  with `CLIP_STT_BASE_URL`/`CLIP_STT_API_KEY` (Groq `whisper-large-v3-turbo`).
+  `CLIP_AI_API_MODEL`, plus `CLIP_AI_API_VISION_MODEL` for a model that takes images). Optional STT:
+  `CLIP_STT_PROVIDER=openai_compatible` with `CLIP_STT_BASE_URL`/`CLIP_STT_API_KEY`/`CLIP_STT_MODEL`.
+  On `openai_compatible` an empty `CLIP_AI_API_VISION_MODEL` means no vision: pictures are never sent to
+  the text model, B-roll is off (warning per clip), burned-in captions are not checked, and visual moments
+  are ranked by rules (one job warning).
+- **Groq free preset** (Groq's model list checked 2026-11-27: `openai/gpt-oss-120b` and
+  `whisper-large-v3-turbo` are production models; Groq lists no vision model; base-tier limits for
+  gpt-oss-120b are 30 RPM / 1K RPD / 8K TPM / 200K TPD, whisper 7,200 audio-seconds per hour, 28,800 per day):
+  ```
+  CLIP_AI_BACKEND=api
+  CLIP_AI_API_PROVIDER=openai_compatible
+  CLIP_AI_API_BASE_URL=https://api.groq.com/openai/v1
+  CLIP_AI_API_KEY=<groq key>
+  CLIP_AI_API_MODEL=openai/gpt-oss-120b
+  CLIP_AI_API_EFFORT=low
+  CLIP_AI_API_MAX_TOKENS=2048
+  CLIP_STT_PROVIDER=openai_compatible
+  CLIP_STT_BASE_URL=https://api.groq.com/openai/v1
+  CLIP_STT_API_KEY=<groq key>
+  CLIP_STT_MODEL=whisper-large-v3-turbo
+  ```
+  Groq reserves the reply budget (`max_tokens`) against the 8K tokens-per-minute limit, so the budget is
+  capped at 2048; a "Request too large" reply is retried once with a budget that fits. A long source's
+  moment-picking prompt can still exceed 8K on its own; that call then fails and moments are picked by
+  rules. Not yet run against the live API (waits for the owner's key).
+
+**Editing (re-render) seam.** Clips stay burned-in; an edit is a server-side re-render. For every clip,
+`clip_to_directory` also writes, beside it:
+- `<clip>_source.mp4`: the source from 2s before the cut to 2s after (starting on a whole second),
+  re-encoded near-losslessly (x264 CRF 16, AAC 192k) so its first frame is exactly `excerpt_offset_s`;
+- `<clip>_assets/`: the stock windows, meme files and sounds, music bed, ending sting and logo it used;
+- `<clip>_manifest.json` (`version: 1`): `duration_s`, `excerpt`, `excerpt_offset_s`, `moment`
+  (start/end in excerpt seconds, `hook`, `title`, ...), the per-second `signals` slice, `language`, `timed`,
+  `layout`, `options`, `brand`, `watermark_text`, `logo`, `music`, `render_settings`, the full `edit` plan
+  (segments, words, beats, reactions, memes, cutaways in excerpt seconds) and the clip-timeline view an
+  editor shows, every time in seconds from the clip's first frame:
+  `captions: [{i, text, start_s, end_s}]`, `memes: [{id, start_s, duration_s, sound}]`,
+  `cutaways: [{stock_id, start_s, duration_s, query}]`, `beats: [{start_s, style, text}]`,
+  `memes_available: [{id, title, provider, mood, ...}]`. Asset paths are relative to the manifest's folder
+  and a re-render refuses any that resolve outside it.
+A failed bundle costs only later editing (a warning; the clip still ships, with `manifest_path: null`).
+
+`rerender_clip` applies `spec` to the ORIGINAL manifest: the spec is the whole desired edit, not a delta
+on the last re-render, and a re-render writes no new manifest. Every key is optional; an omitted key means
+"as the original". Times are on the original clip's timeline, whatever the trim.
+```
+{"trim": {"start_s", "end_s"},                         # >= 3s kept; clamped to the clip
+ "captions": {"enabled": bool, "edits": [{"i", "text"}]},   # i from manifest captions; text <= 40 chars
+ "hook": {"enabled": bool, "text": str},               # <= 80 chars
+ "logo": {"enabled": bool, "position": "top-left"|"top-right"|"bottom-left"|"bottom-right",
+          "scale": 0.06-0.25},                         # share of the 1080px width; top-right moves memes left
+ "memes": [{"id", "start_s", "duration_s": 0.5-4.0, "sound": bool}],  # the full list; [] removes all
+ "sfx": {"enabled": bool},                             # off also drops the ending sting and its held frame
+ "music": {"enabled": bool, "volume_db": -30..-6},
+ "broll": {"enabled": bool},                           # false drops the cutaways; true keeps the original ones
+ "watermark_text": str | null}                         # <= 40 chars; null or "" removes it
+```
+Unknown keys, wrong types, unknown caption indexes, text a font cannot draw and memes whose id is neither
+in `memes_available` nor one of the passed `custom_memes` raise `ClipError("invalid_spec")`; numbers are
+clamped; control characters are removed and ASS override braces neutralised. Memes overlapping in time are
+shortened to end where the next begins (two starting <0.5s apart is an error). Memes can only be placed
+on speech clips (a visual clip's manifest has `edit: null`). A missing or tampered bundle raises
+`invalid_manifest`; an ffmpeg failure `render_failed`. A trim that cuts the end also drops the ending sting
+(it belonged to the original last line). Logo corners: top corners sit under the progress bar; in the
+framed layout the bottom corners are the picture's own lower corners (captions sit under the picture), in
+fill they sit under the captions and above the Shorts title; bottom-right keeps clear of the Shorts button
+column. A top-right logo moves memes to the left. `logo_path` is the customer's current logo: it
+replaces the clip's own logo file, and is what a spec that turns a logo on uses for a clip made without
+one; it never adds a logo the spec did not ask for. `custom_memes` are the customer's files whose ids
+(`custom-<sha1>`) the spec may name. A re-render makes no network call and no AI call,
+renders the same output for the same manifest and spec, and is metered (`meter` in the result, or the
+caller's active meter). Whether a plan may clear `watermark_text` is the core's decision.
 
 ### Customer pages (web agent) — `saas.web`
 `/` landing · `/pricing` · `/waitlist/thanks` · `/login` · `/signup` · `/verify-email` · `/forgot` ·
@@ -463,11 +555,12 @@ the caller opened one, else its own; `meter` is its summary.
 `X-CSRF-Token` read from the `csrf` cookie. Design tokens live in `saas/web/static/css/tokens.css`;
 the admin panel imports them.
 
-## Preliminary pricing (placeholder until docs/saas/costs-and-pricing.md lands)
+## Pricing (owner-approved, in rupees)
 
-Seed only; every number is admin-editable data, not code.
+Seeded data, admin-editable; details and the competitor comparison in docs/saas/pricing.md.
 - Free: 10 shorts OR 10 source minutes, whichever comes first, once per verified identity (not per
   email), watermark on output (seeded in the free plan's features; see Billing).
-- Packs (never expire): 60 / 300 / 1000 credits.
-- Plans: Starter, Pro, Studio monthly with included credits, 1-month rollover cap, annual = 2 months free.
-  Studio includes API + MCP access and priority queue.
+- Packs (never expire): ₹99 = 250 min, ₹349 = 1,000 min, ₹1,499 = 5,000 min.
+- Plans: Creator ₹299 (1,000 min/mo), Pro ₹799 (3,000), Studio ₹2,499 (10,000); yearly = 10x monthly;
+  1-month rollover cap; API + MCP on every paid plan; priority queue on Studio.
+- A job costs max(ceil(source minutes), 3 x ceil(finished minutes)).

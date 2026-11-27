@@ -356,9 +356,10 @@ class Worker:
                 actual_s = float(src.get("duration_s") or 0)
             except (TypeError, ValueError):
                 actual_s = 0.0
-            charge = job.credits_reserved
-            if actual_s > 0:
-                charge = min(job.credits_reserved, service.credits_for(actual_s))
+            # max(ceil(source minutes), 3 x ceil(finished minutes)), measured, never above the reservation.
+            finished_s = sum(float(r.duration_s or 0) for r in rows)
+            charge, basis = service.charge_for(actual_s if actual_s > 0 else job.source_duration_s, finished_s)
+            charge = min(job.credits_reserved, charge)
             shorts = min(len(rows), job.shorts_reserved) if job.funding == "free" else 0
             notes = [str(w)[:300] for w in (result.get("warnings") or []) if w][:10]
             asked = int((job.options or {}).get("clips", len(rows)))
@@ -367,7 +368,7 @@ class Worker:
             now = utcnow()
             res = db.execute(update(Job).where(Job.id == job_id, Job.status.in_(RUNNING_STATUSES))
                              .values(status="done", stage="done", progress=1.0, finished_at=now, credits_charged=charge,
-                                     shorts_charged=shorts, notes=notes,
+                                     charge_basis=basis, shorts_charged=shorts, notes=notes,
                                      meter=_safe_meter(result.get("meter")),
                                      source_title=(str(src.get("title"))[:300] if src.get("title") else job.source_title)))
             if res.rowcount != 1:

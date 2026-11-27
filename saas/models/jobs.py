@@ -59,6 +59,7 @@ class Job(Base):
     options: Mapped[dict] = mapped_column(JSON, default=dict)
     credits_reserved: Mapped[int] = mapped_column(Integer, default=0)
     credits_charged: Mapped[int] = mapped_column(Integer, default=0)
+    charge_basis: Mapped[str] = mapped_column(String(8), default="source")  # source | finished
     funding: Mapped[str] = mapped_column(String(8), default="credits")  # credits | free
     shorts_reserved: Mapped[int] = mapped_column(Integer, default=0)
     shorts_charged: Mapped[int] = mapped_column(Integer, default=0)

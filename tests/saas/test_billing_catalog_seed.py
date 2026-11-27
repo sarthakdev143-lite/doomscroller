@@ -1,21 +1,16 @@
-"""The product seed catalog: the memo's provisional prices, every paid item unpublished until the owner
-approves, and unpublished items neither listed nor purchasable."""
+"""The product seed catalog: the owner's rupee prices, all published, API + MCP on every paid plan, priority on
+Studio; unpublished items (an admin can still hide one) are neither listed nor purchasable."""
 from __future__ import annotations
 
 import pytest
 
 from core_fixtures import login, make_user  # noqa: F401
 
-MEMO_USD = {("plan", "creator", "month"): 1000, ("plan", "creator", "year"): 10000,
-            ("plan", "pro", "month"): 2700, ("plan", "pro", "year"): 27000,
-            ("plan", "studio", "month"): 8900, ("plan", "studio", "year"): 89000,
-            ("plan", "pro-byok", "month"): 1300, ("plan", "pro-byok", "year"): 13000,
-            ("pack", "pack-s", "once"): 400, ("pack", "pack-m", "once"): 1200, ("pack", "pack-l", "once"): 4900}
-MEMO_INR = {("plan", "india-lite", "month"): 29900, ("plan", "creator", "month"): 84900,
-            ("plan", "pro", "month"): 249900, ("plan", "studio", "month"): 839900,
-            ("plan", "studio", "year"): 8399000}
-CREDITS = {"creator": 1000, "pro": 3000, "studio": 10000, "pro-byok": 3000, "india-lite": 300,
-           "pack-s": 250, "pack-m": 1000, "pack-l": 5000}
+PRICES = {("pack", "pack-s", "once"): 9900, ("pack", "pack-m", "once"): 34900, ("pack", "pack-l", "once"): 149900,
+          ("plan", "creator", "month"): 29900, ("plan", "creator", "year"): 299000,
+          ("plan", "pro", "month"): 79900, ("plan", "pro", "year"): 799000,
+          ("plan", "studio", "month"): 249900, ("plan", "studio", "year"): 2499000}
+CREDITS = {"creator": 1000, "pro": 3000, "studio": 10000, "pack-s": 250, "pack-m": 1000, "pack-l": 5000}
 
 
 @pytest.fixture()
@@ -23,49 +18,57 @@ def real_catalog(saas_db, monkeypatch):
     from saas.auth import compat
     from saas.billing import catalog
     from saas.config import settings
+    from saas.security import limits
 
     monkeypatch.setattr(settings, "hibp_enabled", False)
     compat._local.reset()
-    from saas.security import limits
-
     limits.reset_state()
     catalog.ensure_seeded(saas_db)
     return catalog
 
 
-def test_seed_matches_the_memo_and_is_unpublished(saas_db, real_catalog):
-    from saas.models.billing import Pack, Plan, Price
+def test_seed_is_the_owners_rupee_table(saas_db, real_catalog):
+    from saas.models.billing import Pack, Plan, Price, RegionTier
 
-    prices = {(p.item_kind, p.item_slug, p.interval, p.currency): p.amount_minor for p in saas_db.query(Price)}
-    for (kind, slug, interval), amount in MEMO_USD.items():
-        assert prices[(kind, slug, interval, "USD")] == amount
-    for (kind, slug, interval), amount in MEMO_INR.items():
-        assert prices[(kind, slug, interval, "INR")] == amount
+    prices = {(p.item_kind, p.item_slug, p.interval): (p.amount_minor, p.currency, p.tier) for p in saas_db.query(Price)}
+    assert prices == {k: (v, "INR", "default") for k, v in PRICES.items()}  # INR only: no USD, PPP or BYOK rows
     plans = {p.slug: p for p in saas_db.query(Plan)}
     packs = {p.slug: p for p in saas_db.query(Pack)}
+    assert set(plans) == {"free", "creator", "pro", "studio"} and set(packs) == {"pack-s", "pack-m", "pack-l"}
     for slug, credits in CREDITS.items():
         row = plans.get(slug) or packs[slug]
-        assert (row.monthly_credits if slug in plans else row.credits) == credits
-        assert row.published is False, f"{slug} must stay unpublished until the owner approves"
+        assert (row.monthly_credits if slug in plans else row.credits) == credits and row.published is True
+    for slug in ("creator", "pro", "studio"):
+        assert plans[slug].features["api"] and plans[slug].features["mcp"] and plans[slug].rollover_months == 1
+    assert plans["studio"].features["priority"] > plans["pro"].features["priority"] > plans["free"].features["priority"]
     assert plans["free"].features["free_grant_minutes"] == 10 and plans["free"].features["free_grant_shorts"] == 10
-    assert plans["studio"].features["api"] and plans["pro-byok"].features["byok"]
+    assert saas_db.query(RegionTier).count() == 0
 
 
-def test_unpublished_items_are_hidden_and_unbuyable(client, saas_db, real_catalog):
-    from saas.models.billing import Pack
+@pytest.mark.parametrize("default_currency", ["INR", "USD"])
+def test_catalog_shows_rupees_whatever_the_default_currency(client, saas_db, real_catalog, monkeypatch,
+                                                            default_currency):
+    from saas.config import settings
 
+    monkeypatch.setattr(settings, "default_currency", default_currency)
     body = client.get("/api/billing/catalog?country=US").json()
-    assert body["plans"] == [] and body["packs"] == []
-    assert body["free"]["minutes"] == 10 and body["free"]["shorts"] == 10
-    make_user(saas_db, "early@example.com")
-    h = login(client, "early@example.com")
-    for payload in ({"kind": "pack", "slug": "pack-s"}, {"kind": "plan", "slug": "pro", "interval": "month"}):
-        r = client.post("/api/billing/checkout", json=payload, headers=h)
-        assert r.status_code == 404, r.text
-    # The owner publishes one pack: it shows and can be bought.
-    saas_db.query(Pack).filter_by(slug="pack-s").update({"published": True})
+    assert body["currency"] == "INR"
+    shown = {k["slug"]: k["price"]["display"] for k in body["packs"]}
+    assert shown == {"pack-s": "₹99", "pack-m": "₹349", "pack-l": "₹1,499"}
+    plans = {p["slug"]: (p["prices"]["month"]["display"], p["prices"]["year"]["display"]) for p in body["plans"]}
+    assert plans == {"creator": ("₹299", "₹2,990"), "pro": ("₹799", "₹7,990"), "studio": ("₹2,499", "₹24,990")}
+    assert "3 x" in body["charge_rule"]
+
+
+def test_rupee_checkout_and_unpublished_items(client, saas_db, real_catalog):
+    from saas.models.billing import Pack, Payment
+
+    make_user(saas_db, "rupee@example.com")
+    h = login(client, "rupee@example.com")
+    out = client.post("/api/billing/checkout", json={"kind": "pack", "slug": "pack-s"}, headers=h).json()
+    p = saas_db.get(Payment, out["payment_id"])
+    assert (p.currency, p.amount_minor, p.credits) == ("INR", 9900, 250) and out["amount"] == "₹99"
+    saas_db.query(Pack).filter_by(slug="pack-l").update({"published": False})  # an admin hides one
     saas_db.commit()
-    body = client.get("/api/billing/catalog?country=US").json()
-    assert [k["slug"] for k in body["packs"]] == ["pack-s"] and body["packs"][0]["price"]["display"] == "$4"
-    r = client.post("/api/billing/checkout", json={"kind": "pack", "slug": "pack-s"}, headers=h)
-    assert r.status_code == 200 and r.json()["amount"] == "$4"
+    assert "pack-l" not in [k["slug"] for k in client.get("/api/billing/catalog").json()["packs"]]
+    assert client.post("/api/billing/checkout", json={"kind": "pack", "slug": "pack-l"}, headers=h).status_code == 404

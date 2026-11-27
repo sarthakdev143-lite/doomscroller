@@ -33,6 +33,8 @@ router.include_router(editor_router)
 
 class EstimateIn(BaseModel):
     url: str = Field(max_length=2000)
+    clips: int = Field(default=3, ge=1, le=20)
+    max_clip_seconds: int = Field(default=60, ge=15, le=90)
 
 
 class JobIn(BaseModel):
@@ -81,7 +83,7 @@ def serve_clip_file(clip: Clip, kind: str) -> FileResponse:
 def estimate(body: EstimateIn, request: Request, user: User = Depends(require_user), db: Session = Depends(get_db)):
     compat.rate_limit(request, "estimate", settings.api_estimate_per_hour, 3600, key=f"user:{user.id}")
     try:
-        return service.estimate_url(db, user, body.url)
+        return service.estimate_url(db, user, body.url, clips=body.clips, max_clip_seconds=body.max_clip_seconds)
     except ApiError as exc:
         if exc.status == 400:
             return {"ok": False, "reason": exc.code, "message": exc.message, "title": None, "duration_s": None,

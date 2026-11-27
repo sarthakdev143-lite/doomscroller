@@ -24,6 +24,8 @@ router = APIRouter(prefix="/api/v1", route_class=ApiRoute)
 
 class EstimateIn(BaseModel):
     url: str = Field(max_length=2000)
+    clips: int = Field(default=3, ge=1, le=20)
+    max_clip_seconds: int = Field(default=60, ge=15, le=90)
 
 
 class JobIn(BaseModel):
@@ -48,7 +50,7 @@ def balance(p: ApiPrincipal = Depends(require_api_key("billing:read")), db: Sess
 def estimate(body: EstimateIn, request: Request, p: ApiPrincipal = Depends(require_api_key("jobs:read")),
              db: Session = Depends(get_db)):
     compat.rate_limit(request, "estimate", settings.api_estimate_per_hour, 3600, key=f"user:{p.user_id}")
-    return service.estimate_url(db, p.user, body.url)
+    return service.estimate_url(db, p.user, body.url, clips=body.clips, max_clip_seconds=body.max_clip_seconds)
 
 
 @router.post("/jobs", status_code=201)

@@ -124,8 +124,14 @@ def start_checkout(db: Session, user: User, request: Request, *, kind: str, slug
         if amount <= 0:
             raise ApiError(400, "promo_not_applicable", "That code can't be used for a free checkout.")
 
+    charge_currency, sub_amount = price.currency, price.amount_minor
+    if provider.name == "bmc":
+        from . import bmc  # what the BMC page really charges (it may be USD while the catalog is INR)
+
+        amount, charge_currency = bmc.bmc_charge(price)
+        sub_amount = amount
     payment = Payment(user_id=user.id, provider=provider.name, kind=kind, item_slug=slug, interval=interval,
-                      currency=price.currency, amount_minor=amount, list_amount_minor=price.amount_minor,
+                      currency=charge_currency, amount_minor=amount, list_amount_minor=price.amount_minor,
                       credits=credits, status="created", country=country, tier=price.tier,
                       promo_code_id=promo.id if promo else None)
     db.add(payment)
@@ -134,7 +140,7 @@ def start_checkout(db: Session, user: User, request: Request, *, kind: str, slug
     if kind == "plan":
         plan = catalog.get_plan(db, slug)
         sub = Subscription(user_id=user.id, plan_slug=slug, interval=interval, status="incomplete",
-                           provider=provider.name, currency=price.currency, amount_minor=price.amount_minor,
+                           provider=provider.name, currency=charge_currency, amount_minor=sub_amount,
                            monthly_credits=plan.monthly_credits if plan else 0)
         db.add(sub)
         db.flush()

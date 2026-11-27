@@ -190,6 +190,25 @@ def test_checkout_redirects_to_bmc_and_webhook_fills_that_order(client, core, sa
     assert r.status_code == 404  # the membership hasn't started yet
 
 
+def test_bmc_page_in_usd_for_a_rupee_catalog(client, core, saas_db, bmc):
+    """BMC accounts default to USD; the item records what BMC really charges and payments are checked against it."""
+    from saas.billing import ledger
+    from saas.models.billing import Price
+
+    pack = saas_db.query(Price).filter_by(item_kind="pack", item_slug="pack-300", currency="USD", tier="default").one()
+    pack.currency, pack.amount_minor = "INR", 34900  # the catalog sells it for ₹349 ...
+    pack.provider_refs = {"bmc_extra_id": 77, "bmc_amount_minor": 399, "bmc_currency": "USD"}  # ... BMC asks $3.99
+    saas_db.commit()
+    u = make_user(saas_db, "usd@example.com")
+    assert send(client, "extra_purchase.created", extra(4001, "usd@example.com", amount=3.99)).json()["status"] == \
+        "processed"
+    assert ledger.balance(saas_db, u.id) == 300
+    under = send(client, "extra_purchase.created", extra(4002, "usd@example.com", amount=1.0))
+    assert under.json()["status"] == "rejected" and ledger.balance(saas_db, u.id) == 300
+    rupees = send(client, "extra_purchase.created", extra(4003, "usd@example.com", amount=349.0) | {"currency": "INR"})
+    assert rupees.json()["status"] == "rejected"  # not what the BMC page charges
+
+
 def test_bmc_charges_one_price_everywhere(client, core, saas_db, bmc, monkeypatch):
     """BMC's page has one fixed price, so regional/PPP tiers and percent codes must not be offered."""
     from saas.billing import ledger

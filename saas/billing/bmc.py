@@ -103,6 +103,19 @@ def find_verified_user(db: Session, email: Any) -> Optional[User]:
 
 # ---- catalog mapping ------------------------------------------------------------------------------
 
+def bmc_charge(price: Price) -> tuple[int, str]:
+    """What Buy Me a Coffee actually charges for this item: provider_refs bmc_amount_minor + bmc_currency when
+    set (a BMC page may only price in USD while our catalog is in INR), else our own price."""
+    refs = price.provider_refs or {}
+    amount, currency = refs.get("bmc_amount_minor"), str(refs.get("bmc_currency") or "").upper()
+    try:
+        if amount is not None and currency:
+            return int(amount), currency
+    except (TypeError, ValueError):
+        pass
+    return price.amount_minor, price.currency
+
+
 def _prices(db: Session, kind: str) -> list[Price]:
     """Default-tier prices only: BMC charges one fixed price, so a cheaper regional (PPP) price must never
     be what a BMC payment is matched against."""
@@ -126,7 +139,7 @@ def map_membership(db: Session, data: dict) -> Optional[tuple[Plan, Price]]:
             match = p
             break
     if match is None:
-        exact = [p for p in candidates if p.currency == currency and p.amount_minor == paid]
+        exact = [p for p in candidates if bmc_charge(p) == (paid, currency)]
         match = exact[0] if len(exact) == 1 else None
     if match is None:
         return None
@@ -148,7 +161,7 @@ def map_one_off(db: Session, data: dict) -> Optional[tuple[Pack, Price, int]]:
                 if pack is not None and pack.active:
                     return pack, p, qty
     paid = to_minor(data.get("amount"), currency or "USD")
-    exact = [p for p in prices if p.currency == currency and p.amount_minor == paid]
+    exact = [p for p in prices if bmc_charge(p) == (paid, currency)]
     if len(exact) == 1:
         pack = catalog.get_pack(db, exact[0].item_slug)
         if pack is not None and pack.active:
@@ -184,21 +197,22 @@ def one_off(db: Session, etype: str, data: dict, user: Optional[User] = None) ->
     pack, price, qty = mapped
     currency = str(data.get("currency") or "").upper()
     paid = to_minor(data.get("amount"), currency) or 0
-    expected = price.amount_minor * qty
+    unit, charge_currency = bmc_charge(price)
+    expected = unit * qty
     pending = (db.query(Payment).filter(Payment.user_id == user.id, Payment.provider == "bmc", Payment.kind == "pack",
                                         Payment.item_slug == pack.slug, Payment.status.in_(service.OPEN_STATUSES))
                .order_by(Payment.created_at).first())
     payment = pending or Payment(user_id=user.id, provider="bmc", kind="pack", item_slug=pack.slug, interval="once",
-                                 currency=price.currency, tier=price.tier, status="pending")
+                                 currency=charge_currency, tier=price.tier, status="pending")
     payment.provider_order_id = external
-    payment.currency = price.currency
+    payment.currency = charge_currency
     payment.amount_minor = expected
     payment.list_amount_minor = expected
     payment.credits = pack.credits * qty
     if pending is None:
         db.add(payment)
     db.flush()
-    if paid < expected or currency != price.currency:
+    if paid < expected or currency != charge_currency:
         service._amount_ok(db, payment, paid, currency, provider_ref=external)  # records the mismatch + flag
         payment.status = "failed"
         return "rejected", payment.id
@@ -255,13 +269,12 @@ def membership(db: Session, etype: str, data: dict, user: Optional[User] = None)
             db.add(sub)
         sub.provider_subscription_id = ext_sub
         db.flush()
-    sub.amount_minor = price.amount_minor
-    sub.currency = price.currency
+    sub.amount_minor, sub.currency = bmc_charge(price)
     sub.cancel_at_period_end = truthy(data.get("cancel_at_period_end"))
     currency = str(data.get("currency") or "").upper()
     result = service.record_subscription_payment(
         db, sub, provider_ref=external, provider_payment_id=external,
-        amount_minor=to_minor(data.get("amount"), currency or price.currency), currency=currency,
+        amount_minor=to_minor(data.get("amount"), currency or sub.currency), currency=currency,
         period_start=start, period_end=end, first=sub.status == "incomplete")
     return result, sub.id
 

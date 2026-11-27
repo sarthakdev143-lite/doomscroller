@@ -54,16 +54,43 @@ def parse_options(raw: Optional[dict]) -> JobOptions:
 
 
 def credits_for(duration_s: float) -> int:
+    """Source credits: whole minutes of source video, rounded up (at least 1)."""
     return max(1, math.ceil(float(duration_s) / 60.0))
+
+
+def finished_credits(finished_s: float) -> int:
+    """The second term of the charge: N x ceil(finished minutes); 0 when the rule is off."""
+    n = int(settings.finished_minute_multiplier)
+    if n <= 0 or finished_s <= 0:
+        return 0
+    return n * math.ceil(float(finished_s) / 60.0)
+
+
+def charge_for(source_s: float, finished_s: float) -> tuple[int, str]:
+    """(credits, basis): max(ceil(source minutes), N x ceil(finished minutes)), and which term won."""
+    src, fin = credits_for(source_s), finished_credits(finished_s)
+    return (fin, "finished") if fin > src else (src, "source")
+
+
+def job_quote(source_s: float, clips: int, max_clip_seconds: int) -> dict:
+    """What a job reserves: the charge with the longest finished output the options allow
+    (clips x max_clip_seconds). Settlement charges the real finished length, never more than this."""
+    worst_finished = int(clips) * int(max_clip_seconds)
+    credits, basis = charge_for(source_s, worst_finished)
+    return {"credits": credits, "basis": basis, "credits_source": credits_for(source_s),
+            "credits_finished_max": finished_credits(worst_finished)}
 
 
 # ---- estimate -------------------------------------------------------------------------------------
 
-def estimate_url(db: Session, user: Optional[User], url: str) -> dict:
+def estimate_url(db: Session, user: Optional[User], url: str, *, clips: int = 3, max_clip_seconds: int = 60) -> dict:
+    """`credits` is what the job would reserve: max(ceil(source minutes), 3 x ceil(clips x max_clip_seconds / 60)),
+    with `basis` naming the term that won. The real charge uses the real finished length, so it can be lower."""
     meta = probe.ytdlp_metadata(url)
-    credits = credits_for(meta["duration_s"])
+    quote = job_quote(meta["duration_s"], clips, max_clip_seconds)
+    credits = quote["credits"]
     out = {"ok": True, "title": meta["title"], "duration_s": meta["duration_s"], "thumbnail": meta["thumbnail"],
-           "credits": credits, "source": meta.get("extractor")}
+           **quote, "clips": clips, "max_clip_seconds": max_clip_seconds, "source": meta.get("extractor")}
     if user is not None:
         feats = catalog.features_for(db, user)
         max_s = int(feats.get("max_source_minutes", 30)) * 60
@@ -139,8 +166,10 @@ def create_job(db: Session, user: User, *, source_url: Optional[str] = None, upl
     if duration > max_s:
         raise ApiError(400, "source_too_long", f"Videos can be up to {max_s // 60} minutes on your plan.")
     job.source_duration_s = float(duration)
-    credits = credits_for(duration)
+    quote = job_quote(duration, opts.clips, opts.max_clip_seconds)
+    credits = quote["credits"]
     job.credits_reserved = credits
+    job.charge_basis = quote["basis"]
     db.add(job)
     db.flush()
     if upload_id:
@@ -214,7 +243,8 @@ def job_view(db: Session, job: Job, *, include_clips: bool = True, signed: bool 
                       "title": job.source_title, "duration_s": job.source_duration_s,
                       "thumbnail": job.source_thumbnail},
            "options": job.options, "credits_reserved": job.credits_reserved, "credits_charged": job.credits_charged,
-           "funding": job.funding, "shorts_reserved": job.shorts_reserved, "shorts_charged": job.shorts_charged,
+           "funding": job.funding, "charge_basis": job.charge_basis,
+           "shorts_reserved": job.shorts_reserved, "shorts_charged": job.shorts_charged,
            "watermark": job.watermark, "via": job.via,
            "created_at": job.created_at.isoformat(),
            "started_at": job.started_at.isoformat() if job.started_at else None,

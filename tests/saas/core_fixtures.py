@@ -27,6 +27,9 @@ def core(monkeypatch, tmp_path, saas_db):
     monkeypatch.setattr(settings, "data_dir", str(tmp_path / "data"))
     monkeypatch.setattr(settings, "turnstile_secret_key", "")
     monkeypatch.setattr(settings, "engine", "mock")
+    # Most core tests are about reservation, settlement and isolation with whole source minutes; the
+    # max(source, 3 x finished) charge has its own tests (test_billing_charge_rule.py) at the real value.
+    monkeypatch.setattr(settings, "finished_minute_multiplier", 0)
     monkeypatch.setattr(mailer, "_SYNC_FOR_TESTS", True)
     mailer.outbox.clear()
     compat._local.reset()

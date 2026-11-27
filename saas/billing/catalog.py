@@ -114,7 +114,8 @@ def price_for(db: Session, kind: str, slug: str, interval: str, country: Optiona
         row = base.filter(Price.currency == cur, Price.tier == tr).first()
         if row is not None:
             return row
-    return None
+    # A catalog priced in one currency only (e.g. INR) still sells when SAAS_DEFAULT_CURRENCY says otherwise.
+    return base.filter(Price.tier == "default").order_by(Price.currency).first()
 
 
 def format_amount(amount_minor: int, currency: str) -> str:
@@ -185,9 +186,15 @@ def public_catalog(db: Session, country: Optional[str]) -> dict:
                       "per_credit_minor": round(pr.amount_minor / max(1, k.credits), 2)})
     free = get_plan(db, "free")
     free_feats = {**DEFAULT_FEATURES, **((free.features or {}) if free else {})}
+    shown = [v["currency"] for p in plans for v in p["prices"].values() if v] + [k["price"]["currency"] for k in packs]
+    if shown and currency not in shown:
+        currency = max(set(shown), key=shown.count)  # the currency the prices are actually in
     return {"currency": currency, "tier": tier, "country": (country or "").upper() or None,
             "provider": provider_name_for(currency), "promo_codes_at_checkout": not fixed_price_checkout(currency),
             "credit_unit": "1 credit = 1 minute of source video (rounded up per job)",
+            "charge_rule": (f"a job costs max(ceil(source minutes), {settings.finished_minute_multiplier} x "
+                            "ceil(finished minutes))" if settings.finished_minute_multiplier > 0
+                            else "a job costs ceil(source minutes)"),
             "free": {"minutes": int(free_feats.get("free_grant_minutes", 10)),
                      "shorts": int(free_feats.get("free_grant_shorts", 10)),
                      "rule": "once per verified person; ends when either runs out", "features": free_feats},

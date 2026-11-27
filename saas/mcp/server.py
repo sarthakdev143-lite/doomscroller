@@ -114,16 +114,21 @@ def build_server() -> MCPServer:
         return await _call(ctx, ("billing:read",), fn)
 
     @server.tool(description=(
-        "Check a video link before clipping it: returns title, duration_s and the credit cost, and ok=false with a "
+        "Check a video link before clipping it: returns title, duration_s and the credit cost (credits = the most "
+        "the job can cost: max(source minutes, 3 x finished minutes); basis says which applied), and ok=false with a "
         "reason (e.g. insufficient_credits, source_too_long, source_private) if it can't be clipped. Costs nothing. "
         "Supported: YouTube, Vimeo, Twitch, Loom, X/Twitter, TikTok, Instagram, Facebook, Google Drive, Dropbox, "
         "Rumble, Kick. One video per link (no playlists or live streams)."),
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
-    async def estimate_video(ctx: Context, url: Annotated[str, Field(description="Full https link to one video.",
-                                                                     max_length=2000)]) -> str:
+    async def estimate_video(
+        ctx: Context,
+        url: Annotated[str, Field(description="Full https link to one video.", max_length=2000)],
+        clips: Annotated[int, Field(ge=1, le=20, description="Shorts you plan to ask for (affects the cost).")] = 3,
+        max_clip_seconds: Annotated[int, Field(ge=15, le=90, description="Longest clip length you plan.")] = 60,
+    ) -> str:
         def fn(db, user, _key):
             try:
-                return service.estimate_url(db, user, url)
+                return service.estimate_url(db, user, url, clips=clips, max_clip_seconds=max_clip_seconds)
             except ApiError as exc:
                 if exc.status == 400:
                     return {"ok": False, "reason": exc.code, "message": exc.message}
@@ -250,7 +255,7 @@ class BearerGate:
                 principal = keys_mod.authenticate(db, raw, request, ())
                 feats = catalog.features_for(db, principal.user)
                 if not feats.get("mcp"):
-                    raise ApiError(403, "plan_required", "MCP access is part of the Studio plan.")
+                    raise ApiError(403, "plan_required", "MCP access comes with any paid plan.")
                 return principal.key.id
             finally:
                 db.close()
