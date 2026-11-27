@@ -1,0 +1,415 @@
+/* Direction A, "dark studio": the page is the edit bay. Dark, high contrast, the clip large and playing, a film
+   grain over everything, caption yellow as the only colour. No gradients, glass or glow. */
+
+.page-rd-a {
+  --rd-bg: #0d0d0c;
+  --rd-fg: #f1f0e8;
+  --rd-muted: #a3a39a;
+  --rd-rule: #2c2c29;
+  --rd-rule-strong: #57574f;
+  --rd-panel: #141413;
+  --rd-panel-2: #1b1b19;
+  --rd-said: #f1f0e8;
+  --rd-unsaid: #6b6b63;
+  background-color: var(--rd-bg);
+  background-image: url("../texture/grain.svg");
+  background-size: 200px 200px;
+  color-scheme: dark;
+}
+
+.page-rd-a ::selection {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.page-rd-a :focus-visible {
+  outline-color: var(--accent);
+}
+
+/* The shared header and footer, re-lit for a dark page. */
+.page-rd-a .site-header {
+  background: rgba(13, 13, 12, 0.92);
+  color: var(--rd-fg);
+}
+
+.page-rd-a .site-header[data-scrolled="true"] {
+  border-bottom-color: var(--rd-rule);
+}
+
+.page-rd-a .wordmark svg > rect:first-child {
+  fill: var(--rd-bg);
+  stroke: var(--rd-fg);
+  stroke-width: 1.4;
+}
+
+.page-rd-a .site-nav__links a:hover {
+  background: var(--rd-panel-2);
+}
+
+.page-rd-a .site-nav .btn {
+  --btn-bg: var(--accent);
+  --btn-fg: var(--accent-ink);
+  --btn-border: var(--accent);
+}
+
+.page-rd-a .menu-btn {
+  color: var(--rd-fg);
+}
+
+@media (max-width: 860px) {
+  .page-rd-a .site-nav__links {
+    background: var(--rd-bg);
+    border-bottom: 1px solid var(--rd-rule);
+  }
+}
+
+.page-rd-a .site-footer {
+  background: var(--rd-bg);
+  color: var(--rd-muted);
+  border-top: 1px solid var(--rd-rule);
+}
+
+.page-rd-a .site-footer a {
+  color: var(--rd-fg);
+}
+
+.page-rd-a .btn--ghost {
+  --btn-fg: var(--rd-fg);
+  --btn-border: var(--rd-rule-strong);
+}
+
+.page-rd-a .btn--ghost:hover {
+  --btn-bg: var(--rd-panel-2);
+}
+
+.page-rd-a .waitlist .error-text {
+  color: #ff8a7a;
+}
+
+/* ---- hero ------------------------------------------------------------------------------------------------- */
+.ra-hero {
+  padding-block: clamp(1.5rem, 0.5rem + 3vw, 3.5rem) clamp(3rem, 2rem + 3vw, 5rem);
+  border-bottom: 1px solid var(--rd-rule);
+}
+
+.ra-hero__grid {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  grid-template-areas:
+    "head monitor"
+    "body monitor";
+  grid-template-rows: auto 1fr;
+  gap: var(--space-5) clamp(2rem, 1rem + 3vw, 4.5rem);
+  align-items: start;
+}
+
+.ra-hero__head {
+  grid-area: head;
+  padding-top: var(--space-6);
+}
+
+.ra-hero__body {
+  grid-area: body;
+}
+
+.ra-monitor {
+  grid-area: monitor;
+}
+
+.ra-slate {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-5);
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--rd-rule-strong);
+  border-radius: var(--radius-1);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--rd-muted);
+}
+
+.ra-slate__dot {
+  width: 8px;
+  height: 8px;
+  background: var(--accent);
+}
+
+.ra-hero h1 {
+  margin: 0;
+  font-size: clamp(3rem, 1.6rem + 4.6vw, 6.4rem);
+  font-weight: 900;
+  font-stretch: 70%;
+  line-height: 0.9;
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+}
+
+.ra-word {
+  color: var(--accent);
+}
+
+.ra-hero__lede {
+  margin: 0;
+  max-width: 34rem;
+  font-size: var(--text-lg);
+  line-height: var(--leading-snug);
+  color: #cfcec6;
+}
+
+.ra-hero__form {
+  margin-top: var(--space-6);
+  max-width: 32rem;
+}
+
+.ra-hero__fine {
+  margin: var(--space-4) 0 0;
+  max-width: 30rem;
+  font-size: var(--text-xs);
+  color: var(--rd-muted);
+}
+
+/* The monitor: a viewer with a slate bar, the clip at full size and the transcript it was cut from. */
+.ra-monitor {
+  margin: 0;
+  border: 1px solid var(--rd-rule-strong);
+  border-radius: var(--radius-3);
+  background: rgba(20, 20, 19, 0.86);
+}
+
+.ra-monitor__bar,
+.ra-monitor__foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-xs);
+  color: var(--rd-muted);
+}
+
+.ra-monitor__bar {
+  border-bottom: 1px solid var(--rd-rule);
+  letter-spacing: 0.02em;
+}
+
+.ra-monitor__bar > span:first-child {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--rd-fg);
+}
+
+.ra-monitor__fmt {
+  margin-left: auto;
+}
+
+.ra-monitor__live {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: ra-blink 1.6s steps(2, jump-none) infinite;
+}
+
+@keyframes ra-blink {
+  50% { opacity: 0.25; }
+}
+
+.ra-monitor__foot {
+  justify-content: space-between;
+  border-top: 1px solid var(--rd-rule);
+}
+
+.ra-monitor__stage {
+  display: grid;
+  grid-template-columns: minmax(0, 21rem) minmax(0, 1fr);
+  gap: var(--space-5);
+  padding: var(--space-5);
+}
+
+.ra-monitor__clip {
+  position: relative;
+}
+
+/* Viewfinder corners: thin ticks just outside the frame, so the clip reads as something being watched. */
+.ra-monitor__clip::before,
+.ra-monitor__clip::after {
+  content: "";
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  border: 0 solid var(--accent);
+  pointer-events: none;
+}
+
+.ra-monitor__clip::before {
+  top: -8px;
+  left: -8px;
+  border-top-width: 2px;
+  border-left-width: 2px;
+}
+
+.ra-monitor__clip::after {
+  right: -8px;
+  bottom: -8px;
+  border-right-width: 2px;
+  border-bottom-width: 2px;
+}
+
+.ra-monitor .clip {
+  box-shadow: 0 0 0 1px #000;
+}
+
+.ra-monitor__rail {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding-top: var(--space-2);
+}
+
+.ra-monitor__rail-head {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--rd-muted);
+}
+
+.rd-tx--rail .rd-tx__s {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-md);
+}
+
+.rd-tx--rail .rd-tx__s.is-in {
+  background: var(--rd-panel-2);
+}
+
+.rd-tx--rail .rd-tx__cut {
+  color: var(--accent);
+}
+
+.rd-tx--rail .rd-tx__cut::after {
+  border-top-color: var(--accent);
+  opacity: 0.6;
+}
+
+@media (max-width: 1180px) {
+  .ra-monitor__stage {
+    grid-template-columns: minmax(0, 17rem) minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 960px) {
+  .ra-hero__grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "head"
+      "monitor"
+      "body";
+  }
+
+  .ra-hero__head {
+    padding-top: var(--space-3);
+  }
+
+  .ra-monitor__stage {
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
+    padding: var(--space-4);
+  }
+
+  .ra-monitor__clip {
+    width: min(100%, 22rem);
+  }
+
+  .ra-monitor__rail {
+    width: 100%;
+  }
+
+  /* On a phone the rail keeps the two cut marks and the kept sentences; the context lines go. */
+  .rd-tx--rail .rd-tx__s.is-out {
+    display: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .ra-monitor__bar,
+  .ra-monitor__foot {
+    padding-inline: var(--space-3);
+  }
+
+  .ra-monitor__fmt {
+    display: none;
+  }
+
+  .ra-monitor__foot .mono {
+    font-size: 0.6875rem;
+  }
+
+  .rd-tx--rail .rd-tx__s {
+    font-size: var(--text-sm);
+  }
+}
+
+/* ---- shared sections, dark ------------------------------------------------------------------------------- */
+.page-rd-a .rd-section + .rd-section {
+  border-top: 1px solid var(--rd-rule);
+}
+
+.page-rd-a .rd-ba__track {
+  background: #10100f;
+}
+
+.page-rd-a .rd-ba__bars rect {
+  fill: #c9c8bf;
+}
+
+.page-rd-a .rd-ba__clip .clip {
+  box-shadow: 0 0 0 1px var(--rd-rule-strong);
+}
+
+.page-rd-a .rd-table__us {
+  border-bottom: 0;
+}
+
+.page-rd-a .rd-table__us th {
+  color: var(--accent);
+}
+
+.page-rd-a .rd-table__us tr {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.page-rd-a .rd-table__us th,
+.page-rd-a .rd-table__us td:first-of-type {
+  padding-left: var(--space-4);
+}
+
+.page-rd-a .rd-price__why {
+  padding: var(--space-5);
+  border: 1px solid var(--rd-rule);
+  border-radius: var(--radius-3);
+  background: var(--rd-panel);
+}
+
+.page-rd-a .rd-price__why li:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.page-rd-a .rd-price__why li:first-child::before {
+  top: 0.15em;
+}
+
+.page-rd-a .rd-founder__quote p {
+  color: #e2e1d9;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ra-monitor__live {
+    animation: none;
+  }
+}

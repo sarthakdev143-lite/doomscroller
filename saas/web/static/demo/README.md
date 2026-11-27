@@ -1,18 +1,20 @@
 # Demo clip slot
 
-The landing page currently shows the product as HTML/CSS (`partials/clip.html`, `static/js/landing.js`): a
-clip frame drawn to the renderer's own geometry and a scripted transcript. No third-party video is
-committed here.
+The landing pages show the product as HTML/CSS (`partials/clip.html`, `static/js/landing.js`,
+`static/js/redesign.js`): clip frames drawn to the renderer's own geometry and a scripted transcript. No
+third-party video is committed here, and none is ever faked.
 
-When the owner has a real before/after to show, drop it in this folder:
+## Before/after section (landing previews A and B)
 
-- `demo-clip.mp4`: one finished clip made by the product from footage the owner owns outright
-  (their own podcast or talk; never a creator's video, even with credit). 1080x1920, H.264, 15-25 s,
-  under 4 MB (`-crf 28 -preset slow -movflags +faststart`), with captions and the hook burned in by the
-  product itself, not edited afterwards.
-- `demo-clip.jpg`: its first frame, 540x960, used as the `poster` so the hero paints before the video loads.
-- `demo-source.txt`: the source's title, length and the clip's in/out timecodes, so the timeline under the
-  hero can show the real numbers instead of the scripted episode.
+When the owner has three real clips to show, put all six files here. The section switches to them only when all
+six exist (`saas/web/redesign.py` `demo_videos`); otherwise it keeps the drawn frames.
 
-Wiring it in is a template change in `landing.html` (a muted, looping, `playsinline` `<video>` replacing the
-live frame, kept behind the same Pause control and `prefers-reduced-motion` rule).
+- `clip-1.mp4`, `clip-2.mp4`, `clip-3.mp4`: three finished clips made by the product from footage the owner owns
+  outright (their own podcast or talk; never a creator's video, even with credit). 1080x1920, H.264, 15-60 s,
+  each under 4 MB (`-crf 28 -preset slow -movflags +faststart`), with captions and the hook burned in by the
+  product itself, not edited afterwards. Muted playback is what visitors see first, so the captions carry it.
+- `clip-1.jpg`, `clip-2.jpg`, `clip-3.jpg`: each clip's first frame, 540x960, used as its `poster`.
+
+The URLs go through `asset()`, so replacing a file changes its `?v=` (static files are cached as immutable).
+Update `DEMO_CLIPS` in `saas/web/routes.py` with the real source length and in/out timecodes at the same time,
+so the source timeline above the clips shows the real numbers instead of the scripted episode.

@@ -102,9 +102,14 @@ def _seed_as_live(raw: dict) -> dict:
                 return {"amount_minor": r.get("amount_minor"), "currency": currency}
         return None
 
+    # Only what the owner has approved: an item is published only when it says so, the same default as
+    # saas/billing/catalog.py, so provisional prices in the seed never reach a page.
+    def published(item: Any) -> bool:
+        return isinstance(item, dict) and item.get("published") is True
+
     plans = [{**p, "prices": {"month": view("plan", p.get("slug"), "month")}}
-             for p in raw.get("plans") or [] if isinstance(p, dict)]
-    packs = [{**k, "price": view("pack", k.get("slug"), "once")} for k in raw.get("packs") or [] if isinstance(k, dict)]
+             for p in raw.get("plans") or [] if published(p)]
+    packs = [{**k, "price": view("pack", k.get("slug"), "once")} for k in raw.get("packs") or [] if published(k)]
     return {"currency": currency, "plans": plans, "packs": packs}
 
 

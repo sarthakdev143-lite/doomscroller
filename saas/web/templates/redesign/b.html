@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% from "partials/waitlist_form.html" import waitlist_form with context %}
+{% from "partials/clip.html" import clip_frame %}
+{% from "redesign/_parts.html" import transcript, waitlist_count, before_after, price_compare, founder_note with context %}
+
+{# Direction B, "dense light". A preview for the owner; never linked, never in the sitemap. #}
+{% block title %}{{ brand_name }}: long video in, finished Shorts out{% endblock %}
+{% block robots %}<meta name="robots" content="noindex, nofollow">{% endblock %}
+{% block styles %}
+<link rel="stylesheet" href="{{ asset('/static/css/landing.css') }}">
+<link rel="stylesheet" href="{{ asset('/static/css/redesign.css') }}">
+<link rel="stylesheet" href="{{ asset('/static/css/redesign-b.css') }}">
+{% endblock %}
+{% block head_extra %}
+{% if turnstile_site_key %}<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>{% endif %}
+{% endblock %}
+{% block scripts %}
+<script type="module" src="{{ asset('/static/js/waitlist.js') }}"></script>
+<script type="module" src="{{ asset('/static/js/landing.js') }}"></script>
+<script type="module" src="{{ asset('/static/js/redesign.js') }}"></script>
+{% endblock %}
+{% block body_class %}page-rd page-rd-b{% endblock %}
+
+{% block content %}
+<section class="rb-hero" data-track-section="hero" aria-labelledby="hero-title">
+  <div class="wrap">
+    <div class="rb-hero__top">
+      <h1 id="hero-title">Long video in.<br>Finished Shorts out.</h1>
+      <div class="rb-hero__side">
+        <p class="rb-hero__lede">Paste a link to a podcast, stream or talk. {{ brand_name }} picks the moments worth posting,
+          cuts each on a sentence boundary, captions it word by word and frames the speaker. Every Short comes back ready
+          to publish.</p>
+        {% if launch_mode == "waitlist" %}
+        <div class="rb-hero__form" id="join">{{ waitlist_form("hero") }}</div>
+        {% else %}
+        <p class="rb-hero__form"><a class="btn btn--accent btn--lg" href="/signup" data-track="hero-cta-signup">Start free</a></p>
+        {% endif %}
+        {{ waitlist_count() }}
+        <p class="rb-hero__fine">Free for your first {{ free_shorts }} Shorts or {{ free_minutes }} minutes of video, whichever comes first.</p>
+      </div>
+    </div>
+
+    {# The evidence, all on one screen: the clip, the words it was cut from, what you download, and the spec. #}
+    <div class="rb-proof" data-demo>
+      <figure class="rb-proof__cell rb-proof__clip">
+        <figcaption class="rb-proof__label"><span class="mono">01</span> The Short</figcaption>
+        {{ clip_frame(["Nobody", "tells", "you"], active=0, hook="The first 100 videos are practice", focus="a", credit="@yourchannel", live=true) }}
+        <div class="rb-proof__under mono tabular">
+          <span><span data-demo-clock>0:00.0</span> / 0:15.6</span>
+          <button class="btn btn--ghost btn--sm" type="button" data-demo-toggle hidden data-track="demo-toggle">Pause</button>
+        </div>
+      </figure>
+
+      <div class="rb-proof__cell rb-proof__tx">
+        <p class="rb-proof__label"><span class="mono">02</span> Where it cut</p>
+        {{ transcript("rd-tx--sheet") }}
+        <p class="rb-proof__note">The model answers with sentence numbers, not timestamps, so a cut can only fall between two sentences.</p>
+      </div>
+
+      <div class="rb-proof__cell rb-proof__pkg">
+        <p class="rb-proof__label"><span class="mono">03</span> What you download</p>
+        <dl class="rb-pkg">
+          <div><dt>Video</dt><dd class="mono">clip-01.mp4 &middot; 1080&times;1920 &middot; 0:15.6</dd></div>
+          <div><dt>Thumbnail</dt><dd class="mono">clip-01.jpg</dd></div>
+          <div><dt>Title</dt><dd>The first 100 videos are practice</dd></div>
+          <div><dt>Description</dt><dd>Why the first hundred uploads matter less than what you learn from them. <span class="rb-pkg__muted">Credit: @yourchannel</span></dd></div>
+          <div><dt>Hashtags</dt><dd class="mono">#shorts #podcast #creator</dd></div>
+          <div><dt>When to post</dt><dd class="mono">Tue 18:00 &middot; Thu 12:30 &middot; Sat 10:00</dd></div>
+        </dl>
+        <p class="rb-proof__note">Title, description and hashtags are yours to edit before you download.</p>
+      </div>
+
+      <div class="rb-proof__cell rb-proof__spec">
+        <p class="rb-proof__label"><span class="mono">04</span> Every job</p>
+        <dl class="rb-spec">
+          <div><dt>Cuts</dt><dd>Between sentences, never mid-sentence</dd></div>
+          <div><dt>Captions</dt><dd>Word by word, English and Hindi</dd></div>
+          <div><dt>Framing</dt><dd>On whoever is speaking, changing every 1 to 2.4 s</dd></div>
+          <div><dt>Clean-up</dt><dd>Stutters, filler and long pauses cut</dd></div>
+          <div><dt>Clips</dt><dd class="mono tabular">1&ndash;{{ max_clips }} per job, {{ clip_seconds[0] }}&ndash;{{ clip_seconds[1] }} s each</dd></div>
+          <div><dt>Price</dt><dd>Per minute of video you send</dd></div>
+        </dl>
+      </div>
+    </div>
+  </div>
+</section>
+
+{{ before_after() }}
+{{ price_compare() }}
+{{ founder_note() }}
+{% endblock %}

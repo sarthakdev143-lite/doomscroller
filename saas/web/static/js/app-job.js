@@ -181,6 +181,11 @@ function clipCard(clip) {
   download.href = clip.download_url;
   download.setAttribute("download", "");
 
+  // The clip editor (editor agent, saas/web/editor_routes.py).
+  const edit = node.querySelector("[data-clip-edit]");
+  edit.href = `/app/clips/${encodeURIComponent(clip.id)}/edit`;
+  edit.setAttribute("aria-label", `Edit clip ${(clip.index ?? 0) + 1}`);
+
   const toggle = node.querySelector("[data-package-toggle]");
   const pkg = node.querySelector("[data-package]");
   toggle.addEventListener("click", () => {

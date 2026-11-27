@@ -261,8 +261,8 @@ def test_pricing_falls_back_to_the_seed_file(client, monkeypatch, tmp_path):
     fake.public_catalog = broken
     monkeypatch.setitem(sys.modules, "saas.billing.catalog", fake)
     seed = {
-        "plans": [{"slug": "pro", "name": "Pro", "monthly_credits": 500, "public": True}],
-        "packs": [{"slug": "pack-300", "name": "300 minutes", "credits": 300}],
+        "plans": [{"slug": "pro", "name": "Pro", "monthly_credits": 500, "public": True, "published": True}],
+        "packs": [{"slug": "pack-300", "name": "300 minutes", "credits": 300, "published": True}],
         "prices": [
             {"item_kind": "plan", "item_slug": "pro", "interval": "month", "currency": "USD", "tier": "default",
              "amount_minor": 3900},
@@ -278,6 +278,46 @@ def test_pricing_falls_back_to_the_seed_file(client, monkeypatch, tmp_path):
     section = _pricing_html(client)
     assert "$39" in section and "$35" in section
     assert "1,999" not in section and "₹" not in section  # other tiers never leak into the default view
+
+
+def test_seed_fallback_skips_unpublished_prices(client, monkeypatch, tmp_path):
+    """Provisional prices in the seed file never reach a page: unpublished (or unmarked) items are skipped."""
+    from saas.web import routes
+
+    fake = types.ModuleType("saas.billing.catalog")
+    fake.public_catalog = lambda db, country: {"plans": [], "packs": []}  # the live catalog is empty
+    monkeypatch.setitem(sys.modules, "saas.billing.catalog", fake)
+    seed = {
+        "plans": [{"slug": "pro", "name": "Pro", "monthly_credits": 500, "public": True, "published": False},
+                  {"slug": "max", "name": "Max", "monthly_credits": 900, "public": True}],
+        "packs": [{"slug": "pack-300", "name": "300 minutes", "credits": 300, "published": False}],
+        "prices": [
+            {"item_kind": "plan", "item_slug": "pro", "interval": "month", "currency": "USD", "tier": "default",
+             "amount_minor": 3900},
+            {"item_kind": "plan", "item_slug": "max", "interval": "month", "currency": "USD", "tier": "default",
+             "amount_minor": 7700},
+            {"item_kind": "pack", "item_slug": "pack-300", "interval": "once", "currency": "USD",
+             "tier": "default", "amount_minor": 3500},
+        ],
+    }
+    path = tmp_path / "seed_catalog.json"
+    path.write_text(json.dumps(seed), encoding="utf-8")
+    monkeypatch.setattr(routes, "SEED_CATALOG", path)
+    section = _pricing_html(client)
+    assert "Prices are announced at launch." in section
+    assert "$39" not in section and "$77" not in section and "$35" not in section
+    assert routes.normalise_catalog(seed) is None
+
+
+def test_the_real_seed_file_publishes_no_paid_price(client, monkeypatch):
+    """Today every paid plan and pack in saas/billing/seed_catalog.json is unpublished, so the fallback shows none."""
+    from saas.web import routes
+
+    raw = json.loads(routes.SEED_CATALOG.read_text(encoding="utf-8"))
+    pricing = routes.normalise_catalog(raw)
+    shown = [e["slug"] for e in ((pricing or {}).get("plans", []) + (pricing or {}).get("packs", []))]
+    published = {i.get("slug") for i in raw.get("plans", []) + raw.get("packs", []) if i.get("published") is True}
+    assert set(shown) <= published, "an unpublished item leaked into the fallback"
 
 
 def test_pricing_hidden_without_any_catalog(client, no_catalog):

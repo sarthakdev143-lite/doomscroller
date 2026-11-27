@@ -1,0 +1,173 @@
+{#
+  Sections shared by both landing directions (redesign/a.html, redesign/b.html). Same markup and copy in both,
+  styled by redesign.css plus redesign-a.css or redesign-b.css, so the owner compares design rather than words.
+  Import with context: they read brand_name, free_shorts, free_minutes, support_email, demo and the redesign data.
+#}
+{% from "partials/clip.html" import clip_frame %}
+
+{# Clip 1's sentences. landing.js lights them word by word in step with the live clip (data-demo-sentence). #}
+{% macro transcript(cls="") -%}
+<ol class="rd-tx {{ cls }}" role="list" aria-label="Clip 1, sentence by sentence">
+  <li class="rd-tx__s is-out"><span class="rd-tx__meta mono">213 &middot; Guest</span><p>&hellip;which was most of year two, honestly.</p></li>
+  <li class="rd-tx__cut" aria-hidden="true"><span class="mono">IN 14:02.3</span></li>
+  <li class="rd-tx__s is-in" data-demo-sentence data-speaker="a"><span class="rd-tx__meta mono">214 &middot; Host</span><p>Nobody tells you the first hundred videos are practice.</p></li>
+  <li class="rd-tx__s is-in" data-demo-sentence data-speaker="b"><span class="rd-tx__meta mono">215 &middot; Guest</span><p>So what changed at video one hundred and one?</p></li>
+  <li class="rd-tx__s is-in" data-demo-sentence data-speaker="a"><span class="rd-tx__meta mono">216 &middot; Host</span><p>I stopped guessing what people wanted,</p></li>
+  <li class="rd-tx__s is-in" data-demo-sentence data-speaker="a"><span class="rd-tx__meta mono">217 &middot; Host</span><p>and started reading where they stopped watching.</p></li>
+  <li class="rd-tx__cut" aria-hidden="true"><span class="mono">OUT 14:17.9</span></li>
+  <li class="rd-tx__s is-out"><span class="rd-tx__meta mono">218 &middot; Guest</span><p>Wait, where do they stop?</p></li>
+</ol>
+{%- endmacro %}
+
+{# The live count, fed later by the edge (set data-count, or call setWaitlistCount from redesign.js). Shown only
+   from 50 people up; until then it does not exist for the visitor. #}
+{% macro waitlist_count() -%}
+<p class="rd-count" data-waitlist-count data-count="" hidden><span class="rd-count__n mono tabular" data-waitlist-count-value></span> people are on the waitlist.</p>
+{%- endmacro %}
+
+{# ---- before / after ------------------------------------------------------------------------------------------ #}
+{% macro before_after() -%}
+<section class="rd-section rd-ba" id="before-after" data-track-section="before-after" aria-labelledby="ba-title">
+  <div class="wrap">
+    <header class="rd-head">
+      <p class="rd-eyebrow mono">Before and after</p>
+      <h2 id="ba-title">A 72-minute episode in. Three Shorts out.</h2>
+      <p class="rd-head__lede">The source collapses to the three moments worth posting. Each one starts and ends between
+        two sentences, and comes back captioned, framed on the speaker and titled.</p>
+    </header>
+
+    <div class="rd-ba__stage" data-ba data-ba-state="cut">
+      <div class="rd-ba__source">
+        <div class="rd-ba__file">
+          <span class="rd-ba__label">Before</span>
+          <span class="mono">episode-41-final.mp4</span>
+          <span class="mono tabular rd-ba__len">{{ demo.duration_label }}</span>
+          <span class="rd-ba__charged">{{ demo.credits }} min charged</span>
+        </div>
+        <div class="rd-ba__track">
+          <svg class="rd-ba__wave" viewBox="0 0 {{ demo.width }} 60" preserveAspectRatio="none" aria-hidden="true" focusable="false">
+            {% for c in demo.clips %}<rect class="rd-ba__seg" x="{{ c.x }}" y="0" width="{{ c.w }}" height="60"/>{% endfor %}
+            <g class="rd-ba__bars">{% for b in demo.waveform %}<rect x="{{ b.x }}" y="{{ b.y }}" width="3" height="{{ b.h }}"/>{% endfor %}</g>
+          </svg>
+          {% for c in demo.clips %}<span class="rd-ba__pin" data-pos-x="{{ c.x_pct }}" data-pos-w="{{ c.w_pct }}" data-ba-pin="{{ c.n }}" aria-hidden="true">{{ c.n }}</span>{% endfor %}
+        </div>
+        <div class="rd-ba__scale mono" aria-hidden="true"><span>0:00</span><span>18:10</span><span>36:20</span><span>54:30</span><span>1:12:40</span></div>
+      </div>
+
+      <svg class="rd-ba__links" data-ba-links aria-hidden="true" focusable="false"></svg>
+
+      <p class="rd-ba__label rd-ba__label--after">After</p>
+      <ol class="rd-ba__clips" role="list" aria-label="The three Shorts cut from it">
+        {% for t in demo_tiles %}{% set c = demo.clips[loop.index0] %}
+        <li class="rd-ba__clip" data-ba-clip="{{ t.n }}">
+          {% if demo_videos %}
+          <video class="rd-ba__video" src="{{ demo_videos[loop.index0].src }}" poster="{{ demo_videos[loop.index0].poster }}"
+                 muted loop playsinline preload="metadata" aria-label="Short {{ t.n }}: {{ t.hook }}"></video>{# redesign.js plays it: never under reduced motion, and the Pause button applies #}
+          {% else %}
+          <div class="rd-ba__frame" data-ba-words="{{ t.groups|join('|') }}">
+            {{ clip_frame(t.groups[0].split(" "), active=0, hook=t.hook, focus=t.focus, credit="@yourchannel") }}
+          </div>
+          {% endif %}
+          <p class="rd-ba__meta">
+            <span class="rd-ba__n mono">{{ t.n }}</span>
+            <span class="mono tabular">{{ c.start_label }} &rarr; {{ c.end_label }}</span>
+            <span class="mono tabular rd-ba__dur">{{ c.length }}</span>
+          </p>
+        </li>
+        {% endfor %}
+      </ol>
+
+      <div class="rd-ba__controls">
+        <button class="btn btn--ghost btn--sm" type="button" data-ba-replay hidden data-track="ba-replay">Replay the cut</button>
+        <button class="btn btn--ghost btn--sm" type="button" data-ba-pause hidden data-track="ba-pause">Pause</button>
+      </div>
+    </div>
+    {% if not demo_videos %}
+    <p class="rd-fine">The three Shorts are drawn to the renderer’s own layout (hook, picture, credit line, captions), not
+      filmed. They will be replaced by real clips cut from footage we own.</p>
+    {% endif %}
+  </div>
+</section>
+{%- endmacro %}
+
+{# ---- cost ----------------------------------------------------------------------------------------------------- #}
+{% macro price_compare() -%}
+<section class="rd-section rd-price" id="cost" data-track-section="cost" aria-labelledby="cost-title">
+  <div class="wrap">
+    <header class="rd-head">
+      <p class="rd-eyebrow mono">Cost</p>
+      <h2 id="cost-title">What a minute of video costs to clip today.</h2>
+      <p class="rd-head__lede">Seven clipping tools, worked out the same way: the plan’s price divided by the minutes of
+        video it includes, used in full. Our price is published at launch.</p>
+    </header>
+
+    <div class="rd-price__grid">
+      <div class="table-wrap rd-price__table">
+        <table class="rd-table">
+          <caption class="visually-hidden">Price per minute of source video, by tool and plan</caption>
+          <thead><tr><th scope="col">Tool</th><th scope="col">Plan behind the figure</th><th scope="col" class="num">Per minute of video</th></tr></thead>
+          {% for t in comparison %}
+          <tbody>
+            {% for plan, figure in t.rows %}
+            <tr>
+              {% if loop.first %}<th scope="rowgroup" rowspan="{{ t.rows|length }}">{{ t.tool }}<a class="rd-ref mono" href="#src-{{ t.ref }}" data-track="cost-ref-{{ t.ref|lower }}">{{ t.ref }}</a>{% if t.note %}<span class="rd-table__note">{{ t.note }}</span>{% endif %}</th>{% endif %}
+              <td>{{ plan }}</td>
+              <td class="num mono tabular">{{ figure }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+          {% endfor %}
+          <tbody class="rd-table__us">
+            <tr><th scope="row">{{ brand_name }}</th><td>Per minute of video you send, rounded up once per job</td><td class="num">Pricing at launch</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <aside class="rd-price__why" aria-labelledby="why-title">
+        <h3 id="why-title">How ours is priced</h3>
+        <ol role="list">
+          <li><strong>One unit: minutes of video you send.</strong> Rounded up once per job. Asking for three clips or
+            twenty costs the same.</li>
+          <li><strong>No fee per clip, per export or per API call.</strong> By comparison, Klap’s API charges $0.44 per
+            input video, $0.32 per short and $0.48 per export<a class="rd-ref mono" href="#src-C3" data-track="cost-ref-why-c3">C3</a>.</li>
+          <li><strong>A failed job costs nothing.</strong> Its minutes come back on their own.</li>
+          <li><strong>Free to start.</strong> Your first {{ free_shorts }} Shorts or {{ free_minutes }} minutes of video,
+            whichever comes first.</li>
+        </ol>
+      </aside>
+    </div>
+
+    <div class="rd-sources">
+      <p><strong>How these were worked out.</strong> Per minute of video = the plan’s price ÷ the minutes of source video
+        it includes, at full use, from each tool’s pricing page as recorded in our research memo of {{ memo_date }}.
+        Prices change; check the page before you compare.</p>
+      <ol role="list">
+        {% for s in comparison_sources %}
+        <li id="src-{{ s.ref }}"><span class="mono">{{ s.ref }}</span> {{ s.tool }}:
+          <a href="{{ s.url }}" rel="nofollow noopener" target="_blank" data-track="cost-source-{{ s.ref|lower }}">{{ s.url.split("//")[1].rstrip("/") }}</a>, {{ s.seen }}.</li>
+        {% endfor %}
+      </ol>
+    </div>
+  </div>
+</section>
+{%- endmacro %}
+
+{# ---- founder ------------------------------------------------------------------------------------------------ #}
+{# DRAFT in Sarthak's name: he approves the wording before this ships. #}
+{% macro founder_note() -%}
+<section class="rd-section rd-founder" data-track-section="founder" aria-labelledby="founder-title">
+  <div class="wrap rd-founder__inner">
+    <div class="rd-founder__mark mono" aria-hidden="true">{{ founder.initials }}</div>
+    <div class="rd-founder__body">
+      <h2 class="rd-eyebrow mono" id="founder-title">A note from the founder</h2>
+      <blockquote class="rd-founder__quote">
+        <p>I’m building {{ brand_name }} on my own, from India, and in public. The parts I care about are the ones
+          that are easy to skip: cuts that land between
+          sentences, captions that keep time with the voice, and a price you can work out before you press start. If a
+          clip comes back wrong, tell me at <a href="mailto:{{ support_email }}" data-track="founder-email">{{ support_email }}</a>.</p>
+      </blockquote>
+      <p class="rd-founder__sig"><strong>{{ founder.name }}</strong> <span>Founder, {{ brand_name }}</span></p>
+    </div>
+  </div>
+</section>
+{%- endmacro %}

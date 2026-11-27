@@ -1,0 +1,320 @@
+/* Direction B, "dense light": the paper stays, the page gets heavier. Bigger type, ink rules instead of cards,
+   and the evidence (clip, transcript, download, spec) laid out on one screen like a spec sheet. */
+
+.page-rd-b {
+  --rd-rule: #c9c9c0;
+  --rd-rule-strong: var(--ink);
+  --rd-panel: var(--surface);
+  --rd-unsaid: #8b8b83;
+}
+
+/* ---- hero ------------------------------------------------------------------------------------------------- */
+.rb-hero {
+  padding-block: clamp(1.25rem, 0.5rem + 2vw, 2.25rem) clamp(2.5rem, 1.5rem + 3vw, 4.5rem);
+}
+
+.rb-hero__top {
+  display: grid;
+  grid-template-columns: minmax(0, 8fr) minmax(0, 4fr);
+  gap: var(--space-5) clamp(1.5rem, 1rem + 2vw, 3.5rem);
+  align-items: end;
+  padding-bottom: var(--space-5);
+  border-bottom: 3px solid var(--ink);
+}
+
+.rb-hero h1 {
+  margin: 0;
+  font-size: clamp(3.1rem, 1.2rem + 6vw, 7.2rem);
+  font-weight: 900;
+  font-stretch: 68%;
+  line-height: 0.86;
+  letter-spacing: -0.015em;
+}
+
+.rb-hero__lede {
+  margin: 0;
+  font-size: var(--text-md);
+  line-height: var(--leading-snug);
+  color: var(--ink-2);
+}
+
+.rb-hero__form {
+  margin-top: var(--space-4);
+}
+
+.rb-hero__fine {
+  margin: var(--space-3) 0 0;
+  font-size: var(--text-xs);
+  color: var(--ink-3);
+}
+
+/* The proof sheet: four cells, ink rules between them, nothing floating. */
+.rb-proof {
+  display: grid;
+  grid-template-columns: minmax(0, 15rem) minmax(0, 1.25fr) minmax(0, 1.1fr) minmax(0, 0.95fr);
+  border-bottom: 1px solid var(--ink);
+}
+
+.rb-proof__cell {
+  margin: 0;
+  padding: var(--space-4) var(--space-5) var(--space-5);
+  border-left: 1px solid var(--ink);
+  min-width: 0;
+}
+
+.rb-proof__cell:first-child {
+  padding-left: 0;
+  border-left: 0;
+}
+
+.rb-proof__cell:last-child {
+  padding-right: 0;
+}
+
+.rb-proof__label {
+  display: flex;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+
+.rb-proof__label .mono {
+  font-weight: 500;
+  color: var(--ink-3);
+}
+
+.rb-proof__under {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--ink-3);
+}
+
+.rb-proof__note {
+  margin: var(--space-3) 0 0;
+  font-size: var(--text-xs);
+  line-height: 1.45;
+  color: var(--ink-3);
+}
+
+.rd-tx--sheet .rd-tx__s {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  padding: 0.3rem 0 0.3rem var(--space-3);
+  font-size: var(--text-sm);
+}
+
+.rd-tx--sheet .rd-tx__meta {
+  font-size: 0.6875rem;
+}
+
+.rd-tx--sheet .rd-tx__cut {
+  padding-inline: var(--space-2) 0;
+}
+
+.rb-pkg,
+.rb-spec {
+  margin: 0;
+}
+
+.rb-pkg div,
+.rb-spec div {
+  display: grid;
+  grid-template-columns: 6.25rem minmax(0, 1fr);
+  gap: var(--space-2);
+  padding: 0.45rem 0;
+  border-top: 1px solid var(--rd-rule);
+  font-size: var(--text-sm);
+  line-height: 1.35;
+}
+
+.rb-pkg div:first-child,
+.rb-spec div:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.rb-pkg dt,
+.rb-spec dt {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--ink-3);
+  padding-top: 0.12em;
+}
+
+.rb-pkg dd,
+.rb-spec dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.rb-pkg dd.mono {
+  font-size: 0.8125rem;
+}
+
+.rb-pkg__muted {
+  color: var(--ink-3);
+}
+
+.rb-spec dd {
+  font-weight: 600;
+}
+
+@media (max-width: 1180px) {
+  .rb-proof {
+    grid-template-columns: minmax(0, 14rem) minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .rb-proof__spec {
+    grid-column: 1 / -1;
+    padding-left: 0;
+    border-left: 0;
+    border-top: 1px solid var(--ink);
+  }
+
+  .rb-spec {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    column-gap: var(--space-5);
+  }
+
+  .rb-spec div:nth-child(-n + 3) {
+    border-top: 0;
+    padding-top: 0;
+  }
+}
+
+@media (max-width: 900px) {
+  .rb-hero__top {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .rb-proof {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .rb-proof__cell {
+    padding: var(--space-4) 0 var(--space-5);
+    border-left: 0;
+    border-top: 1px solid var(--ink);
+  }
+
+  .rb-proof__cell:first-child {
+    border-top: 0;
+  }
+
+  .rb-proof__clip .clip {
+    width: min(100%, 17rem);
+  }
+
+  .rb-proof__clip .rb-proof__under {
+    width: min(100%, 17rem);
+  }
+
+  .rb-spec {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .rb-spec div:nth-child(-n + 3) {
+    border-top: 1px solid var(--rd-rule);
+    padding-top: 0.45rem;
+  }
+
+  .rb-spec div:first-child {
+    border-top: 0;
+    padding-top: 0;
+  }
+}
+
+/* ---- shared sections, dense ------------------------------------------------------------------------------- */
+.page-rd-b .rd-section {
+  border-top: 3px solid var(--ink);
+}
+
+.page-rd-b .rd-section + .rd-section {
+  margin-top: 0;
+}
+
+.page-rd-b .rd-head {
+  margin-bottom: var(--space-6);
+}
+
+.page-rd-b .rd-head h2 {
+  font-size: clamp(2.6rem, 1.4rem + 4.4vw, 5.6rem);
+  font-weight: 900;
+  font-stretch: 68%;
+  line-height: 0.88;
+}
+
+.page-rd-b .rd-head__lede {
+  color: var(--ink-2);
+}
+
+.page-rd-b .rd-eyebrow {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.page-rd-b .rd-ba__track {
+  border-width: 2px;
+  border-radius: 0;
+}
+
+.page-rd-b .rd-ba__clip .clip {
+  border-radius: var(--radius-2);
+}
+
+.page-rd-b .rd-table thead th {
+  color: var(--ink);
+  border-bottom-width: 2px;
+}
+
+.page-rd-b .rd-table td.num {
+  font-size: var(--text-lg);
+}
+
+.page-rd-b .rd-table__us {
+  background: var(--accent);
+  border-bottom: 0;
+}
+
+.page-rd-b .rd-table__us th,
+.page-rd-b .rd-table__us td:first-of-type {
+  padding-left: var(--space-3);
+}
+
+.page-rd-b .rd-table__us td.num {
+  padding-right: var(--space-3);
+}
+
+.page-rd-b .rd-price__why {
+  padding-top: var(--space-1);
+  border-top: 2px solid var(--ink);
+}
+
+.page-rd-b .rd-price__why h3 {
+  margin-top: var(--space-3);
+}
+
+.page-rd-b .rd-founder {
+  background: var(--ink);
+  color: var(--paper);
+  --rd-muted: #b9b9b0;
+  border-top: 0;
+}
+
+.page-rd-b .rd-founder .rd-eyebrow {
+  color: var(--accent);
+}
+
+.page-rd-b .rd-founder :focus-visible {
+  outline-color: var(--accent);
+}

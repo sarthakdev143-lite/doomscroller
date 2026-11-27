@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% from "partials/waitlist_form.html" import waitlist_form with context %}
+{% from "partials/clip.html" import clip_frame %}
+{% from "redesign/_parts.html" import transcript, waitlist_count, before_after, price_compare, founder_note with context %}
+
+{# Direction A, "dark studio". A preview for the owner; never linked, never in the sitemap. #}
+{% block title %}{{ brand_name }}: cut on the sentence, captioned on the word{% endblock %}
+{% block robots %}<meta name="robots" content="noindex, nofollow">{% endblock %}
+{% block styles %}
+<link rel="stylesheet" href="{{ asset('/static/css/landing.css') }}">
+<link rel="stylesheet" href="{{ asset('/static/css/redesign.css') }}">
+<link rel="stylesheet" href="{{ asset('/static/css/redesign-a.css') }}">
+{% endblock %}
+{% block head_extra %}
+{% if turnstile_site_key %}<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>{% endif %}
+{% endblock %}
+{% block scripts %}
+<script type="module" src="{{ asset('/static/js/waitlist.js') }}"></script>
+<script type="module" src="{{ asset('/static/js/landing.js') }}"></script>
+<script type="module" src="{{ asset('/static/js/redesign.js') }}"></script>
+{% endblock %}
+{% block body_class %}page-rd page-rd-a{% endblock %}
+
+{% block content %}
+<section class="ra-hero" data-track-section="hero" aria-labelledby="hero-title">
+  <div class="wrap ra-hero__grid">
+    <div class="ra-hero__head">
+      <p class="ra-slate mono"><span class="ra-slate__dot" aria-hidden="true"></span>Long video in, Shorts out</p>
+      <h1 id="hero-title">Cut on the sentence. Captioned on <span class="ra-word">the&nbsp;word.</span></h1>
+    </div>
+    <div class="ra-hero__body">
+      <p class="ra-hero__lede">Send a podcast, stream or talk. {{ brand_name }} finds the moments worth posting, cuts each
+        one where a sentence ends, captions it word by word and keeps the speaker in frame. You get back the MP4, a
+        title, description, hashtags, a thumbnail and times to post.</p>
+      {% if launch_mode == "waitlist" %}
+      <div class="ra-hero__form" id="join">{{ waitlist_form("hero") }}</div>
+      {% else %}
+      <p class="ra-hero__form"><a class="btn btn--accent btn--lg" href="/signup" data-track="hero-cta-signup">Start free</a></p>
+      {% endif %}
+      {{ waitlist_count() }}
+      <p class="ra-hero__fine">Free for your first {{ free_shorts }} Shorts or {{ free_minutes }} minutes of video,
+        whichever comes first. Then you pay per minute of video you send, however many clips you take.</p>
+    </div>
+
+    <figure class="ra-monitor" data-demo>
+      <div class="ra-monitor__bar mono">
+        <span><span class="ra-monitor__live" aria-hidden="true"></span>Clip 1 of 3</span>
+        <span class="tabular"><span data-demo-clock>0:00.0</span> / 0:15.6</span>
+        <span class="ra-monitor__fmt">1080&times;1920</span>
+      </div>
+      <div class="ra-monitor__stage">
+        <div class="ra-monitor__clip">
+          {{ clip_frame(["Nobody", "tells", "you"], active=0, hook="The first 100 videos are practice", focus="a", credit="@yourchannel", live=true) }}
+        </div>
+        <div class="ra-monitor__rail">
+          <p class="ra-monitor__rail-head mono">Source 14:02 &middot; where it cut</p>
+          {{ transcript("rd-tx--rail") }}
+        </div>
+      </div>
+      <div class="ra-monitor__foot">
+        <span class="mono tabular">episode-41-final.mp4 &middot; 14:02.3 &rarr; 14:17.9</span>
+        <button class="btn btn--ghost btn--sm" type="button" data-demo-toggle hidden data-track="demo-toggle">Pause</button>
+      </div>
+      <figcaption class="visually-hidden">A finished clip playing beside the transcript it was cut from: the hook shows for the
+        first seconds, captions light up one word at a time, and the cut starts and ends between two sentences.</figcaption>
+    </figure>
+  </div>
+</section>
+
+{{ before_after() }}
+{{ price_compare() }}
+{{ founder_note() }}
+{% endblock %}

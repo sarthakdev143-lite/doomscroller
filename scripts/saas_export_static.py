@@ -47,12 +47,26 @@ PAGES = [
     ("errors/404.html", "404.html", "/404"),  # Pages serves it for every unknown path
 ]
 SITEMAP = ["/", "/pricing/", "/privacy/", "/terms/", "/refunds/", "/cookies/"]
+# Landing directions for the owner to choose between (saas/web/redesign.py). Only with --previews, never into the
+# default output folder, never in the sitemap; each page carries noindex.
+PREVIEWS = [
+    ("redesign/a.html", "preview/a/index.html", "/preview/a/"),
+    ("redesign/b.html", "preview/b/index.html", "/preview/b/"),
+]
 
 GA4_ID = re.compile(r"^G-[A-Z0-9]{4,20}$")
 CLARITY_ID = re.compile(r"^[a-z0-9]{6,20}$", re.IGNORECASE)
 TURNSTILE_KEY = re.compile(r"^[0-9A-Za-z_-]{10,100}$")
-JS_IMPORT = re.compile(r"""(\bfrom\s+["'])(\./[\w.-]+\.js)(\?v=[0-9a-f]+)?(["'])""")
-# Assets only the signed-in app and the sign-in pages load (paths relative to saas/web/static).
+# A relative module specifier in any import form: `from "./x.js"`, a bare `import "./x.js"` statement and
+# `import("./x.js")`. The bare form must start its line: site.js mentions `import "./site.js"` in a comment, and
+# rewriting that would make the module's hash depend on itself, so the rewrite never settles.
+# Parent paths count too: static/js/editor/*.js import "../api.js", which must carry the same ?v= as the page's
+# own api.js or the browser loads a second, unversioned copy that the immutable cache then pins.
+JS_IMPORT = re.compile(
+    r"""((?:\bfrom\s*|^[ \t]*import\s*|\bimport\s*\(\s*)["'])((?:\.\.?/)+(?:[\w.-]+/)*[\w.-]+\.js)(\?v=[0-9a-f]+)?(["'])""",
+    re.MULTILINE)
+# Assets only the signed-in app and the sign-in pages load (paths relative to saas/web/static). They ARE published
+# with the site, because the beta serves app pages through it; no app or sign-in PAGE is ever exported.
 APP_ONLY = re.compile(r"^(css/app\.css|js/api\.js|js/auth\.js|js/app-[\w-]+\.js)$")
 
 
@@ -140,8 +154,6 @@ def _copy_static(src: Path, dst: Path) -> list[Path]:
     for f in sorted(src.rglob("*")):
         if not f.is_file() or f.suffix == ".md" or "__pycache__" in f.parts:
             continue
-        if app_only(f.relative_to(src).as_posix()):
-            continue  # the signed-in app is served by the Python app, never from the static site
         target = dst / f.relative_to(src)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(f, target)
@@ -167,8 +179,10 @@ def _copy_static(src: Path, dst: Path) -> list[Path]:
 
 
 def export(out: Path, *, brand: str, public_url: str, support_email: str = "", ga4: str = "", clarity: str = "",
-           turnstile: str = "") -> list[Path]:
-    """Write the site to `out` and return every file written."""
+           turnstile: str = "", previews: bool = False) -> list[Path]:
+    """Write the site to `out` and return every file written. previews=True adds the landing directions."""
+    if previews and Path(out).resolve() == DEFAULT_OUT.resolve():
+        raise ValueError(f"previews are never written to {DEFAULT_OUT}; pass --out with a scratch folder")
     brand, public_url = brand.strip(), public_url.strip().rstrip("/")
     ga4, clarity, turnstile = ga4.strip(), clarity.strip(), turnstile.strip()
     if not brand:
@@ -193,8 +207,13 @@ def export(out: Path, *, brand: str, public_url: str, support_email: str = "", g
     saved = {key: env.globals.get(key) for key in overrides}
     env.globals.update(overrides)
     try:
-        for template, file, path in PAGES:
+        from saas.web import redesign
+
+        for template, file, path in PAGES + (PREVIEWS if previews else []):
             ctx = routes.common_context(path, public_url)
+            if template.startswith("redesign/"):
+                ctx.update(routes.landing_context(pricing=None, static=True))
+                ctx.update(redesign.context(routes.STATIC_DIR, exported_asset(out)))
             ctx.update(static_export=True, analytics={"ga4": ga4, "clarity": clarity})
             if template == "landing.html":
                 ctx.update(routes.landing_context(pricing=None, static=True))  # no prices before launch
@@ -234,6 +253,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT, help=f"output folder (default {DEFAULT_OUT})")
     parser.add_argument("--allow-placeholder", action="store_true",
                         help="build even though SAAS_SUPPORT_EMAIL is unset or an example address (preview only)")
+    parser.add_argument("--previews", action="store_true",
+                        help="also write the landing directions to preview/a/ and preview/b/ (scratch --out only)")
     args = parser.parse_args(argv)
     support = os.environ.get("SAAS_SUPPORT_EMAIL", "").strip()
     if is_placeholder_email(support) and not args.allow_placeholder:
@@ -249,6 +270,7 @@ def main(argv: list[str] | None = None) -> int:
             ga4=os.environ.get("GA4_MEASUREMENT_ID", ""),
             clarity=os.environ.get("CLARITY_PROJECT_ID", ""),
             turnstile=os.environ.get("SAAS_TURNSTILE_SITE_KEY", ""),
+            previews=args.previews,
         )
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)

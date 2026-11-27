@@ -73,18 +73,59 @@ def test_every_page_and_extra_is_written(site):
     assert not (out / "styleguide").exists() and not (out / "app").exists()
 
 
-def test_signed_in_app_stays_off_the_static_site(site):
+def test_app_assets_ship_but_app_pages_never_do(site):
+    """The beta serves app pages through the site, so their CSS and JS are published; the pages themselves are not."""
     exporter, out = site
     for page in ("login", "signup", "forgot", "verify-email", "reset", "app"):
         assert not (out / page).exists(), page
     shipped = {p.relative_to(out / "static").as_posix() for p in (out / "static").rglob("*") if p.is_file()}
-    assert not [p for p in shipped if exporter.app_only(p)], "app-only scripts and styles are not published"
-    for name in ("css/app.css", "js/api.js", "js/auth.js", "js/app-shell.js", "js/app-job.js"):
-        assert exporter.app_only(name) and name not in shipped
+    source = ROOT / "saas" / "web" / "static"
+    app_assets = {p.relative_to(source).as_posix() for p in source.rglob("*")
+                  if p.is_file() and exporter.app_only(p.relative_to(source).as_posix())}
+    assert {"css/app.css", "js/api.js", "js/auth.js", "js/app-shell.js", "js/app-job.js"} <= app_assets
+    assert app_assets <= shipped, sorted(app_assets - shipped)
     assert "js/site.js" in shipped and "css/components.css" in shipped
     for html in out.rglob("*.html"):
         text = html.read_text(encoding="utf-8")
         assert 'href="/login"' not in text and "/static/js/auth.js" not in text, html.name
+
+
+def test_every_relative_import_is_versioned(site):
+    """/static/* is cached as immutable, so an unversioned import would pin a module's old bytes for a year.
+    Covers `from "./x.js"`, bare `import "./x.js"` (app-brand.js) and `import("./x.js")`."""
+    import hashlib
+
+    _exporter_module, out = site
+    spec = re.compile(r"""\b(?:from|import)\s*\(?\s*["']((?:\.\.?/)+[\w./-]+\.js)(\?v=([0-9a-f]+))?["']""")
+    seen_bare = False
+    for js in (out / "static" / "js").rglob("*.js"):  # subfolders too: editor/ imports "../api.js"
+        text = "\n".join(line for line in js.read_text(encoding="utf-8").splitlines()
+                         if not line.lstrip().startswith(("//", "*", "/*")))  # code only
+        seen_bare |= bool(re.search(r"""^import\s+["']\.""", text, re.MULTILINE))
+        for target, version, digest in spec.findall(text):
+            assert version, f"{js.relative_to(out)} imports {target} without ?v="
+            published = (js.parent / target).resolve().read_bytes()
+            assert hashlib.sha256(published).hexdigest()[:10] == digest, (js.name, target)
+    assert seen_bare, "the bare-import case is exercised"
+
+
+def test_parent_path_imports_are_versioned(tmp_path, monkeypatch):
+    """A module in a subfolder importing "../x.js" gets the same ?v= the page uses for x.js."""
+    import hashlib
+    import shutil
+
+    exporter = _exporter()
+    static = tmp_path / "static"
+    (static / "js" / "sub").mkdir(parents=True)
+    (static / "js" / "base.js").write_text("export const a = 1;\n", encoding="utf-8")
+    (static / "js" / "sub" / "deep.js").write_text('import { a } from "../base.js";\nimport "../base.js";\n',
+                                                     encoding="utf-8")
+    out = tmp_path / "out"
+    exporter._copy_static(static, out / "static")
+    deep = (out / "static" / "js" / "sub" / "deep.js").read_text(encoding="utf-8")
+    digest = hashlib.sha256((out / "static" / "js" / "base.js").read_bytes()).hexdigest()[:10]
+    assert deep.count(f'"../base.js?v={digest}"') == 2, deep
+    shutil.rmtree(out)
 
 
 def test_pages_have_no_request_time_dependencies(site):
