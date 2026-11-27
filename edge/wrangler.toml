@@ -1,13 +1,13 @@
 # Cloudflare Pages project: static site in public/ + Pages Functions in functions/ + one D1 database.
 # Free tier: 100k Function requests/day, D1 5 GB / 5M rows read per day. See README.md for deploy steps.
-name = "doomscroller"
+name = "doomscroller-studio"
 pages_build_output_dir = "public"
 compatibility_date = "2026-11-01"
 
 [vars]
 # Public, non-secret settings. Secrets (IP_HASH_SALT, ADMIN_PASSWORD, TURNSTILE_SECRET_KEY) are set
 # with `wrangler pages secret put`, never here.
-PUBLIC_URL = "https://doomscroller-epy.pages.dev"
+PUBLIC_URL = "https://doomscroller-studio.pages.dev"
 REFERRAL_BUMP = "5"
 
 [[d1_databases]]
