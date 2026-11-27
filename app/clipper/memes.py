@@ -174,6 +174,13 @@ HISTORY_AVOID = 30
 _HISTORY_KEEP = 300
 
 
+def cache_root() -> Path:
+    """Meme searches and downloads: the shared cache when one is set, else content/. Owner-curated
+    files (the local pack) and the history always stay in content/."""
+    shared = str(getattr(settings, "clip_shared_cache_dir", "") or "").strip()
+    return Path(shared).expanduser() if shared else settings.content_path
+
+
 def history_path() -> Path:
     # Kept beside content/, not inside content/memes/: cleanup ages everything in memes/ by mtime.
     return settings.content_path / "meme_history.json"
@@ -304,7 +311,7 @@ def _request(url: str, params: dict) -> dict:
 
 def _search_cache(library: str, query: str) -> Path:
     digest = hashlib.sha1(f"meme|{library}|{query.lower()}".encode()).hexdigest()[:20]
-    return settings.content_path / "memes" / f"meme-{digest}.json"
+    return cache_root() / "memes" / f"meme-{digest}.json"
 
 
 def _read_search_cache(path: Path) -> Optional[object]:
@@ -318,10 +325,14 @@ def _read_search_cache(path: Path) -> Optional[object]:
 
 
 def _write_search_cache(path: Path, results: object) -> None:
+    # Atomic, because a shared cache can be read by another job mid-write.
+    partial = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"at": time.time(), "results": results}), encoding="utf-8")
+        partial.write_text(json.dumps({"at": time.time(), "results": results}), encoding="utf-8")
+        os.replace(partial, path)
     except OSError as exc:
+        partial.unlink(missing_ok=True)
         log.warning("memes: could not cache a search: %s", exc)
 
 
@@ -467,7 +478,7 @@ def _local_copy(candidate: Candidate, seconds: float) -> Optional[Path]:
     """A checked file for this result, downloading it if needed. None if it will not play."""
     raw = candidate.link.split("?")[0].lower()
     suffix = next((e for e in (".mp4", ".gif", ".jpg", ".jpeg", ".png", ".webp") if raw.endswith(e)), ".gif")
-    path = settings.content_path / "memes" / f"{_safe_meme_id(candidate.meme_id)}{suffix}"
+    path = cache_root() / "memes" / f"{_safe_meme_id(candidate.meme_id)}{suffix}"
     if path.exists() and not _playable(path, seconds):
         path.unlink()
     if path.exists():

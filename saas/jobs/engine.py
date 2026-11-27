@@ -108,7 +108,12 @@ class ClipperEngine:
             log.error("clipper engine unavailable: %s", exc)
             raise EngineError("engine_unavailable", "The clip engine is not available right now.", retryable=True)
         # cache_dir also receives the source download and transcript, so it is per job (private, and
-        # removed by the worker afterwards), never a cache shared between customers.
+        # removed by the worker afterwards), never a cache shared between customers. shared_cache_dir holds only
+        # public stock/meme search results and downloads: shared so Pixabay's 24h cache rule holds and Giphy
+        # quota is not re-spent on every job.
+        from ..config import settings as saas_settings
+
+        shared_cache = Path(saas_settings.data_dir) / "_shared_cache"
         with metering.metered() as meter:
             try:
                 result = standalone.clip_to_directory(
@@ -119,7 +124,7 @@ class ClipperEngine:
                     max_clip_seconds=int(options.get("max_clip_seconds", 60)), brand_name=brand_name,
                     watermark_text=watermark_text, recent_memes=tuple(recent_memes), on_stage=on_stage,
                     logo_path=logo_path, custom_memes=tuple(custom_memes),
-                    cache_dir=Path(out_dir).parent / "work")
+                    cache_dir=Path(out_dir).parent / "work", shared_cache_dir=shared_cache)
             except JobCanceled:
                 raise
             except Exception as exc:

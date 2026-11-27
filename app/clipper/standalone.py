@@ -121,7 +121,7 @@ def clip_to_directory(source: str, out_dir: Path, *, count: int = 3, language: s
                       on_stage: Optional[Callable[[str, float], None]] = None,
                       logo_path: Optional[str] = None, custom_memes: Sequence[str] = (),
                       cache_dir: Optional[Path] = None, sfx_pack_dir: Optional[Path] = None,
-                      music_dir: Optional[Path] = None) -> dict:
+                      music_dir: Optional[Path] = None, shared_cache_dir: Optional[Path] = None) -> dict:
     """Cut ``count`` finished clips from ``source`` into ``out_dir``. Raises :class:`ClipError` if none can be made.
 
     Returns ``{"source": {...}, "clips": [...], "warnings": [...], "meter": <metering summary>}``. Each clip's
@@ -137,6 +137,10 @@ def clip_to_directory(source: str, out_dir: Path, *, count: int = 3, language: s
 
     ``sfx_pack_dir`` defaults to this deployment's configured pack; ``music_dir`` defaults to an empty
     folder under the cache, so music (when on) is the zero-copyright synthesised bed.
+
+    ``shared_cache_dir`` holds only stock-footage and meme searches and downloads, so jobs share them
+    (Pixabay asks for 24h caching; Giphy's quota is small). The source, transcript and everything else
+    stay private under ``cache_dir``. Without it those caches live under ``cache_dir`` too.
     """
     out = Path(out_dir).expanduser().resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -164,6 +168,7 @@ def clip_to_directory(source: str, out_dir: Path, *, count: int = 3, language: s
         "clip_edit_target_sec": min(settings.clip_edit_target_sec, max(12, int(max_clip_seconds * 0.8))),
         "clip_auto_queue": False,
         "brand_name": "",
+        "clip_shared_cache_dir": str(Path(shared_cache_dir).expanduser().resolve()) if shared_cache_dir else "",
     }
     with _lock, _overrides(values), _meter() as meter:
         try:

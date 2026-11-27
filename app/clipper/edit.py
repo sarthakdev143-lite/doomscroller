@@ -53,7 +53,11 @@ _MIN_KEPT_SHARE = 0.6
 _FIRST_CUTAWAY_SEC = 2.5
 _LAST_CUTAWAY_MARGIN_SEC = 1.5
 # B-roll is the exception, not the texture: a wrong cutaway is worse than none (owner, Nov 2026).
-_MIN_CUTAWAY_GAP_SEC = 6.0
+_MIN_CUTAWAY_GAP_SEC = 4.0
+# Candidates are planned closer together than that: the gap and the share are enforced among the shots
+# that really get footage, so a shot the judge rejects never blocks the next concrete thing named.
+_PLAN_CUTAWAY_GAP_SEC = 1.0
+_PLAN_CUTAWAY_SHARE = 0.45
 _MIN_CUTAWAY_SEC, _MAX_CUTAWAY_SEC = 1.5, 3.0
 _MAX_CUTAWAY_SHARE = 0.3
 # A cutaway never covers a beat, a reaction or the payoff: those are the speaker's moments.
@@ -460,15 +464,16 @@ def _speaker_windows(plan: EditPlan) -> list[tuple[float, float]]:
     return windows
 
 
-def _spaced_cutaways(cutaways: Sequence[Cutaway], plan: EditPlan) -> list[Cutaway]:
+def _spaced_cutaways(cutaways: Sequence[Cutaway], plan: EditPlan, *, gap: float = _MIN_CUTAWAY_GAP_SEC,
+                     share: float = _MAX_CUTAWAY_SHARE) -> list[Cutaway]:
     """Keep the speaker on screen at both ends, on every beat, reaction and the payoff, and for most of the clip."""
     blocked = _speaker_windows(plan)
-    allowance = plan.duration * _MAX_CUTAWAY_SHARE
+    allowance = plan.duration * share
     kept: list[Cutaway] = []
-    last_end, used = -_MIN_CUTAWAY_GAP_SEC, 0.0
+    last_end, used = -gap, 0.0
     for cutaway in sorted(cutaways, key=lambda c: c.at):
         when = plan.to_output(cutaway.at)
-        if when is None or when < _FIRST_CUTAWAY_SEC or when < last_end + _MIN_CUTAWAY_GAP_SEC:
+        if when is None or when < _FIRST_CUTAWAY_SEC or when < last_end + gap:
             continue
         seconds = min(cutaway.seconds, plan.duration - _LAST_CUTAWAY_MARGIN_SEC - when)
         if seconds < _MIN_CUTAWAY_SEC or used + seconds > allowance:
@@ -493,14 +498,16 @@ def _words_around(plan: EditPlan, cutaway: Cutaway) -> str:
 class _ShotChooser:
     """Asks the AI which results literally show the subject. Nothing it has not judged is ever used.
 
-    There is no second, broader search when it rejects them all: a looser search is how a duck came
-    to illustrate a wet ball. No judge (no AI, no thumbnails, a failed call) means no cutaway.
+    There is no broader search when it rejects them all: a looser search, suggested by the judge, is how
+    a duck came to illustrate a wet ball. No judge (no AI, no thumbnails, a failed call) means no cutaway.
     """
 
     def __init__(self, spoken: str, session: broll.StockSession, warnings: list[str], subject: str = ""):
         self.spoken, self.session, self.warnings, self.subject = spoken, session, warnings, subject
+        self.seen: set[str] = set()
 
     def __call__(self, found: list[broll.Candidate]) -> list[broll.Candidate]:
+        self.seen.update(c.video_id for c in found)
         if self.session.picking_failed or not self.spoken or not ai.available():
             return []
         try:
@@ -513,12 +520,39 @@ class _ShotChooser:
             self.session.picking_failed = True
             self.warnings.append("the AI could not judge stock shots, so this job left them out")
             return []
-        # Only its first choice: the runners-up are what it liked less.
-        return verdict.fit[:1]
+        # Best first; a later choice is only used when an earlier one will not download or is dark.
+        return verdict.fit
+
+    def verify(self, path: str, offset: float, seconds: float) -> bool:
+        """The seconds that would really play must show the subject too, not only the library's thumbnail."""
+        if self.session.picking_failed:
+            return False
+        try:
+            verdict = shots.confirm(path, offset, seconds, self.spoken, self.subject)
+        except Interrupted:
+            raise
+        except Exception as exc:  # a failed check means the shot is not used, never that it is used unchecked
+            log.info("edit: could not check the stock window: %s", exc)
+            return False
+        return bool(verdict)
 
 
 def _fetch_fitting_shot(cutaway: Cutaway, used: set[str], chooser: _ShotChooser) -> Optional[broll.StockClip]:
-    return broll.fetch(cutaway.query, cutaway.seconds, exclude=used, choose=chooser)
+    """The query first, then, if the judge rejected every result, the subject alone.
+
+    A library matches tags, so a qualifier can steer it off the thing: "swiss chocolate" returned Swiss
+    mountains. The subject is the speaker's own words for the thing, so searching it is narrower than the
+    query, never broader, and its results face the same judge (the ones already rejected are not shown again).
+    """
+    clip = broll.fetch(cutaway.query, cutaway.seconds, exclude=used, choose=chooser)
+    subject = " ".join(str(cutaway.subject or "").split())
+    if (clip is not None or not subject or subject.lower() == cutaway.query.lower()
+            or chooser.session.picking_failed or chooser.session.stopped):
+        return clip
+    clip = broll.fetch(subject, cutaway.seconds, exclude=used | chooser.seen, choose=chooser)
+    if clip is not None:
+        cutaway.query = subject
+    return clip
 
 
 def attach_stock(plan: EditPlan, session: Optional[broll.StockSession] = None) -> list[str]:
@@ -540,9 +574,15 @@ def attach_stock(plan: EditPlan, session: Optional[broll.StockSession] = None) -
     warnings: list[str] = []
     used: set[str] = set()
     kept: list[Cutaway] = []
+    allowance = plan.duration * _MAX_CUTAWAY_SHARE
+    last_end, used_sec = -_MIN_CUTAWAY_GAP_SEC, 0.0
     for cutaway in plan.cutaways:
         if session.stopped:
             break
+        # The real spacing and share apply among shots that got footage, so a rejected one costs nothing.
+        when = plan.to_output(cutaway.at)
+        if when is not None and (when < last_end + _MIN_CUTAWAY_GAP_SEC or used_sec + cutaway.seconds > allowance):
+            continue
         try:
             chooser = _ShotChooser(_words_around(plan, cutaway), session, warnings, cutaway.subject)
             clip = _fetch_fitting_shot(cutaway, used, chooser)
@@ -573,6 +613,8 @@ def attach_stock(plan: EditPlan, session: Optional[broll.StockSession] = None) -
         cutaway.clip = clip
         used.add(clip.video_id)
         kept.append(cutaway)
+        if when is not None:
+            last_end, used_sec = when + cutaway.seconds, used_sec + cutaway.seconds
     plan.cutaways = kept
     return warnings
 
@@ -858,5 +900,6 @@ def build_edit(moment: Moment, words: Sequence[Word], *, title: str = "") -> Edi
         last_sentence = next((s for s in reversed(sentences) if s.first_word <= kept[-1] <= s.last_word), None)
         first_kept = next((i for i in kept if last_sentence and i >= last_sentence.first_word), None)
         plan.payoff_at = inside[first_kept].start if first_kept is not None else None
-    plan.cutaways = _spaced_cutaways(_reply_cutaways(reply, sentences, inside, set(kept)), plan)
+    plan.cutaways = _spaced_cutaways(_reply_cutaways(reply, sentences, inside, set(kept)), plan,
+                                     gap=_PLAN_CUTAWAY_GAP_SEC, share=_PLAN_CUTAWAY_SHARE)
     return plan

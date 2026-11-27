@@ -394,6 +394,8 @@ def test_clipper_engine_calls_the_pipeline_seam(core, tmp_path, monkeypatch):
     assert seen["count"] == 2 and seen["music"] is True and seen["watermark_text"] == "Brand"
     assert seen["logo_path"] == "/logo.png" and seen["custom_memes"] == ("/a.gif",) and seen["recent_memes"] == ("m1",)
     assert seen["cache_dir"] == tmp_path.parent / "work" and stages == ["rendering"]
+    # Public stock/meme caches are shared across jobs; the private per-job dir is not.
+    assert seen["shared_cache_dir"].name == "_shared_cache" and seen["shared_cache_dir"] != seen["cache_dir"]
     assert out["meter"]["stt_seconds"] == {"deepgram:nova-3": 120.0}
     with pytest.raises(EngineError) as exc:
         ClipperEngine().run(source="boom", out_dir=tmp_path, options={}, brand_name=None, watermark_text=None,

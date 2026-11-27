@@ -109,7 +109,35 @@ def test_broll_is_at_most_a_third_of_the_clip_and_spaced_out():
     kept = edit._spaced_cutaways(shots, plan)
     assert sum(c.seconds for c in kept) <= 40 * 0.3
     times = [c.at for c in kept]
-    assert all(b - a >= 3.0 + 6.0 - 1e-6 for a, b in zip(times, times[1:]))
+    assert all(b - a >= 3.0 + 4.0 - 1e-6 for a, b in zip(times, times[1:]))
+
+
+def test_a_rejected_shot_never_blocks_the_next_concrete_thing(monkeypatch):
+    """Zurich: 'big airport' then 'chocolate' 4s later. The airport shots were all rejected, and the planned
+    6s gap had already dropped the chocolate, so the clip got no B-roll at all. Spacing now applies among
+    shots that actually got footage."""
+    from app.clipper import broll
+    monkeypatch.setattr(settings, "pixabay_api_key", "k")
+    monkeypatch.setattr(settings, "clip_broll", True)
+    monkeypatch.setattr(ai, "available", lambda: True)
+    plan = EditPlan(words=_words(80), segments=[(0.0, 40.0)], speed=1.0)
+    plan.cutaways = edit._spaced_cutaways([Cutaway(5.5, 2.0, "busy airport terminal", subject="airport"),
+                                           Cutaway(9.5, 2.0, "swiss chocolate shop", subject="chocolate"),
+                                           Cutaway(13.0, 2.0, "chocolate bars", subject="chocolates")], plan,
+                                          gap=edit._PLAN_CUTAWAY_GAP_SEC, share=edit._PLAN_CUTAWAY_SHARE)
+    assert len(plan.cutaways) == 3
+    searched = []
+
+    def fetch(query, seconds, exclude=(), choose=None):
+        searched.append(query)
+        return None if "airport" in query else broll.StockClip(query, f"/x/{query}.mp4", 10.0, offset=0.4)
+
+    monkeypatch.setattr(broll, "fetch", fetch)
+    edit.attach_stock(plan)
+    # The airport was rejected (and its subject-only retry too), the chocolate shop got footage, and the
+    # third is too close to it to be used.
+    assert searched == ["busy airport terminal", "airport", "swiss chocolate shop"]
+    assert [c.query for c in plan.cutaways] == ["swiss chocolate shop"]
 
 
 def test_the_edit_prompt_no_longer_demands_broll_and_says_when_in_doubt_leave_it_out():

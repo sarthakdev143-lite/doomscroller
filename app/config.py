@@ -231,6 +231,10 @@ class Settings(BaseSettings):
     # fallback, on whatever accounts they are logged in to. "api" calls an HTTP API instead, for hosts with no
     # logged-in CLI (the SaaS); usage is metered per call.
     clip_ai_backend: str = "cli"
+    # Where stock-footage and meme search caches and downloads live. Empty means CONTENT_DIR. The SaaS points
+    # it at one folder shared by every job (Pixabay's 24h cache rule, Giphy's quota) while each job's source
+    # and transcript stay private under its own CONTENT_DIR.
+    clip_shared_cache_dir: str = ""
     # With the api backend: "anthropic" (Messages API) or "openai_compatible" (any /chat/completions endpoint,
     # e.g. Gemini https://generativelanguage.googleapis.com/v1beta/openai or Groq https://api.groq.com/openai/v1).
     clip_ai_api_provider: str = "anthropic"

@@ -328,12 +328,16 @@ drive it through the `ClipJob` table, so queued work survives a restart.
   download just means fewer cutaways. A 429 stops further searches. Pixabay requires searches cached for 24h, and
   its key travels in the URL, so the httpx logger stays at WARNING and errors must never include the URL.
   The AI proposes B-roll only where the speaker names a concrete filmable thing (`subject`); `edit.grounded_subject`
-  drops ungrounded or generic subjects. Cutaways never cover a beat, a reaction or the final sentence, take at most 30%
-  of the clip and sit at least 6s apart. Searches match tags rather than meaning, so `shots.py` shows the vision model
-  the results, cropped as they will render, with the subject and the words spoken over them, and only its first choice
-  is used. A rejection is final: no second, broader search (that is how a duck illustrated a wet ball). No judge (no
-  AI, no thumbnails, a failed reply) means no cutaway, never the first unjudged match: unjudged matches put a sapphire
-  ring and Alcatraz into a 1940 film.
+  drops ungrounded or generic subjects. Cutaways never cover a beat, a reaction or the final sentence. Candidates are
+  planned 1s apart; the 4s gap and 30% share apply among shots that actually get footage, so a rejected one never
+  blocks the next. Searches match tags rather than meaning, so `shots.py` shows the vision model the results, cropped as
+  they will render, with the subject and the words spoken over them. When every result is rejected, one more search
+  uses the subject alone (the speaker's own words, never the judge's broader suggestion: that is how a duck
+  illustrated a wet ball). The chosen clip plays from its first lit stretch (`broll.visible_offset`; dark openings
+  rendered as black boxes) and `shots.confirm` checks the seconds that will actually play before use, because library
+  thumbnails are often a different moment. No judge (no AI, no thumbnails, a failed reply) means no cutaway, never the
+  first unjudged match: unjudged matches put a sapphire ring and Alcatraz into a 1940 film. Stock and meme caches can
+  live in `CLIP_SHARED_CACHE_DIR` (the SaaS shares them across customers; sources stay private per job).
   Files are test-decoded before use, because a CDN can answer 200 with an error page, and a render that still
   fails is retried once without B-roll.
 - **Tidying speech is conservative.** A rule that removes words changes what someone said, so `droppable_indices`

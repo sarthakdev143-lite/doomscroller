@@ -242,9 +242,15 @@ def _request(url: str, params: dict, headers: Optional[dict] = None) -> dict:
         raise StockError(f"{name} sent an unreadable reply") from None
 
 
+def cache_root() -> Path:
+    """Stock searches and downloads: the shared cache when one is set, else content/."""
+    shared = str(getattr(settings, "clip_shared_cache_dir", "") or "").strip()
+    return Path(shared).expanduser() if shared else settings.content_path
+
+
 def _search_cache(library: str, query: str) -> Path:
     digest = hashlib.sha1(f"{library}|{query.lower()}".encode()).hexdigest()[:20]
-    return settings.content_path / "broll" / f"search-{digest}.json"
+    return cache_root() / "broll" / f"search-{digest}.json"
 
 
 def _read_search_cache(path: Path) -> Optional[object]:
@@ -340,9 +346,36 @@ def _playable(path: Path, seconds: float) -> bool:
     return len(raw) // 64 >= int(seconds * 4)
 
 
+# A cutaway must show something: stock clips often open on black (a fade-in), and a 2-second cutaway
+# taken from the first second of one renders as a black box over the speaker.
+_DARK_LUMA = 24.0
+_SCAN_FPS = 4
+
+
+def visible_offset(path: Path, seconds: float) -> Optional[float]:
+    """Where in the file a ``seconds``-long window first stays visibly lit, from _LEAD_IN_SEC on.
+
+    None when no such window exists (the clip is black or nearly so where it would play). If the file
+    cannot be scanned the usual lead-in is assumed: it already decoded once, in _playable.
+    """
+    try:
+        raw = read_ffmpeg(["-i", str(path), "-map", "0:v:0", "-an", "-vf", f"fps={_SCAN_FPS},scale=8:8,format=gray",
+                           "-f", "rawvideo", "-"])
+    except MediaError:
+        return _LEAD_IN_SEC
+    lumas = [sum(raw[i:i + 64]) / 64 for i in range(0, len(raw) - 63, 64)]
+    if not lumas:
+        return _LEAD_IN_SEC
+    need = int(math.ceil(seconds * _SCAN_FPS)) + 1
+    for index in range(int(_LEAD_IN_SEC * _SCAN_FPS), len(lumas) - need + 1):
+        if all(luma >= _DARK_LUMA for luma in lumas[index:index + need]):
+            return max(_LEAD_IN_SEC, index / _SCAN_FPS)
+    return None
+
+
 def _local_copy(candidate: Candidate, seconds: float) -> Optional[Path]:
     """A checked file for this result, downloading it if needed. None if it will not play."""
-    path = settings.content_path / "broll" / f"{_safe_video_id(candidate.video_id)}.mp4"
+    path = cache_root() / "broll" / f"{_safe_video_id(candidate.video_id)}.mp4"
     if path.exists() and not _playable(path, seconds):
         path.unlink(missing_ok=True)
     if path.exists():
@@ -355,12 +388,30 @@ def _local_copy(candidate: Candidate, seconds: float) -> Optional[Path]:
     return None
 
 
+def windows(path: Path, seconds: float, duration: float) -> list[float]:
+    """Offsets worth trying for a cutaway: the first lit stretch, then the middle of the clip."""
+    first = visible_offset(path, seconds)
+    if first is None:
+        return []
+    found = [first]
+    if math.isfinite(duration) and duration > 0:
+        middle = round(max(first, (duration - seconds) / 2), 2)
+        if middle - first >= seconds and middle + seconds <= duration:
+            found.append(middle)
+    return found
+
+
 def fetch(query: str, seconds: float, *, exclude: Iterable[str] = (),
-          choose: Optional[Callable[[list[Candidate]], list[Candidate]]] = None) -> Optional[StockClip]:
+          choose: Optional[Callable[[list[Candidate]], list[Candidate]]] = None,
+          verify: Optional[Callable[[str, float], bool]] = None) -> Optional[StockClip]:
     """A local stock clip long enough for this cutaway, or None if nothing suits.
 
-    `choose` gets the results long enough to use, and returns those worth trying, best first.
+    `choose` gets the results long enough to use, and returns those worth trying, best first. A chooser
+    with a ``verify(path, offset, seconds)`` method (or an explicit ``verify(path, offset)``) checks the
+    stretch that would really play; the first window it accepts is used.
     """
+    if verify is None and callable(getattr(choose, "verify", None)):
+        verify = lambda path, offset: choose.verify(path, offset, seconds)  # noqa: E731
     if not math.isfinite(seconds) or seconds <= 0:
         return None
     skip = set(exclude)
@@ -380,8 +431,14 @@ def fetch(query: str, seconds: float, *, exclude: Iterable[str] = (),
         if path is None:
             failed += 1
             continue
+        offsets = windows(path, seconds, candidate.duration) if verify is not None else [visible_offset(path, seconds)]
+        offset = next((o for o in offsets if o is not None and (verify is None or verify(str(path), o))), None)
+        if offset is None:
+            log.info("broll: %s does not show the subject (or is dark) where it would play, so it is skipped",
+                     candidate.video_id)
+            continue
         return StockClip(video_id=candidate.video_id, path=str(path), duration=candidate.duration,
-                         author=candidate.author, page_url=candidate.page_url, offset=_LEAD_IN_SEC,
+                         author=candidate.author, page_url=candidate.page_url, offset=offset,
                          provider=candidate.provider)
     if failed:
         raise DownloadsFailed(f"{failed} stock downloads failed", failed)

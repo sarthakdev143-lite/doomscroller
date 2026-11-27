@@ -23,6 +23,8 @@ def _library(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "clip_broll", True)
     monkeypatch.setattr(ai, "available", lambda: True)
     monkeypatch.setattr(broll, "_playable", lambda path, seconds: True)
+    # The window that would play is checked by the vision model too; these tests are about choosing.
+    monkeypatch.setattr(shots, "confirm", lambda *a, **k: True)
 
     def deliver(link, path):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -397,6 +399,27 @@ def test_a_rejection_is_final_and_no_broader_search_is_tried(monkeypatch):
     assert searches == ["rain"]
 
 
+def test_a_rejected_query_gets_one_search_for_the_subject_alone_never_a_suggestion(monkeypatch):
+    """'swiss chocolate' found Swiss mountains; 'chocolate', the speaker's own word, is the narrower retry."""
+    searches = _search_returns(monkeypatch, swiss_chocolate=[_candidate(1), _candidate(2)],
+                               chocolate=[_candidate(2), _candidate(3)], alps=[_candidate(4)])
+    offered = []
+
+    def judge(found, spoken, subject=""):
+        offered.append([c.video_id for c in found])
+        if any(c.video_id == "pixabay-3" for c in found):
+            return shots.Verdict([c for c in found if c.video_id == "pixabay-3"])
+        return shots.Verdict([], "alps")
+
+    monkeypatch.setattr(shots, "judge", judge)
+    plan = _plan((15.0, "swiss chocolate"))
+    plan.cutaways[0].subject = "chocolate"
+    attach_stock(plan)
+    assert searches == ["swiss chocolate", "chocolate"]
+    assert offered == [["pixabay-1", "pixabay-2"], ["pixabay-3"]]  # rejected shots are not shown again
+    assert plan.cutaways[0].clip.video_id == "pixabay-3" and plan.cutaways[0].query == "chocolate"
+
+
 def test_rejection_without_a_suggestion_drops_the_cutaway(monkeypatch):
     searches = _search_returns(monkeypatch, rain=[_candidate(1)])
     monkeypatch.setattr(shots, "judge", lambda found, spoken, subject="": shots.Verdict([]))
@@ -410,6 +433,55 @@ def test_each_cutaway_gets_one_search_only(monkeypatch):
     monkeypatch.setattr(shots, "judge", lambda found, spoken, subject="": next(replies))
     attach_stock(_plan((12.0, "rain"), (18.0, "sun")))
     assert searches == ["rain", "sun"]
+
+
+def test_a_stock_clip_that_opens_on_black_plays_from_where_it_is_lit_or_not_at_all(tmp_path, monkeypatch):
+    """A chocolate clip fading in from black rendered as a black box over the speaker for 2 seconds."""
+    lumas = [0] * 12 + [90] * 20  # dark for 3s at 4 fps, then lit
+    monkeypatch.setattr(broll, "read_ffmpeg", lambda args: bytes(b for luma in lumas for b in [luma] * 64))
+    assert broll.visible_offset(tmp_path / "x.mp4", 2.0) == 3.0
+    lumas[:] = [0] * 32
+    assert broll.visible_offset(tmp_path / "x.mp4", 2.0) is None
+    _search_returns(monkeypatch, chocolate=[_candidate(1), _candidate(2)])
+    monkeypatch.setattr(shots, "judge", lambda found, spoken, subject="": shots.Verdict(list(found)))
+    monkeypatch.setattr(broll, "visible_offset", lambda path, seconds: None if "pixabay-1" in str(path) else 1.25)
+    plan = _plan((15.0, "chocolate"))
+    attach_stock(plan)
+    assert plan.cutaways[0].clip.video_id == "pixabay-2" and plan.cutaways[0].clip.offset == 1.25
+
+
+def test_the_seconds_that_would_play_are_checked_not_only_the_thumbnail(monkeypatch):
+    """A 'chocolate' pick played plain waffles: the library thumbnail was a later moment of the clip."""
+    _search_returns(monkeypatch, chocolate=[_candidate(1, duration=12.0), _candidate(2, duration=12.0)])
+    monkeypatch.setattr(shots, "judge", lambda found, spoken, subject="": shots.Verdict(list(found)))
+    checked = []
+
+    def confirm(path, offset, seconds, spoken, subject=""):
+        checked.append((os.path.basename(path), offset))
+        return "pixabay-2" in path and offset > 1.0  # only clip 2's middle shows chocolate
+
+    monkeypatch.setattr(shots, "confirm", confirm)
+    plan = _plan((15.0, "chocolate"))
+    plan.cutaways[0].subject = "chocolate"
+    attach_stock(plan)
+    # Clip 1 fails both windows; clip 2's opening fails, its middle shows the chocolate and is what plays.
+    assert [name for name, _ in checked] == ["pixabay-1.mp4"] * 2 + ["pixabay-2.mp4"] * 2
+    assert plan.cutaways[0].clip.video_id == "pixabay-2" and plan.cutaways[0].clip.offset == 5.0
+
+
+def test_a_window_the_ai_cannot_check_is_never_used(monkeypatch, tmp_path):
+    _search_returns(monkeypatch, rain=[_candidate(1)])
+    monkeypatch.setattr(shots, "judge", lambda found, spoken, subject="": shots.Verdict(list(found)))
+    monkeypatch.setattr(shots, "confirm", lambda *a, **k: None)
+    plan = _plan((15.0, "rain"))
+    attach_stock(plan)
+    assert plan.cutaways == []
+
+
+def test_a_window_with_no_readable_frames_does_not_fit(monkeypatch, tmp_path):
+    monkeypatch.undo()  # the real check, not the fixture's stand-in
+    monkeypatch.setattr(ai, "ask_json", lambda *a, **k: pytest.fail("nothing to show, so nothing to ask"))
+    assert shots.confirm(str(tmp_path / "missing.mp4"), 0.4, 2.0, "rain") is False
 
 
 def test_only_the_judges_first_choice_is_used(monkeypatch):
@@ -436,7 +508,9 @@ def test_the_subject_reaches_the_judge(monkeypatch):
 
 def test_the_judge_prompt_names_the_subject_and_says_when_in_doubt_none():
     prompt = shots._prompt("the ball is wet", 3, subject="wet ball")
-    assert 'has to show: "wet ball"' in prompt and "When in doubt, choose none" in prompt
+    assert 'has to show: "wet ball"' in prompt and "If none of them clearly shows the thing, choose none" in prompt
+    # A typical example of the named thing counts, so a real airport is not refused for not being Zurich's.
+    assert "any busy airport illustrates" in prompt and "a duck in a stream does not illustrate a wet ball" in prompt
     assert '"search"' not in prompt
 
 

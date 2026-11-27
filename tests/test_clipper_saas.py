@@ -393,6 +393,27 @@ def test_clip_to_directory_returns_the_contract_shape_and_writes_only_under_out_
     assert calls["transcribe"] == {"sidecar": False, "language_hint": ""}
 
 
+def test_stock_and_meme_caches_can_be_shared_across_jobs_while_the_rest_stays_private(monkeypatch, tmp_path):
+    from app.clipper import broll
+    seen = {}
+    _seam(monkeypatch, tmp_path)
+    original = standalone.produce_clip
+
+    def spy(*a, **k):
+        seen.update(stock=broll._search_cache("Pixabay", "rain"), meme=memes._search_cache("Giphy", "lol"),
+                    content=settings.content_path)
+        return original(*a, **k)
+
+    monkeypatch.setattr(standalone, "produce_clip", spy)
+    shared = tmp_path / "shared"
+    standalone.clip_to_directory("x", tmp_path / "job", count=1, shared_cache_dir=shared)
+    assert seen["stock"].parent == shared.resolve() / "broll" and seen["meme"].parent == shared.resolve() / "memes"
+    assert seen["content"] == (tmp_path / "job").resolve() / ".cache"
+    assert settings.clip_shared_cache_dir == ""
+    standalone.clip_to_directory("x", tmp_path / "job2", count=1)
+    assert seen["stock"].parent == (tmp_path / "job2").resolve() / ".cache" / "broll"
+
+
 def test_options_reach_settings_only_during_the_run(monkeypatch, tmp_path):
     seen = {}
     calls = _seam(monkeypatch, tmp_path)
