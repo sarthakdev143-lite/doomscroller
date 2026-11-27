@@ -3697,7 +3697,10 @@ def test_payoff_pass_extends_a_clip_that_stops_on_its_setup(monkeypatch):
     assert picked[0].end >= sentences[7].end - 0.01
 
 
-def test_payoff_pass_keeps_the_ending_and_drops_early_setup_when_too_long(monkeypatch):
+def test_payoff_pass_never_cuts_the_setup_its_title_describes(monkeypatch):
+    # Sentences 0-9 run 33s against a 25s cap: reaching the "outcome" would mean dropping the opening the title is
+    # about (a real run left "Tasting Space Crickets" with two lines of tasting and the channel's outro).
+    monkeypatch.setattr(settings, "clip_min_sec", 10)
     monkeypatch.setattr(settings, "clip_max_sec", 25)
     replies = iter([
         {"clips": [{"first": 0, "last": 3, "title": "Title", "score": 90}]},
@@ -3707,7 +3710,23 @@ def test_payoff_pass_keeps_the_ending_and_drops_early_setup_when_too_long(monkey
     words = _long_transcript()
     sentences = moments.build_sentences(words)
     picked = moments.pick_speech(words, _signals(300), count=1)
-    assert picked[0].end >= sentences[9].end - 0.01 and picked[0].start > sentences[0].start
+    assert picked[0].start <= sentences[0].start + 0.01
+    assert sentences[3].end - 0.01 <= picked[0].end < sentences[4].start
+
+
+def test_payoff_pass_refuses_an_outcome_longer_than_the_clip(monkeypatch):
+    # A 16.5s clip (sentences 2-6) whose "outcome" is sentence 13 would gain 23s: that is a new story, not its end.
+    monkeypatch.setattr(settings, "clip_min_sec", 10)
+    monkeypatch.setattr(settings, "clip_max_sec", 60)
+    replies = iter([
+        {"clips": [{"first": 2, "last": 6, "title": "Title", "score": 90}]},
+        {"clips": [{"clip": 0, "last": 13}]},
+    ])
+    monkeypatch.setattr(ai, "ask_json", lambda *a, **k: next(replies))
+    words = _long_transcript()
+    sentences = moments.build_sentences(words)
+    picked = moments.pick_speech(words, _signals(300), count=1)
+    assert sentences[6].end - 0.01 <= picked[0].end < sentences[7].start
 
 
 @pytest.mark.parametrize("answer", [{"clips": [{"clip": 0, "last": 1}]}, {"clips": [{"clip": "x", "last": 1e999}]},
