@@ -1,0 +1,234 @@
+{% extends "app/_layout.html" %}
+{% block title %}Edit clip {{ clip_number }} | {{ brand_name }}{% endblock %}
+{% block styles %}{{ super() }}<link rel="stylesheet" href="{{ asset('/static/css/editor.css') }}">{% endblock %}
+{% block page_script %}<script type="module" src="{{ asset('/static/js/editor/main.js') }}"></script>{% endblock %}
+
+{% block app %}
+<section class="ed" aria-labelledby="ed-title" data-editor data-clip="{{ clip_id }}" data-job="{{ job_id }}" data-track-section="app-editor">
+  <header class="ed-head">
+    <div class="ed-head__title">
+      <p class="small"><a href="/app/jobs/{{ job_id }}#clip-{{ clip_id }}" data-track="editor-back">Back to the job</a></p>
+      <h1 id="ed-title">Edit clip {{ clip_number }}</h1>
+      {% if clip_title %}<p class="ed-head__clip" title="{{ clip_title }}">{{ clip_title }}</p>{% endif %}
+    </div>
+    <div class="ed-head__side">
+      <div class="ed-head__actions">
+        <div class="ed-history" role="group" aria-label="History">
+          <button class="icon-btn" type="button" data-undo disabled aria-keyshortcuts="Control+Z Meta+Z" title="Undo (Ctrl+Z)" data-track="editor-undo">
+            <span class="visually-hidden">Undo</span>
+            <svg viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4L3 8l4 4"/><path d="M3 8h8.5a5 5 0 010 10H8"/></svg>
+          </button>
+          <button class="icon-btn" type="button" data-redo disabled aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z Control+Y" title="Redo (Ctrl+Shift+Z)" data-track="editor-redo">
+            <span class="visually-hidden">Redo</span>
+            <svg viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 4l4 4-4 4"/><path d="M17 8H8.5a5 5 0 000 10H12"/></svg>
+          </button>
+        </div>
+        <a class="btn btn--ghost btn--sm" href="/api/clips/{{ clip_id }}/download" download data-download data-track="editor-download">Download</a>
+        <button class="btn btn--accent" type="button" data-render disabled data-track="editor-render"><span class="spinner" aria-hidden="true"></span><span data-render-label>Render changes</span></button>
+      </div>
+      <p class="ed-head__status small" role="status" aria-live="polite"><span data-edit-state>Loading the clip…</span><span class="ed-head__quota" data-rerenders></span></p>
+    </div>
+  </header>
+
+  <div class="ed-progress" data-render-progress hidden>
+    <div class="ed-progress__row">
+      <strong data-render-stage>Queued</strong>
+      <span class="mono small" data-render-pct>0%</span>
+    </div>
+    <div class="progress" role="progressbar" aria-label="Render progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" data-render-meter><span class="progress__fill" data-render-bar></span></div>
+    <p class="hint">A render usually takes a minute or two. You can keep editing: this render uses your edits as they were when you clicked.</p>
+  </div>
+  <p class="notice notice--error ed-error" role="alert" data-ed-error hidden></p>
+
+  <div class="empty" data-ed-unavailable hidden>
+    <p class="empty__title" data-ed-unavailable-title>This clip can’t be edited.</p>
+    <p data-ed-unavailable-text></p>
+    <a class="btn" href="/app/jobs/{{ job_id }}#clip-{{ clip_id }}" data-track="editor-unavailable-back">Back to the job</a>
+  </div>
+
+  <div class="ed-body" data-ed-body>
+    <div class="ed-stage">
+      <div class="ed-monitor">
+        <div class="ed-player" data-player>
+          <video playsinline preload="auto" data-video aria-label="Clip preview"></video>
+          <div class="ed-ov" data-overlay aria-hidden="true">
+            <img class="ed-ov__logo" alt="" data-ov-logo hidden>
+            <p class="ed-ov__hook" data-ov-hook hidden><span data-ov-hook-text></span></p>
+            <div class="ed-ov__memes" data-ov-memes></div>
+            <p class="ed-ov__note" data-ov-note hidden></p>
+          </div>
+          <span class="ed-player__mode" data-player-mode>Preview</span>
+          <p class="ed-player__msg" data-player-msg hidden></p>
+          <span class="skeleton ed-player__skeleton" data-player-skeleton></span>
+        </div>
+      </div>
+
+      <div class="ed-transport">
+        <button class="icon-btn ed-transport__play" type="button" data-play disabled aria-keyshortcuts="Space K" data-track="editor-play">
+          <span class="visually-hidden" data-play-label>Play</span>
+          <svg viewBox="0 0 20 20" aria-hidden="true" data-icon-play><path d="M6 4l10 6-10 6z" fill="currentColor"/></svg>
+          <svg viewBox="0 0 20 20" aria-hidden="true" data-icon-pause hidden><path d="M5 4h3.5v12H5zM11.5 4H15v12h-3.5z" fill="currentColor"/></svg>
+        </button>
+        <button class="icon-btn" type="button" data-mute aria-pressed="false" data-track="editor-mute">
+          <span class="visually-hidden">Mute</span>
+          <svg viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" data-icon-sound><path d="M3 8v4h3l4 3V5L6 8z"/><path d="M13.5 7.5a3.5 3.5 0 010 5M15.5 5.5a6.4 6.4 0 010 9"/></svg>
+          <svg viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" data-icon-muted hidden><path d="M3 8v4h3l4 3V5L6 8z"/><path d="M13 8l4 4M17 8l-4 4"/></svg>
+        </button>
+        <p class="ed-transport__time mono"><span data-time>0:00.0</span> <span class="muted">/ <span data-length>0:00.0</span></span></p>
+        <div class="ed-viewbar">
+          <label class="visually-hidden" for="ed-version">Showing</label>
+          <select class="select ed-viewbar__select" id="ed-version" data-version disabled data-track="editor-version">
+            <option value="preview">Preview of your edits</option>
+          </select>
+          <button class="btn btn--ghost btn--sm" type="button" data-compare hidden data-track="editor-compare">Previous version</button>
+        </div>
+      </div>
+      <p class="hint ed-stage__note">A preview. Captions are burned in, so caption fixes show after you render.</p>
+    </div>
+
+    <div class="ed-tl" data-timeline>
+      <div class="ed-tl__bar">
+        <h2 class="ed-tl__title">Timeline</h2>
+        <p class="ed-tl__trim mono small" data-trim-readout></p>
+        <div class="ed-tl__zoom" role="group" aria-label="Timeline zoom">
+          <button class="icon-btn" type="button" data-zoom="out" data-track="editor-zoom-out"><span class="visually-hidden">Zoom out</span><svg viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 10h10"/></svg></button>
+          <button class="btn btn--ghost btn--sm" type="button" data-zoom="fit" data-track="editor-zoom-fit">Fit</button>
+          <button class="icon-btn" type="button" data-zoom="in" data-track="editor-zoom-in"><span class="visually-hidden">Zoom in</span><svg viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 10h10M10 5v10"/></svg></button>
+        </div>
+        <details class="ed-keys">
+          <summary data-track="editor-shortcuts">Shortcuts</summary>
+          <dl class="ed-keys__list">
+            <div><dt><kbd>Space</kbd> or <kbd>K</kbd></dt><dd>Play or pause</dd></div>
+            <div><dt><kbd>J</kbd> <kbd>L</kbd></dt><dd>Back or forward 1 second</dd></div>
+            <div><dt><kbd>Ctrl</kbd>+<kbd>Z</kbd></dt><dd>Undo (add <kbd>Shift</kbd> to redo)</dd></div>
+            <div><dt>Trim handle: <kbd>←</kbd> <kbd>→</kbd></dt><dd>Step word by word (<kbd>Shift</kbd>: a tenth of a second)</dd></div>
+            <div><dt>Meme: <kbd>←</kbd> <kbd>→</kbd></dt><dd>Move it (<kbd>Shift</kbd>: 1 second)</dd></div>
+            <div><dt>Meme: <kbd>[</kbd> <kbd>]</kbd></dt><dd>Shorter or longer</dd></div>
+            <div><dt>Meme: <kbd>S</kbd> / <kbd>Delete</kbd></dt><dd>Sound on or off / remove it</dd></div>
+          </dl>
+        </details>
+      </div>
+      <div class="ed-tl__body on-dark">
+        <div class="ed-tl__labels" aria-hidden="true">
+          <span class="ed-tl__label ed-tl__label--ruler">Time</span>
+          <span class="ed-tl__label ed-tl__label--words">Words</span>
+          <span class="ed-tl__label ed-tl__label--memes">Memes</span>
+        </div>
+        <div class="ed-tl__scroll" data-tl-scroll>
+          <div class="ed-tl__track" data-tl-track>
+            <div class="ed-tl__canvas" data-tl-canvas>
+              <div class="ed-tl__ruler" data-tl-ruler></div>
+              <div class="ed-tl__row ed-tl__row--words" data-tl-words aria-hidden="true"></div>
+              <div class="ed-tl__row ed-tl__row--memes" data-tl-memes role="group" aria-label="Memes on the timeline"></div>
+              <div class="ed-tl__shade" data-tl-shade="start"></div>
+              <div class="ed-tl__shade" data-tl-shade="end"></div>
+              <div class="ed-tl__handle ed-tl__handle--start" role="slider" tabindex="0" aria-label="Trim start" aria-orientation="horizontal" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" data-handle="start"><span class="ed-tl__grip" aria-hidden="true"></span></div>
+              <div class="ed-tl__handle ed-tl__handle--end" role="slider" tabindex="0" aria-label="Trim end" aria-orientation="horizontal" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" data-handle="end"><span class="ed-tl__grip" aria-hidden="true"></span></div>
+              <div class="ed-tl__playhead" data-tl-playhead aria-hidden="true"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="hint">Drag the yellow handles to trim<span data-trim-words-hint>; they snap to the edges of words, so no cut lands mid-word (hold <kbd>Alt</kbd> to place them freely)</span>. Click anywhere on the timeline to jump there.</p>
+    </div>
+
+    <div class="ed-inspector">
+      <div class="tabs" data-tabs>
+        <div class="tabs__list" role="tablist" aria-label="Edit">
+          <button class="tabs__tab" role="tab" type="button" id="ed-tab-captions" aria-controls="ed-panel-captions" aria-selected="true" tabindex="0" data-track="editor-tab-captions">Captions</button>
+          <button class="tabs__tab" role="tab" type="button" id="ed-tab-hook" aria-controls="ed-panel-hook" aria-selected="false" tabindex="-1" data-track="editor-tab-hook">Hook</button>
+          <button class="tabs__tab" role="tab" type="button" id="ed-tab-logo" aria-controls="ed-panel-logo" aria-selected="false" tabindex="-1" data-track="editor-tab-logo">Logo</button>
+          <button class="tabs__tab" role="tab" type="button" id="ed-tab-memes" aria-controls="ed-panel-memes" aria-selected="false" tabindex="-1" data-track="editor-tab-memes">Memes</button>
+          <button class="tabs__tab" role="tab" type="button" id="ed-tab-sound" aria-controls="ed-panel-sound" aria-selected="false" tabindex="-1" data-track="editor-tab-sound">Sound</button>
+        </div>
+
+        <div class="tabs__panel ed-panel" role="tabpanel" id="ed-panel-captions" aria-labelledby="ed-tab-captions">
+          <label class="switch">
+            <span class="switch__text"><strong>Captions</strong><span>Word-by-word captions burned into the clip</span></span>
+            <input autocomplete="off" type="checkbox" data-captions-enabled>
+          </label>
+          <p class="ed-note small">Caption fixes appear after Render changes.</p>
+          <p class="hint" data-words-hint>Select a word to fix its spelling or a name. Arrow keys move between words; Enter edits one.</p>
+          <div class="ed-words" role="group" aria-label="Caption words" data-words></div>
+          <p class="hint" data-words-empty hidden>This clip has no spoken words, so there are no captions to fix.</p>
+          <p class="ed-words__summary small" data-edits-summary hidden><span data-edits-count></span> <button class="link-btn" type="button" data-edits-reset data-track="editor-captions-reset">Undo all fixes</button></p>
+        </div>
+
+        <div class="tabs__panel ed-panel" role="tabpanel" id="ed-panel-hook" aria-labelledby="ed-tab-hook" hidden>
+          <label class="switch">
+            <span class="switch__text"><strong>Hook</strong><span>The line in the yellow box over the opening seconds</span></span>
+            <input autocomplete="off" type="checkbox" data-hook-enabled>
+          </label>
+          <div class="field ed-field">
+            <div class="label-row"><label class="label" for="ed-hook-text">Hook text</label><span class="count" data-hook-count></span></div>
+            <input class="input" id="ed-hook-text" type="text" autocomplete="off" spellcheck="true" data-hook-text>
+            <p class="hint" data-hook-hint>Keep it short: it is set in capitals and shown for the first few seconds.</p>
+          </div>
+        </div>
+
+        <div class="tabs__panel ed-panel" role="tabpanel" id="ed-panel-logo" aria-labelledby="ed-tab-logo" hidden>
+          <label class="switch">
+            <span class="switch__text"><strong>Logo</strong><span>Your brand-kit logo on the clip</span></span>
+            <input autocomplete="off" type="checkbox" data-logo-enabled>
+          </label>
+          <p class="notice ed-field" data-logo-missing hidden><span>You haven’t added a logo yet. <a href="/app/brand" data-track="editor-brand-logo">Add one in the Brand kit</a>, then come back.</span></p>
+          <fieldset class="ed-corners ed-field" data-logo-corners>
+            <legend class="label">Position</legend>
+            <div class="ed-corners__grid">
+              <label class="ed-corner"><input autocomplete="off" type="radio" name="ed-logo-position" value="top-left"><span>Top left</span></label>
+              <label class="ed-corner"><input autocomplete="off" type="radio" name="ed-logo-position" value=""><span>Top centre</span></label>
+              <label class="ed-corner"><input autocomplete="off" type="radio" name="ed-logo-position" value="top-right"><span>Top right</span></label>
+              <label class="ed-corner"><input autocomplete="off" type="radio" name="ed-logo-position" value="bottom-left"><span>Lower left</span></label>
+              <span class="ed-corners__gap" aria-hidden="true"></span>
+              <label class="ed-corner"><input autocomplete="off" type="radio" name="ed-logo-position" value="bottom-right"><span>Lower right</span></label>
+            </div>
+            <p class="hint">Top centre is the default spot. The lower corners sit above the title and buttons Shorts draws over the bottom of the screen.</p>
+          </fieldset>
+          <div class="field ed-field">
+            <div class="label-row"><label class="label" for="ed-logo-scale">Size</label><output class="count" for="ed-logo-scale" data-logo-scale-out></output></div>
+            <input autocomplete="off" class="range" id="ed-logo-scale" type="range" min="6" max="25" step="1" data-logo-scale>
+          </div>
+        </div>
+
+        <div class="tabs__panel ed-panel" role="tabpanel" id="ed-panel-memes" aria-labelledby="ed-tab-memes" hidden>
+          <div class="ed-panel__head">
+            <h2 class="ed-panel__title">Add a meme</h2>
+            <span class="small muted" data-meme-at></span>
+          </div>
+          <p class="notice ed-field" data-memes-locked hidden><span>Memes can only be added to clips cut from speech. Any memes this clip already has stay as they are.</span></p>
+          <p class="hint" data-memes-hint>Pick one to drop it in at the playhead. On the timeline, drag a meme to move it and drag its right edge to change how long it shows.</p>
+          <div class="ed-picker" data-meme-picker></div>
+          <p class="hint" data-memes-none hidden>There are no memes to choose from for this clip. <a href="/app/brand" data-track="editor-brand-memes">Add your own in the Brand kit</a>.</p>
+          <p class="hint" data-memes-full hidden></p>
+          <div class="ed-panel__head ed-panel__head--list">
+            <h2 class="ed-panel__title">On this clip</h2>
+            <span class="small muted" data-meme-count></span>
+          </div>
+          <ol class="ed-mlist" role="list" data-meme-list></ol>
+          <p class="hint" data-meme-list-empty>No memes on this clip.</p>
+        </div>
+
+        <div class="tabs__panel ed-panel" role="tabpanel" id="ed-panel-sound" aria-labelledby="ed-tab-sound" hidden>
+          <label class="switch">
+            <span class="switch__text"><strong>Sound effects</strong><span>Hits and whooshes on the edit’s beats</span></span>
+            <input autocomplete="off" type="checkbox" data-sfx-enabled>
+          </label>
+          <label class="switch">
+            <span class="switch__text"><strong>Music</strong><span>A quiet bed that ducks under the voice</span></span>
+            <input autocomplete="off" type="checkbox" data-music-enabled>
+          </label>
+          <div class="field ed-field" data-music-volume-field>
+            <div class="label-row"><label class="label" for="ed-music-volume">Music volume</label><output class="count" for="ed-music-volume" data-music-volume-out></output></div>
+            <input autocomplete="off" class="range" id="ed-music-volume" type="range" min="-30" max="-6" step="1" data-music-volume>
+          </div>
+          <label class="switch">
+            <span class="switch__text"><strong>B-roll</strong><span>Stock cutaways over the speaker</span></span>
+            <input autocomplete="off" type="checkbox" data-broll-enabled>
+          </label>
+          <p class="hint ed-field">The preview plays the clip’s current sound. These changes are heard once you render.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+{% endblock %}

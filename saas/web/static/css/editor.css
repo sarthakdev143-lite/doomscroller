@@ -1,0 +1,1221 @@
+/*
+ * The clip editor (/app/clips/{id}/edit). Same tokens and components as the rest of the app.
+ *
+ * The preview and the timeline are dark objects (the clip's own surface, like the player on the job page);
+ * the inspector is paper. Yellow marks what you can grab: the trim handles and memes on the timeline, and the
+ * one "Render changes" button. Overlay positions are the renderer's, as shares of its 1080x1920 canvas
+ * (app/clipper/render.py, captions.py), so the preview lands where the render will.
+ *
+ * Contrast (WCAG 2.x): night-text on night 16.7, night-text on night-3 13.5, night-muted on night 7.7,
+ * ink on accent 14.8, ink on accent-wash 16, ink-3 on surface 6.3. Inactive (trimmed-out) content is exempt.
+ */
+
+.ed {
+  /* Tall enough to judge the picture, short enough that the timeline stays on screen at 900px. */
+  --player-h: clamp(17rem, calc(100vh - 30rem), 36rem);
+}
+
+/* ---- header ---------------------------------------------------------------------------------------- */
+
+.ed-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding-bottom: var(--space-3);
+  margin-bottom: var(--space-4);
+  border-bottom: 2px solid var(--ink);
+}
+
+.ed-head__title {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
+.ed-head h1 {
+  margin-top: var(--space-1);
+  font-size: var(--text-xl);
+  font-stretch: var(--stretch-heading);
+  font-weight: 800;
+  line-height: 1.05;
+}
+
+.ed-head__clip {
+  max-width: 40rem;
+  margin-top: var(--space-1);
+  overflow: hidden;
+  color: var(--ink-2);
+  font-size: var(--text-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ed-head__side {
+  display: grid;
+  justify-items: end;
+  gap: var(--space-2);
+}
+
+.ed-head__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.ed-history {
+  display: flex;
+  gap: 2px;
+  padding-right: var(--space-2);
+  margin-right: var(--space-1);
+  border-right: var(--border);
+}
+
+.ed .icon-btn[disabled] {
+  opacity: 0.4;
+  cursor: not-allowed;
+  background: transparent;
+}
+
+.ed-head__status {
+  color: var(--ink-3);
+  text-align: right;
+}
+
+.ed-head__quota:not(:empty)::before {
+  content: " · ";
+}
+
+.ed[data-dirty="true"] [data-edit-state] {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.ed[data-dirty="true"] [data-edit-state]::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border: 1px solid var(--ink);
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: 0.05em;
+}
+
+/* ---- render progress and errors ---------------------------------------------------------------- */
+
+.ed-progress {
+  display: grid;
+  gap: var(--space-2);
+  margin-bottom: var(--space-5);
+  padding: var(--space-4) var(--space-5);
+  border: 1px solid var(--ink);
+  border-radius: var(--radius-3);
+  background: var(--surface);
+}
+
+.ed-progress__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.ed-error {
+  margin-bottom: var(--space-5);
+}
+
+/* ---- layout: preview and timeline on the left, the inspector on the right ------------------------- */
+
+.ed-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(19rem, 25rem);
+  grid-template-areas:
+    "stage inspector"
+    "timeline inspector";
+  /* A tall inspector tab grows the timeline's row, never the preview's, so the timeline stays put. */
+  grid-template-rows: auto 1fr;
+  gap: var(--space-5) var(--space-6);
+  align-items: start;
+}
+
+.ed-stage {
+  grid-area: stage;
+  min-width: 0;
+}
+
+.ed-tl {
+  grid-area: timeline;
+  min-width: 0;
+}
+
+.ed-inspector {
+  grid-area: inspector;
+  min-width: 0;
+  position: sticky;
+  top: var(--space-4);
+}
+
+/* ---- preview ------------------------------------------------------------------------------------- */
+
+.ed-viewbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.ed-viewbar__select {
+  width: auto;
+  min-width: 0;
+  max-width: 100%;
+  flex: 0 1 15rem;
+  min-height: 40px;
+  font-size: var(--text-sm);
+}
+
+.ed-monitor {
+  display: grid;
+  place-items: center;
+  padding: var(--space-3);
+  border-radius: var(--radius-3);
+  background: var(--night);
+}
+
+.ed-player {
+  position: relative;
+  height: var(--player-h);
+  aspect-ratio: 9 / 16;
+  max-width: 100%;
+  overflow: hidden;
+  border-radius: var(--radius-2);
+  background: #000;
+  container-type: inline-size;
+}
+
+.ed-player video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+  cursor: pointer;
+}
+
+.ed-player__mode {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  padding: 2px 7px;
+  border-radius: var(--radius-1);
+  background: rgba(17, 17, 17, 0.82);
+  color: var(--night-text);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  pointer-events: none;
+}
+
+.ed-player[data-mode="version"] .ed-player__mode {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.ed-player__msg {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: var(--space-4);
+  background: rgba(20, 20, 19, 0.9);
+  color: var(--night-text);
+  font-size: var(--text-sm);
+  text-align: center;
+}
+
+.ed-player__skeleton {
+  position: absolute;
+  inset: 0;
+  border-radius: 0;
+  background: var(--night-2);
+}
+
+.ed-player__skeleton::after {
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.08), transparent);
+}
+
+/* The overlay: what the render will draw, at the renderer's positions. */
+.ed-ov {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.ed-ov__hook {
+  position: absolute;
+  top: 13%;
+  left: 5.6%;
+  right: 5.6%;
+  text-align: center;
+  line-height: 1.32;
+}
+
+.ed-ov__hook span {
+  padding: 0.12em 0.32em;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 6.2cqw;
+  font-weight: 800;
+  font-stretch: 80%;
+  text-transform: uppercase;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  overflow-wrap: anywhere;
+}
+
+.ed-ov__logo {
+  position: absolute;
+  width: var(--logo-w, 20.37cqw);
+  height: var(--logo-h, 8.15cqw);
+  object-fit: contain;
+}
+
+.ed-ov__logo[data-position="center"] {
+  left: 50%;
+  top: 9.1%;
+  transform: translate(-50%, -50%);
+}
+
+.ed-ov__logo[data-position="top-left"] {
+  left: 3.7%;
+  top: 6.25%;
+  object-position: left top;
+}
+
+.ed-ov__logo[data-position="top-right"] {
+  right: 3.7%;
+  top: 6.25%;
+  object-position: right top;
+}
+
+.ed-ov__logo[data-position="bottom-left"] {
+  left: 3.7%;
+  bottom: 28.1%;
+  object-position: left bottom;
+}
+
+.ed-ov__logo[data-position="bottom-right"] {
+  right: 3.7%;
+  bottom: 28.1%;
+  object-position: right bottom;
+}
+
+.ed-ov__memes {
+  position: absolute;
+  top: 12%;
+  right: 3.7%;
+  width: 27.8%;
+  display: grid;
+  gap: 4px;
+}
+
+.ed-ov__meme {
+  width: 100%;
+  height: auto;
+  border-radius: 2px;
+}
+
+/* A meme with no file to show (the clip's own library memes): a labelled stand-in at its real spot. */
+.ed-ov__meme.ed-meme-ph {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 6 / 5;
+  padding: 6%;
+  border: 2px dashed var(--accent);
+  background: rgba(17, 17, 17, 0.72);
+  color: var(--night-text);
+  font-size: 4.2cqw;
+  font-weight: 700;
+  line-height: 1.15;
+  text-align: center;
+}
+
+.ed-ov__meme[data-selected="true"] {
+  outline: 2px dashed var(--accent);
+  outline-offset: 2px;
+}
+
+.ed-ov__note {
+  position: absolute;
+  left: 50%;
+  bottom: 42%;
+  width: max-content;
+  max-width: 86%;
+  transform: translateX(-50%);
+  padding: 6px 10px;
+  border-radius: var(--radius-2);
+  background: rgba(17, 17, 17, 0.86);
+  color: var(--night-text);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  text-align: center;
+}
+
+/* ---- transport ----------------------------------------------------------------------------------- */
+
+.ed-transport {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.ed-transport__play {
+  background: var(--ink);
+  color: var(--paper);
+  border-radius: 50%;
+}
+
+.ed-transport__play:hover {
+  background: #2a2a27;
+}
+
+.ed-transport__play svg {
+  width: 18px;
+  height: 18px;
+}
+
+.ed-transport__time {
+  margin-right: auto;
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.ed-keys {
+  position: relative;
+}
+
+.ed-keys summary {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--tap);
+  padding: 0 var(--space-2);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-color: var(--rule-strong);
+  text-underline-offset: 0.2em;
+  list-style: none;
+  cursor: pointer;
+}
+
+.ed-keys summary::-webkit-details-marker {
+  display: none;
+}
+
+.ed-keys__list {
+  position: absolute;
+  z-index: var(--z-raised);
+  right: 0;
+  top: calc(100% + 4px);
+  display: grid;
+  gap: var(--space-2);
+  width: min(24rem, calc(100vw - 2rem));
+  padding: var(--space-4);
+  border: 1px solid var(--ink);
+  border-radius: var(--radius-3);
+  background: var(--surface);
+  box-shadow: var(--shadow-2);
+  font-size: var(--text-sm);
+}
+
+.ed-keys__list div {
+  display: grid;
+  grid-template-columns: 9.5rem minmax(0, 1fr);
+  gap: var(--space-3);
+}
+
+.ed-keys__list dt {
+  color: var(--ink-2);
+}
+
+.ed kbd {
+  display: inline-block;
+  min-width: 1.6em;
+  padding: 0 0.35em;
+  border: 1px solid var(--rule-strong);
+  border-bottom-width: 2px;
+  border-radius: var(--radius-1);
+  background: var(--surface);
+  font-size: 0.8em;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.ed-stage__note {
+  margin-top: var(--space-2);
+  max-width: 40rem;
+}
+
+/* ---- timeline ------------------------------------------------------------------------------------ */
+
+.ed-tl {
+  --tl-ruler: 26px;
+  --tl-words: 40px;
+  --tl-memes: 44px;
+}
+
+.ed-tl__bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-4);
+  margin-bottom: var(--space-2);
+}
+
+.ed-tl__title {
+  font-size: var(--text-md);
+  font-stretch: var(--stretch-heading);
+  font-weight: 750;
+}
+
+.ed-tl__trim {
+  margin-right: auto;
+  color: var(--ink-2);
+}
+
+.ed-tl__zoom {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.ed-tl__body {
+  display: grid;
+  grid-template-columns: 4.5rem minmax(0, 1fr);
+  overflow: hidden;
+  border-radius: var(--radius-3);
+  background: var(--night);
+  color: var(--night-text);
+}
+
+.ed-tl__labels {
+  display: grid;
+  grid-template-rows: var(--tl-ruler) var(--tl-words) var(--tl-memes);
+  border-right: 1px solid var(--night-rule);
+  color: var(--night-muted);
+  font-size: var(--text-xs);
+}
+
+.ed-tl__label {
+  display: flex;
+  align-items: center;
+  padding: 0 var(--space-3);
+}
+
+.ed-tl__label--words,
+.ed-tl__label--memes {
+  border-top: 1px solid var(--night-rule);
+}
+
+.ed-tl__scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-color: var(--night-rule) transparent;
+}
+
+.ed-tl__track {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 0 16px;
+}
+
+.ed-tl__canvas {
+  position: relative;
+  height: calc(var(--tl-ruler) + var(--tl-words) + var(--tl-memes));
+  touch-action: pan-x;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: pointer;
+}
+
+.ed-tl__ruler,
+.ed-tl__row {
+  position: absolute;
+  left: 0;
+  right: 0;
+}
+
+.ed-tl__ruler {
+  top: 0;
+  height: var(--tl-ruler);
+}
+
+.ed-tl__row--words {
+  top: var(--tl-ruler);
+  height: var(--tl-words);
+  border-top: 1px solid var(--night-rule);
+}
+
+.ed-tl__row--memes {
+  top: calc(var(--tl-ruler) + var(--tl-words));
+  height: var(--tl-memes);
+  border-top: 1px solid var(--night-rule);
+}
+
+.ed-tl__tick {
+  position: absolute;
+  bottom: 0;
+  width: 1px;
+  height: 5px;
+  background: var(--night-rule);
+}
+
+.ed-tl__tick--major {
+  height: 9px;
+  background: var(--night-muted);
+}
+
+.ed-tl__tick-label {
+  position: absolute;
+  bottom: 10px;
+  left: 3px;
+  color: var(--night-muted);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.ed-tl__word {
+  position: absolute;
+  top: 7px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  padding: 0 3px;
+  overflow: hidden;
+  border-left: 1px solid var(--night);
+  border-radius: 3px;
+  background: var(--night-3);
+  color: var(--night-text);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+/* Too narrow at this zoom for its text: a plain block (the word is in the captions panel). */
+.ed-tl__word[data-narrow="true"] {
+  padding: 0;
+  color: transparent;
+}
+
+.ed-tl__word[data-edited="true"] {
+  box-shadow: inset 0 -3px 0 var(--accent);
+}
+
+.ed-tl__word[data-out="true"] {
+  opacity: 0.45;
+}
+
+.ed-tl[data-captions="false"] .ed-tl__word {
+  opacity: 0.35;
+}
+
+.ed-tl__meme {
+  position: absolute;
+  top: 7px;
+  height: 30px;
+  min-width: 14px;
+  box-sizing: border-box;
+  padding: 0 14px 0 6px;
+  overflow: hidden;
+  border: 1px solid var(--ink);
+  border-radius: 4px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 0.75rem;
+  font-weight: 650;
+  text-align: left;
+  white-space: nowrap;
+  cursor: grab;
+  touch-action: none;
+}
+
+.ed-tl__meme:active {
+  cursor: grabbing;
+}
+
+.ed-tl__meme[data-sound="false"] {
+  background: var(--accent-wash);
+  border-style: dashed;
+}
+
+.ed-tl__meme[data-clash="true"] {
+  background: var(--danger-wash);
+  border: 2px solid #ff8a7a;
+  color: #7a1810;
+}
+
+.ed-tl__meme[data-selected="true"],
+.ed-tl__meme:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 1px;
+}
+
+.ed-tl__meme[data-narrow="true"] .ed-tl__meme-label {
+  visibility: hidden;
+}
+
+.ed-tl__meme-label {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ed-tl__meme-grip {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 12px;
+  border-left: 1px solid rgba(17, 17, 17, 0.4);
+  background: linear-gradient(90deg, transparent 4px, var(--ink) 4px 5px, transparent 5px 7px, var(--ink) 7px 8px, transparent 8px) no-repeat center / 100% 12px;
+  cursor: ew-resize;
+}
+
+.ed-tl__shade {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 0;
+  background: rgba(8, 8, 7, 0.66);
+  pointer-events: none;
+}
+
+.ed-tl__handle {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  bottom: 0;
+  width: 14px;
+  background: var(--accent);
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.ed-tl__handle::after {
+  /* A wider hit area than the visible bar (fingers). */
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -8px;
+  right: -8px;
+}
+
+.ed-tl__handle--start {
+  transform: translateX(-100%);
+  border-radius: 5px 0 0 5px;
+}
+
+.ed-tl__handle--end {
+  border-radius: 0 5px 5px 0;
+}
+
+.ed-tl__handle:focus-visible,
+.ed-tl__handle[data-dragging="true"] {
+  outline: 2px solid #fff;
+  outline-offset: 1px;
+  border-radius: 5px;
+}
+
+.ed-tl__grip {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 5px;
+  height: 18px;
+  transform: translate(-50%, -50%);
+  border-left: 1px solid var(--ink);
+  border-right: 1px solid var(--ink);
+}
+
+.ed-tl__playhead {
+  position: absolute;
+  z-index: 3;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: #fff;
+  pointer-events: none;
+}
+
+.ed-tl__playhead::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -5px;
+  border: 6px solid transparent;
+  border-top-color: #fff;
+}
+
+/* ---- inspector ----------------------------------------------------------------------------------- */
+
+.ed-inspector .tabs__tab {
+  padding: 0 var(--space-3);
+}
+
+.ed-inspector .tabs__tab[aria-selected="true"]::after {
+  left: var(--space-3);
+  right: var(--space-3);
+}
+
+.ed-panel {
+  padding-top: var(--space-4);
+}
+
+.ed-field {
+  margin-top: var(--space-4);
+}
+
+.ed-panel .switch:first-child {
+  padding-top: 0;
+}
+
+.ed-note {
+  margin: var(--space-3) 0;
+  padding: var(--space-2) var(--space-3);
+  border-left: 3px solid var(--ink);
+  background: var(--accent-wash);
+  color: var(--ink);
+  font-weight: 650;
+}
+
+/* Caption words */
+.ed-words {
+  display: grid;
+  max-height: min(26rem, 60vh);
+  margin-top: var(--space-3);
+  padding: var(--space-1) var(--space-2);
+  overflow: auto;
+  border: var(--border);
+  border-radius: var(--radius-2);
+  background: var(--surface);
+}
+
+.ed-words[data-off="true"] {
+  opacity: 0.55;
+}
+
+.ed-line {
+  display: grid;
+  grid-template-columns: 3.25rem minmax(0, 1fr);
+  gap: var(--space-2);
+  padding: 3px 0;
+}
+
+.ed-line + .ed-line {
+  border-top: 1px solid var(--surface-sunk);
+}
+
+.ed-line__time {
+  padding-top: 7px;
+  color: var(--ink-3);
+  font-size: var(--text-xs);
+}
+
+.ed-word {
+  min-height: 30px;
+  margin: 0;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: var(--radius-1);
+  background: none;
+  color: var(--ink);
+  font-size: var(--text-sm);
+}
+
+.ed-word:hover {
+  background: var(--surface-sunk);
+}
+
+.ed-word[data-now="true"] {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.ed-word[data-edited="true"] {
+  background: var(--accent-wash);
+  box-shadow: inset 0 -2px 0 var(--ink);
+}
+
+.ed-word[data-edited="true"][data-now="true"] {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.ed-word[data-out="true"] {
+  color: var(--ink-3);
+  text-decoration: line-through;
+  text-decoration-color: var(--rule-strong);
+}
+
+.ed-word-input {
+  min-height: 30px;
+  max-width: 100%;
+  padding: 2px 4px;
+  border: 1px solid var(--ink);
+  border-radius: var(--radius-1);
+  background: var(--surface);
+  font-size: var(--text-sm);
+  box-shadow: 0 0 0 3px var(--accent);
+}
+
+.ed-word-input:focus-visible {
+  outline: none;
+}
+
+.ed-words__summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  color: var(--ink-2);
+}
+
+/* Logo position */
+.ed-corners {
+  min-width: 0;
+  margin: var(--space-4) 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.ed-corners legend {
+  padding: 0;
+}
+
+.ed-corners__grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-2);
+  margin: var(--space-2) 0;
+}
+
+.ed-corner {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-2);
+  background: var(--surface);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  line-height: 1.15;
+  text-align: center;
+  cursor: pointer;
+}
+
+.ed-corner input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.ed-corner:has(input:checked) {
+  border-color: var(--ink);
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.ed-corner:has(input:focus-visible) {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+.ed-corners[disabled] .ed-corner,
+.ed-panel .range[disabled],
+.ed-panel [data-off="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Memes */
+.ed-panel__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-1) var(--space-3);
+}
+
+.ed-panel__head--list {
+  margin-top: var(--space-5);
+  padding-top: var(--space-4);
+  border-top: var(--border);
+}
+
+.ed-panel__title {
+  font-size: var(--text-md);
+  font-weight: 700;
+}
+
+.ed-picker {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(6.25rem, 1fr));
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.ed-pick {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-2);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: var(--text-xs);
+  text-align: left;
+}
+
+.ed-pick:hover {
+  border-color: var(--ink);
+}
+
+.ed-pick[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ed-pick__media {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  overflow: hidden;
+  border-radius: var(--radius-1);
+  background: var(--surface-sunk);
+}
+
+.ed-pick__img,
+.ed-mrow__img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.ed-pick__img.ed-meme-ph,
+.ed-mrow__img.ed-meme-ph {
+  display: grid;
+  place-items: center;
+  padding: 6px;
+  background: var(--night-2);
+  color: var(--night-text);
+  font-size: var(--text-xs);
+  font-weight: 650;
+  line-height: 1.2;
+  text-align: center;
+}
+
+.ed-mrow__img.ed-meme-ph {
+  padding: 2px;
+  font-size: 0.625rem;
+  overflow: hidden;
+}
+
+.ed-pick__label {
+  overflow: hidden;
+  padding: 0 2px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ed-pick__tag {
+  padding: 0 2px;
+  color: var(--ink-3);
+}
+
+.ed-mlist {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.ed-mrow {
+  display: grid;
+  grid-template-columns: 3rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-2);
+  background: var(--surface);
+}
+
+.ed-mrow__note {
+  margin-top: 4px;
+  color: var(--ink-2);
+}
+
+.ed-mrow[data-clash="true"] {
+  border-color: var(--danger);
+}
+
+.ed-mrow[data-clash="true"] .ed-mrow__note {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.ed-mrow[data-selected="true"] {
+  border-color: var(--ink);
+  box-shadow: inset 4px 0 0 var(--accent);
+}
+
+.ed-mrow__thumb {
+  display: block;
+  width: 3rem;
+  height: 3rem;
+  overflow: hidden;
+  border-radius: var(--radius-1);
+  background: var(--surface-sunk);
+}
+
+.ed-mrow__name {
+  min-height: 28px;
+  font-size: var(--text-sm);
+  text-align: left;
+}
+
+.ed-mrow__fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  margin-top: 2px;
+}
+
+.ed-mini {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-2);
+  font-size: var(--text-xs);
+}
+
+.ed-num {
+  width: 4.75rem;
+  min-height: 34px;
+  padding: 0 6px;
+}
+
+.ed-mini--check input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--ink);
+}
+
+/* ---- narrower screens ---------------------------------------------------------------------------- */
+
+@media (max-width: 1100px) {
+  .ed-body {
+    grid-template-columns: minmax(0, 1fr) minmax(17rem, 21rem);
+    gap: var(--space-5);
+  }
+}
+
+@media (max-width: 960px) {
+  .ed {
+    --player-h: clamp(15rem, 48vh, 34rem);
+  }
+
+  .ed-body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "stage"
+      "timeline"
+      "inspector";
+    grid-template-rows: auto;
+  }
+
+  .ed-inspector {
+    position: static;
+  }
+}
+
+@media (max-width: 560px) {
+  .ed-head {
+    align-items: stretch;
+  }
+
+  /* All five tabs fit a 390px phone without scrolling. */
+  .ed-inspector .tabs__tab {
+    padding: 0 var(--space-2);
+  }
+
+  .ed-inspector .tabs__tab[aria-selected="true"]::after {
+    left: var(--space-2);
+    right: var(--space-2);
+  }
+
+  .ed-head__side {
+    justify-items: stretch;
+    width: 100%;
+  }
+
+  .ed-head__actions {
+    justify-content: flex-start;
+  }
+
+  .ed-head__actions .btn--accent {
+    flex: 1 1 auto;
+  }
+
+  .ed-head__status {
+    text-align: left;
+  }
+
+  .ed-monitor {
+    padding: var(--space-3);
+  }
+
+  .ed-tl__body {
+    grid-template-columns: 3.75rem minmax(0, 1fr);
+  }
+
+  .ed-tl__label {
+    padding: 0 var(--space-2);
+  }
+
+  .ed-keys__list div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+
+  .ed-mrow {
+    grid-template-columns: 2.5rem minmax(0, 1fr);
+  }
+
+  .ed-mrow__thumb {
+    width: 2.5rem;
+    height: 2.5rem;
+  }
+
+  .ed-mrow .btn {
+    grid-column: 2;
+    justify-self: start;
+  }
+}
