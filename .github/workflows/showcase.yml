@@ -1,0 +1,230 @@
+# Showcase assets for this project's own website.
+#
+# This workflow publishes the project: it makes the real Shorts and footage shown on the doomscroller landing page
+# (direction D), cut by this repository's own clip pipeline (app.clipper.standalone.clip_to_directory) from public
+# NASA footage. It never renders customer jobs; those run only on the owner's machine (CLAUDE.md, "SaaS").
+#
+# What it does per source in scripts/showcase/edit_decision_list.json:
+#   1. downloads the NASA original from images-assets.nasa.gov (never committed) and checks its size and sha256;
+#   2. builds a vetting pack (contact sheets, corner and credit-band strips, silence profile, dated/NASA wording);
+#   3. only for sources marked "approved" (with a pinned sha256): rebuilds the compliance-edited working copy,
+#      verifies its duration and joins, runs ONE cutting run (memes off, music off, no watermark) and gathers
+#      judging evidence (black/flash frames, contact sheets, caption-sync grabs);
+#   4. scrubs every text file with app.logging_config.scrub_secrets, removes any file that still holds a key,
+#      and uploads the rest as the artifact "showcase-<source>".
+# Licences and the reason for every cut: docs/saas/landing-d-sources.md.
+#
+# Triggers: workflow_dispatch (pick a source, or vet only), and push to scripts/showcase/** or this file. A push
+# cuts only sources with "cut_on_push": true, because every cut spends the AI provider's free-tier quota.
+#
+# Repository secrets (Settings > Secrets and variables > Actions): CLIP_AI_API_KEY, CLIP_STT_API_KEY,
+# DEEPGRAM_API_KEY, PIXABAY_API_KEY. They are mapped only into the steps that need them and never printed.
+name: showcase
+
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: Source to process
+        type: choice
+        options: [all, black_holes, eye_on_neptune]
+        default: all
+      vet_only:
+        description: Only build the vetting pack (no AI calls, no secrets needed)
+        type: boolean
+        default: false
+  push:
+    paths:
+      - "scripts/showcase/**"
+      - ".github/workflows/showcase.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: showcase-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  showcase:
+    name: Showcase (${{ matrix.source }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 1  # one AI run at a time on a free tier
+      matrix:
+        source: [black_holes, eye_on_neptune]
+    env:
+      SOURCE_ID: ${{ matrix.source }}
+      DOOMSCROLLER_ENV_FILE: ""
+      SAAS_ENV_FILE: ""
+      PYTHONUTF8: "1"
+      PYTHONUNBUFFERED: "1"
+      CLIP_AI_BACKEND: api
+      CLIP_AI_API_PROVIDER: openai_compatible
+      CLIP_AI_API_BASE_URL: https://api.groq.com/openai/v1
+      CLIP_AI_API_MODEL: openai/gpt-oss-120b
+      CLIP_AI_API_VISION_MODEL: qwen/qwen3.8-27b
+      CLIP_AI_API_MAX_TOKENS: "2048"
+      CLIP_AI_API_EFFORT: low
+      CLIP_STT_PROVIDER: openai_compatible
+      CLIP_STT_BASE_URL: https://api.groq.com/openai/v1
+      CLIP_STT_MODEL: whisper-large-v3-turbo
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Plan
+        id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_SOURCE: ${{ inputs.source }}
+          VET_ONLY: ${{ inputs.vet_only }}
+        run: |
+          python scripts/showcase/plan.py --source-id "$SOURCE_ID" --event "$EVENT_NAME" \
+            --dispatch-source "$DISPATCH_SOURCE" --vet-only "${VET_ONLY:-false}"
+
+      - name: Check required secrets
+        if: steps.plan.outputs.run_cut == 'true'
+        env:
+          CLIP_AI_API_KEY: ${{ secrets.CLIP_AI_API_KEY }}
+          CLIP_STT_API_KEY: ${{ secrets.CLIP_STT_API_KEY }}
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
+          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+        run: |
+          missing=""
+          for name in CLIP_AI_API_KEY CLIP_STT_API_KEY DEEPGRAM_API_KEY PIXABAY_API_KEY; do
+            if [ -z "${!name}" ]; then missing="$missing $name"; fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error title=Missing repository secrets::Add these under Settings > Secrets and variables > Actions:$missing"
+            exit 1
+          fi
+          echo "All four required secrets are set."
+
+      - name: Install ffmpeg and fonts
+        if: steps.plan.outputs.selected == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core fonts-noto-core
+          ffmpeg -hide_banner -version | head -n 1
+
+      - name: Install Python dependencies
+        if: steps.plan.outputs.selected == 'true'
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Download the NASA source
+        if: steps.plan.outputs.selected == 'true'
+        env:
+          SRC_URL: ${{ steps.plan.outputs.url }}
+          SRT_URL: ${{ steps.plan.outputs.captions_url }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/showcase/src"
+          curl -fsSL --retry 3 --retry-delay 5 -A "Mozilla/5.0" -o "$RUNNER_TEMP/showcase/src/source.mp4" "$SRC_URL"
+          if [ -n "$SRT_URL" ]; then
+            curl -fsSL --retry 3 --retry-delay 5 -A "Mozilla/5.0" -o "$RUNNER_TEMP/showcase/src/source.srt" "$SRT_URL"
+          fi
+          ls -l "$RUNNER_TEMP/showcase/src"
+
+      - name: Verify source size and hash
+        if: steps.plan.outputs.selected == 'true'
+        env:
+          EXPECTED_SHA256: ${{ steps.plan.outputs.sha256 }}
+          EXPECTED_BYTES: ${{ steps.plan.outputs.bytes }}
+        run: |
+          f="$RUNNER_TEMP/showcase/src/source.mp4"
+          actual_sha=$(sha256sum "$f" | cut -d' ' -f1)
+          actual_bytes=$(stat -c %s "$f")
+          echo "source: $actual_bytes bytes, sha256 $actual_sha"
+          if [ -n "$EXPECTED_BYTES" ] && [ "$actual_bytes" != "$EXPECTED_BYTES" ]; then
+            echo "::error title=Source changed::expected $EXPECTED_BYTES bytes, got $actual_bytes"; exit 1
+          fi
+          if [ -n "$EXPECTED_SHA256" ]; then
+            if [ "$actual_sha" != "$EXPECTED_SHA256" ]; then
+              echo "::error title=Source changed::sha256 differs from the edit list"; exit 1
+            fi
+          else
+            echo "::warning title=sha256 not pinned::pin $actual_sha for $SOURCE_ID in scripts/showcase/edit_decision_list.json before approving it"
+          fi
+
+      - name: Vetting pack (frame grabs, credits, silence, wording)
+        if: steps.plan.outputs.selected == 'true'
+        run: |
+          python scripts/showcase/vet.py --source-id "$SOURCE_ID" \
+            --src "$RUNNER_TEMP/showcase/src/source.mp4" --srt "$RUNNER_TEMP/showcase/src/source.srt" \
+            --out "$RUNNER_TEMP/upload/$SOURCE_ID/vet"
+
+      - name: Rebuild and verify the working copy
+        id: rebuild
+        if: steps.plan.outputs.run_cut == 'true'
+        run: |
+          python scripts/showcase/rebuild_working_copy.py --source-id "$SOURCE_ID" \
+            --src "$RUNNER_TEMP/showcase/src/source.mp4" --out-dir "$RUNNER_TEMP/showcase/work" \
+            --checks "$RUNNER_TEMP/upload/$SOURCE_ID/checks"
+
+      - name: Cut clips (one AI run)
+        id: cut
+        if: steps.plan.outputs.run_cut == 'true'
+        timeout-minutes: 40  # fails only this step, so clips already rendered still get judged and uploaded
+        env:
+          CLIP_AI_API_KEY: ${{ secrets.CLIP_AI_API_KEY }}
+          CLIP_STT_API_KEY: ${{ secrets.CLIP_STT_API_KEY }}
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
+          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+          WORKING_COPY: ${{ steps.rebuild.outputs.working_copy }}
+          COUNT: ${{ steps.plan.outputs.count }}
+          MAX_CLIP_SECONDS: ${{ steps.plan.outputs.max_clip_seconds }}
+          CAPTION_OVERRIDE: ${{ steps.plan.outputs.caption_override }}
+        run: |
+          override=""
+          if [ "$CAPTION_OVERRIDE" = "true" ]; then override="--caption-detector-override"; fi
+          python scripts/showcase/run_clip.py --src "$WORKING_COPY" --run-dir "$RUNNER_TEMP/showcase/run" \
+            --count "$COUNT" --max-clip-seconds "$MAX_CLIP_SECONDS" $override
+
+      - name: Judge clips
+        if: always() && steps.cut.outcome != 'skipped' && steps.cut.outcome != ''
+        run: python scripts/showcase/judge.py --run-dir "$RUNNER_TEMP/showcase/run"
+
+      - name: Collect artifacts
+        if: always() && steps.plan.outputs.selected == 'true'
+        run: |
+          run="$RUNNER_TEMP/showcase/run"
+          up="$RUNNER_TEMP/upload/$SOURCE_ID"
+          mkdir -p "$up"
+          if [ -d "$run/clips" ]; then
+            mkdir -p "$up/clips"
+            find "$run/clips" -maxdepth 1 -type f \( -name 'clip_*.mp4' ! -name '*_source.mp4' \) -exec cp {} "$up/clips/" \;
+            find "$run/clips" -maxdepth 1 -type f \( -name 'clip_*.jpg' -o -name 'clip_*_manifest.json' \) -exec cp {} "$up/clips/" \;
+          fi
+          if [ -d "$run/judge" ]; then cp -r "$run/judge" "$up/"; fi
+          for f in transcript.json already_captioned_verdict.json result.json error.json run.log; do
+            if [ -f "$run/$f" ]; then cp "$run/$f" "$up/"; fi
+          done
+          find "$up" -type f | sort
+
+      - name: Scrub and leak-check artifacts
+        id: scrub
+        if: always() && steps.plan.outputs.selected == 'true'
+        env:
+          CLIP_AI_API_KEY: ${{ secrets.CLIP_AI_API_KEY }}
+          CLIP_STT_API_KEY: ${{ secrets.CLIP_STT_API_KEY }}
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
+          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+        run: python scripts/showcase/scrub_artifacts.py "$RUNNER_TEMP/upload/$SOURCE_ID"
+
+      - name: Upload artifacts
+        if: always() && steps.plan.outputs.selected == 'true' && steps.scrub.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: showcase-${{ matrix.source }}
+          path: ${{ runner.temp }}/upload/${{ matrix.source }}
+          if-no-files-found: warn
+          retention-days: 14

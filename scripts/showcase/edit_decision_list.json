@@ -1,0 +1,71 @@
+{
+  "_about": "Showcase sources for this project's website (landing direction D), cut by .github/workflows/showcase.yml. Times are seconds in the NASA original. Licences and the reasons for every cut: docs/saas/landing-d-sources.md. A source is cut only when approved is true and sha256 is pinned; every source gets a vetting pack. cut_on_push controls whether a push spends an AI run on it.",
+  "sources": {
+    "black_holes": {
+      "title": "Shedding Light on Black Holes",
+      "nasa_id": "301_BlackHoles",
+      "library_page": "https://images.nasa.gov/details/301_BlackHoles",
+      "url": "https://images-assets.nasa.gov/video/301_BlackHoles/301_BlackHoles~orig.mp4",
+      "captions_url": "https://images-assets.nasa.gov/video/301_BlackHoles/301_BlackHoles.srt",
+      "sha256": "e005569fd6b2c15f24585348541f5b15175fa118e543c18bc3cada8afa198b06",
+      "bytes": 161761840,
+      "audio_stream": 0,
+      "crop": {"w": 1642, "h": 924, "x": 264, "y": 152,
+               "why": "removes the persistent 'science @ NASA' insignia bug (top right, x 1650-1852, y 63-147 of 1920x1076) and the Event Horizon Telescope logo (top left on EHT frames); keeps the right-aligned image credits"},
+      "snap_to_silence": false,
+      "segments": [
+        {"start": 20.1, "end": 84.2,
+         "why": "after the Science@NASA bumper and the science.nasa.gov screenshots (their crossfade's last ghost frame is 20.033 s); intro and myth 1"},
+        {"start": 138.6, "end": 174.3,
+         "why": "myth 3. Drops 84.2-138.6 (myth 2): an artwork credited Robin Dienel, Carnegie Institution for Science, licence unverified; narration naming and quoting Dr. Dan Evans (NASA Headquarters) over his photo card"},
+        {"start": 203.95, "end": 229.2,
+         "why": "outro. Drops 174.3-203.95 (myth 4): Stephen Hawking's photo and name card appear before its sentence ends. Ends before 'visit science.nasa.gov' and the NASA end card"}
+      ],
+      "expected_duration": 125.05,
+      "dark_joins": true,
+      "approved": true,
+      "cut_on_push": true,
+      "count": 8,
+      "max_clip_seconds": 45,
+      "caption_detector_override": true,
+      "caption_detector_override_why": "the myth 3 title card prints its spoken sentence for ~13 s and lands on one of subtitles.already_captioned's eight sample frames; it is a title, not running captions. The detector's real verdict is still logged to already_captioned_verdict.json"
+    },
+    "eye_on_neptune": {
+      "title": "Eye on Neptune",
+      "nasa_id": "302_EyeOnNeptune",
+      "library_page": "https://images.nasa.gov/details/302_EyeOnNeptune",
+      "url": "https://images-assets.nasa.gov/video/302_EyeOnNeptune/302_EyeOnNeptune~orig.mp4",
+      "captions_url": "https://images-assets.nasa.gov/video/302_EyeOnNeptune/302_EyeOnNeptune.srt",
+      "sha256": null,
+      "bytes": 92878849,
+      "audio_stream": 0,
+      "crop": null,
+      "snap_to_silence": true,
+      "segments": [
+        {"start": 14.0, "end": 21.0,
+         "why": "'It is an ice giant, a planet of monster storms, and a recluse rarely seen.' Starts after the Science@NASA bumper (crossfade end not yet measured)"},
+        {"start": 65.0, "end": 89.0,
+         "why": "'When you find this elusive planet ...' to '... deep beneath the clouds.' Drops 21-65: the dated opposition lines ('on the night of September 9', 'evenings in September') and two shots of people (stargazer silhouettes, a person at a computer)"},
+        {"start": 99.0, "end": 129.0,
+         "why": "Voyager 2's closest glimpse, the dark vortex, Hubble since. Drops 89-99: 'This opposition event also comes just after the 30th anniversary ...' (dated)"},
+        {"start": 139.0, "end": 162.0,
+         "why": "Neptune's seasons span decades. Drops 129-139: 'NASA scientists have learned ...' (says NASA). Ends before 'consider taking a look ... in September' (dated), the stargazer silhouettes, 'visit science.nasa.gov' and the NASA end card"}
+      ],
+      "expected_duration": null,
+      "dark_joins": false,
+      "approved": false,
+      "cut_on_push": false,
+      "count": 4,
+      "max_clip_seconds": 45,
+      "caption_detector_override": false,
+      "open_items": [
+        "measure the corner bug at 1900x1068 from the vetting pack's corner strips and set crop",
+        "read every on-screen credit in the kept ranges from the credit-band strips and verify its licence at the origin",
+        "confirm no identifiable person in the kept ranges (contact sheets)",
+        "confirm the bumper crossfade has ended by the first kept frame",
+        "check the vetting report's music bins and dated/NASA word hits for the kept ranges",
+        "pin sha256 from the vetting report, then set approved"
+      ]
+    }
+  }
+}

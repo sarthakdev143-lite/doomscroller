@@ -68,7 +68,7 @@ Footer: legal links only.
 - Source: public-domain NASA video, or CC-BY with attribution — but first read NASA's media usage guidelines on
   recognisable people in commercial/advertising use. If that rules out identifiable people, use narrated footage
   with nobody identifiable on screen (which also fits the no-faces rule). No NASA insignia emphasis, no implied
-  endorsement. Record URL + licence in `saas/web/static/media/d/SOURCES.md`.
+  endorsement. Record URL + licence in `docs/saas/landing-d-sources.md`.
 - The Shorts on the page are cut from that source by THIS product's pipeline (proof, not mockups). Cut more than
   three and keep only clips whose title matches their content, that carry no outro/housekeeping, and whose frames
   look right.
