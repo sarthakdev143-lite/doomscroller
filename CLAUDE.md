@@ -399,6 +399,11 @@ drive it through the `ClipJob` table, so queued work survives a restart.
   With a Hindi hint or two agreeing 20s Deepgram samples of clear Hindi speech, Sarvam goes first and the full
   Deepgram pass is skipped. `metering.record`/`metering.timed` sit at every point of spend and are no-ops without a
   meter.
+- **Backup keys** (`app/apikeys.py`). The owner pastes a second key "for backup" into the same line, which as one
+  string is no key at all (every call 401). So `DEEPGRAM_API_KEY`, `CLIP_AI_API_KEY` and `CLIP_STT_API_KEY` are read
+  as comma-separated lists: a 401/403 marks a key refused for 30 minutes and the same request goes to the next; a 429
+  never switches keys. Logs say "key 2 of 3", never a key, and `scrub_secrets` redacts each key of a multi-key value.
+  Never "fix" such a line by deleting a key that fails a quick test: a separator left on it is the usual cause.
 - **The API backend adapts to the provider instead of failing safe** (`ai.py`, found running the SaaS on Groq). A 400
   naming a per-request picture cap ("supports up to 3 images") is learned per endpoint and model, and the pictures go
   as that many numbered sheets; a reply cut off at `max_tokens` is never an answer, and when a reasoning model spent it
