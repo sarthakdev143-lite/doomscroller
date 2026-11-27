@@ -256,6 +256,11 @@ def _sample_language(audio_path: str, duration: float) -> str:
             payload = _request(sample)
             metering.record("stt", provider="deepgram", model=settings.deepgram_model, audio_seconds=_SAMPLE_SEC)
             piece = parse_response(payload, _SAMPLE_SEC)
+        except TranscribeError as exc:
+            # Deepgram itself refused (a revoked key, no credit, a malformed DEEPGRAM_API_KEY such as two keys
+            # joined by a comma): say so, because every later Deepgram call fails the same way.
+            log.warning("transcribe: no language from the sample: %s", exc)
+            return ""
         except Exception as exc:  # the full pass still runs, so a failed sample only costs the saving
             log.info("transcribe: no language from the sample (%s)", type(exc).__name__)
             return ""

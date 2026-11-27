@@ -24,11 +24,14 @@ StageCallback = Callable[[str, float], None]
 
 
 class EngineError(Exception):
-    def __init__(self, code: str, message: str, *, retryable: bool = False):
+    def __init__(self, code: str, message: str, *, retryable: bool = False, meter: Optional[dict] = None):
         super().__init__(message)
         self.code = code
         self.message = message
         self.retryable = retryable
+        # What the run spent before it failed (app.clipper.metering summary): a failed job still paid for its
+        # transcription and AI calls, and the admin cost view must show that.
+        self.meter = meter
 
 
 class JobCanceled(Exception):
@@ -198,9 +201,11 @@ class ClipperEngine:
             except Exception as exc:
                 clip_error = getattr(standalone, "ClipError", None)
                 if clip_error is not None and isinstance(exc, clip_error):
-                    raise EngineError(str(getattr(exc, "code", "clip_failed")), str(getattr(exc, "message", exc))[:300])
+                    raise EngineError(str(getattr(exc, "code", "clip_failed")), str(getattr(exc, "message", exc))[:300],
+                                      meter=meter.summary())
                 log.exception("clip engine crashed")
-                raise EngineError("engine_crashed", "Something went wrong while making your clips.", retryable=True)
+                raise EngineError("engine_crashed", "Something went wrong while making your clips.", retryable=True,
+                                  meter=meter.summary())
             summary = meter.summary()
         if not isinstance(result, dict):
             raise EngineError("engine_crashed", "The clip engine returned nothing.")
@@ -230,9 +235,11 @@ class ClipperEngine:
             except Exception as exc:
                 clip_error = getattr(standalone, "ClipError", None)
                 if clip_error is not None and isinstance(exc, clip_error):
-                    raise EngineError(str(getattr(exc, "code", "clip_failed")), str(getattr(exc, "message", exc))[:300])
+                    raise EngineError(str(getattr(exc, "code", "clip_failed")), str(getattr(exc, "message", exc))[:300],
+                                      meter=meter.summary())
                 log.exception("clip editor crashed")
-                raise EngineError("engine_crashed", "Something went wrong while rendering your edit.", retryable=True)
+                raise EngineError("engine_crashed", "Something went wrong while rendering your edit.", retryable=True,
+                                  meter=meter.summary())
             summary = meter.summary()
         if not isinstance(result, dict):
             raise EngineError("engine_crashed", "The clip editor returned nothing.")

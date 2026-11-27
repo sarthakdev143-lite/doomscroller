@@ -147,7 +147,7 @@ class Worker:
         except JobCanceled:
             self._finish_without_clips(job_id, "canceled", "canceled", "Canceled.")
         except EngineError as exc:
-            self._fail(job_id, exc.code, exc.message)
+            self._fail(job_id, exc.code, exc.message, meter=exc.meter)
         except Exception:
             log.exception("job %s crashed", job_id)
             self._fail(job_id, "engine_crashed", "Something went wrong while making your clips.")
@@ -230,7 +230,7 @@ class Worker:
         except JobCanceled:
             self._finish_without_clips(job_id, "canceled", "canceled", "Canceled.")
         except EngineError as exc:
-            self._fail(job_id, exc.code, exc.message)
+            self._fail(job_id, exc.code, exc.message, meter=exc.meter)
         except Exception:
             log.exception("re-render %s crashed", job_id)
             self._fail(job_id, "engine_crashed", "Something went wrong while rendering your edit.")

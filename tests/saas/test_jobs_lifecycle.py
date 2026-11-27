@@ -401,3 +401,21 @@ def test_clipper_engine_calls_the_pipeline_seam(core, tmp_path, monkeypatch):
         ClipperEngine().run(source="boom", out_dir=tmp_path, options={}, brand_name=None, watermark_text=None,
                             recent_memes=(), on_stage=lambda s, p: None)
     assert exc.value.code == "no_speech"
+    # A failed run still paid for what it used before failing, and says so.
+    assert exc.value.meter["stt_seconds"] == {"deepgram:nova-3": 120.0}
+
+
+def test_a_failed_job_keeps_what_the_engine_spent(client, core, saas_db, sources):
+    from saas.jobs.engine import EngineError, MockEngine
+    from saas.models.jobs import Job
+
+    make_user(saas_db, "spent@example.com", plan="pro", credits=20)
+    h = login(client, "spent@example.com")
+    job = _create(client, h)
+    spent = {"stt_seconds": {"openai_compatible:whisper-large-v3-turbo": 207.0},
+             "llm": {"openai_compatible:openai/gpt-oss-120b": {"calls": 3.0, "failed": 0.0}}}
+    worker(MockEngine(fail_with=EngineError("no_moments", "No usable moments.", meter=spent))).run_one()
+    saas_db.expire_all()
+    row = saas_db.get(Job, job["id"])
+    assert row.status == "failed" and row.error_code == "no_moments" and row.credits_charged == 0
+    assert row.meter == spent

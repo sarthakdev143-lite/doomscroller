@@ -399,6 +399,12 @@ drive it through the `ClipJob` table, so queued work survives a restart.
   With a Hindi hint or two agreeing 20s Deepgram samples of clear Hindi speech, Sarvam goes first and the full
   Deepgram pass is skipped. `metering.record`/`metering.timed` sit at every point of spend and are no-ops without a
   meter.
+- **The API backend adapts to the provider instead of failing safe** (`ai.py`, found running the SaaS on Groq). A 400
+  naming a per-request picture cap ("supports up to 3 images") is learned per endpoint and model, and the pictures go
+  as that many numbered sheets; a reply cut off at `max_tokens` is never an answer, and when a reasoning model spent it
+  thinking with no `CLIP_AI_API_EFFORT` set, the call is re-asked at `reasoning_effort=low` (and so is every later call).
+  Whisper's word timings are gapless, so `whisper_stt.fit_to_speech` trims each word to the speaking frames
+  (`sarvam.speech_frames`), or captions run seconds ahead across pauses.
 - Changes to the filter graph need the `slow` tier in `tests/test_clipper_render.py`.
 
 ### Growth loop (`app/growth/`)

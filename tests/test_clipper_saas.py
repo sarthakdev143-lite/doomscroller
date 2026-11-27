@@ -319,6 +319,175 @@ def test_groq_request_too_large_retries_once_with_a_reply_budget_that_fits(groq,
     assert ai.ask("x") is None and budgets == [2048]
 
 
+def _thinking_post(bodies, *, answer='{"clips": []}'):
+    """gpt-oss-120b at Groq's default effort: the whole reply budget goes on reasoning and nothing is answered."""
+    def post(url, json=None, headers=None, timeout=None):
+        bodies.append(dict(json))
+        if json.get("reasoning_effort") == "low":
+            return _Response(200, {"model": json["model"], "choices": [{"message": {"content": answer},
+                                                                         "finish_reason": "stop"}],
+                                   "usage": {"prompt_tokens": 1394, "completion_tokens": 300,
+                                             "completion_tokens_details": {"reasoning_tokens": 120}}})
+        return _Response(200, {"model": json["model"], "choices": [{"message": {"content": '{"clips": [{"first": 5,'},
+                                                                     "finish_reason": "length"}],
+                               "usage": {"prompt_tokens": 1394, "completion_tokens": 2048,
+                                         "completion_tokens_details": {"reasoning_tokens": 2046}}})
+    return post
+
+
+def test_a_reply_the_model_spent_thinking_is_asked_again_at_low_effort(groq, monkeypatch):
+    monkeypatch.setattr(settings, "clip_ai_api_effort", "")  # the owner's .env.saas left it out
+    monkeypatch.setattr(ai, "_low_effort_models", set())
+    bodies = []
+    monkeypatch.setattr(ai.httpx, "post", _thinking_post(bodies))
+    with metering.metered() as meter:
+        assert ai.ask_json("Pick the moments. JSON only.") == {"clips": []}
+    assert [b.get("reasoning_effort") for b in bodies] == [None, "low"]
+    llm = meter.summary()["llm"]["openai_compatible:openai/gpt-oss-120b"]
+    assert llm["calls"] == 2 and llm["failed"] == 1 and llm["output_tokens"] == 2348  # the wasted call is still billed
+    # Every later call to that model starts at low effort.
+    bodies.clear()
+    assert ai.ask_json("Again.") == {"clips": []} and [b.get("reasoning_effort") for b in bodies] == ["low"]
+
+
+def test_an_effort_the_operator_chose_is_never_overridden_and_a_cut_off_reply_still_gets_the_strict_retry(
+        groq, monkeypatch, caplog):
+    monkeypatch.setattr(settings, "clip_ai_api_effort", "medium")
+    monkeypatch.setattr(ai, "_low_effort_models", set())
+    bodies = []
+    monkeypatch.setattr(ai.httpx, "post", _thinking_post(bodies))
+    with caplog.at_level(logging.WARNING, logger="app.clipper.ai"):
+        assert ai.ask("Pick.") == '{"clips": [{"first": 5,'  # handed back, flagged, never silently dropped
+    assert [b.get("reasoning_effort") for b in bodies] == ["medium"]
+    assert any("cut off at its 2048-token reply budget" in r.getMessage() for r in caplog.records)
+    # ask_json still makes its stricter second attempt, which a shorter reply can fit.
+    bodies.clear()
+    replies = iter([_Response(200, {"model": "openai/gpt-oss-120b", "usage": {"completion_tokens": 2048},
+                                    "choices": [{"message": {"content": '{"clips": [{"first"'}, "finish_reason": "length"}]}),
+                    _Response(200, {"model": "openai/gpt-oss-120b", "usage": {"completion_tokens": 400},
+                                    "choices": [{"message": {"content": '{"clips": []}'}, "finish_reason": "stop"}]})])
+    monkeypatch.setattr(ai.httpx, "post", lambda url, json=None, **k: bodies.append(json) or next(replies))
+    assert ai.ask_json("Pick.") == {"clips": []} and len(bodies) == 2
+
+
+def test_low_effort_is_remembered_only_once_the_model_accepts_it(groq, monkeypatch):
+    monkeypatch.setattr(settings, "clip_ai_api_effort", "")
+    monkeypatch.setattr(ai, "_low_effort_models", set())
+    bodies = []
+    thinking = _thinking_post([])
+
+    def refuses_low(url, json=None, headers=None, timeout=None):
+        bodies.append(dict(json))
+        if json.get("reasoning_effort"):
+            return _Response(400, {"error": {"message": "`reasoning_effort` is not supported with this model"}})
+        return thinking(url, json=json, headers=headers, timeout=timeout)
+
+    monkeypatch.setattr(ai.httpx, "post", refuses_low)
+    assert ai.ask("Pick.") is None and [b.get("reasoning_effort") for b in bodies] == [None, "low"]
+    assert ai._low_effort_models == set()
+    bodies.clear()
+    ai.ask("Again.")
+    assert bodies[0].get("reasoning_effort") is None  # later calls are not poisoned by the refused parameter
+
+
+def test_transient_retries_are_not_used_up_by_one_time_adjustments(groq_vision, monkeypatch, tmp_path):
+    """A refused picture count, then two 429s, then an answer: still answered (three transient retries are not needed)."""
+    frames = _jpegs(tmp_path, 5)
+    replies = iter([_Response(400, {"error": {"message": "Too many images provided. This model supports up to 3 images"}}),
+                    _Response(429, {"error": {"message": "slow down"}}), _Response(429, {"error": {"message": "slow down"}}),
+                    _Response(200, {"choices": [{"message": {"content": "{\"ok\": true}"}, "finish_reason": "stop"}],
+                                    "usage": {}})])
+    monkeypatch.setattr(ai.httpx, "post", lambda *a, **k: next(replies))
+    assert ai.ask_json("Look.", files=frames) == {"ok": True}
+
+
+def _jpegs(tmp_path, count, size=(480, 270), name="frame"):
+    from PIL import Image
+    paths = []
+    for i in range(count):
+        path = tmp_path / f"{name}_{i}.jpg"
+        Image.new("RGB", size, (20 * i % 255, 80, 160)).save(path, format="JPEG")
+        paths.append(str(path))
+    return paths
+
+
+def _capped_vision_post(sent, cap=3, reply='{"captions": false}'):
+    """Groq's qwen vision model: more than `cap` pictures in one request is a 400 naming the cap."""
+    def post(url, json=None, headers=None, timeout=None):
+        parts = json["messages"][1]["content"]
+        images = [p for p in parts if isinstance(p, dict) and p.get("type") == "image_url"] if isinstance(parts, list) else []
+        text = next((p["text"] for p in parts if isinstance(p, dict) and p.get("type") == "text"), "") \
+            if isinstance(parts, list) else parts
+        sent.append({"images": len(images), "text": text})
+        if len(images) > cap:
+            return _Response(400, {"error": {"message": f"Too many images provided.  This model supports up to {cap} images",
+                                             "type": "invalid_request_error"}})
+        return _Response(200, {"model": json["model"], "usage": {"prompt_tokens": 50, "completion_tokens": 5},
+                               "choices": [{"message": {"content": reply}, "finish_reason": "stop"}]})
+    return post
+
+
+@pytest.fixture
+def groq_vision(groq, monkeypatch):
+    monkeypatch.setattr(settings, "clip_ai_api_vision_model", "qwen/qwen3.8-27b")
+    monkeypatch.setattr(ai, "_image_caps", {})
+    return groq
+
+
+def test_a_vision_model_capped_at_three_pictures_gets_numbered_sheets_instead_of_a_lost_call(groq_vision, monkeypatch,
+                                                                                               tmp_path):
+    from PIL import Image
+    sent = []
+    monkeypatch.setattr(ai.httpx, "post", _capped_vision_post(sent))
+    frames = _jpegs(tmp_path, 8)
+    with metering.metered() as meter:
+        assert ai.ask_json("Any captions?", files=frames) == {"captions": False}
+    # One refused request, then the eight frames as three numbered sheets, in order.
+    assert [s["images"] for s in sent] == [8, 3]
+    assert "1 to 8" in sent[1]["text"] and "top-left corner" in sent[1]["text"]
+    llm = meter.summary()["llm"]["openai_compatible:qwen/qwen3.8-27b"]
+    assert llm["calls"] == 1 and llm["failed"] == 0 and llm["images"] == 3
+    # The cap is remembered for this endpoint and model: the next call never pays the refusal again.
+    sent.clear()
+    assert ai.ask_json("Rank these.", files=frames[:6]) == {"captions": False}
+    assert [s["images"] for s in sent] == [3]
+    # Requests within the cap are untouched (no sheets, no note).
+    sent.clear()
+    assert ai.ask_json("One picture.", files=frames[:1]) == {"captions": False}
+    assert sent[0]["images"] == 1 and "Upload limit" not in sent[0]["text"]
+    # The sheets keep every picture and label it with its number.
+    sheets = ai._combine_images(frames, 3, str(tmp_path))
+    assert len(sheets) == 3
+    with Image.open(sheets[0]) as sheet:
+        assert sheet.width >= 2 * 480 and sheet.height >= 2 * 270  # three frames in a 2x2 grid at full size
+
+
+def test_the_caption_check_and_visual_ranking_never_exceed_a_vision_models_picture_cap(groq_vision, monkeypatch,
+                                                                                         tmp_path):
+    from app.clipper import moments, subtitles
+    from PIL import Image
+    sent = []
+
+    def frame(args, **kwargs):
+        Image.new("RGB", (480, 270), (200, 200, 200)).save(args[-1], format="JPEG")
+
+    monkeypatch.setattr(subtitles, "run_ffmpeg", frame)
+    monkeypatch.setattr(ai.httpx, "post", _capped_vision_post(sent, reply='{"captions": true}'))
+    assert subtitles.already_captioned("talk.mp4", INFO) is True
+
+    def strip(path, moment, out_path):
+        Image.new("RGB", (1280, 180), (90, 90, 90)).save(out_path, format="JPEG")
+
+    ranked = {"clips": [{"candidate": 2, "title": "Big reveal", "hook": "Watch this", "score": 90}]}
+    monkeypatch.setattr(moments, "_frame_strip", strip)
+    monkeypatch.setattr(ai.httpx, "post", _capped_vision_post(sent, reply=json.dumps(ranked)))
+    candidates = [Moment(float(10 * i), float(10 * i + 20), kind="visual", score=50.0) for i in range(6)]
+    assert moments._ai_rank_visual("talk.mp4", candidates, "Talk") == ranked
+    answered = [s for s in sent if s["images"] <= 3]
+    assert len(answered) == 2 and sum(1 for s in sent if s["images"] > 3) == 1  # only the very first request is refused
+    assert "1 to 6" in answered[1]["text"]
+
+
 # ---------- cheaper speech-to-text ----------
 
 def _deepgram_reply(language="en", words=("Hello.",) * 60):
@@ -378,6 +547,23 @@ def test_english_audio_costs_a_sample_plus_one_full_pass_and_no_sarvam(monkeypat
     monkeypatch.setattr(sarvam, "transcribe", lambda *a, **k: pytest.fail("English never goes to Sarvam"))
     got = tr.transcribe(str(video), INFO)
     assert got.is_english_speech and sent == ["sample_0.mp3", "audio.mp3"]
+
+
+def test_a_refused_deepgram_sample_is_a_warning_that_names_the_reason(monkeypatch, tmp_path, caplog):
+    """A key Deepgram refuses (here: two keys joined by a comma) used to log only "TranscribeError" at INFO."""
+    from app.clipper import sarvam, whisper_stt as ws
+    video = _stt(monkeypatch, tmp_path)
+    monkeypatch.setattr(ws, "available", lambda: False)
+
+    def refused(path):
+        raise tr.TranscribeError('Deepgram returned 401: {"err_code":"INVALID_AUTH","err_msg":"Invalid credentials."}')
+
+    monkeypatch.setattr(tr, "_request", refused)
+    monkeypatch.setattr(sarvam, "transcribe", lambda *a, **k: pytest.fail("no Hindi was heard"))
+    with caplog.at_level(logging.INFO, logger="app.clipper.transcribe"), pytest.raises(tr.TranscribeError):
+        tr.transcribe(str(video), INFO)
+    sample = [r for r in caplog.records if "from the sample" in r.getMessage()]
+    assert sample and sample[0].levelno == logging.WARNING and "401" in sample[0].getMessage()
 
 
 def test_a_failed_sarvam_still_falls_back_to_deepgram_once(monkeypatch, tmp_path):
@@ -475,6 +661,51 @@ def test_whisper_is_used_when_configured_and_deepgram_is_not(monkeypatch, tmp_pa
     assert calls[1][2]["timestamp_granularities[]"] == ["word", "segment"]
     assert meter.summary()["stt_seconds"] == {"openai_compatible:whisper-large-v3-turbo": 900.0}
     assert got.words[-1].start == pytest.approx(600.1)
+
+
+def _mask(seconds, *spans):
+    import numpy as np
+    active = np.zeros(int(seconds * 100), dtype=bool)
+    for a, b in spans:
+        active[int(a * 100):int(b * 100)] = True
+    return active
+
+
+def test_whisper_words_are_trimmed_to_the_speech_not_stretched_over_a_pause():
+    """Measured on a real talk: Whisper timed "Oh" 5.5s before it was said, across a pause spent eating."""
+    words = [Word("Australia.", 3.0, 4.0), Word("Oh", 4.0, 9.0), Word("they're", 9.0, 9.4), Word("hmm", 9.4, 9.9)]
+    got = whisper_stt.fit_to_speech(words, _mask(12, (3.0, 3.8), (8.9, 9.4)))
+    assert [w.text for w in got] == ["Australia.", "Oh", "they're", "hmm"]
+    assert got[0].start == 3.0 and got[0].end == pytest.approx(3.88)  # the pause after it is no longer its own
+    assert got[1].start == pytest.approx(8.82) and got[1].end == 9.0  # starts just before the sound, not 4.9s early
+    assert (got[2].start, got[2].end) == (9.0, 9.4)  # already on speech: untouched
+    assert (got[3].start, got[3].end) == (9.4, 9.9)  # no speech frames in its span: kept as Whisper had it
+    # Short dips (under 0.15s) are syllables, not pauses; no mask means no change.
+    assert whisper_stt.fit_to_speech([Word("go", 1.0, 1.5)], _mask(3, (1.1, 1.5)))[0].start == 1.0
+    assert whisper_stt.fit_to_speech(words, None) == words
+    # A later ten-minute window's mask starts at its own offset.
+    later = whisper_stt.fit_to_speech([Word("Oh", 604.0, 609.0)], _mask(12, (8.9, 9.4)), offset=600.0)
+    assert later[0].start == pytest.approx(608.82) and later[0].end == 609.0
+
+
+def test_whisper_transcripts_are_fitted_to_the_audio_they_came_from(monkeypatch, tmp_path):
+    from app.clipper import sarvam
+    monkeypatch.setattr(settings, "clip_stt_provider", "openai_compatible")
+    monkeypatch.setattr(settings, "clip_stt_base_url", "https://api.groq.com/openai/v1")
+    monkeypatch.setattr(settings, "clip_stt_api_key", "gq")
+    monkeypatch.setattr(whisper_stt, "run_ffmpeg", lambda args, **k: Path(args[-1]).write_bytes(b"mp3"))
+    monkeypatch.setattr(whisper_stt.httpx, "post", lambda *a, **k: _Response(200, {
+        "language": "english", "segments": [{"text": "Well. Oh nice."}],
+        "words": [{"word": "Well", "start": 0.2, "end": 0.6}, {"word": "Oh", "start": 0.6, "end": 5.0},
+                  {"word": "nice", "start": 5.0, "end": 5.4}]}))
+    seen = []
+    monkeypatch.setattr(sarvam, "speech_frames", lambda path: seen.append(path) or _mask(6, (0.2, 0.6), (4.7, 5.4)))
+    got = whisper_stt.transcribe(str(tmp_path / "audio.mp3"), 6.0)
+    assert len(seen) == 1 and Path(seen[0]).name == "part_0.mp3"  # each upload window's own audio, never the whole file
+    assert [(w.text, w.start) for w in got.words] == [("Well.", 0.2), ("Oh", pytest.approx(4.62)), ("nice.", 5.0)]
+    # A mask that cannot be read leaves Whisper's timings as they were, never the transcript lost.
+    monkeypatch.setattr(sarvam, "speech_frames", lambda path: (_ for _ in ()).throw(ValueError("bad audio")))
+    assert whisper_stt.transcribe(str(tmp_path / "audio.mp3"), 6.0).words[1].start == 0.6
 
 
 # ---------- the standalone seam ----------

@@ -334,11 +334,37 @@ def _openai_request(prompt: str, files: Sequence[str], model: str, key: str, bas
         "messages": [{"role": "system", "content": _CLAUDE_SYSTEM},
                      {"role": "user", "content": _openai_content(prompt, files)}],
     }
-    effort = str(getattr(settings, "clip_ai_api_effort", "") or "").strip().lower()
+    effort = _configured_effort()
     if effort in ("low", "medium", "high"):
         body["reasoning_effort"] = effort
+    elif not effort and (base, model) in _low_effort_models:
+        body["reasoning_effort"] = "low"
     headers = {"authorization": f"Bearer {key}", "content-type": "application/json"}
     return f"{base}/chat/completions", headers, body
+
+
+def _configured_effort() -> str:
+    return str(getattr(settings, "clip_ai_api_effort", "") or "").strip().lower()
+
+
+# A reasoning model left at its provider's default effort can spend the whole reply budget thinking: Groq's gpt-oss-120b
+# at its default "medium" used 2046 of 2048 tokens on reasoning for the moment-picking prompt and answered nothing, so a
+# talk produced no clips. When that happens with no effort configured, the call is asked again at "low", and so is every
+# later call to that model. An effort the operator chose is never overridden.
+_low_effort_models: set[tuple[str, str]] = set()
+
+
+def _cut_short(data: dict) -> tuple[bool, int]:
+    """(the reply stopped at the token budget, reasoning tokens it spent) for an OpenAI-compatible reply."""
+    choices = data.get("choices") if isinstance(data.get("choices"), list) else []
+    finish = choices[0].get("finish_reason") if choices and isinstance(choices[0], dict) else None
+    usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+    details = usage.get("completion_tokens_details") if isinstance(usage.get("completion_tokens_details"), dict) else {}
+    try:
+        reasoning = int(details.get("reasoning_tokens") or 0)
+    except (TypeError, ValueError):
+        reasoning = 0
+    return finish == "length", reasoning
 
 
 def _openai_reply(data: dict) -> tuple[Optional[str], dict]:
@@ -358,30 +384,120 @@ def _openai_reply(data: dict) -> tuple[Optional[str], dict]:
 
 def _ask_api(prompt: str, *, files: Sequence[str] = ()) -> Optional[str]:
     """One HTTP API call. None on any failure, a refusal, or an empty reply; never raises."""
+    if not files:
+        return _ask_api_with(prompt, ())
+    with tempfile.TemporaryDirectory(prefix="clipper-ai-", ignore_cleanup_errors=True) as sheets_dir:
+        return _ask_api_with(prompt, files, sheets_dir)
+
+
+# Some vision models take only a few pictures per request: Groq's answered the eight-frame caption check with
+# "Too many images provided. This model supports up to 3 images", which silently cost every job its caption check
+# and every no-speech source its AI ranking. The cap is learned from that refusal, per endpoint and model, and from
+# then on the pictures travel combined into that many numbered sheets, in order, so no caller has to know it.
+_IMAGE_CAP_RE = re.compile(r"supports?\s+(?:up\s+to|at\s+most|a\s+maximum\s+of)\s+(\d+)\s+images?", re.IGNORECASE)
+_image_caps: dict[tuple[str, str], int] = {}
+_SHEET_MAX_SIDE = 2048
+_SHEET_GAP = 8
+
+
+def _image_cap(response: httpx.Response) -> Optional[int]:
+    """The per-request picture limit a 400 names, or None when the error is about something else."""
+    try:
+        text = response.text or ""
+    except Exception:
+        return None
+    match = _IMAGE_CAP_RE.search(text)
+    cap = int(match.group(1)) if match else 0
+    return cap if cap >= 1 else None
+
+
+def _combine_images(files: Sequence[str], cap: int, out_dir: str) -> list[str]:
+    """Pack ``files`` into at most ``cap`` JPEG sheets, keeping their order. Each picture is labelled with its number
+    (1-based, across all sheets) in its top-left corner. Raises OSError/ValueError on an unreadable picture."""
+    from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
+
+    total = len(files)
+    per = -(-total // cap)  # ceil: consecutive groups, so numbering and order survive
+    sheets: list[str] = []
+    for start in range(0, total, per):
+        pictures = []
+        try:
+            for path in files[start:start + per]:
+                with Image.open(path) as img:
+                    pictures.append(img.convert("RGB"))
+        except UnidentifiedImageError as exc:
+            raise ValueError(f"cannot combine {Path(path).name}: not an image") from exc
+        cell_w, cell_h = max(p.width for p in pictures), max(p.height for p in pictures)
+        # Frame strips are already a row of frames: stack them. Single frames go in a near-square grid.
+        columns = 1 if cell_w >= 2.5 * cell_h else math.ceil(math.sqrt(len(pictures)))
+        rows = math.ceil(len(pictures) / columns)
+        sheet = Image.new("RGB", (columns * cell_w + (columns - 1) * _SHEET_GAP,
+                                  rows * cell_h + (rows - 1) * _SHEET_GAP), (0, 0, 0))
+        draw = ImageDraw.Draw(sheet)
+        size = max(18, min(cell_w, cell_h) // 7)
+        font = ImageFont.load_default(size=size)
+        for offset, picture in enumerate(pictures):
+            left = (offset % columns) * (cell_w + _SHEET_GAP)
+            top = (offset // columns) * (cell_h + _SHEET_GAP)
+            sheet.paste(picture, (left, top))
+            label = str(start + offset + 1)
+            box = draw.textbbox((0, 0), label, font=font)
+            pad = max(4, size // 4)
+            draw.rectangle((left, top, left + box[2] + 2 * pad, top + box[3] + 2 * pad), fill=(0, 0, 0))
+            draw.text((left + pad, top + pad), label, fill=(255, 230, 0), font=font)
+        if max(sheet.size) > _SHEET_MAX_SIDE:
+            scale = _SHEET_MAX_SIDE / max(sheet.size)
+            sheet = sheet.resize((max(1, round(sheet.width * scale)), max(1, round(sheet.height * scale))),
+                                 Image.Resampling.LANCZOS)
+        out = os.path.join(out_dir, f"sheet_{len(sheets) + 1}.jpg")
+        sheet.save(out, format="JPEG", quality=88)
+        sheets.append(out)
+    return sheets
+
+
+def _fit_images(prompt: str, files: Sequence[str], cap: int, out_dir: str) -> tuple[str, list[str]]:
+    sheets = _combine_images(files, cap, out_dir)
+    note = (f"\n\n(Upload limit: the {len(files)} pictures arrive combined into {len(sheets)} "
+            f"image{'s' if len(sheets) != 1 else ''}. Each picture is labelled with its number, 1 to {len(files)}, "
+            "in its top-left corner, in the original order. Treat each numbered picture as one attached image.)")
+    return f"{prompt.rstrip()}{note}", sheets
+
+
+def _ask_api_with(prompt: str, files: Sequence[str], sheets_dir: str = "") -> Optional[str]:
     key, base, provider = _api_key(), _api_base(), api_provider()
     model = _api_model(files)
     if not key or not base or not model:
         return None
     build, parse = ((_anthropic_request, _anthropic_reply) if provider == ANTHROPIC
                     else (_openai_request, _openai_reply))
+    sent = list(files)
     try:
-        url, headers, body = build(prompt, files, model, key, base)
+        cap = _image_caps.get((base, model))
+        if cap and len(files) > cap:
+            sent_prompt, sent = _fit_images(prompt, files, cap, sheets_dir)
+        else:
+            sent_prompt = prompt
+        url, headers, body = build(sent_prompt, sent, model, key, base)
     except (OSError, ValueError) as exc:
         log.warning("%s api: %s", provider, exc)
         return None
     timeout = httpx.Timeout(_timeout(), connect=15)
 
     def spent(ok: bool, counts: Optional[dict] = None, served_by: str = "") -> None:
-        metering.record("llm", provider=provider, model=served_by or model, ok=ok, images=len(files),
+        metering.record("llm", provider=provider, model=served_by or model, ok=ok, images=len(sent),
                         **{"input_tokens": 0, "output_tokens": 0, **(counts or {})})
 
-    shrunk = False
-    for attempt in range(_API_RETRIES + 1):
+    shrunk = lowered = False
+    attempt = 0
+    # One-time adjustments (a smaller reply budget, combined pictures, a lower reasoning effort) are re-asked without
+    # using up a retry; only transient failures (network, 408/409/429, 5xx) count against _API_RETRIES.
+    while True:
         try:
             response = httpx.post(url, json=body, headers=headers, timeout=timeout)
         except httpx.HTTPError as exc:
             if attempt < _API_RETRIES:
                 time.sleep(_retry_wait(None, attempt))
+                attempt += 1
                 continue
             log.warning("%s api could not be reached: %s", provider, type(exc).__name__)
             spent(False)
@@ -395,8 +511,23 @@ def _ask_api(prompt: str, *, files: Sequence[str] = ()) -> Optional[str]:
                      provider, body.get("max_tokens"), smaller)
             body["max_tokens"], shrunk = smaller, True
             continue
+        cap = _image_cap(response) if status == 400 and len(sent) > 1 else None
+        if cap and len(sent) > cap and len(files) > cap:
+            _image_caps[(base, model)] = cap
+            log.warning("%s api: %s takes at most %d picture%s per request; sending the %d combined into numbered "
+                        "sheets from now on", provider, model, cap, "" if cap == 1 else "s", len(files))
+            try:
+                sent_prompt, sent = _fit_images(prompt, files, cap, sheets_dir)
+                url, headers, fitted = build(sent_prompt, sent, model, key, base)
+            except (OSError, ValueError) as exc:
+                log.warning("%s api: %s", provider, exc)
+                spent(False)
+                return None
+            body = {**fitted, "max_tokens": body.get("max_tokens", fitted.get("max_tokens"))}
+            continue
         if (status in (408, 409, 429) or status >= 500) and attempt < _API_RETRIES:
             time.sleep(_retry_wait(response, attempt))
+            attempt += 1
             continue
         try:
             data = response.json()
@@ -409,9 +540,28 @@ def _ask_api(prompt: str, *, files: Sequence[str] = ()) -> Optional[str]:
             spent(False)
             return None
         text, counts = parse(data)
-        spent(text is not None, counts, str(data.get("model") or ""))
+        served = str(data.get("model") or "")
+        if lowered:
+            # Remembered only once the provider has accepted "low" for this model: one that refuses the parameter
+            # must not have every later call sent with it.
+            _low_effort_models.add((base, model))
+        truncated, reasoning = _cut_short(data) if provider != ANTHROPIC else (False, 0)
+        if truncated:
+            spent(False, counts, served)
+            budget = body.get("max_tokens")
+            if reasoning and not lowered and not _configured_effort() and body.get("reasoning_effort") != "low":
+                log.warning("%s api: %s spent %s of its %s reply tokens reasoning and was cut off; asking again with "
+                            "reasoning_effort=low, as every later call will (set CLIP_AI_API_EFFORT=low to skip the "
+                            "wasted call)", provider, model, reasoning, budget)
+                body["reasoning_effort"], lowered = "low", True
+                continue
+            # Nothing left to adjust here: hand back what came, flagged, so ask_json's stricter retry still gets its
+            # chance (a shorter second reply often fits) instead of the call being dropped outright.
+            log.warning("%s api: %s was cut off at its %s-token reply budget (%s of them reasoning); raise "
+                        "CLIP_AI_API_MAX_TOKENS or lower CLIP_AI_API_EFFORT", provider, model, budget, reasoning)
+            return text
+        spent(text is not None, counts, served)
         return text
-    return None
 
 
 _TOO_LARGE = re.compile(r"Limit\D{0,3}(\d+)\D{1,12}Requested\D{0,3}(\d+)", re.IGNORECASE)

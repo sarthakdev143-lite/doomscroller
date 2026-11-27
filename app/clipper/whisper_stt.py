@@ -5,6 +5,12 @@ transcriber. Whisper's word list carries timings but no punctuation, and the cli
 their punctuation, so each word takes its punctuated spelling from the segment text it belongs to.
 Uploads are capped by these services (25 MB on Groq's free tier), so audio goes up in windows of ten
 minutes and each window's timings are moved back onto the source clock. Any failure returns None.
+
+Whisper's word timings are gapless: a word before or after a pause stretches over it. On a real talk a speaker
+who stopped to eat had "Oh" timed 5.5s before she said it, so its caption sat over the pause. So each word is
+trimmed to the audio's speaking frames (the activity mask Sarvam's word placement uses), never moved outside its
+own span: on that talk the mean onset error against Deepgram fell from 0.29s to 0.16s and the worst from 5.5s
+to 1.3s.
 """
 from __future__ import annotations
 
@@ -78,6 +84,47 @@ def punctuated_words(data: dict, offset: float) -> list[Word]:
     return out
 
 
+_FRAME_SEC = 0.01  # sarvam.speech_frames judges activity per 10ms frame
+_TRIM_MIN_SEC = 0.15  # only a pause this long inside a word's span is trimmed off it
+_ONSET_LEAD_SEC = 0.08  # soft onsets (s, f, h) read as quiet: start a little before the first loud frame
+
+
+def fit_to_speech(words: list[Word], active, offset: float = 0.0) -> list[Word]:
+    """Trim each word's leading and trailing non-speech runs (``active``: per-10ms speech frames whose first frame
+    is at ``offset`` seconds). A word only ever shrinks inside its own span, so order and text are untouched; a word
+    with no speech frames is kept."""
+    if active is None or not len(active):
+        return list(words)
+    out: list[Word] = []
+    for word in words:
+        a = max(0, int(round((word.start - offset) / _FRAME_SEC)))
+        b = min(len(active), int(round((word.end - offset) / _FRAME_SEC)))
+        start, end = word.start, word.end
+        spoken = [i for i in range(a, b) if active[i]] if b > a else []
+        if spoken:
+            if (spoken[0] - a) * _FRAME_SEC >= _TRIM_MIN_SEC:
+                start = max(word.start, offset + spoken[0] * _FRAME_SEC - _ONSET_LEAD_SEC)
+            if (b - 1 - spoken[-1]) * _FRAME_SEC >= _TRIM_MIN_SEC:
+                end = min(word.end, offset + (spoken[-1] + 1) * _FRAME_SEC + _ONSET_LEAD_SEC)
+        end = max(end, min(word.end, start + 0.05))
+        out.append(Word(word.text, round(start, 3), round(end, 3), word.confidence))
+    return out
+
+
+def _fitted(words: list[Word], piece: str, offset: float) -> list[Word]:
+    """One window's words fitted to that window's own speech frames (a window at a time, so a 90-minute source
+    never decodes into memory at once). Any failure keeps Whisper's timings: looser, never lost."""
+    try:
+        from .sarvam import speech_frames
+
+        return fit_to_speech(words, speech_frames(piece), offset)
+    except Interrupted:
+        raise
+    except Exception as exc:
+        log.warning("whisper: could not fit word timings to the speech: %s", type(exc).__name__)
+        return words
+
+
 def _request(path: str) -> dict:
     base = str(settings.clip_stt_base_url or "").strip().rstrip("/")
     key = str(settings.clip_stt_api_key or "").strip()
@@ -115,7 +162,7 @@ def transcribe(audio_path: str, duration: float) -> Optional[Transcript]:
                 data = _request(piece)
                 metering.record("stt", provider="openai_compatible", model=settings.clip_stt_model,
                                 audio_seconds=round(length, 2))
-                words += punctuated_words(data, start)
+                words += _fitted(punctuated_words(data, start), piece, start)
                 if data.get("language"):
                     languages.append(language_code(data["language"]))
                 start += length

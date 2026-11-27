@@ -3619,6 +3619,15 @@ def test_speech_prompt_asks_for_the_transcript_language():
     assert "Hinglish" in prompt and "same language as the transcript" in prompt
 
 
+def test_known_english_speech_is_never_offered_hinglish_titles():
+    """Told "Hinglish when Hindi, otherwise English", gpt-oss titled an English talk "Space ke liye cricket ka taste test!"."""
+    sentences = build_sentences(_words("we ate crickets on the station today"))
+    english = moments._speech_prompt(sentences, 2, "Space food", language="en")
+    assert "Hinglish" not in english and "plain English" in english
+    hindi = moments._speech_prompt(sentences, 2, "Space food", language="hi")
+    assert "Romanized Hinglish" in hindi and "plain English" not in hindi
+
+
 def test_the_ai_may_name_one_sound_from_the_pack_and_nothing_else():
     sentences = build_sentences(_words("a b c"))
     assert '"sound"' not in moments._speech_prompt(sentences, 2, "x")
