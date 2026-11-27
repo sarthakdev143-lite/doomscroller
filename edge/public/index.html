@@ -36,14 +36,14 @@
   <link rel="stylesheet" href="/static/css/components.css?v=d9c0b7e8a4">
   <link rel="stylesheet" href="/static/css/landing.css?v=da7e67c744">
   
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
 
 
-
   
   
-  
-  
-  
+  <meta name="ds:ga4" content="G-DGES64SC1M">
+  <meta name="ds:clarity" content="zk56f31gue">
+  <script type="module" src="/static/js/consent.js?v=6619266c2c"></script>
   
   <script type="module" src="/static/js/site.js?v=226f1320bb"></script>
   
@@ -103,11 +103,13 @@
 
   <input type="hidden" name="ref" value="">
   
-  <input type="hidden" name="ts" value="1795771200598">
+  <input type="hidden" name="ts" value="1795773797625">
   <div class="hp" aria-hidden="true">
     <label for="wl-hero-website">Leave this empty</label>
     <input id="wl-hero-website" name="website" type="text" tabindex="-1" autocomplete="off">
   </div>
+  
+  <div class="cf-turnstile waitlist__turnstile" data-sitekey="0x4AAAAAAGVf0nGY2QShsUK_" data-action="waitlist" data-theme="light" data-size="flexible"></div>
   
   <p class="error-text" id="wl-hero-error" data-form-error role="alert"></p>
 </form></div>
@@ -646,11 +648,13 @@
 
   <input type="hidden" name="ref" value="">
   
-  <input type="hidden" name="ts" value="1795771200598">
+  <input type="hidden" name="ts" value="1795773797625">
   <div class="hp" aria-hidden="true">
     <label for="wl-footer-website">Leave this empty</label>
     <input id="wl-footer-website" name="website" type="text" tabindex="-1" autocomplete="off">
   </div>
+  
+  <div class="cf-turnstile waitlist__turnstile" data-sitekey="0x4AAAAAAGVf0nGY2QShsUK_" data-action="waitlist" data-theme="light" data-size="flexible"></div>
   
   <p class="error-text" id="wl-footer-error" data-form-error role="alert"></p>
 </form>
@@ -695,6 +699,17 @@
   </div>
 </footer>
   <div class="toasts" data-toasts role="status" aria-live="polite"></div>
+  
+  <div class="consent" data-consent role="region" aria-labelledby="consent-title" hidden>
+    <p class="consent__title" id="consent-title">Analytics, only if you say yes</p>
+    <p class="consent__text">We would like to use Google Analytics and Microsoft Clarity
+      to see how this site is used, including recordings of clicks and scrolling with every form field hidden.
+      Nothing loads until you choose. <a href="/privacy#analytics" data-track="consent-privacy">Privacy</a> &middot; <a href="/cookies" data-track="consent-cookies">Cookies</a></p>
+    <div class="consent__actions">
+      <button class="btn" type="button" data-consent-choice="denied" data-track="consent-reject">Reject</button>
+      <button class="btn" type="button" data-consent-choice="granted" data-track="consent-accept">Accept</button>
+    </div>
+  </div>
   
 </body>
 </html>

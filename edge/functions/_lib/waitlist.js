@@ -89,7 +89,27 @@ export function referralUrl(request, code) {
   return `${new URL(request.url).origin}/?ref=${code}`;
 }
 
-async function verifyTurnstile(env, token, ip) {
+// The widget on the waitlist forms renders with data-action="waitlist"; a token minted for another action
+// (or another site using the same widget) is refused.
+export const TURNSTILE_ACTION = "waitlist";
+// Cloudflare's documented test secrets answer with hostname "example.com" and an empty action, so the
+// hostname/action checks cannot apply to them. They are never valid in production.
+const TURNSTILE_TEST_SECRETS = new Set([
+  "1x0000000000000000000000000000000AA",
+  "2x0000000000000000000000000000000AA",
+  "3x0000000000000000000000000000000AA",
+]);
+
+function turnstileHostnames(env, request) {
+  const raw = String(env.TURNSTILE_HOSTNAMES || "").split(",").map((h) => h.trim().toLowerCase()).filter(Boolean);
+  if (raw.length) return raw;
+  try {
+    if (env.PUBLIC_URL) return [new URL(env.PUBLIC_URL).hostname.toLowerCase()];
+  } catch (_) { /* fall through */ }
+  return [new URL(request.url).hostname.toLowerCase()];
+}
+
+async function verifyTurnstile(env, request, token, ip) {
   if (!env.TURNSTILE_SECRET_KEY) return { ok: true, used: false };
   if (!token || typeof token !== "string" || token.length > 2048) return { ok: false, used: true };
   const form = new FormData();
@@ -98,9 +118,19 @@ async function verifyTurnstile(env, token, ip) {
   form.append("remoteip", ip);
   form.append("idempotency_key", crypto.randomUUID());
   try {
-    const res = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", { method: "POST", body: form });
+    const res = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
+      method: "POST", body: form, signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return { ok: false, used: true };
     const data = await res.json();
-    return { ok: !!data.success, used: true };
+    if (data.success !== true) return { ok: false, used: true };
+    if (TURNSTILE_TEST_SECRETS.has(env.TURNSTILE_SECRET_KEY)) return { ok: true, used: true };
+    const host = String(data.hostname || "").toLowerCase();
+    if (data.action !== TURNSTILE_ACTION || !turnstileHostnames(env, request).includes(host)) {
+      console.warn("turnstile token refused", JSON.stringify({ action: data.action, hostname: host }));
+      return { ok: false, used: true };
+    }
+    return { ok: true, used: true };
   } catch (err) {
     console.error("turnstile unavailable", err && err.message);
     return { ok: false, used: true }; // fail closed: an unverifiable token is not a human
@@ -153,7 +183,7 @@ export async function join(context) {
   const rlEmail = await rateLimit(env, "join_email", emailKey, 5, 3600);
   if (!rlEmail.ok) return tooMany(rlEmail.retryAfter);
 
-  const ts_ = await verifyTurnstile(env, data.cf_turnstile_response || data["cf-turnstile-response"], ip);
+  const ts_ = await verifyTurnstile(env, request, data.cf_turnstile_response || data["cf-turnstile-response"], ip);
   if (!ts_.ok) return fail(400, "turnstile_failed", "Please complete the verification and try again.");
 
   const db = env.DB;

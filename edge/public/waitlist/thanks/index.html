@@ -39,9 +39,9 @@
 
   
   
-  
-  
-  
+  <meta name="ds:ga4" content="G-DGES64SC1M">
+  <meta name="ds:clarity" content="zk56f31gue">
+  <script type="module" src="/static/js/consent.js?v=6619266c2c"></script>
   
   <script type="module" src="/static/js/site.js?v=226f1320bb"></script>
   <script type="module" src="/static/js/thanks.js?v=38e85123d3"></script>
@@ -171,6 +171,17 @@
   </div>
 </footer>
   <div class="toasts" data-toasts role="status" aria-live="polite"></div>
+  
+  <div class="consent" data-consent role="region" aria-labelledby="consent-title" hidden>
+    <p class="consent__title" id="consent-title">Analytics, only if you say yes</p>
+    <p class="consent__text">We would like to use Google Analytics and Microsoft Clarity
+      to see how this site is used, including recordings of clicks and scrolling with every form field hidden.
+      Nothing loads until you choose. <a href="/privacy#analytics" data-track="consent-privacy">Privacy</a> &middot; <a href="/cookies" data-track="consent-cookies">Cookies</a></p>
+    <div class="consent__actions">
+      <button class="btn" type="button" data-consent-choice="denied" data-track="consent-reject">Reject</button>
+      <button class="btn" type="button" data-consent-choice="granted" data-track="consent-accept">Accept</button>
+    </div>
+  </div>
   
 </body>
 </html>

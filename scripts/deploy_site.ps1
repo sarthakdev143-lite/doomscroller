@@ -15,9 +15,9 @@ $env:SAAS_OPERATOR_NAME = "Sarthak Parulekar"
 $env:SAAS_OPERATOR_COUNTRY = "India"
 $env:SAAS_LEGAL_EFFECTIVE_DATE = "27 November 2026"
 # Fill these in when you have them (empty = that script is left out of the pages).
-$env:GA4_MEASUREMENT_ID = ""        # G-XXXXXXXXXX  (Google Analytics 4)
-$env:CLARITY_PROJECT_ID = ""        # e.g. abcd1234ef (Microsoft Clarity)
-$env:SAAS_TURNSTILE_SITE_KEY = ""   # 0x4AAAA... (Cloudflare Turnstile; its secret goes in Cloudflare, not here)
+$env:GA4_MEASUREMENT_ID = "G-DGES64SC1M"       # Google Analytics 4 (direct; GTM container GTM-W4Q688DF not used)
+$env:CLARITY_PROJECT_ID = "zk56f31gue"         # Microsoft Clarity
+$env:SAAS_TURNSTILE_SITE_KEY = "0x4AAAAAAGVf0nGY2QShsUK_"  # Cloudflare Turnstile (public site key; the secret lives in Cloudflare)
 
 & "$root\.venv-saas\Scripts\python.exe" scripts\saas_export_static.py
 if ($LASTEXITCODE -ne 0) { throw "export failed" }

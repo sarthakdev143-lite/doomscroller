@@ -56,7 +56,7 @@
     <input id="wl-{{ id }}-website" name="website" type="text" tabindex="-1" autocomplete="off">
   </div>
   {% if turnstile_site_key %}
-  <div class="cf-turnstile waitlist__turnstile" data-sitekey="{{ turnstile_site_key }}" data-theme="light" data-size="flexible"></div>
+  <div class="cf-turnstile waitlist__turnstile" data-sitekey="{{ turnstile_site_key }}" data-action="waitlist" data-theme="light" data-size="flexible"></div>
   {% endif %}
   <p class="error-text" id="wl-{{ id }}-error" data-form-error role="alert"></p>
 </form>
