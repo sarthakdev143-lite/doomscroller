@@ -117,6 +117,22 @@ the owner's `.env` (it reads `SAAS_*` / `.env.saas`) and never writes `doomscrol
 
 API key scopes: `jobs:read`, `jobs:write`, `clips:read`, `clips:write`, `billing:read`. Default: all.
 
+**Edge waitlist -> app invites** (core agent, `saas/auth/waitlist_bridge.py`). The live waitlist is D1
+(edge/); app signup redeems invites against the app's `waitlist_entries`. The owner bridges them with
+`scripts/saas_manage.py import-waitlist <export.csv> [--invite N] [--include-flagged] [--dry-run] [--out invites.csv]`
+(and `--outstanding` to re-export every issued, unredeemed invite):
+- Reads exactly what edge `/admin/export.csv` writes (admin.js `toCsv`: BOM, CRLF, quoting, and the
+  `safeCell` formula apostrophe, which is undone).
+- Upserts by normalised email, keeping `seq` (join order), position (`rank_key = seq -
+  waitlist_referral_bump x referrals_counted`, the formula both sides use), referral code/count and
+  referrer, `created_at`, country, role, channel, first-touch source and risk reasons. Imported waiting
+  entries are `confirmed`. Flagged rows are skipped unless `--include-flagged`; an entry flagged later is
+  held from invites. Edge `removed` removes (and voids an unused invite); a `joined` entry is never touched.
+  Idempotent: re-importing the same file changes nothing and never undoes issued invites.
+- `--invite N` invites the top N un-invited, unflagged, waiting entries by position (`saas.waitlist.service.invite`,
+  no email sent) and prints/writes `email,invite_code,signup_url,expires_at` with
+  `signup_url = SAAS_PUBLIC_URL/signup?invite=<code>`. The owner mails them.
+
 ### Security (tracking agent) — `saas.security`
 - `limits.enforce(request, bucket: str, limit: int, window_s: int, key: str | None = None)` — raises
   429 `{"error":"rate_limited"}`; key defaults to client IP. `limits.hit(...) -> bool` non-raising.
@@ -334,13 +350,16 @@ def clip_to_directory(source: str, out_dir: Path, *, count: int = 3, language: s
                       on_stage: Callable[[str, float], None] | None = None,
                       logo_path: str | None = None, custom_memes: Sequence[str] = (),
                       cache_dir: Path | None = None, sfx_pack_dir: Path | None = None,
-                      music_dir: Path | None = None) -> dict
+                      music_dir: Path | None = None, shared_cache_dir: Path | None = None) -> dict
 # -> {"source": {"title", "duration_s", "author"}, "clips": [{"path", "thumbnail_path", "duration_s",
 #     "start_s", "end_s", "title", "description", "hashtags", "score", "language", "memes_used",
 #     "kind", "hook"}], "warnings": [str], "meter": <metering summary>}
 ```
 Landed (pipeline agent). No DB writes, no reads of channel/growth state, every file under `out_dir`
 (downloads, stock/meme caches and transcripts go to `out_dir/.cache` unless `cache_dir` is given).
+Pass `shared_cache_dir` (one folder for every job) so stock-footage and meme searches and downloads are
+shared across jobs (Pixabay requires 24h search caching; Giphy's quota is small); the source and its
+transcript always stay private under `cache_dir`.
 `on_stage(stage, progress)` gets `fetching`, `transcribing`, `selecting`, `rendering`, `done` with
 monotonic progress 0-1; an exception raised from it stops the run (use it to cancel). Raises
 `app.clipper.standalone.ClipError(code, message)` when no clip is made; codes: `fetch_failed`,

@@ -10,6 +10,9 @@
     python scripts/saas_manage.py bmc-map pack pack-300 --extra-id 98765 --url https://buymeacoffee.com/you/e/98765
     python scripts/saas_manage.py claims                  # Buy Me a Coffee payments not yet matched to an account
     python scripts/saas_manage.py claim CLAIM_ID someone@example.com   # credit one to a verified account
+    python scripts/saas_manage.py import-waitlist waitlist-202611270130.csv --dry-run   # the edge /admin/export.csv
+    python scripts/saas_manage.py import-waitlist waitlist-202611270130.csv --invite 50 --out invites.csv
+    python scripts/saas_manage.py import-waitlist --outstanding --out invites.csv     # re-export unredeemed invites
 """
 from __future__ import annotations
 
@@ -36,7 +39,7 @@ def _user(db, email: str):
     return u
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="SaaS operator commands")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("seed-catalog")
@@ -54,7 +57,14 @@ def main() -> int:
     p.add_argument("--url"); p.add_argument("--currency", default="USD")  # noqa: E702
     sub.add_parser("claims")
     p = sub.add_parser("claim"); p.add_argument("claim_id"); p.add_argument("email")  # noqa: E702
-    args = ap.parse_args()
+    p = sub.add_parser("import-waitlist", help="upsert the edge waitlist export; optionally issue invites")
+    p.add_argument("csv", nargs="?", help="the CSV from the edge /admin/export.csv")
+    p.add_argument("--invite", type=int, default=0, help="invite the top N un-invited people by position")
+    p.add_argument("--include-flagged", action="store_true", help="also import entries the edge flagged")
+    p.add_argument("--dry-run", action="store_true", help="report what would change, write nothing")
+    p.add_argument("--outstanding", action="store_true", help="export every issued, unredeemed invite")
+    p.add_argument("--out", help="write the invites CSV here instead of printing it")
+    args = ap.parse_args(argv)
 
     from saas.billing import catalog, ledger
     from saas.common import utcnow
@@ -127,6 +137,28 @@ def main() -> int:
             if result in ("processed", "duplicate"):
                 c.status, c.claimed_by, c.claimed_at = "claimed", u.id, utcnow()
             print(result, detail)
+        elif args.cmd == "import-waitlist":
+            from saas.auth import waitlist_bridge as bridge
+
+            if not args.csv and not args.outstanding:
+                raise SystemExit("give the export CSV, or --outstanding")
+            if args.csv:
+                stats = bridge.import_rows(db, bridge.read_export(args.csv), include_flagged=args.include_flagged)
+                print("import:", stats, file=sys.stderr)
+            invites = bridge.issue_invites(db, args.invite) if args.invite else []
+            if args.outstanding:
+                invites = bridge.outstanding_invites(db)
+            if args.dry_run:
+                db.rollback()
+                print(f"dry run: nothing written; would invite {len(invites)}: "
+                      + ", ".join(r["email"] for r in invites), file=sys.stderr)
+            elif invites or args.out:
+                text = bridge.invites_csv(invites)
+                if args.out:
+                    Path(args.out).write_text(text, encoding="utf-8", newline="")
+                    print(f"{len(invites)} invites written to {args.out}", file=sys.stderr)
+                else:
+                    sys.stdout.write(text)
     return 0
 
 
