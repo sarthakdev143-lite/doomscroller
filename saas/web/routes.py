@@ -267,9 +267,32 @@ def common_context(path: str, public_url: str) -> dict:
     }
 
 
-def landing_context(pricing: dict | None, ref: str = "") -> dict:
+API_PLACEHOLDER = "https://<app-host>/api/v1"  # the static site, before the app has an address
+
+
+def api_links(static: bool) -> dict:
+    """The API base and MCP URL the examples show. On the static site there is no API at public_url (Pages
+    serves only the marketing pages), so unless SAAS_API_BASE_URL names the app, show a host nobody can mistake
+    for a real one."""
+    base = settings.api_base_url.strip().rstrip("/")
+    if not base:
+        base = API_PLACEHOLDER if static else f"{settings.public_url.rstrip('/')}/api/v1"
+    origin = base[: -len("/api/v1")] if base.endswith("/api/v1") else base
+    return {"api_base": base, "mcp_url": f"{origin}/mcp", "api_is_placeholder": base == API_PLACEHOLDER}
+
+
+def legal_date(today=None) -> str:
+    """'27 November 2026': the configured effective date, else the day of rendering (or of the export)."""
+    if settings.legal_effective_date.strip():
+        return settings.legal_effective_date.strip()
+    d = today or utcnow().date()
+    return f"{d.day} {d:%B %Y}"
+
+
+def landing_context(pricing: dict | None, ref: str = "", *, static: bool = False) -> dict:
     max_upload_gb = settings.max_upload_mb / 1024
     return {
+        **api_links(static),
         "pricing": pricing,
         "demo": _demo(),
         "credit_examples": _credit_examples(),
@@ -296,7 +319,8 @@ LEGAL = {
 def legal_context(slug: str) -> dict:
     title, description = LEGAL[slug]
     return {"page_title": title, "page_description": description, "legal_slug": slug, "legal_pages": LEGAL,
-            "session_days": settings.session_days}
+            "session_days": settings.session_days, "operator_name": settings.operator_name.strip(),
+            "operator_country": settings.operator_country.strip(), "legal_date": legal_date()}
 
 
 def _base_context(request: Request, **extra: Any) -> dict:

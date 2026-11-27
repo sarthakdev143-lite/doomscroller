@@ -307,6 +307,23 @@ def test_credit_examples_round_up_per_job():
     assert rows["18:05"] == 19 and rows["1:12:40"] == 73 and rows["1:58:00"] == 118
 
 
+def test_live_landing_points_the_api_examples_at_this_app(client):
+    from saas.config import settings
+
+    html = client.get("/").text
+    base = settings.public_url.rstrip("/")
+    assert f"curl {base}/api/v1/jobs" in html and f'"{base}/mcp"' in html
+    assert "&lt;app-host&gt;" not in html and "at an address we publish then" not in html
+
+
+def test_live_legal_pages_show_no_draft_markers(client):
+    for page in ("/privacy", "/terms", "/refunds", "/cookies"):
+        html = client.get(page).text
+        for marker in ("LAWYER", "DRAFT", 'class="todo"', "review-note", "{#"):
+            assert marker not in html, (page, marker)
+        assert "Last updated: " in html
+
+
 # ---- thanks, styleguide, errors ----------------------------------------------------------------
 
 def test_thanks_page_escapes_the_code(client):

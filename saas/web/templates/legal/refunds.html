@@ -18,7 +18,7 @@
 <h2 id="short">1. The short version</h2>
 <ul>
   <li>A job that fails costs nothing: its minutes come back automatically.</li>
-  <li>Unused pay-as-you-go minutes can be refunded within <span class="todo">[owner + LAWYER REVIEW: number]</span> days of purchase.</li>
+  <li>Unused pay-as-you-go minutes can be refunded within 14 days of purchase.{# OWNER + LAWYER REVIEW: 14 days comes from docs/saas/costs-and-pricing.md 5.8 (packs: 14 days if untouched) #}</li>
   <li>Monthly payments can be cancelled at any time and run until the end of the month you paid for.</li>
 </ul>
 
@@ -28,16 +28,15 @@
 
 <h2 id="packs">3. Pay as you go</h2>
 <p>If you have not used any of the minutes you bought, you can ask for a full refund within
-  <span class="todo">[number]</span> days of buying them. Once some have been used, that purchase is not
-  refundable. <span class="todo">[owner decision: partial refunds of partly used purchases?]</span></p>
+  14 days of buying them. Once some have been used, that purchase is not
+  refundable.{# OWNER: partial refunds of partly used purchases? #}</p>
 
 <h2 id="plans">4. Monthly</h2>
-<p>Cancel any time. You keep the month you paid for, and its minutes, until it ends, and you are not charged again.
-  <span class="todo">[owner + LAWYER REVIEW: refunds for a renewal you did not mean to keep; how cancelling works with the payment provider]</span></p>
+<p>Cancel any time. You keep the month you paid for, and its minutes, until it ends, and you are not charged again.{# OWNER + LAWYER REVIEW: refunds for a renewal you did not mean to keep; how cancelling works with the payment provider #}</p>
 
 <h2 id="quality">5. Clips you are unhappy with</h2>
 <p>If a job finished but the clips are unusable (for example, the captions are out of sync with the voice), write to
-  us with the job ID. We look at each case and may return the minutes. <span class="todo">[owner decision]</span></p>
+  us with the job ID. We look at each case and may return the minutes.{# OWNER: decide how unusable-clip claims are handled #}</p>
 
 <h2 id="chargebacks">6. Chargebacks and reversed payments</h2>
 <p>If a payment is refunded or disputed with your bank, the minutes it bought are removed from your balance (never
@@ -46,7 +45,7 @@
 
 <h2 id="how">7. How to ask</h2>
 <p>Email <a href="mailto:{{ support_email }}" data-track="refunds-email">{{ support_email }}</a> from your account’s
-  address with the payment reference from your billing history. Refunds go back to the original payment method,
-  usually within <span class="todo">[number]</span> business days.</p>
-<p><span class="todo">[LAWYER REVIEW: statutory rights, e.g. the EU/UK 14-day right of withdrawal for digital content and how it ends once a job starts with your consent]</span></p>
+  address with the payment reference from your billing history. Refunds go back to the original payment method;
+  how long they take to arrive depends on the payment provider and your bank.</p>{# OWNER: a typical number of business days, once the provider is final #}
+<p>This policy does not take away any refund rights the law gives you where you live.</p>{# LAWYER REVIEW: statutory rights, e.g. the EU/UK 14-day right of withdrawal for digital content and how it ends once a job starts with your consent #}
 {% endblock %}

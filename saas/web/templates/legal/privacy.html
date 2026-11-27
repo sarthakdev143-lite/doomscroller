@@ -24,15 +24,14 @@
   It says what we collect, why, and what you can do about it.</p>
 
 <h2 id="who">1. Who we are</h2>
-<p>The controller of your personal data is <span class="todo">[LAWYER REVIEW: legal entity or sole trader name, address]</span>.
-  Contact us about privacy at <a href="mailto:{{ support_email }}" data-track="privacy-email">{{ support_email }}</a>.
-  <span class="todo">[LAWYER REVIEW: data protection officer or EU/UK representative, if required]</span></p>
+<p>The controller of your personal data is {{ operator_name or "the operator of " ~ brand_name }}, an individual based in {{ operator_country }}.{# LAWYER REVIEW: legal name and postal address of the controller (an individual, no company) #}
+  Contact us about privacy at <a href="mailto:{{ support_email }}" data-track="privacy-email">{{ support_email }}</a>.{# LAWYER REVIEW: data protection officer or EU/UK representative, if required #}</p>
 
 <h2 id="collect">2. What we collect</h2>
 <h3>On the website, today</h3>
 <ul>
   <li><strong>Waitlist:</strong> your email address, and if you give them, what you make and a link to your channel; the referral code you arrived with, and the one we give you; the first page you opened on this visit (including any campaign tags in its link) and the site that sent you there.</li>
-  <li><strong>Technical data:</strong> your IP address and browser details, used to stop automated sign-ups. <span class="todo">[confirm what the waitlist endpoint stores]</span></li>
+  <li><strong>Technical data:</strong> a one-way hash of your IP address and of its network, the approximate location (country, region, city, time zone) and network provider worked out from it, which Cloudflare data centre answered, and your browser’s user agent. We use these to stop automated and repeated sign-ups.</li>
   <li><strong>Analytics, only if you accept:</strong> pages you view, links and buttons you click, how far you scroll, the page that sent you, an approximate location from your IP address, and recordings of clicks and scrolling with every form field hidden. See <a href="#analytics" data-track="privacy-link-analytics">section 4</a>.</li>
 </ul>
 <h3>In the app, when it opens</h3>
@@ -48,11 +47,11 @@
   <table class="table">
     <thead><tr><th scope="col">Purpose</th><th scope="col">Data</th><th scope="col">Legal basis</th></tr></thead>
     <tbody>
-      <tr><td>Run the waitlist and send your invite</td><td>Waitlist</td><td>Consent <span class="todo">[LAWYER REVIEW]</span></td></tr>
+      <tr><td>Run the waitlist and send your invite</td><td>Waitlist</td><td>Consent{# LAWYER REVIEW: legal basis for the waitlist #}</td></tr>
       <tr><td>Understand which pages work</td><td>Analytics and recordings</td><td>Consent, given with the Accept button</td></tr>
-      <tr><td>Stop bots, fraud and repeat free-tier claims</td><td>Technical data, security records</td><td>Legitimate interests <span class="todo">[LAWYER REVIEW: balancing test]</span></td></tr>
-      <tr><td>Make your clips, keep your account, take payment</td><td>Account, videos, payments</td><td>Contract <span class="todo">[LAWYER REVIEW]</span></td></tr>
-      <tr><td>Keep tax and accounting records</td><td>Payments</td><td>Legal obligation <span class="todo">[LAWYER REVIEW]</span></td></tr>
+      <tr><td>Stop bots, fraud and repeat free-tier claims</td><td>Technical data, security records</td><td>Legitimate interests{# LAWYER REVIEW: balancing test #}</td></tr>
+      <tr><td>Make your clips, keep your account, take payment</td><td>Account, videos, payments</td><td>Contract{# LAWYER REVIEW: legal basis for providing the service #}</td></tr>
+      <tr><td>Keep tax and accounting records</td><td>Payments</td><td>Legal obligation{# LAWYER REVIEW: legal basis for tax and accounting records #}</td></tr>
     </tbody>
   </table>
 </div>
@@ -66,7 +65,7 @@
   <li><strong>Microsoft Clarity</strong> records how pages respond to clicks and scrolling, and builds heatmaps. Form fields are masked, so what you type is never recorded.</li>
   <li>Both set cookies, listed on the <a href="/cookies" data-track="privacy-link-cookies">cookie page</a>. Your choice is stored in your browser, and you can change it at any time with <button type="button" class="link-btn" data-consent-open data-track="privacy-cookie-settings">Cookie settings</button>.</li>
 </ul>
-<p><span class="todo">[LAWYER REVIEW: consent wording per region; Google and Microsoft as processors or independent controllers]</span></p>
+{# LAWYER REVIEW: consent wording per region; Google and Microsoft as processors or independent controllers #}
 
 <h2 id="fraud">5. Bots and abuse</h2>
 <p>Forms on the website may be protected by Cloudflare Turnstile, which checks that a person, not a script, is
@@ -74,7 +73,7 @@
 <p>In the app, the free tier is once per person. To keep it that way we will combine signals such as your IP address,
   network type and technical characteristics of your browser and device, stored as a one-way hash. A match may mean
   an account gets no free tier or is reviewed by a person. We do not use these signals to follow you across other
-  websites. <span class="todo">[LAWYER REVIEW: whether device signals need consent in each market]</span></p>
+  websites.{# LAWYER REVIEW: whether device signals need consent in each market #}</p>
 
 <h2 id="processors">6. Who processes it for us</h2>
 <div class="table-wrap">
@@ -84,29 +83,29 @@
       <tr><td>Cloudflare</td><td>Hosting the website and waitlist, bot checks (Turnstile)</td><td>IP address, browser signals, waitlist entries</td></tr>
       <tr><td>Google (Analytics 4)</td><td>Visit statistics, after you accept</td><td>Usage events, IP address, browser details</td></tr>
       <tr><td>Microsoft (Clarity)</td><td>Recordings and heatmaps, after you accept</td><td>Masked page recordings, IP address, browser details</td></tr>
-      <tr><td><span class="todo">[payment provider, named at launch]</span></td><td>Payments, in the app</td><td>What you enter at checkout</td></tr>
+      <tr><td>Our payment provider{# OWNER: name the payment provider here once it is final #}</td><td>Payments, in the app</td><td>What you enter at checkout</td></tr>
       <tr><td>Deepgram, Sarvam AI</td><td>Speech to text, in the app</td><td>The audio of videos you submit</td></tr>
-      <tr><td>AI model providers <span class="todo">[confirm list]</span></td><td>Choosing moments, writing titles, judging footage</td><td>Transcript text and still frames from your video</td></tr>
+      <tr><td>AI model providers{# OWNER: list the AI model providers by name #}</td><td>Choosing moments, writing titles, judging footage</td><td>Transcript text and still frames from your video</td></tr>
       <tr><td>Pexels, Pixabay, Tenor, Giphy</td><td>Stock footage and reaction GIFs</td><td>Search words only, never your video</td></tr>
-      <tr><td><span class="todo">[email provider]</span></td><td>Sending your invite</td><td>Your email address and the message</td></tr>
+      <tr><td>Our email provider{# OWNER: name the SMTP provider #}</td><td>Sending your invite and account emails</td><td>Your email address and the message</td></tr>
     </tbody>
   </table>
 </div>
-<p class="review-note" role="note">[LAWYER REVIEW: confirm every provider, data processing terms, and each provider’s terms on training with customer data.]</p>
+{# LAWYER REVIEW: confirm every provider, data processing terms, and each provider’s terms on training with customer data #}
 
 <h2 id="transfers">7. International transfers</h2>
-<p><span class="todo">[LAWYER REVIEW: where data is stored, which providers are outside your country, and the transfer safeguards used.]</span></p>
+<p>{{ brand_name }} is run from {{ operator_country }}. Several of the providers above are based elsewhere, mostly in the United States, so your data may be stored or processed outside the country you live in.</p>{# LAWYER REVIEW: where data is stored, which providers are outside the customer's country, and the transfer safeguards used #}
 
 <h2 id="retention">8. How long we keep it</h2>
 <div class="table-wrap">
   <table class="table">
     <thead><tr><th scope="col">Data</th><th scope="col">Kept for</th></tr></thead>
     <tbody>
-      <tr><td>Waitlist entries</td><td>Until you get your invite or ask us to delete them, at most <span class="todo">[LAWYER REVIEW: period]</span></td></tr>
-      <tr><td>Analytics and recordings</td><td>Google Analytics: <span class="todo">[2 or 14 months, as set]</span>. Clarity: <span class="todo">[as set by Microsoft]</span></td></tr>
+      <tr><td>Waitlist entries</td><td>Until you get your invite, or until you ask us to delete them{# LAWYER REVIEW: maximum retention period #}</td></tr>
+      <tr><td>Analytics and recordings</td><td>Google Analytics: at most 14 months. Clarity: the period Microsoft sets for Clarity{# OWNER: state the GA4 data-retention setting (2 or 14 months) and Clarity's current retention #}</td></tr>
       <tr><td>Finished clips and uploads (app)</td><td>{{ retention_days }} days after they are made, then deleted</td></tr>
-      <tr><td>Account data (app)</td><td>While your account is open, then <span class="todo">[LAWYER REVIEW: period]</span></td></tr>
-      <tr><td>Payment records (app)</td><td>As long as tax law requires <span class="todo">[LAWYER REVIEW: period per country]</span></td></tr>
+      <tr><td>Account data (app)</td><td>While your account is open. When you delete it, your details, uploads and clips are deleted at once; we keep the payment records below and a one-way hash of your email address, so the free tier cannot be claimed twice.{# LAWYER REVIEW: retention after an account is closed #}</td></tr>
+      <tr><td>Payment records (app)</td><td>As long as tax law requires{# LAWYER REVIEW: period per country #}</td></tr>
     </tbody>
   </table>
 </div>
@@ -115,14 +114,14 @@
 <p>Depending on where you live, you can ask to see, correct, export or delete your data, object to or restrict how we
   use it, and withdraw consent. Email <a href="mailto:{{ support_email }}" data-track="privacy-rights-email">{{ support_email }}</a>
   from the address you signed up with. You can also complain to your data protection authority.</p>
-<p><span class="todo">[LAWYER REVIEW: GDPR / UK GDPR, India DPDP Act 2023, California CCPA/CPRA wording and response times]</span></p>
+{# LAWYER REVIEW: GDPR / UK GDPR, India DPDP Act 2023, California CCPA/CPRA wording and response times #}
 
 <h2 id="children">10. Children</h2>
-<p>The service is not for children. <span class="todo">[LAWYER REVIEW: minimum age per market]</span></p>
+<p>The service is not for children.{# LAWYER REVIEW: minimum age per market #}</p>
 
 <h2 id="security">11. Security</h2>
 <p>The website is served over HTTPS only. In the app, passwords are stored as Argon2 hashes, sessions use secure,
-  HTTP-only cookies, and you can turn on two-factor authentication. <span class="todo">[LAWYER REVIEW: breach notification commitments]</span></p>
+  HTTP-only cookies, and you can turn on two-factor authentication.{# LAWYER REVIEW: breach notification commitments #}</p>
 
 <h2 id="changes">12. Changes to this policy</h2>
 <p>If we change this policy in a way that matters, we will update the date at the top and, for waitlist members and

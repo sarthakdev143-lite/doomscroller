@@ -138,11 +138,13 @@
         </li>
         <li class="step">
           <span class="step__n mono">05</span>
-          <h3 class="step__title">You edit in the browser, then download.</h3>
+          <h3 class="step__title">You fix the words, then download.</h3>
           <div class="step__body">
-            <p>Adjust each clip before you take it, add your own logo and memes, and rewrite the title, description
-              and hashtags. Then download the package and post it yourself, wherever you post.</p>
-            <p class="step__detail">Each package: the MP4, a thumbnail, the text, and suggested times to post.</p>
+            <p>Before a job starts, choose whether your own logo and memes go in. When the clips are ready, rewrite
+              each one’s title, description and hashtags in the browser. Then download the package and post it
+              yourself, wherever you post.</p>
+            <p class="step__detail">The cuts, captions and effects are made for you; there is no timeline editor.
+              Each package: the MP4, a thumbnail, the text, and suggested times to post.</p>
           </div>
         </li>
       </ol>
@@ -180,7 +182,7 @@
           <li><span class="legend__n">4</span><div><h3 class="h4">Reaction memes</h3><p>Up to three per clip, on the strongest beats. Upload your own, use the built-in set, or switch them off.</p></div></li>
           <li><span class="legend__n">5</span><div><h3 class="h4">Credit line</h3><p>The creator’s name stays on screen for the whole clip.</p></div></li>
           <li><span class="legend__n">6</span><div><h3 class="h4">Word captions</h3><p>One word lights up at a time, timed to the voice. If the source already has captions burned in, ours are left off so nothing shows twice.</p></div></li>
-          <li class="legend__plain"><span class="legend__n">+</span><div><h3 class="h4">B-roll, only where it fits</h3><p>Stock footage replaces the picture when a vision check agrees it matches the words being said. Credited in the description.</p></div></li>
+          <li class="legend__plain"><span class="legend__n">+</span><div><h3 class="h4">B-roll, rarely</h3><p>Stock footage replaces the picture only when the speaker names something we can show and the footage matches. Often a clip has none. When it is used, it is credited in the description.</p></div></li>
           <li class="legend__plain"><span class="legend__n">+</span><div><h3 class="h4">Sound</h3><p>Effects are synthesised, so there is nothing to license. Music is optional and ducks under the voice.</p></div></li>
           <li class="legend__plain"><span class="legend__n">+</span><div><h3 class="h4">Your logo</h3><p>Upload it once and it goes on every clip.</p></div></li>
         </ol>
@@ -188,7 +190,7 @@
       <div class="meta-card" aria-labelledby="meta-title">
         <div class="meta-card__head">
           <h3 class="h4" id="meta-title">The package for this Short</h3>
-          <span class="badge">editable before download</span>
+          <span class="badge">text editable before download</span>
         </div>
         <dl class="meta-card__fields">
           <div><dt>Video</dt><dd class="mono">clip-01.mp4 &middot; 1080&times;1920 &middot; 0:15.6</dd></div>
@@ -258,7 +260,7 @@
         <p>Everything the web app does is in the HTTP API: estimate a link, start a job, check on it, fetch the clips
           and signed download links. The same actions are an MCP server, so Claude, ChatGPT or Cursor can make clips
           when you ask in plain words.</p>
-        <p class="api__note">The API and MCP server open with the app. Keys are created in your account and shown once.
+        <p class="api__note">The API and MCP server open with the app{% if api_is_placeholder %}, at an address we publish then; <span class="mono">&lt;app-host&gt;</span> below stands in for it{% endif %}. Keys are created in your account and shown once.
           {%- if pricing and pricing.api_plans %} API and MCP access come with the {{ pricing.api_plans|join(" and ") }} plan{{ "s" if pricing.api_plans|length > 1 }}.
           {%- else %} Which plans include API access is listed with the prices at launch.{% endif %}</p>
       </div>
@@ -270,7 +272,7 @@
         <div class="tabs__panel" role="tabpanel" id="panel-http" aria-labelledby="tab-http" tabindex="0">
           <div class="code">
             <div class="code__bar"><span>Start a job</span><button class="btn btn--ghost btn--sm" type="button" data-copy="#code-http" data-track="api-copy-http">Copy</button></div>
-<pre id="code-http"><code>curl {{ public_url }}/api/v1/jobs \
+<pre id="code-http"><code>curl {{ api_base }}/jobs \
   -H <span class="c-str">"Authorization: Bearer dsk_live_…"</span> \
   -H <span class="c-str">"Content-Type: application/json"</span> \
   -d <span class="c-str">'{"source_url": "https://www.youtube.com/watch?v=…",
@@ -285,7 +287,7 @@
 <pre id="code-mcp"><code>{
   <span class="c-key">"mcpServers"</span>: {
     <span class="c-key">"{{ brand_name|lower|replace(' ', '-') }}"</span>: {
-      <span class="c-key">"url"</span>: <span class="c-str">"{{ public_url }}/mcp"</span>,
+      <span class="c-key">"url"</span>: <span class="c-str">"{{ mcp_url }}"</span>,
       <span class="c-key">"headers"</span>: {
         <span class="c-key">"Authorization"</span>: <span class="c-str">"Bearer dsk_live_…"</span>
       }
@@ -329,7 +331,7 @@
         </details>
         <details class="disclosure">
           <summary data-track="faq-edit">Can I edit the clips?</summary>
-          <div class="disclosure__body"><p>Yes, in the browser, before you download. Add your own logo and memes, and rewrite the title, description and hashtags. The captions follow what was said in the video.</p></div>
+          <div class="disclosure__body"><p>You can edit the words: each clip’s title, description and hashtags, in the browser, before you download. Your own logo and memes are chosen before a job starts. The video itself is cut, captioned and edited for you; there is no timeline to trim or re-cut in the browser, and the captions follow what was said.</p></div>
         </details>
         <details class="disclosure">
           <summary data-track="faq-free">Is there a free tier?</summary>

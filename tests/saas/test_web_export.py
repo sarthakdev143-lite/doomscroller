@@ -207,6 +207,7 @@ def test_reexport_removes_only_its_own_files_and_restores_globals(tmp_path):
 
 def test_cli_reads_the_environment(tmp_path, monkeypatch, capsys):
     exporter = _exporter()
+    monkeypatch.setenv("SAAS_SUPPORT_EMAIL", "help@zebracut.test")
     monkeypatch.setenv("SAAS_BRAND_NAME", "doomscroller")
     monkeypatch.delenv("SAAS_PUBLIC_URL", raising=False)
     monkeypatch.setenv("GA4_MEASUREMENT_ID", "G-ENV1234")
@@ -217,3 +218,80 @@ def test_cli_reads_the_environment(tmp_path, monkeypatch, capsys):
     assert "ds:clarity" not in landing
     monkeypatch.setenv("GA4_MEASUREMENT_ID", "nonsense")
     assert exporter.main(["--out", str(tmp_path / "site")]) == 2
+
+
+@pytest.mark.parametrize("address", ["", "support@example.com", "a@EXAMPLE.org", "x@foo.example"])
+def test_cli_refuses_a_placeholder_support_address(tmp_path, monkeypatch, capsys, address):
+    exporter = _exporter()
+    monkeypatch.setenv("SAAS_SUPPORT_EMAIL", address)
+    for name in ("GA4_MEASUREMENT_ID", "CLARITY_PROJECT_ID", "SAAS_TURNSTILE_SITE_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    assert exporter.main(["--out", str(tmp_path / "site")]) == 2
+    assert "SAAS_SUPPORT_EMAIL" in capsys.readouterr().err
+    assert not (tmp_path / "site").exists(), "nothing is written when the build is refused"
+    assert exporter.main(["--out", str(tmp_path / "site"), "--allow-placeholder"]) == 0
+    assert "do not ship this build" in capsys.readouterr().err
+
+
+def test_public_pages_carry_no_draft_markers(site):
+    _exporter_module, out = site
+    for html in out.rglob("*.html"):
+        text = html.read_text(encoding="utf-8")
+        for marker in ("LAWYER", "DRAFT", "[confirm", "[number", "[owner", 'class="todo"', "review-note", "{#", "#}"):
+            assert marker not in text, (html.relative_to(out).as_posix(), marker)
+    source = (ROOT / "saas" / "web" / "templates" / "legal" / "privacy.html").read_text(encoding="utf-8")
+    assert "{# LAWYER REVIEW:" in source, "the review notes stay in the source as comments"
+    todo = (ROOT / "docs" / "saas" / "LEGAL_TODO.md").read_text(encoding="utf-8")
+    assert "Privacy, 1. Who we are" in todo and "Terms, 12. Law and disputes" in todo
+
+
+def test_legal_pages_name_the_operator_and_date(tmp_path, monkeypatch):
+    from saas.config import settings
+
+    exporter = _exporter()
+    monkeypatch.setattr(settings, "operator_name", "Asha Rao")
+    monkeypatch.setattr(settings, "operator_country", "India")
+    monkeypatch.setattr(settings, "legal_effective_date", "1 December 2026")
+    out = tmp_path / "public"
+    exporter.export(out, brand="Zebracut", public_url="https://z.pages.dev", support_email="hi@zebracut.test")
+    privacy = (out / "privacy" / "index.html").read_text(encoding="utf-8")
+    terms = (out / "terms" / "index.html").read_text(encoding="utf-8")
+    assert "The controller of your personal data is Asha Rao, an individual based in India." in privacy
+    assert "between you and Asha Rao, an individual based in India" in terms
+    for page in ("privacy", "terms", "refunds", "cookies"):
+        assert "Last updated: 1 December 2026" in (out / page / "index.html").read_text(encoding="utf-8"), page
+
+
+def test_legal_date_defaults_to_the_export_day(monkeypatch):
+    import datetime
+
+    from saas.config import settings
+    from saas.web import routes
+
+    monkeypatch.setattr(settings, "legal_effective_date", "")
+    assert routes.legal_date(datetime.date(2026, 11, 7)) == "7 November 2026"
+
+
+def test_api_examples_never_point_at_the_static_host(site, monkeypatch, tmp_path):
+    exporter, out = site
+    landing = (out / "index.html").read_text(encoding="utf-8")
+    assert "https://zebracut.pages.dev/api" not in landing and "https://zebracut.pages.dev/mcp" not in landing
+    assert "curl https://&lt;app-host&gt;/api/v1/jobs" in landing and "https://&lt;app-host&gt;/mcp" in landing
+    assert "at an address we publish then" in landing
+    from saas.config import settings
+
+    monkeypatch.setattr(settings, "api_base_url", "https://app.zebracut.test/api/v1/")
+    exporter.export(tmp_path / "named", brand="Zebracut", public_url="https://z.pages.dev")
+    named = (tmp_path / "named" / "index.html").read_text(encoding="utf-8")
+    assert "curl https://app.zebracut.test/api/v1/jobs" in named and '"https://app.zebracut.test/mcp"' in named
+    assert "&lt;app-host&gt;" not in named
+
+
+def test_editing_and_broll_copy_stays_honest(site):
+    _exporter_module, out = site
+    landing = (out / "index.html").read_text(encoding="utf-8")
+    pricing = (out / "pricing" / "index.html").read_text(encoding="utf-8")
+    assert "there is no timeline editor" in landing and "no timeline to trim or re-cut" in landing
+    assert "You edit in the browser" not in landing and "Adjust each clip" not in landing
+    assert "Editing in the browser" not in pricing
+    assert "Often a clip has none" in landing and "often none" in pricing

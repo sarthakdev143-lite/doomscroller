@@ -23,11 +23,12 @@
     <tbody>
       <tr><td><code>ds_consent</code> (local storage)</td><td>Us</td><td>Remembers whether you accepted or rejected analytics</td><td>Until you clear it</td></tr>
       <tr><td><code>ds_ref</code> (local storage)</td><td>Us</td><td>The referral code you arrived with, for the waitlist form</td><td>Until you clear it</td></tr>
+      <tr><td><code>ds_landing</code> (session storage)</td><td>Us</td><td>The first page you opened on this visit and the site that sent you, sent with the waitlist form</td><td>Until you close the tab</td></tr>
       <tr><td><code>ds_waitlist</code> (session storage)</td><td>Us</td><td>Your waitlist result, for the page after you join</td><td>Until you close the tab</td></tr>
       <tr><td><code>_ga</code>, <code>_ga_*</code></td><td>Google Analytics, after Accept</td><td>Tells visits apart, counts pages and clicks</td><td>Up to 2 years</td></tr>
       <tr><td><code>_clck</code>, <code>_clsk</code></td><td>Microsoft Clarity, after Accept</td><td>Groups page views into a visit for recordings and heatmaps</td><td>1 year and 1 day</td></tr>
-      <tr><td><code>MUID</code>, <code>CLID</code>, <code>ANONCHK</code>, <code>SM</code>, <code>MR</code> <span class="todo">[confirm]</span></td><td>Microsoft, after Accept</td><td>Used by Clarity to identify the browser across Microsoft sites</td><td>Up to 1 year</td></tr>
-      <tr><td><code>cf_clearance</code> <span class="todo">[confirm]</span></td><td>Cloudflare Turnstile</td><td>Tells people from bots on forms</td><td><span class="todo">[confirm]</span></td></tr>
+      <tr><td><code>MUID</code>, <code>CLID</code>, <code>ANONCHK</code>, <code>SM</code>, <code>MR</code>{# OWNER: check this list against the cookies Clarity really sets on the live site #}</td><td>Microsoft, after Accept</td><td>Used by Clarity to identify the browser across Microsoft sites</td><td>Up to 1 year</td></tr>
+      <tr><td><code>cf_clearance</code>, only if Cloudflare shows you a challenge</td><td>Cloudflare</td><td>Remembers that you passed a bot check</td><td>As long as Cloudflare’s challenge setting allows</td></tr>{# OWNER: confirm whether Turnstile on our forms sets any cookie, and the cf_clearance lifetime (Challenge Passage) #}
     </tbody>
   </table>
 </div>
@@ -39,7 +40,7 @@
     <thead><tr><th scope="col">Name</th><th scope="col">Purpose</th><th scope="col">Type</th><th scope="col">Lasts</th></tr></thead>
     <tbody>
       <tr><td><code>sid</code></td><td>Keeps you signed in</td><td>Strictly necessary</td><td>{{ session_days }} days</td></tr>
-      <tr><td><code>csrf</code></td><td>Stops other sites submitting forms as you</td><td>Strictly necessary</td><td><span class="todo">[confirm]</span></td></tr>
+      <tr><td><code>csrf</code></td><td>Stops other sites submitting forms as you</td><td>Strictly necessary</td><td>1 year</td></tr>
     </tbody>
   </table>
 </div>
@@ -48,5 +49,5 @@
 <p>Change what you allow at any time:</p>
 <p><button type="button" class="btn btn--ghost" data-consent-open data-track="cookies-open-settings">Cookie settings</button></p>
 <p>Rejecting analytics stops Google Analytics and Clarity from loading on your next page. You can also clear or block
-  cookies in your browser. <span class="todo">[LAWYER REVIEW: consent wording per region]</span></p>
+  cookies in your browser.{# LAWYER REVIEW: consent wording per region #}</p>
 {% endblock %}

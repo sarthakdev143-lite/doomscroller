@@ -18,8 +18,8 @@
       <header class="legal__head">
         <h1 id="legal-title">{{ page_title }}</h1>
         <p class="lede">{{ page_description }}</p>
-        <p class="legal__dates mono">Last updated: <span class="todo">[LAWYER REVIEW: date]</span> &middot; Effective: <span class="todo">[LAWYER REVIEW: date]</span></p>
-        <p class="review-note" role="note">DRAFT. Text marked [LAWYER REVIEW] must be written or approved by a qualified lawyer for every country we sell in before launch. The structure below reflects what the product actually does.</p>
+        <p class="legal__dates mono">Last updated: {{ legal_date }} &middot; Effective: {{ legal_date }}{# LAWYER REVIEW: confirm the effective date; set SAAS_LEGAL_EFFECTIVE_DATE so it stops following the export date #}</p>
+        {# LAWYER REVIEW: every legal page must be written or approved by a qualified lawyer for each country we sell in. The structure reflects what the product actually does. Open items: docs/saas/LEGAL_TODO.md #}
       </header>
       <div class="prose legal__body">
         {% block legal %}{% endblock %}

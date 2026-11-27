@@ -1,14 +1,19 @@
 """Render the marketing site to static files for Cloudflare Pages (edge/public/).
 
-    .venv-saas/Scripts/python.exe scripts/saas_export_static.py [--out edge/public]
+    .venv-saas/Scripts/python.exe scripts/saas_export_static.py [--out edge/public] [--allow-placeholder]
 
 Python never runs on Pages: these files are the whole site. The waitlist form posts JSON to
 /api/waitlist and the thanks page reads /api/waitlist/me, both Cloudflare Pages Functions in edge/functions.
 
-Environment, all optional. An unset analytics or Turnstile ID means that snippet is not in the pages at all.
+Environment. An unset analytics or Turnstile ID means that snippet is not in the pages at all.
+  SAAS_SUPPORT_EMAIL       REQUIRED: the contact address on every page. Unset or @example.com fails the export,
+                           unless --allow-placeholder is passed (a preview build, never a launch)
   SAAS_BRAND_NAME          default "doomscroller" (shown exactly as written)
   SAAS_PUBLIC_URL          default https://doomscroller.pages.dev (canonical URLs, share image, sitemap)
-  SAAS_SUPPORT_EMAIL       the contact address on every page
+  SAAS_API_BASE_URL        the app's API base for the code examples; unset shows https://<app-host>/api/v1
+  SAAS_OPERATOR_NAME       who runs the service, on the legal pages (default "the operator of <brand name>")
+  SAAS_OPERATOR_COUNTRY    default "India"
+  SAAS_LEGAL_EFFECTIVE_DATE  e.g. "27 November 2026"; unset uses the export date
   GA4_MEASUREMENT_ID       G-XXXXXXXXXX; Google Analytics 4, loaded only after the visitor accepts
   CLARITY_PROJECT_ID       Microsoft Clarity project id, loaded only after the visitor accepts
   SAAS_TURNSTILE_SITE_KEY  Cloudflare Turnstile widget on the waitlist forms
@@ -53,6 +58,12 @@ APP_ONLY = re.compile(r"^(css/app\.css|js/api\.js|js/auth\.js|js/app-[\w-]+\.js)
 
 def app_only(rel: str) -> bool:
     return bool(APP_ONLY.match(rel))
+
+
+def is_placeholder_email(address: str) -> bool:
+    """Unset, or a reserved example domain (RFC 2606), which nobody can write to."""
+    domain = address.strip().lower().rpartition("@")[2]
+    return not domain or domain in ("example.com", "example.org", "example.net") or domain.endswith(".example")
 
 
 def _saas():
@@ -186,7 +197,7 @@ def export(out: Path, *, brand: str, public_url: str, support_email: str = "", g
             ctx = routes.common_context(path, public_url)
             ctx.update(static_export=True, analytics={"ga4": ga4, "clarity": clarity})
             if template == "landing.html":
-                ctx.update(routes.landing_context(pricing=None))  # no prices before launch
+                ctx.update(routes.landing_context(pricing=None, static=True))  # no prices before launch
             elif template == "pricing.html":
                 ctx.update(routes.pricing_context(pricing=None))
             elif template == "waitlist_thanks.html":
@@ -221,8 +232,14 @@ def export(out: Path, *, brand: str, public_url: str, support_email: str = "", g
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT, help=f"output folder (default {DEFAULT_OUT})")
+    parser.add_argument("--allow-placeholder", action="store_true",
+                        help="build even though SAAS_SUPPORT_EMAIL is unset or an example address (preview only)")
     args = parser.parse_args(argv)
     support = os.environ.get("SAAS_SUPPORT_EMAIL", "").strip()
+    if is_placeholder_email(support) and not args.allow_placeholder:
+        print("error: SAAS_SUPPORT_EMAIL is unset or an example address, so every page would show a contact address "
+              "nobody reads. Set it, or pass --allow-placeholder for a preview build.", file=sys.stderr)
+        return 2
     try:
         files = export(
             args.out,
@@ -238,8 +255,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     pages = [f for f in files if f.suffix == ".html"]
     print(f"wrote {len(files)} files ({len(pages)} pages) to {args.out}")
-    if not support or support.endswith("@example.com"):
-        print("warning: SAAS_SUPPORT_EMAIL is not set; pages show a placeholder contact address", file=sys.stderr)
+    if is_placeholder_email(support):
+        print("warning: --allow-placeholder: pages show a placeholder contact address; do not ship this build",
+              file=sys.stderr)
+    if not os.environ.get("SAAS_LEGAL_EFFECTIVE_DATE", "").strip():
+        print("note: SAAS_LEGAL_EFFECTIVE_DATE not set; the legal pages are dated today", file=sys.stderr)
     for name in ("GA4_MEASUREMENT_ID", "CLARITY_PROJECT_ID", "SAAS_TURNSTILE_SITE_KEY"):
         if not os.environ.get(name, "").strip():
             print(f"note: {name} not set; that snippet is left out", file=sys.stderr)

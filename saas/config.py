@@ -159,6 +159,17 @@ class SaasSettings(BaseSettings):
     api_rate_per_minute: int = 60  # per API key, shared by /api/v1 and /mcp
     api_estimate_per_hour: int = 120  # estimates spawn yt-dlp; cap them per key/user
 
+    # ---- web (web agent) -----------------------------------------------------------------------
+    # Who runs the service, as the legal pages name them. The owner is an individual, not a company; the name is
+    # only ever used mid-sentence ("an agreement between you and <operator_name>"). Empty means
+    # "the operator of <brand_name>", i.e. "the operator of doomscroller", and follows a renamed brand.
+    operator_name: str = ""
+    operator_country: str = "India"
+    legal_effective_date: str = ""  # e.g. "27 November 2026"; empty -> the day the page is rendered or exported
+    # The public API's base once the app is open, e.g. https://app.example.com/api/v1. Empty: the app's own pages
+    # use public_url + /api/v1, and the static site shows an obvious placeholder host instead of a URL that 404s.
+    api_base_url: str = ""
+
     @property
     def is_prod(self) -> bool:
         return self.env.lower() == "prod"
