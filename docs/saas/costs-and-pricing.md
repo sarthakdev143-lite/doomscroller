@@ -789,6 +789,90 @@ revenue in this order:**
 
 ---
 
+## 10. Beta hosting and email
+
+Setup: the FastAPI app runs on the owner's Windows laptop, which renders with ffmpeg and downloads YouTube over
+the home IP. The marketing site is on `*.pages.dev`. There is no owned domain and no budget. Invited beta users,
+tens a day, need a stable URL.
+
+### 10.1 Cloudflare: tunnels, video, R2
+
+- **Quick Tunnels: not for real users.** "Quick Tunnels are for testing and development." "Each Quick Tunnel
+  supports up to 200 in-flight requests. Additional requests return a `429` response." "Quick Tunnels do not
+  support Server-Sent Events (SSE)." "Quick Tunnels have no uptime guarantee." [S60] The URL is also random and
+  changes on every restart.
+- **A named tunnel's public hostname needs a domain on Cloudflare.** Third-party guides say "Cloudflare Tunnel
+  requires a domain registered with Cloudflare DNS to create a persistent public hostname" [S61]. Cloudflare's own
+  get-started page does not say either way.
+- **The way around it is Workers VPC.** A Worker on `*.workers.dev` reaches the laptop through a tunnel created
+  for Workers VPC: "Connect a Cloudflare Tunnel to your infrastructure, register each target as a VPC Service",
+  then `env.VPC_SERVICE.fetch(...)`. The setup asks only for a tunnel name and the private address; no public
+  hostname or domain [S62]. "Available on Free and Paid plans", and "While in beta, Workers VPC is available for
+  free to all Workers plans." It "is currently in beta." Requests count against Workers Free: 100,000 a day [S46].
+- **Video.** The Service-Specific Terms say: "Unless you are an Enterprise customer, Cloudflare offers specific Paid
+  Services (e.g., the Developer Platform, Images, and Stream) that you must use in order to serve video and other
+  large files via the CDN." Cloudflare "reserves the right to disable or limit your access … if you use or are
+  suspected of using the CDN without such Paid Services to serve video" [S45].
+  - Proxying MP4s through a plain tunnel hostname is the restricted case.
+  - Serving them through a Worker (the Developer Platform) is the route the clause names. It does not say whether
+    the free tier counts, so it is the most defensible $0 route, not a guaranteed one.
+  - For tens of 20-40 MB downloads a day, stream them through the Worker.
+- **R2 needs a checkout.** Official: "You need a Cloudflare account with an R2 subscription" and "Complete the
+  checkout flow to add an R2 subscription to your account"; "R2 is free to get started with included free monthly
+  usage" [S63]. The page does not name the payment method. Recent third-party guides say a card or PayPal is
+  required at that checkout [S48]. Plan on adding PayPal; usage stays $0 inside 10 GB.
+
+**Recommendation:** `app.<sub>.workers.dev` (Worker) → Workers VPC → `cloudflared` on the laptop → FastAPI.
+- The Worker also serves clip downloads: from R2 once a PayPal account is attached, otherwise streamed from the
+  laptop.
+- Drop the Quick Tunnel and `localhost.run` route from the user path.
+
+### 10.2 Other $0 options
+
+| option | the terms | verdict |
+|---|---|---|
+| **Tailscale Funnel** | free plan "is only suitable for non-commercial use of Tailscale"; "Traffic sent over a Funnel is subject to non-configurable bandwidth limits"; only ports 443/8443/10000; names under `tailnet-name.ts.net`; "currently in beta" [S64][S65] | **no**: a product beta is commercial use |
+| **ngrok free** | "ngrok shows an interstitial page in front of all HTML browser traffic on the free tier"; **1 GB/month** data out; **20,000 requests/month**; one dev domain that "doesn't change when you restart the agent" [S66] | **no**: 1 GB is about 30-50 clip downloads a month, and every user sees a warning page |
+| **Cloudflare Worker + Workers VPC (+ R2)** | section 10.1 | **yes**: stable URL, no domain, $0 |
+
+I found no other free option with better terms that I could verify.
+
+### 10.3 Transactional email without a domain
+
+| option | the facts | verdict |
+|---|---|---|
+| **Gmail SMTP + app password** (a dedicated Gmail account) | "more than 500 emails sent in a day" triggers "You have reached a limit for sending mail", lifted "within 1 to 24 hours" [S67]. "App passwords can only be used with accounts that have 2-Step Verification turned on"; Google says they "aren't recommended"; "we revoke your app passwords when you change your Google Account password" [S68]. Program Policies: "Don't use Gmail to distribute spam or unsolicited commercial mail" (transactional mail to signed-up users is not addressed) [S69] | **recommended** |
+| Brevo free | "Brevo also replaces email addresses from free email providers, such as gmail.com, because they cannot be authenticated"; "Domains from free email services … cannot be authenticated" [S70] | no: a gmail.com or proton.me sender cannot pass DMARC through Brevo |
+| Proton Mail SMTP | "SMTP is available for all paid Proton Mail plans with custom domain addresses" [S71] | no: needs a paid plan and a domain |
+| Resend | "You must add and verify at least one domain to send emails with Resend"; "a domain you own (i.e., not a shared or public domain)" [S72] | no |
+| Amazon SES | the sandbox sends "only … to verified email addresses and domains", at most "200 messages per 24-hour period"; production still requires you "verify all identities" used as From [S73] | no: an SES-sent gmail.com From fails DMARC, and gmail.com's policy is quarantine since Feb 2024 per Brevo [S70] |
+
+**Recommendation:** send from `<app>.noreply@gmail.com` through `smtp.gmail.com:587`, with an app password stored
+in `.env.saas` on the laptop.
+- **Why it lands in the inbox:** Google's own servers send the mail and sign it for gmail.com, so DMARC aligns.
+  That is the one $0, domain-less setup that should reach outside inboxes.
+- **Volume:** tens a day is well under the 500/day cap.
+- **Content:** keep messages transactional only (verification, password reset, job finished).
+
+### 10.4 Buy Me a Coffee webhooks and currency
+
+- **Retries:** "Failed webhook deliveries are retried automatically up to 4 additional times using exponential
+  delays"; "If more than 10 consecutive deliveries fail, the webhook is automatically disabled" (with an email).
+  The delays are not specified [S52].
+- **So the webhook must never point at the laptop.** Point it at the Worker, which verifies `x-signature-sha256`
+  (HMAC-SHA256 of the raw body) and writes the event to D1, idempotent on `event_id`. The laptop syncs credits from
+  D1, so a sleeping laptop loses nothing.
+- **Events for billing:** `membership.started`, `membership.updated`, `membership.cancelled`, `membership.paused`;
+  `extra_purchase.created`, `extra_purchase.updated`, `extra_purchase.refunded`. Also available: `donation.*`,
+  `recurring_donation.*`, `commission_order.*`, `wishlist_payment.*` [S52].
+- **USD while based in India: yes.** "Your account is set to USD by default"; you may "receive support in six
+  different currencies"; localized pricing requires "Your currency should be set in USD" [S74]. India is a
+  supported payout country through Stripe Express [S53].
+  - The currency article does not mention memberships explicitly. Price the levels in USD on the default account
+    currency, and confirm with the $1 test purchase.
+
+---
+
 ## Sources
 
 Seen 2026-11-27 unless a date is given. "Second-hand" = not the vendor's own page.
@@ -836,6 +920,23 @@ Seen 2026-11-27 unless a date is given. "Second-hand" = not the vendor's own pag
 - [S57] Gemini free-tier limits (AI Studio only; third-party figures) — https://aistudio.google.com/docs/rate-limits ; https://www.scriptbyai.com/gemini-api-free-tier-limits/
 - [S58] Oracle Cloud Always Free resources — https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm
 - [S59] Oracle Cloud Free Tier FAQ (card verification) — https://www.oracle.com/sg/cloud/free/faq/
+
+**Beta hosting and email section**
+- [S60] Cloudflare Quick Tunnels (TryCloudflare) — https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/
+- [S61] Named tunnels need a Cloudflare DNS domain, third-party — https://localtonet.com/blog/cloudflare-tunnel-alternative ; https://pluggie.io/blog/cloudflare-tunnel-dns-requirement
+- [S62] Cloudflare Workers VPC — https://developers.cloudflare.com/workers-vpc/ ; https://developers.cloudflare.com/workers-vpc/get-started/
+- [S63] Cloudflare R2 get started — https://developers.cloudflare.com/r2/get-started/
+- [S64] Tailscale Funnel — https://tailscale.com/kb/1223/funnel
+- [S65] Tailscale pricing / free plan FAQ — https://tailscale.com/pricing
+- [S66] ngrok free plan limits — https://ngrok.com/docs/pricing-limits/free-plan-limits/ ; https://ngrok.com/pricing
+- [S67] Gmail sending limits — https://support.google.com/mail/answer/22839
+- [S68] Google app passwords — https://support.google.com/accounts/answer/185833
+- [S69] Gmail Program Policies — https://support.google.com/mail/answer/16734397
+- [S70] Brevo domain authentication (free-mail senders replaced) — https://help.brevo.com/hc/en-us/articles/12163873383186-Authenticate-your-domain-with-Brevo-Brevo-code-DKIM-DMARC ; https://help.brevo.com/hc/en-us/articles/16045394674066-Troubleshooting-Domain-authentication ; gmail.com DMARC quarantine (vendor blog): https://www.brevo.com/blog/gmail-and-yahoo-sender-requirements/
+- [S71] Proton Mail SMTP submission — https://proton.me/support/smtp-submission
+- [S72] Resend domains — https://resend.com/docs/dashboard/domains/introduction
+- [S73] Amazon SES sandbox — https://docs.aws.amazon.com/ses/latest/dg/request-production-access.html
+- [S74] Buy Me a Coffee advanced settings, currency (2026-08-10) — https://help.buymeacoffee.com/en/articles/10202407-buy-me-a-coffee-advanced-settings-explained
 
 **Storage, email, bot protection**
 - [S22] Cloudflare R2 pricing — https://developers.cloudflare.com/r2/pricing/
