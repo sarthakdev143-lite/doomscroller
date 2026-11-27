@@ -361,7 +361,7 @@ export class Timeline {
     let drag = null;
     this.memesRow.addEventListener("pointerdown", (e) => {
       const node = e.target.closest(".ed-tl__meme");
-      if (!node || !this.ctx || e.button > 0) return;
+      if (!node || !this.ctx || !this.ctx.memesEditable || e.button > 0) return;
       e.preventDefault();
       const k = Number(node.dataset.k);
       const meme = this.store.state.memes[k];
@@ -408,7 +408,7 @@ export class Timeline {
 
     this.memesRow.addEventListener("keydown", (e) => {
       const node = e.target.closest(".ed-tl__meme");
-      if (!node || !this.ctx) return;
+      if (!node || !this.ctx || !this.ctx.memesEditable) return;
       const k = Number(node.dataset.k);
       const meme = this.store.state.memes[k];
       if (!meme) return;

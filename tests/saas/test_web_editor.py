@@ -381,8 +381,79 @@ NODE_SPEC = textwrap.dedent("""
     assert.equal(store.change((x) => { x.sfx.enabled = false; }), false, "a no-op is not a step");
     store.change((x) => { x.broll.enabled = false; });
     assert.ok(!store.canRedo, "a new change drops the redo branch");
+
+    // Resuming after a reload starts from the new version only when nothing was edited in this page.
+    const fresh = new s.Store(base);
+    assert.ok(fresh.pristine);
+    const v2 = s.clone(base); v2.music.enabled = true;
+    fresh.reset(v2);
+    assert.ok(fresh.pristine && fresh.state.music.enabled && !fresh.canUndo);
+    fresh.change((x) => { x.sfx.enabled = false; });
+    assert.ok(!fresh.pristine, "an edit since loading keeps the customer's state");
     console.log("ok");
 """)
+
+NODE_SESSION = textwrap.dedent("""
+    import assert from "node:assert/strict";
+    import * as j from "./session.js";
+
+    // GET /edit's active_job_id is the render to resume; anything else is no render.
+    assert.equal(j.activeJob({ active_job_id: "job_abc" }), "job_abc");
+    for (const raw of [{}, { active_job_id: null }, { active_job_id: "" }, null]) assert.equal(j.activeJob(raw), null);
+
+    const run = async (readings) => {
+      const seen = [];
+      let waits = 0;
+      const queue = [...readings];
+      const job = await j.followJob("job_abc", {
+        getJob: async (id) => {
+          assert.equal(id, "job_abc");
+          const next = queue.shift();
+          if (next instanceof Error) throw next;
+          return next;
+        },
+        wait: async () => { waits += 1; },
+        onProgress: (x) => seen.push(`${x.status}:${x.progress}`),
+      });
+      return { job, seen, waits };
+    };
+
+    // A resumed render is followed through its stages to the end, and a network blip is retried.
+    const blip = Object.assign(new Error("offline"), { status: 0 });
+    const ok = await run([{ status: "queued", progress: 0 }, blip, { status: "rendering", stage: "rendering", progress: 0.4 },
+                          { status: "done", stage: "done", progress: 1 }]);
+    assert.equal(ok.job.status, "done");
+    assert.deepEqual(ok.seen, ["queued:0", "rendering:0.4", "done:1"]);
+    assert.equal(ok.waits, 3);
+    assert.equal(j.failureText(ok.job), "");
+
+    // A failed render says why and keeps the edits; a job that is gone stops at once.
+    const bad = await run([{ status: "failed", error: { code: "invalid_spec", message: "two memes start less than half a second apart" } }]);
+    assert.equal(j.failureText(bad.job),
+      "two memes start less than half a second apart. Your edits are still here; render again when you’re ready.");
+    assert.match(j.failureText({ status: "canceled" }), /^The render was canceled\\. /);
+    await assert.rejects(run([Object.assign(new Error("gone"), { status: 404 })]), /gone/);
+    const flaky = Array.from({ length: 7 }, () => Object.assign(new Error("down"), { status: 503 }));
+    await assert.rejects(run(flaky), /down/, "gives up after repeated failures");
+    console.log("ok");
+""")
+
+
+@pytest.mark.skipif(NODE is None, reason="node not installed")
+def test_a_render_in_progress_is_resumed(tmp_path):
+    for name in ("session.js",):
+        shutil.copyfile(EDITOR_JS / name, tmp_path / name)
+    (tmp_path / "package.json").write_text(json.dumps({"type": "module"}), encoding="utf-8")
+    (tmp_path / "spec.js").write_text(NODE_SESSION, encoding="utf-8")
+    r = subprocess.run([NODE, str(tmp_path / "spec.js")], capture_output=True, text=True, cwd=tmp_path,
+                       stdin=subprocess.DEVNULL, timeout=60)
+    assert r.returncode == 0 and r.stdout.strip() == "ok", r.stderr or r.stdout
+    main = (EDITOR_JS / "main.js").read_text(encoding="utf-8")
+    # The page reads active_job_id on load and follows that job with the same view a new render uses.
+    assert "activeJob(raw)" in main
+    assert re.search(r"if \(edit\.activeJobId\) watchRender\(Promise\.resolve\(\{ id: edit\.activeJobId \}\), null\)", main)
+    assert "/api/jobs/${" in main and "followJob(jobId" in main
+    assert "/api/jobs/${encodeURIComponent(root.dataset.job)}" not in main, "first-render options come from /edit"
 
 
 @pytest.mark.skipif(NODE is None, reason="node not installed")

@@ -5,8 +5,9 @@
 // version from the clip's saved source excerpt (app/clipper/editor.py). That version then replaces the preview.
 //
 // API (docs/saas/CONTRACT.md, saas/jobs/editor.py):
-//   GET  /api/clips/{id}/edit      {version, duration_s, spec, words, memes: {in_clip, available}, hook,
-//                                   logo: {available, url}, limits}
+//   GET  /api/clips/{id}/edit      {version, duration_s, spec, options, words, memes: {in_clip, available,
+//                                   editable}, hook, logo: {available, url, in_clip, showing}, active_job_id,
+//                                   limits}
 //   POST /api/clips/{id}/render    {spec} -> 202 the re-render job; poll GET /api/jobs/{job.id} until final
 //   GET  /api/clips/{id}/versions  {current, versions: [{version, current, created_at, spec, video_url}]}
 //   GET  /api/clips/{id}           the clip (download_url is the newest version)
@@ -17,6 +18,7 @@ import "../app-shell.js";
 import { toast } from "../site.js";
 import { Panels } from "./panels.js";
 import { Player } from "./player.js";
+import { activeJob, failureText, followJob } from "./session.js";
 import { KEYS, Store, clone, effective, memeSpans, readLimits, same, toSpec } from "./state.js";
 import { Timeline } from "./timeline.js";
 import { finite, stamp } from "./util.js";
@@ -26,7 +28,6 @@ const clipId = root.dataset.clip;
 const enc = encodeURIComponent(clipId);
 const $ = (sel) => root.querySelector(sel);
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
-const FINAL = ["done", "failed", "canceled"];
 
 const ui = {
   undo: $("[data-undo]"),
@@ -71,7 +72,6 @@ let view = "preview";
 let rendering = false;
 let selected = null;
 let labels = new Map();
-let jobOptions = {};
 
 const player = new Player($("[data-player]"), { onTime, onPlayState });
 let timeline = null;
@@ -94,28 +94,27 @@ const memeLabel = (m) => String(m.label || m.title || "Meme").replace(/\.(gif|pn
   .replace(/[-_]+/g, " ").trim().slice(0, 40) || "Meme";
 
 /** GET /edit in one shape, whichever fields the server sends. */
-function readEdit(raw, jobOptions = {}) {
+function readEdit(raw) {
   const memes = isObj(raw.memes) ? raw.memes : {};
   const available = (Array.isArray(memes.available) ? memes.available : Array.isArray(raw.memes_available) ? raw.memes_available : [])
     .filter((m) => isObj(m) && typeof m.id === "string" && m.id)
-    .map((m) => ({ id: m.id, label: memeLabel(m), url: m.thumb_url || m.url || "",
+    .map((m) => ({ id: m.id, label: memeLabel(m), url: m.thumb_url || m.url || "", mediaType: m.media_type || "",
       custom: m.provider === "custom" || m.kind === "custom" }));
   const inClip = Array.isArray(memes.in_clip) ? memes.in_clip : Array.isArray(raw.memes) ? raw.memes : null;
   const logo = isObj(raw.logo) ? raw.logo : {};
   const logoAvailable = typeof logo.available === "boolean" ? logo.available : Boolean(raw.logo_available);
-  // What the first render had, where the server says: its hook, its job options, whether it had a logo.
+  // What the first render had: its hook, its options (captions, sfx, music, broll) and whether it had a logo.
   const defaults = { ...(isObj(raw.defaults) ? raw.defaults : {}) };
   if (typeof raw.hook === "string" && !defaults.hook) defaults.hook = { enabled: Boolean(raw.hook.trim()), text: raw.hook };
-  // The first render followed its job's options (captions, sfx, music, broll); the server's own copy wins.
-  const options = isObj(raw.options) ? raw.options : isObj(jobOptions) ? jobOptions : {};
+  const options = isObj(raw.options) ? raw.options : {};
   for (const key of ["captions", "sfx", "music", "broll"]) {
     if (typeof options[key] === "boolean" && !defaults[key]) defaults[key] = { enabled: options[key] };
   }
   if (typeof logo.in_clip === "boolean" && !defaults.logo) defaults.logo = { enabled: logo.in_clip };
   const words = readWords(raw.words);
-  // The engine only places memes on clips cut from speech (they have an edit plan). The server's own flag
-  // wins; without one, a clip is locked only when it surely has no speech: captions were on, yet it has no
-  // caption words and no memes. (Made with captions off, it may well be speech: let the engine decide.)
+  // The engine only places memes on clips cut from speech (they have an edit plan): `memes.editable`. Should
+  // a server not say, a clip is locked only when it surely has no speech: captions were on, yet it has no
+  // caption words and no memes.
   const flag = typeof memes.editable === "boolean" ? memes.editable
     : typeof raw.memes_editable === "boolean" ? raw.memes_editable : null;
   const memesEditable = flag ?? (words.length > 0 || (inClip || []).length > 0 || options.captions === false);
@@ -128,6 +127,8 @@ function readEdit(raw, jobOptions = {}) {
     defaults,
     logoAvailable,
     logoInClip: typeof logo.in_clip === "boolean" ? logo.in_clip : null,
+    logoShowing: typeof logo.showing === "boolean" ? logo.showing : null,
+    activeJobId: activeJob(raw),
     logoUrl: "url" in logo ? logo.url || "" : raw.logo_url || (logoAvailable ? "/api/brand/logo/file" : ""),
     duration: finite(raw.duration_s, null),
     limits: raw.limits,
@@ -140,17 +141,15 @@ function adoptServer(data) {
   edit = data;
   ctx.limits = readLimits(data.limits);
   serverKeys = new Set(Object.keys(data.spec).filter((k) => KEYS.includes(k)));
-  // A re-render is handed the brand-kit logo whatever the first render had (saas/jobs/worker.py), and the
-  // engine shows it unless the spec says enabled: false. So the logo setting always travels explicitly,
-  // and what the switch says is what renders.
-  if (ctx.logoAvailable) serverKeys.add("logo");
   rendered = effective(data.spec, ctx);
+  // The server says outright whether the newest version shows a logo; trust it over our reading of the spec.
+  if (typeof data.logoShowing === "boolean") rendered.logo.enabled = data.logoShowing && ctx.logoAvailable;
 }
 
 /* ---- the spec --------------------------------------------------------------------------------- */
 
-// A key the customer has changed is always sent, even when it lands back on what we think the first render had:
-// that guess can be wrong (it comes from the job's options), and "as first made" must never swallow a choice.
+// A key the customer has changed is always sent, even when it lands back on the first render's value, so
+// "as first made" can never swallow a choice they made.
 let touched = new Set();
 let lastState = null;
 const specOf = (state) => toSpec(state, { base, serverKeys: new Set([...serverKeys, ...touched]), ctx });
@@ -211,8 +210,7 @@ function downloadUrl(v) {
 function previewSource() {
   if (edit.previewUrl) return { url: edit.previewUrl, offset: edit.previewOffset, burned: null };
   const first = versions.find((v) => v.n === 1);
-  // Unless the server says the first render has the logo, assume it doesn't: the overlay then shows the
-  // logo the next render will add (the worker hands every re-render the brand-kit logo).
+  // The first render's pixels have a logo only when the server says so (`logo.in_clip`).
   const firstBurned = edit.logoInClip === true ? base : { ...base, logo: { enabled: false, position: null, scale: null } };
   if (first) return { url: first.video_url, offset: 0, burned: firstBurned };
   const top = latest();
@@ -340,19 +338,13 @@ function unavailable(err) {
 
 async function load() {
   let raw;
-  let job = null;
   try {
-    [raw, clip, job] = await Promise.all([
-      api(`/api/clips/${enc}/edit`),
-      api(`/api/clips/${enc}`),
-      api(`/api/jobs/${encodeURIComponent(root.dataset.job)}`).catch(() => null), // its options seed the defaults
-    ]);
+    [raw, clip] = await Promise.all([api(`/api/clips/${enc}/edit`), api(`/api/clips/${enc}`)]);
   } catch (err) {
     unavailable(err);
     return;
   }
-  jobOptions = job && isObj(job.options) ? job.options : {};
-  edit = readEdit(raw, jobOptions);
+  edit = readEdit(raw);
   const duration = edit.duration ?? finite(clip.duration_s, 0);
   if (!(duration > 0)) {
     unavailable({ status: 409, message: "This clip has no length to edit." });
@@ -397,6 +389,8 @@ async function load() {
   fillVersions();
   ui.play.disabled = false;
   await showView("preview", { at: rendered.trim.start_s });
+  // A render started before this page loaded (another tab, or before a reload): follow it here.
+  if (edit.activeJobId) watchRender(Promise.resolve({ id: edit.activeJobId }), null);
 }
 
 /* ---- rendering -------------------------------------------------------------------------------- */
@@ -412,29 +406,18 @@ function progress(job) {
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function follow(jobId) {
-  let misses = 0;
-  for (;;) {
-    let job;
-    try {
-      job = await api(`/api/jobs/${encodeURIComponent(jobId)}`);
-      misses = 0;
-    } catch (err) {
-      if (err.status === 404 || misses >= 5) throw err;
-      misses += 1;
-      await wait(4000);
-      continue;
-    }
-    progress(job);
-    if (FINAL.includes(job.status)) return job;
-    await wait(document.hidden ? 5000 : 1500);
-  }
-}
-
 async function render() {
   if (rendering || !isDirty()) return;
   const spec = specOf(store.state);
-  const submitted = clone(store.state);
+  await watchRender(api(`/api/clips/${enc}/render`, { method: "POST", body: { spec } }), { state: clone(store.state), spec });
+}
+
+/**
+ * Show a render's progress until it ends, then adopt the new version. `started` resolves to the job (POST
+ * /render's answer, or the clip's `active_job_id` after a reload); `mine` is what this page sent, or null
+ * for a render started elsewhere.
+ */
+async function watchRender(started, mine) {
   rendering = true;
   showError("");
   progress({ status: "queued", progress: 0 });
@@ -442,16 +425,18 @@ async function render() {
   ui.render.setAttribute("aria-busy", "true");
   chrome();
   try {
-    const job = await api(`/api/clips/${enc}/render`, { method: "POST", body: { spec } });
+    const job = await started;
     const jobId = job.id || job.job_id;
     if (!jobId) throw new Error("The server didn’t start a render. Try again.");
-    const done = FINAL.includes(job.status) ? job : await follow(jobId);
-    if (done.status !== "done") {
-      const why = done.error && done.error.message ? done.error.message
-        : done.status === "canceled" ? "The render was canceled." : "The render didn’t finish.";
-      throw new Error(`${why.replace(/\.?$/, ".")} Your edits are still here; render again when you’re ready.`);
-    }
-    await adoptRender(submitted, spec);
+    const done = await followJob(jobId, {
+      getJob: (id) => api(`/api/jobs/${encodeURIComponent(id)}`),
+      wait,
+      onProgress: progress,
+      hidden: () => document.hidden,
+    });
+    const why = failureText(done);
+    if (why) throw new Error(why);
+    await adoptRender(mine);
   } catch (err) {
     showError(err && err.message ? err.message : "The render didn’t finish. Try again.");
   } finally {
@@ -463,17 +448,24 @@ async function render() {
 }
 
 /** A render finished: the new version becomes what "unsaved" is measured against, and it is shown. */
-async function adoptRender(submitted, spec) {
+async function adoptRender(mine) {
   const [fresh, freshClip] = await Promise.all([
     api(`/api/clips/${enc}/edit`).catch(() => null),
     api(`/api/clips/${enc}`).catch(() => clip),
   ]);
   clip = freshClip;
   if (fresh) {
-    adoptServer(readEdit(fresh, jobOptions));
-  } else {
-    serverKeys = new Set(Object.keys(spec));
-    rendered = submitted;
+    adoptServer(readEdit(fresh));
+  } else if (mine) {
+    serverKeys = new Set(Object.keys(mine.spec));
+    rendered = mine.state;
+  }
+  // A render this page didn't send (resumed after a reload): if nothing was edited meanwhile, the editor
+  // starts from the new version; otherwise the customer's edits stay and are measured against it.
+  if (!mine && fresh && store.pristine) {
+    touched = new Set();
+    lastState = null;
+    store.reset(rendered);
   }
   versions = await loadVersions();
   fillVersions();

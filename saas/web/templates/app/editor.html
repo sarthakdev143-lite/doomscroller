@@ -191,21 +191,23 @@
         </div>
 
         <div class="tabs__panel ed-panel" role="tabpanel" id="ed-panel-memes" aria-labelledby="ed-tab-memes" hidden>
-          <div class="ed-panel__head">
-            <h2 class="ed-panel__title">Add a meme</h2>
-            <span class="small muted" data-meme-at></span>
+          <p class="notice" data-memes-locked hidden><span>Memes can only be added to clips cut from speech, so this clip’s memes can’t be changed.</span></p>
+          <div data-meme-tools>
+            <div class="ed-panel__head">
+              <h2 class="ed-panel__title">Add a meme</h2>
+              <span class="small muted" data-meme-at></span>
+            </div>
+            <p class="hint">Pick one to drop it in at the playhead. On the timeline, drag a meme to move it and drag its right edge to change how long it shows.</p>
+            <div class="ed-picker" data-meme-picker></div>
+            <p class="hint" data-memes-none hidden>There are no memes to choose from for this clip. <a href="/app/brand" data-track="editor-brand-memes">Add your own in the Brand kit</a>.</p>
+            <p class="hint" data-memes-full hidden></p>
+            <div class="ed-panel__head ed-panel__head--list">
+              <h2 class="ed-panel__title">On this clip</h2>
+              <span class="small muted" data-meme-count></span>
+            </div>
+            <ol class="ed-mlist" role="list" data-meme-list></ol>
+            <p class="hint" data-meme-list-empty>No memes on this clip.</p>
           </div>
-          <p class="notice ed-field" data-memes-locked hidden><span>Memes can only be added to clips cut from speech. Any memes this clip already has stay as they are.</span></p>
-          <p class="hint" data-memes-hint>Pick one to drop it in at the playhead. On the timeline, drag a meme to move it and drag its right edge to change how long it shows.</p>
-          <div class="ed-picker" data-meme-picker></div>
-          <p class="hint" data-memes-none hidden>There are no memes to choose from for this clip. <a href="/app/brand" data-track="editor-brand-memes">Add your own in the Brand kit</a>.</p>
-          <p class="hint" data-memes-full hidden></p>
-          <div class="ed-panel__head ed-panel__head--list">
-            <h2 class="ed-panel__title">On this clip</h2>
-            <span class="small muted" data-meme-count></span>
-          </div>
-          <ol class="ed-mlist" role="list" data-meme-list></ol>
-          <p class="hint" data-meme-list-empty>No memes on this clip.</p>
         </div>
 
         <div class="tabs__panel ed-panel" role="tabpanel" id="ed-panel-sound" aria-labelledby="ed-tab-sound" hidden>

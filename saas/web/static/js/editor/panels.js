@@ -89,9 +89,7 @@ export class Panels {
     this.logo.missing.hidden = Boolean(ctx.logoAvailable);
     // The engine only places memes on clips cut from speech; say so here, not after a failed render.
     this.memes.locked.hidden = ctx.memesEditable;
-    this.memes.picker.hidden = !ctx.memesEditable;
-    this.memes.at.hidden = !ctx.memesEditable;
-    this.root.querySelector("[data-memes-hint]").hidden = !ctx.memesEditable;
+    this.root.querySelector("[data-meme-tools]").hidden = !ctx.memesEditable;
     this.buildPicker();
   }
 
@@ -102,7 +100,7 @@ export class Panels {
     this.available.forEach((m) => {
       const label = this.labels.get(m.id) || "Meme";
       const tile = el("button", { class: "ed-pick", type: "button", "data-id": m.id, "data-track": "editor-meme-add" },
-        el("span", { class: "ed-pick__media" }, memeVisual(m.url, label, "ed-pick__img")),
+        el("span", { class: "ed-pick__media" }, memeVisual(m.url, label, "ed-pick__img", m.mediaType)),
         el("span", { class: "ed-pick__label", text: label }),
         el("span", { class: "ed-pick__tag", text: m.custom ? "Your brand kit" : "From this clip" }));
       picker.append(tile);
@@ -423,7 +421,8 @@ export class Panels {
       if (r.thumb.dataset.id !== m.id) {
         r.thumb.dataset.id = m.id;
         r.thumb.textContent = "";
-        r.thumb.append(memeVisual((this.available.find((a) => a.id === m.id) || {}).url || "", label, "ed-mrow__img"));
+        const found = this.available.find((a) => a.id === m.id) || {};
+        r.thumb.append(memeVisual(found.url || "", label, "ed-mrow__img", found.mediaType));
       }
       if (r.name.textContent !== label) r.name.textContent = label;
       r.name.setAttribute("aria-label", `${label}: select it and jump to ${stamp(m.start_s)}`);

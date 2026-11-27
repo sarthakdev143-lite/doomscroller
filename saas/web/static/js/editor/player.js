@@ -125,7 +125,7 @@ export class Player {
 
   /** `memes`: [{id, url, label}] from the editor's list of memes it can use. */
   setThumbs(memes) {
-    this.thumbs = new Map((memes || []).map((m) => [m.id, { url: m.url || "", label: m.label || "Meme" }]));
+    this.thumbs = new Map((memes || []).map((m) => [m.id, { url: m.url || "", label: m.label || "Meme", mediaType: m.mediaType || "" }]));
     this.memeKey = null;
   }
 
@@ -247,7 +247,7 @@ export class Player {
       this.memesBox.textContent = "";
       shown.forEach((k) => {
         const meme = this.thumbs.get(s.memes[k].id) || { url: "", label: "Meme" };
-        const node = memeVisual(meme.url, meme.label, "ed-ov__meme");
+        const node = memeVisual(meme.url, meme.label, "ed-ov__meme", meme.mediaType);
         node.dataset.selected = String(k === this.selected);
         this.memesBox.append(node);
       });

@@ -257,6 +257,21 @@ export class Store {
     return this.past.length > 0;
   }
 
+  /** Untouched since loading: no step to undo or redo, no drag under way. */
+  get pristine() {
+    return !this.past.length && !this.future.length && this.held === null;
+  }
+
+  /** Start over from `state`, with no history (a render the customer didn't make in this page finished). */
+  reset(state, reason = "load") {
+    this.state = clone(state);
+    this.past = [];
+    this.future = [];
+    this.held = null;
+    this.last = null;
+    this.emit(reason);
+  }
+
   get canRedo() {
     return this.future.length > 0;
   }
