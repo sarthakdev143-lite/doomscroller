@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import JSON, Boolean, Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import JSON, Boolean, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..common import new_id, utcnow
@@ -48,7 +48,9 @@ class Job(Base):
     status: Mapped[str] = mapped_column(String(16), default="queued", index=True)
     stage: Mapped[str] = mapped_column(String(16), default="queued")
     progress: Mapped[float] = mapped_column(Float, default=0.0)
-    source_kind: Mapped[str] = mapped_column(String(8))  # url | upload
+    kind: Mapped[str] = mapped_column(String(12), default="clip", index=True)  # clip | rerender
+    clip_id: Mapped[Optional[str]] = mapped_column(String(40), nullable=True, index=True)  # rerender target
+    source_kind: Mapped[str] = mapped_column(String(8))  # url | upload | clip
     source_url: Mapped[Optional[str]] = mapped_column(String(2000), nullable=True)
     upload_id: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
     source_title: Mapped[str] = mapped_column(String(300), default="")
@@ -102,12 +104,39 @@ class Clip(Base):
     score: Mapped[float] = mapped_column(Float, default=0.0)
     language: Mapped[str] = mapped_column(String(8), default="")
     memes_used: Mapped[list] = mapped_column(JSON, default=list)
+    # Editing: the engine's manifest and source excerpt (relative to SAAS_DATA_DIR), the current version
+    # and the edit spec it was rendered with ({} = as first made).
+    manifest_path: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    source_path: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    spec: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, index=True)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
     deleted_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime, nullable=True)
 
 
 Index("ix_clips_user_created", Clip.user_id, Clip.created_at)
+
+
+class ClipVersion(Base):
+    """Every render of a clip: v1 is the original, each editor re-render adds one. The newest is the clip's file."""
+
+    __tablename__ = "clip_versions"
+    __table_args__ = (UniqueConstraint("clip_id", "version", name="uq_clip_version"),)
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("clv_"))
+    clip_id: Mapped[str] = mapped_column(String(40), ForeignKey("clips.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[str] = mapped_column(String(40), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    path: Mapped[str] = mapped_column(String(500))
+    thumbnail_path: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    duration_s: Mapped[float] = mapped_column(Float, default=0.0)
+    spec: Mapped[dict] = mapped_column(JSON, default=dict)
+    job_id: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    credits_charged: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime, nullable=True)
 
 
 class BrandAsset(Base):
@@ -125,5 +154,6 @@ class BrandAsset(Base):
     width: Mapped[int] = mapped_column(Integer, default=0)
     height: Mapped[int] = mapped_column(Integer, default=0)
     duration_s: Mapped[float] = mapped_column(Float, default=0.0)
+    meme_key: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)  # engine meme id: custom-<sha1[:20]>
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     deleted_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime, nullable=True)

@@ -304,7 +304,9 @@ def _page(request: Request, title: str, body_html: str) -> HTMLResponse:
            f"<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
            f"<meta name=\"robots\" content=\"noindex\"><title>{html.escape(title)} · {html.escape(settings.brand_name)}"
            f"</title></head><body><main>{body_html}</main></body></html>")
-    return HTMLResponse(doc, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
+    # same-origin, not no-referrer: under no-referrer browsers send `Origin: null` on this page's form POST, and
+    # the CSRF layer rightly refuses a null origin. same-origin still never leaks the token URL to another site.
+    return HTMLResponse(doc, headers={"Cache-Control": "no-store", "Referrer-Policy": "same-origin"})
 
 
 @router.get("/auth/magic/{token}")

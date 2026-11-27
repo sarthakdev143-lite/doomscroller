@@ -42,6 +42,7 @@ class Plan(Base):
     sort: Mapped[int] = mapped_column(Integer, default=0)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     public: Mapped[bool] = mapped_column(Boolean, default=True)  # free plan is not purchasable
+    published: Mapped[bool] = mapped_column(Boolean, default=False)  # owner-approved; hidden and unbuyable until then
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
 
@@ -54,6 +55,7 @@ class Pack(Base):
     name: Mapped[str] = mapped_column(String(80))
     description: Mapped[str] = mapped_column(String(400), default="")
     credits: Mapped[int] = mapped_column(Integer)
+    published: Mapped[bool] = mapped_column(Boolean, default=False)  # owner-approved; hidden and unbuyable until then
     sort: Mapped[int] = mapped_column(Integer, default=0)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)

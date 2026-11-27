@@ -31,7 +31,7 @@ from ..common import utcnow
 from ..config import settings
 from ..db import SessionLocal
 from ..models.core import User
-from ..models.jobs import FINAL_STATUSES, RUNNING_STATUSES, Clip, Job, Upload
+from ..models.jobs import FINAL_STATUSES, RUNNING_STATUSES, Clip, ClipVersion, Job, Upload
 from ..auth.errors import ApiError
 from . import brand, service, ssrf, storage
 from .engine import Engine, EngineError, JobCanceled, get_engine
@@ -106,6 +106,10 @@ class Worker:
             user = db.get(User, job.user_id) if job else None
             if job is None or user is None:
                 return
+            if job.kind == "rerender":
+                db.close()
+                self._process_rerender(job_id)
+                return
             source = self._source(db, job)
             jdir = storage.job_dir(job.user_id, job.id)
             out_dir = jdir / "out"
@@ -131,20 +135,8 @@ class Worker:
             return
         db.close()
 
-        hb_stop = threading.Event()
-        hb = threading.Thread(target=self._heartbeat, args=(job_id, hb_stop, started), daemon=True,
-                              name=f"hb-{job_id[-6:]}")
-        hb.start()
-
-        def on_stage(stage: str, progress: float) -> None:
-            if stage not in RUNNING_STATUSES:
-                stage = "rendering"
-            values = {"stage": stage, "progress": max(0.0, min(1.0, float(progress))), "heartbeat_at": utcnow()}
-            if stage in RUNNING_STATUSES:
-                values["status"] = stage
-            self._update(job_id, **values)
-            if self._cancel_requested(job_id):
-                raise JobCanceled()
+        hb_stop, hb = self._start_heartbeat(job_id, started)
+        on_stage = self._stage_callback(job_id)
 
         try:
             result = self.engine.run(source=source, out_dir=out_dir, options=options, brand_name=None,
@@ -162,6 +154,115 @@ class Worker:
             hb_stop.set()
             hb.join(timeout=5)
             self._release_inputs(job_id)
+
+    def _start_heartbeat(self, job_id: str, started: float) -> tuple[threading.Event, threading.Thread]:
+        stop = threading.Event()
+        hb = threading.Thread(target=self._heartbeat, args=(job_id, stop, started), daemon=True,
+                              name=f"hb-{job_id[-6:]}")
+        hb.start()
+        return stop, hb
+
+    def _stage_callback(self, job_id: str):
+        def on_stage(stage: str, progress: float) -> None:
+            if stage not in RUNNING_STATUSES:
+                stage = "rendering"
+            values = {"stage": stage, "progress": max(0.0, min(1.0, float(progress))), "heartbeat_at": utcnow()}
+            if stage in RUNNING_STATUSES:
+                values["status"] = stage
+            self._update(job_id, **values)
+            if self._cancel_requested(job_id):
+                raise JobCanceled()
+        return on_stage
+
+    # ---- editor re-renders ------------------------------------------------------------------------
+
+    def _process_rerender(self, job_id: str) -> None:
+        db = self.sessions()
+        try:
+            job = db.get(Job, job_id)
+            clip = (db.query(Clip).filter(Clip.id == job.clip_id, Clip.user_id == job.user_id,
+                                          Clip.deleted_at.is_(None)).one_or_none())
+            if clip is None:
+                raise EngineError("clip_gone", "That clip was deleted.")
+            manifest = storage.resolve(clip.manifest_path)
+            if manifest is None or not manifest.is_file():
+                raise EngineError("not_editable", "This clip can't be edited (it was made before editing existed).")
+            version = int(clip.version or 1) + 1
+            stem = manifest.name[: -len("_manifest.json")] if manifest.name.endswith("_manifest.json") else manifest.stem
+            out_path = manifest.parent / f"{stem}_v{version}.mp4"
+            spec = dict((job.options or {}).get("spec") or {})
+            logo_path, custom_memes = brand.engine_assets(db, job.user_id, {"logo": True, "custom_memes": True})
+            started = time.monotonic()
+        except EngineError as exc:
+            db.close()
+            self._fail(job_id, exc.code, exc.message)
+            return
+        except Exception:
+            db.close()
+            log.exception("re-render %s could not start", job_id)
+            self._fail(job_id, "engine_crashed", "Something went wrong while starting your edit.")
+            return
+        db.close()
+        hb_stop, hb = self._start_heartbeat(job_id, started)
+        try:
+            result = self.engine.rerender(manifest_path=str(manifest), spec=spec, out_path=out_path,
+                                          on_stage=self._stage_callback(job_id), logo_path=logo_path,
+                                          custom_memes=custom_memes)
+            self._succeed_rerender(job_id, result, manifest.parent, version, spec)
+        except JobCanceled:
+            self._finish_without_clips(job_id, "canceled", "canceled", "Canceled.")
+        except EngineError as exc:
+            self._fail(job_id, exc.code, exc.message)
+        except Exception:
+            log.exception("re-render %s crashed", job_id)
+            self._fail(job_id, "engine_crashed", "Something went wrong while rendering your edit.")
+        finally:
+            hb_stop.set()
+            hb.join(timeout=5)
+
+    def _succeed_rerender(self, job_id: str, result: dict, clip_dir: Path, version: int, spec: dict) -> None:
+        vid = Path(str((result or {}).get("path") or ""))
+        if not vid.is_file() or not storage.within(vid, clip_dir):
+            self._fail(job_id, "render_failed", "The edit didn't produce a video. Your credits were returned.")
+            return
+        db = self.sessions()
+        try:
+            job = db.get(Job, job_id)
+            clip = db.query(Clip).filter(Clip.id == job.clip_id, Clip.user_id == job.user_id).one_or_none()
+            if job is None or clip is None or job.status not in RUNNING_STATUSES:
+                return
+            thumb = Path(str(result.get("thumbnail_path") or ""))
+            thumb_rel = storage.relative(thumb) if result.get("thumbnail_path") and thumb.is_file() and \
+                storage.within(thumb, clip_dir) else None
+            now = utcnow()
+            res = db.execute(update(Job).where(Job.id == job_id, Job.status.in_(RUNNING_STATUSES))
+                             .values(status="done", stage="done", progress=1.0, finished_at=now,
+                                     credits_charged=job.credits_reserved, meter=_safe_meter(result.get("meter"))))
+            if res.rowcount != 1:
+                db.rollback()
+                return
+            duration = float(result.get("duration_s") or clip.duration_s or 0)
+            db.add(ClipVersion(clip_id=clip.id, user_id=clip.user_id, version=version, path=storage.relative(vid),
+                               thumbnail_path=thumb_rel, size_bytes=vid.stat().st_size, duration_s=duration,
+                               spec=spec, job_id=job_id, credits_charged=job.credits_reserved))
+            clip.path = storage.relative(vid)
+            clip.thumbnail_path = thumb_rel or clip.thumbnail_path
+            clip.size_bytes = vid.stat().st_size
+            clip.duration_s = duration
+            clip.version = version
+            clip.spec = spec
+            if result.get("memes_used"):
+                clip.memes_used = [str(m)[:200] for m in result["memes_used"]][:20]
+            ledger.settle(db, job_id, job.credits_reserved)
+            db.commit()
+        except Exception:
+            db.rollback()
+            log.exception("re-render %s: saving the new version failed", job_id)
+            db.close()
+            self._fail(job_id, "engine_crashed", "Something went wrong while saving your edit.")
+            return
+        finally:
+            db.close()
 
     def _source(self, db: Session, job: Job) -> str:
         if job.source_kind == "url":
@@ -231,7 +332,14 @@ class Worker:
                 thumb = Path(str(c.get("thumbnail_path") or ""))
                 thumb_rel = storage.relative(thumb) if c.get("thumbnail_path") and thumb.is_file() and \
                     storage.within(thumb, out_dir) else None
+                bundle = {}
+                for key, src_key in (("manifest_path", "manifest_path"), ("source_path", "source_excerpt_path")):
+                    p = Path(str(c.get(src_key) or ""))
+                    bundle[key] = storage.relative(p) if c.get(src_key) and p.is_file() and storage.within(p, out_dir) \
+                        else None
                 rows.append(Clip(job_id=job.id, user_id=job.user_id, idx=i, path=storage.relative(vid),
+                                 manifest_path=bundle["manifest_path"], source_path=bundle["source_path"], version=1,
+                                 spec={},
                                  thumbnail_path=thumb_rel, size_bytes=vid.stat().st_size,
                                  duration_s=float(c.get("duration_s") or 0), start_s=float(c.get("start_s") or 0),
                                  end_s=float(c.get("end_s") or 0), title=str(c.get("title") or "")[:200],
@@ -267,6 +375,11 @@ class Worker:
                 return
             for r in rows:
                 db.add(r)
+            db.flush()
+            for r in rows:
+                db.add(ClipVersion(clip_id=r.id, user_id=r.user_id, version=1, path=r.path,
+                                   thumbnail_path=r.thumbnail_path, size_bytes=r.size_bytes, duration_s=r.duration_s,
+                                   spec={}, job_id=job_id))
             ledger.settle(db, job_id, charge, shorts=len(rows))
             db.commit()
         except Exception:

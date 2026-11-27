@@ -41,7 +41,9 @@ def core(monkeypatch, tmp_path, saas_db):
                                                                    "grant_free_credits": True})
     from saas.billing import catalog
 
-    catalog.ensure_seeded(saas_db)
+    # Tests use a frozen, fully published catalog, not the provisional product price list.
+    catalog.seed_catalog(saas_db, Path(__file__).with_name("core_catalog.json"))
+    saas_db.commit()
     yield settings
     mailer.outbox.clear()
 

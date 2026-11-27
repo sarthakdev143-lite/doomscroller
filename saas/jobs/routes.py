@@ -23,10 +23,12 @@ from ..models.jobs import Clip, Upload
 from . import package, service, storage, uploads
 from .api_v1 import router as v1_router
 from .brand import router as brand_router
+from .editor import router as editor_router
 
 router = APIRouter(route_class=ApiRoute)
 router.include_router(v1_router)
 router.include_router(brand_router)
+router.include_router(editor_router)
 
 
 class EstimateIn(BaseModel):

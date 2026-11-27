@@ -117,6 +117,33 @@ the owner's `.env` (it reads `SAAS_*` / `.env.saas`) and never writes `doomscrol
 
 API key scopes: `jobs:read`, `jobs:write`, `clips:read`, `clips:write`, `billing:read`. Default: all.
 
+**Production mode** (core agent). `scripts/saas_manage.py init-prod` writes a persistent
+`SAAS_SECRET_KEY` (64 url-safe chars) into the SaaS env file (`SAAS_ENV_FILE`, default `.env.saas`,
+gitignored), never prints it and refuses to overwrite an existing one. With `SAAS_ENV=prod` the app
+refuses to start without a 32+ character secret (`create_app()` raises `SecretKeyMissing`; `saas_serve.py
+--check` reports it). `saas_manage.py backup [--keep N] [--dir D]` takes a SQLite online backup
+(`saas/jobs/backup.py`: consistent while serving, `PRAGMA quick_check`ed, `saas-YYYYMMDD-HHMMSS-mmm.db`,
+newest `SAAS_BACKUP_KEEP`=14 kept, default folder `backups/` beside the DB; Postgres: use pg_dump), and
+`saas_serve.py` runs one whenever the newest is older than `SAAS_BACKUP_EVERY_HOURS`=24.
+
+**Email.** Plain SMTP: `SAAS_SMTP_HOST/PORT/USER/PASSWORD/FROM`, `SAAS_SMTP_STARTTLS` (default on) or
+`SAAS_SMTP_SSL` (465). Gmail: `smtp.gmail.com`, 587, STARTTLS, user and from = the Gmail address,
+password = a Google **App Password**. `saas_manage.py mail-test <to>` sends one message synchronously and
+prints OK or the reason (never the password).
+
+**Edge trust** (`SAAS_TRUST_PROXY=edge`, `SAAS_EDGE_SECRET`; `saas/auth/edge.py`, installed outermost by
+`saas.mcp.mount`). For a Cloudflare Pages Function in front of the origin. Every request must carry:
+- `X-DS-Edge-Auth: <SAAS_EDGE_SECRET>`, compared in constant time;
+- `X-DS-Client-IP: <visitor IP>` (from `CF-Connecting-IP`);
+- `X-DS-Client-Sig: hex(HMAC-SHA256(key=SAAS_EDGE_SECRET, msg="<ip>|<floor(unix_seconds/60)>"))`, accepted
+  for the current minute ±2.
+
+Anything else gets 403 (`edge_only`, `bad_client_ip`, or `edge_headers` for duplicated X-DS-* headers),
+so the raw origin URL is useless. An empty secret refuses everything. The verified IP becomes the
+connection address and the X-DS-* headers are removed, so `client_ip()` and every per-IP limit and ban
+see the real visitor. **The proxy must drop any client-sent `X-DS-*` headers before adding its own, and
+must also carry `/webhooks/*`** (BMC etc. can then only reach the origin through it).
+
 **Edge waitlist -> app invites** (core agent, `saas/auth/waitlist_bridge.py`). The live waitlist is D1
 (edge/); app signup redeems invites against the app's `waitlist_entries`. The owner bridges them with
 `scripts/saas_manage.py import-waitlist <export.csv> [--invite N] [--include-flagged] [--dry-run] [--out invites.csv]`
@@ -199,6 +226,20 @@ API key scopes: `jobs:read`, `jobs:write`, `clips:read`, `clips:write`, `billing
   they are admin-editable. A job is funded entirely by the free meters when they cover its minutes
   *and* its requested clip count, otherwise entirely by paid credits; settling a free job charges the
   minutes used and the clips actually produced and returns the rest. Granted when the email is verified.
+- **Prices are provisional and unpublished.** `seed_catalog.json` holds the memo's section-0 table:
+  - Packs: S 250 credits/$4, M 1,000/$12, L 5,000/$49.
+  - Plans, monthly / annual: Creator 1,000/mo $10/$100, Pro 3,000 $27/$270, Studio 10,000 $89/$890,
+    Pro BYOK 3,000 $13/$130.
+  - India (INR tier): Lite 300 ₹299/₹2,990 (India only), Creator ₹849/₹8,490, Pro ₹2,499/₹24,990,
+    Studio ₹8,399/₹83,990.
+
+  Every paid plan and pack has `published=false` (`billing_plans.published`, `billing_packs.published`).
+  The catalog API lists only published items and checkout refuses unpublished ones (404), until the owner
+  approves and they're flipped to true. Payments that arrive anyway (e.g. BMC) are still honoured. Not
+  implemented: the memo's charging rule `max(source minutes, 3 x finished minutes)`; charging is still
+  source minutes. **Web agent:** `saas/web/routes.py` falls back to reading `seed_catalog.json` when the
+  live catalog is empty, so it must skip `"published": false` items too, or the provisional prices show
+  on the dynamic landing page. The static export uses no prices, so it is unaffected.
 - `catalog.public_catalog(db, country: str | None) -> {"currency", "plans": [...], "packs": [...],
   "free": {minutes, shorts, rule, features}}` —
   plans and packs are DB rows editable in admin (seeded from `saas/billing/seed_catalog.json`), with
@@ -300,6 +341,39 @@ API key scopes: `jobs:read`, `jobs:write`, `clips:read`, `clips:write`, `billing
   rules-v1, fixed local times, 30-minute lead, clip N of a job starts N slots later): YouTube Shorts
   weekdays 12:00/15:00/19:00, weekends 10:00/14:00/19:00; Instagram Reels weekdays 09:00/12:00/19:00,
   weekends 10:00/13:00/19:00; TikTok weekdays 07:00/12:00/19:00/21:00, weekends 11:00/19:00/21:00.
+- **Editor** (`saas/jobs/editor.py`, against `app.clipper.standalone.rerender_clip(manifest_path, spec,
+  out_path, *, custom_memes, logo_path, on_stage)`):
+  - The engine leaves `<clip>_manifest.json`, `<clip>_source.mp4` and `<clip>_assets/` beside each clip
+    (clip dict keys `manifest_path`, `source_excerpt_path`). They are stored on the clip and deleted with
+    it (delete or retention), together with every version.
+  - `GET /api/clips/{id}/edit` → `{clip_id, version, duration_s, spec, words, memes: {in_clip,
+    available}, cutaways, beats, hook, layout, logo: {available, url}, limits}`.
+    - `words` are the manifest's caption words `{i, text, start, end}` (what `captions.edits[].i` refers to).
+    - `memes.available` holds the clip's own library memes `{id, title, provider, mood}`, plus brand-kit
+      memes `{id: "custom-<sha1 of the stored file[:20]>", title, provider: "custom", url}`. That id is
+      the engine's custom-meme id; internal file paths are never returned.
+    - `limits` = `{max_memes 10, max_caption_chars 40, max_hook_chars 80, max_watermark_chars 40,
+      min_clip_s 3, meme_duration_s [0.5, 4], logo_scale [0.06, 0.25], music_volume_db [-30, -6],
+      free_rerenders, rerenders_used, free_left, credit_cost_after_free, balance}`. The spec limits mirror
+      app/clipper/editor.py, and a test keeps them in step.
+    - A clip without a manifest answers 409 `not_editable`.
+  - `POST /api/clips/{id}/render {spec}` → 202 job (`kind: "rerender"`, `clip_id`). The spec is the
+    pipeline's: top-level keys ⊆ `trim, captions, hook, logo, memes, sfx, music, broll, watermark_text`,
+    at most 32 KB (400 `invalid_spec` / 413 `spec_too_large` here). The engine validates the rest; a
+    spec it can't apply fails the job with error `invalid_spec` and a customer-safe message.
+    - The first `SAAS_RERENDER_FREE_PER_CLIP`=5 re-renders that haven't failed are `funding: "included"`.
+      After that each one reserves `SAAS_RERENDER_CREDIT_COST`=1 paid credit, charged on success and
+      released on failure (402 `insufficient_credits`).
+    - One active re-render per clip (409 `rerender_in_progress`), 3 per user (429 `too_many_rerenders`),
+      30 per user per hour.
+    - Re-renders don't count against plan concurrency or daily-job caps and aren't in `GET /api/jobs`;
+      poll `GET /api/jobs/{job_id}`.
+  - On success the new file becomes the clip's file (`clip.version` +1, `clip.spec` = that spec);
+    earlier versions are kept until the clip's retention ends.
+  - `GET /api/clips/{id}/versions` → `{clip_id, current, versions: [{version, current, created_at,
+    duration_s, size_bytes, spec, credits_charged, job_id, video_url}]}`.
+  - `GET /api/clips/{id}/versions/{n}/video` streams a version.
+  - Every editor route is owner-scoped (404 for anyone else's clip).
 - **Brand kit** (per user, under `SAAS_DATA_DIR/<user>/brand/`): `GET /api/brand` → `{logo, memes, limits}`;
   `POST /api/brand/logo` (multipart `file`; PNG/JPEG/WebP, SVG only when a server-side renderer is
   installed else 415 `svg_unsupported`; ≤5 MB, 16-4096 px; decoded and re-encoded to a ≤1024 px PNG);

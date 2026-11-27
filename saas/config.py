@@ -110,6 +110,11 @@ class SaasSettings(BaseSettings):
     job_timeout_minutes: int = 120
     worker_poll_s: float = 2.0
     signed_url_ttl_s: int = 3600
+    backup_dir: str = ""  # SQLite backups; default: a "backups" folder next to the database file
+    backup_keep: int = 14  # newest N backups kept
+    backup_every_hours: int = 24  # saas_serve runs one when the newest is older than this
+    rerender_free_per_clip: int = 5  # editor re-renders included per clip
+    rerender_credit_cost: int = 1  # credits per re-render after the free ones
 
     # ---- tracking & security (tracking agent) --------------------------------------------------
     turnstile_site_key: str = ""
@@ -155,6 +160,9 @@ class SaasSettings(BaseSettings):
     cost_rates_json: str = ""
 
     # ---- mcp / public api (core agent, phase 2) ------------------------------------------------
+    # SAAS_TRUST_PROXY=edge: every request must come through the Cloudflare Pages Function proxy, which
+    # sends X-DS-Edge-Auth = this secret and a signed client IP (saas/auth/edge.py). Empty = refuse all.
+    edge_secret: str = ""
     mcp_enabled: bool = True
     api_rate_per_minute: int = 60  # per API key, shared by /api/v1 and /mcp
     api_estimate_per_hour: int = 120  # estimates spawn yt-dlp; cap them per key/user

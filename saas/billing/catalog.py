@@ -40,13 +40,14 @@ def seed_catalog(db: Session, path: Path = SEED_PATH) -> dict:
         if p["slug"] not in have_plans:
             db.add(Plan(slug=p["slug"], name=p["name"], description=p.get("description", ""),
                         monthly_credits=int(p.get("monthly_credits", 0)), rollover_months=int(p.get("rollover_months", 1)),
-                        features=p.get("features", {}), sort=int(p.get("sort", 0)), public=bool(p.get("public", True))))
+                        features=p.get("features", {}), sort=int(p.get("sort", 0)), public=bool(p.get("public", True)),
+                        published=bool(p.get("published", False))))
             added["plans"] += 1
     have_packs = {p.slug for p in db.query(Pack.slug)}
     for p in data.get("packs", []):
         if p["slug"] not in have_packs:
             db.add(Pack(slug=p["slug"], name=p["name"], credits=int(p["credits"]), sort=int(p.get("sort", 0)),
-                        description=p.get("description", "")))
+                        description=p.get("description", ""), published=bool(p.get("published", False))))
             added["packs"] += 1
     have_prices = {(r.item_kind, r.item_slug, r.interval, r.currency, r.tier) for r in
                    db.query(Price.item_kind, Price.item_slug, Price.interval, Price.currency, Price.tier)}
@@ -163,7 +164,7 @@ def public_catalog(db: Session, country: Optional[str]) -> dict:
     ensure_seeded(db)
     currency, tier = pricing_region(db, country)
     plans = []
-    for p in db.query(Plan).filter(Plan.active.is_(True)).order_by(Plan.sort, Plan.slug):
+    for p in db.query(Plan).filter(Plan.active.is_(True), Plan.published.is_(True)).order_by(Plan.sort, Plan.slug):
         if not p.public:
             continue
         month = price_for(db, "plan", p.slug, "month", country)
@@ -175,7 +176,7 @@ def public_catalog(db: Session, country: Optional[str]) -> dict:
                       "features": {**DEFAULT_FEATURES, **(p.features or {})},
                       "prices": {"month": _price_view(month), "year": _price_view(year)}})
     packs = []
-    for k in db.query(Pack).filter(Pack.active.is_(True)).order_by(Pack.sort, Pack.slug):
+    for k in db.query(Pack).filter(Pack.active.is_(True), Pack.published.is_(True)).order_by(Pack.sort, Pack.slug):
         pr = price_for(db, "pack", k.slug, "once", country)
         if pr is None:
             continue

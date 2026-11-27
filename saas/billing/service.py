@@ -89,7 +89,7 @@ def start_checkout(db: Session, user: User, request: Request, *, kind: str, slug
         if interval not in ("month", "year"):
             raise ApiError(400, "invalid_interval", "Choose monthly or yearly billing.")
         plan = catalog.get_plan(db, slug)
-        if plan is None or not plan.active or not plan.public:
+        if plan is None or not plan.active or not plan.public or not plan.published:
             raise ApiError(404, "not_found", "That plan doesn't exist.")
         active = (db.query(Subscription)
                   .filter(Subscription.user_id == user.id, Subscription.status.in_(("active", "past_due"))).first())
@@ -101,7 +101,7 @@ def start_checkout(db: Session, user: User, request: Request, *, kind: str, slug
     elif kind == "pack":
         interval = "once"
         pack = catalog.get_pack(db, slug)
-        if pack is None or not pack.active:
+        if pack is None or not pack.active or not pack.published:
             raise ApiError(404, "not_found", "That credit pack doesn't exist.")
         item_name = f"{pack.name} of clip credits"
         credits = pack.credits

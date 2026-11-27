@@ -311,6 +311,8 @@ def test_magic_link_confirm_page_then_post(client, core, saas_db):
     token = outbox_link("/auth/magic/")
     page = client.get(f"/auth/magic/{token}")
     assert page.status_code == 200 and "<form method=\"post\"" in page.text
+    # no-referrer would make real browsers post `Origin: null`, which the CSRF layer refuses (found in a browser).
+    assert page.headers["referrer-policy"] == "same-origin"
     assert not client.cookies.get("sid")  # a GET (mail scanner) never signs anyone in
     r = client.post(f"/auth/magic/{token}", follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == "/app"

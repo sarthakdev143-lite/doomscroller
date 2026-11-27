@@ -54,15 +54,16 @@ def _html(paragraphs: list[str], button: tuple[str, str] | None = None) -> str:
             f"</body></html>")
 
 
-def _deliver(mail: Mail) -> None:
+def _deliver(mail: Mail) -> tuple[bool, str]:
+    """(sent, detail). Never raises and never logs credentials."""
     if not settings.smtp_host:
         if settings.is_prod:
             log.error("SMTP is not configured in prod; dropped mail '%s'", mail.subject)
-            return
+            return False, "SMTP is not configured (SAAS_SMTP_HOST is empty)"
         outbox.append(mail)
         # WARNING so it shows on a default console (uvicorn leaves the root logger at WARNING). Dev only.
         log.warning("[dev mail] to=%s subject=%s\n%s", mail.to, mail.subject, mail.text)
-        return
+        return True, "no SMTP configured: printed to the console (dev)"
     msg = EmailMessage()
     msg["From"] = _from_address()
     msg["To"] = mail.to
@@ -82,8 +83,14 @@ def _deliver(mail: Mail) -> None:
             if settings.smtp_user:
                 server.login(settings.smtp_user, settings.smtp_password)
             server.send_message(msg)
+    except smtplib.SMTPAuthenticationError:
+        log.error("mail '%s' failed: SMTP login refused", mail.subject)
+        return False, ("SMTP login refused. For Gmail use an App Password (Google Account > Security > "
+                       "2-Step Verification > App passwords), not the account password.")
     except Exception as exc:
         log.error("mail '%s' failed: %s", mail.subject, type(exc).__name__)
+        return False, f"{type(exc).__name__}: {str(exc)[:200]}"
+    return True, f"sent via {settings.smtp_host}:{settings.smtp_port}"
 
 
 def send(to: str, subject: str, paragraphs: list[str], button: tuple[str, str] | None = None) -> None:
@@ -96,6 +103,15 @@ def send(to: str, subject: str, paragraphs: list[str], button: tuple[str, str] |
         _deliver(mail)
         return
     threading.Thread(target=_deliver, args=(mail,), daemon=True, name="saas-mail").start()
+
+
+def send_test(to: str) -> tuple[bool, str]:
+    """Send one message synchronously and report what happened (scripts/saas_manage.py mail-test)."""
+    paragraphs = [f"This is a test message from {settings.brand_name}.",
+                  f"If you can read it, outgoing email works (server {settings.smtp_host or 'none'}, "
+                  f"from {settings.smtp_from or settings.support_email})."]
+    text = "\n\n".join(paragraphs) + f"\n\n-- {settings.brand_name}"
+    return _deliver(Mail(to=to, subject=f"{settings.brand_name} mail test", text=text, html=_html(paragraphs)))
 
 
 def _url(path: str) -> str:

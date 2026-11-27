@@ -93,12 +93,14 @@ def _check_caps(db: Session, user: User, feats: dict, options: JobOptions) -> No
         raise ApiError(403, "billing_hold", f"Your account has a billing hold. Contact {settings.support_email}.")
     if options.clips > int(feats.get("max_clips", 3)):
         raise ApiError(400, "invalid_options", f"Your plan allows up to {feats.get('max_clips')} clips per job.")
-    active = db.query(func.count(Job.id)).filter(Job.user_id == user.id, Job.status.in_(ACTIVE_STATUSES)).scalar()
+    active = db.query(func.count(Job.id)).filter(Job.user_id == user.id, Job.kind == "clip",
+                                                 Job.status.in_(ACTIVE_STATUSES)).scalar()
     if active >= int(feats.get("concurrency", 1)):
         raise ApiError(429, "too_many_active_jobs",
                        f"You can run {feats.get('concurrency')} job(s) at once. Wait for one to finish.")
     since = utcnow() - timedelta(hours=24)
-    today = db.query(func.count(Job.id)).filter(Job.user_id == user.id, Job.created_at >= since).scalar()
+    today = db.query(func.count(Job.id)).filter(Job.user_id == user.id, Job.kind == "clip",
+                                                Job.created_at >= since).scalar()
     if today >= int(feats.get("daily_jobs", 3)):
         raise ApiError(429, "daily_limit", f"Your plan allows {feats.get('daily_jobs')} jobs per day.")
 
@@ -176,8 +178,10 @@ def get_job(db: Session, user_id: str, job_id: str) -> Job:
 
 
 def list_jobs(db: Session, user_id: str, *, status: Optional[str] = None, limit: int = 20,
-              before: Optional[str] = None) -> list[Job]:
+              before: Optional[str] = None, kind: Optional[str] = "clip") -> list[Job]:
     q = db.query(Job).filter(Job.user_id == user_id)
+    if kind:
+        q = q.filter(Job.kind == kind)
     if status:
         q = q.filter(Job.status == status)
     if before:
@@ -205,7 +209,7 @@ def clip_view(clip: Clip, *, signed: bool = False) -> dict:
 
 
 def job_view(db: Session, job: Job, *, include_clips: bool = True, signed: bool = False) -> dict:
-    out = {"id": job.id, "status": job.status, "stage": job.stage, "progress": round(float(job.progress or 0), 3),
+    out = {"id": job.id, "kind": job.kind, "clip_id": job.clip_id, "status": job.status, "stage": job.stage, "progress": round(float(job.progress or 0), 3),
            "source": {"kind": job.source_kind, "url": job.source_url, "upload_id": job.upload_id,
                       "title": job.source_title, "duration_s": job.source_duration_s,
                       "thumbnail": job.source_thumbnail},
@@ -293,7 +297,10 @@ def update_clip(db: Session, user_id: str, clip_id: str, *, title: Optional[str]
 
 
 def delete_clip(db: Session, user_id: str, clip_id: str) -> None:
+    from . import editor
+
     clip = get_clip(db, user_id, clip_id)
+    editor.purge_clip_files(clip, db)
     storage.remove_file(clip.path)
     storage.remove_file(clip.thumbnail_path)
     clip.deleted_at = utcnow()
@@ -366,7 +373,10 @@ def cleanup_retention(db: Session) -> dict:
         except OSError:
             pass
     cutoff = now - timedelta(days=settings.clip_retention_days)
+    from . import editor
+
     for clip in db.query(Clip).filter(Clip.deleted_at.is_(None), Clip.created_at < cutoff).limit(1000).all():
+        editor.purge_clip_files(clip, db)
         storage.remove_file(clip.path)
         storage.remove_file(clip.thumbnail_path)
         clip.deleted_at = now

@@ -56,6 +56,18 @@ _PIL_PIXEL_LIMIT = 40_000_000
 router = APIRouter(route_class=ApiRoute)
 
 
+def meme_key(path: Path) -> str:
+    """The id the clip engine gives this file as a custom meme (app.clipper.memes.custom_candidates:
+    "custom-" + the first 20 hex chars of the SHA-1 of its bytes). Editor specs reference memes by it."""
+    import hashlib
+
+    digest = hashlib.sha1()  # noqa: S324 - an identity, not a security hash; must match the engine
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+    return f"custom-{digest.hexdigest()[:20]}"
+
+
 def brand_dir(user_id: str) -> Path:
     d = storage.user_dir(user_id) / "brand"
     d.mkdir(parents=True, exist_ok=True)
@@ -312,7 +324,8 @@ async def upload_meme(request: Request, user: User = Depends(require_verified_us
     finally:
         tmp.unlink(missing_ok=True)
     asset = BrandAsset(user_id=user.id, kind="meme", path=storage.relative(final), media_type=media_type,
-                       original_name=name, size_bytes=stored, width=w, height=h, duration_s=dur)
+                       original_name=name, size_bytes=stored, width=w, height=h, duration_s=dur,
+                       meme_key=meme_key(final))
     db.add(asset)
     db.commit()
     return public(asset)

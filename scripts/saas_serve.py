@@ -40,6 +40,7 @@ def _load_env_file() -> list[str]:
     path = (ROOT / name) if not Path(name).is_absolute() else Path(name)
     if path.resolve() == (ROOT / ".env").resolve():
         raise SystemExit("refusing to load the owner's .env as the SaaS env file")
+    os.environ["SAAS_ENV_FILE"] = str(path)  # saas.config reads it relative to the cwd otherwise
     if not path.is_file():
         return []
     from dotenv import dotenv_values
@@ -108,6 +109,20 @@ class WorkerPool:
                 p.kill()
 
 
+def _backup_loop(stop: threading.Event) -> None:
+    """SQLite: back up whenever the newest backup is older than SAAS_BACKUP_EVERY_HOURS (checked hourly)."""
+    from saas.jobs import backup
+
+    while not stop.is_set():
+        try:
+            if backup.due():
+                out = backup.run_backup()
+                print(f"[saas] backup written: {out.name}", flush=True)
+        except Exception as exc:  # a failed backup must not take the server down
+            print(f"[saas] BACKUP FAILED: {type(exc).__name__}: {exc}", flush=True)
+        stop.wait(3600)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     ap.add_argument("--workers", type=int, default=None, help="worker processes (default SAAS_WORKER_CONCURRENCY)")
@@ -158,6 +173,7 @@ def main() -> int:
     pool = WorkerPool(workers)
     sup = threading.Thread(target=pool.supervise, daemon=True, name="saas-workers")
     sup.start()
+    threading.Thread(target=_backup_loop, args=(pool.stop,), daemon=True, name="saas-backup").start()
     try:
         if args.no_web:
             while True:

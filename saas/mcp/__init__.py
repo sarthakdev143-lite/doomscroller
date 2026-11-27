@@ -7,8 +7,15 @@ from fastapi import FastAPI
 
 
 def mount(app: FastAPI) -> None:
-    from ..auth import errors
+    from ..auth import edge, errors
     from .server import mount as mount_mcp
 
     errors.install(app)
+    from ..config import settings
+
+    if settings.is_prod:
+        from ..auth import crypto
+
+        crypto.master_key()  # raises SecretKeyMissing: prod never starts without a persistent SAAS_SECRET_KEY
+    edge.install(app)
     mount_mcp(app)

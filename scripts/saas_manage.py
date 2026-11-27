@@ -13,6 +13,10 @@
     python scripts/saas_manage.py import-waitlist waitlist-202611270130.csv --dry-run   # the edge /admin/export.csv
     python scripts/saas_manage.py import-waitlist waitlist-202611270130.csv --invite 50 --out invites.csv
     python scripts/saas_manage.py import-waitlist --outstanding --out invites.csv     # re-export unredeemed invites
+    python scripts/saas_manage.py init-prod               # persistent SAAS_SECRET_KEY into .env.saas (never printed)
+    python scripts/saas_manage.py backup [--keep 14] [--dir D:\\backups]
+    python scripts/saas_manage.py mail-test you@example.com   # e.g. Gmail: SAAS_SMTP_HOST=smtp.gmail.com, port 587,
+                                                              # SAAS_SMTP_USER/FROM = the address, PASSWORD = an App Password
 """
 from __future__ import annotations
 
@@ -27,6 +31,43 @@ ROOT = Path(__file__).resolve().parent.parent
 os.environ["DOOMSCROLLER_ENV_FILE"] = ""
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+
+def env_file_path() -> Path | None:
+    """The SaaS env file (SAAS_ENV_FILE, default .env.saas), absolute; relative names are repo-relative."""
+    name = os.environ.get("SAAS_ENV_FILE", ".env.saas")
+    if not name:
+        return None
+    p = Path(name).expanduser()
+    return p if p.is_absolute() else ROOT / p
+
+
+# saas.config reads SAAS_ENV_FILE relative to the working directory; pin it so `cd` doesn't matter.
+if env_file_path() is not None:
+    os.environ["SAAS_ENV_FILE"] = str(env_file_path())
+
+
+def init_prod(path: Path) -> None:
+    """Write a new persistent SAAS_SECRET_KEY into the SaaS env file. Never prints it; never overwrites one."""
+    import re
+    import secrets
+
+    if path.resolve() == (ROOT / ".env").resolve():
+        raise SystemExit("refusing to write the owner's .env; point SAAS_ENV_FILE at .env.saas")
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    if any(re.match(r"\s*SAAS_SECRET_KEY\s*=\s*\S", line) for line in lines):
+        raise SystemExit(f"SAAS_SECRET_KEY is already set in {path}; not overwriting it (a new key signs everyone "
+                         "out, breaks signed links and makes stored 2FA secrets unreadable).")
+    lines = [line for line in lines if not re.match(r"\s*SAAS_SECRET_KEY\s*=", line)]
+    lines.append(f"SAAS_SECRET_KEY={secrets.token_urlsafe(48)}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if os.name != "nt":
+        os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+    print(f"Wrote a new SAAS_SECRET_KEY to {path} (not shown). Keep a private copy of this file: losing the key "
+          "signs everyone out and makes stored 2FA secrets unreadable. Set SAAS_ENV=prod there too.")
 
 
 def _user(db, email: str):
@@ -64,7 +105,35 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dry-run", action="store_true", help="report what would change, write nothing")
     p.add_argument("--outstanding", action="store_true", help="export every issued, unredeemed invite")
     p.add_argument("--out", help="write the invites CSV here instead of printing it")
+    sub.add_parser("init-prod", help="generate a persistent SAAS_SECRET_KEY into the SaaS env file")
+    p = sub.add_parser("backup", help="SQLite online backup of the SaaS database")
+    p.add_argument("--keep", type=int, default=None); p.add_argument("--dir")  # noqa: E702
+    p = sub.add_parser("mail-test", help="send one test email with the configured SMTP settings")
+    p.add_argument("to")
     args = ap.parse_args(argv)
+
+    if args.cmd == "init-prod":
+        path = env_file_path()
+        if path is None:
+            raise SystemExit("SAAS_ENV_FILE is empty; set it to the env file to write (default .env.saas)")
+        init_prod(path)
+        return 0
+    if args.cmd == "backup":
+        from saas.jobs import backup
+
+        try:
+            out = backup.run_backup(dest=Path(args.dir) if args.dir else None, keep=args.keep)
+        except backup.BackupError as exc:
+            raise SystemExit(str(exc))
+        print(f"backup written: {out}")
+        return 0
+    if args.cmd == "mail-test":
+        from saas.auth import mailer
+        from saas.config import settings
+
+        ok, detail = mailer.send_test(args.to)
+        print(f"{'OK' if ok else 'FAILED'}: {detail} (from {settings.smtp_from or settings.support_email})")
+        return 0 if ok else 1
 
     from saas.billing import catalog, ledger
     from saas.common import utcnow
