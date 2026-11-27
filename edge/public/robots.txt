@@ -3,4 +3,4 @@ Disallow: /app
 Disallow: /api/
 Disallow: /admin
 Disallow: /auth/
-Sitemap: https://doomscroller.pages.dev/sitemap.xml
+Sitemap: https://doomscroller-epy.pages.dev/sitemap.xml
