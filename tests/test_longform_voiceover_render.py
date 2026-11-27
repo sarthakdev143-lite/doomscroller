@@ -284,6 +284,65 @@ def test_cold_open_uncapped_up_to_11_5s_and_bridge_seeks_mid_broll_and_ducks_aud
     assert voiceover._clean_spoken(voiceover._clean_spoken("MrBeast and @rug vs FaZe Rug")) == "Mr. Beast and Faze Rug vs Faze Rug"
 
 
+def test_narrated_beds_release_the_duck_when_the_narration_ends(tmp_path, monkeypatch):
+    """A card that outlasts its voice must not stay ducked: that remainder measured -48 dBFS dead air."""
+    wav = tmp_path / "vo.wav"
+    with wave.open(str(wav), "wb") as wf:  # exactly 2.0s of mono 16-bit PCM
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(24000)
+        wf.writeframes(b"\x01\x00" * 48000)
+    src = tmp_path / "src.mp4"
+    src.write_bytes(b"MP4")
+    limiter_last = "alimiter=limit=0.84:attack=2:release=40:level=0:latency=1,aformat=channel_layouts=stereo"
+
+    monkeypatch.setattr(lf_render, "probe", lambda p: MediaInfo(120.0, 1920, 1080, 30.0, True))
+    monkeypatch.setattr(voiceover, "probe", lambda p: MediaInfo(120.0, 1920, 1080, 30.0, True))
+    monkeypatch.setattr(lf_render, "_find_bright_offset", lambda p, a, b, need: a)
+    monkeypatch.setattr(lf_render, "_probe_duration", lambda p, f: f)
+    calls: list[list[str]] = []
+
+    def fake_ffmpeg(args, **kw):
+        calls.append(list(args))
+        Path(args[-1]).write_bytes(b"X" * 1000)
+
+    monkeypatch.setattr(voiceover, "run_ffmpeg", fake_ffmpeg)
+    monkeypatch.setattr(lf_render, "run_ffmpeg", fake_ffmpeg)
+
+    def last_graph() -> str:
+        graphs = [c for c in calls if "-filter_complex" in c]
+        return graphs[-1][graphs[-1].index("-filter_complex") + 1]
+
+    # Bridge given 4.5s for a 2.0s voice: ducked under the voice, released at its 0.12s delay + 2.0s.
+    voiceover.render_narrator_bridge(
+        wav, src, tmp_path / "br.mp4", tmp_path, badge_text="#1 · SOURAV JOSHI", headline="Khaas Pal", duration=4.5,
+    )
+    fc = last_graph()
+    assert "[0:a]atrim=0:4.850," in fc
+    assert "[bedsrc0]volume=0.06,lowpass=f=900,afade=t=out:st=2.120:d=0.35[bedduck]" in fc
+    assert "[bedsrc1]volume=0.14,lowpass=f=2000,afade=t=in:st=2.120:d=0.35[bedopen]" in fc
+    assert "afade=t=in:d=0.20,afade=t=out:st=4.650:d=0.20,asetpts=N/SR/TB[bed]" in fc
+    assert f"[vo][bed]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,{limiter_last}" in fc
+
+    # A narration length that cannot be read keeps the duck for the whole card: never swell under a voice.
+    unreadable = tmp_path / "unreadable.wav"
+    unreadable.write_bytes(b"RIFF")
+    voiceover.render_narrator_bridge(
+        unreadable, src, tmp_path / "br2.mp4", tmp_path, badge_text="#1 · SOURAV JOSHI", headline="Khaas Pal", duration=4.5,
+    )
+    fc = last_graph()
+    assert "volume=0.06,lowpass=f=900" in fc and "asplit" not in fc and "volume=0.14" not in fc
+
+    # Cold open: a 2.0s hook under the 4.8s floor is released at its 0.18s delay + 2.0s.
+    seg = planner.SegmentPlan(str(src), "https://youtu.be/1", "1", "@souravjvlogs", "Sourav Joshi", "Vlog", 10.0, 70.0, 95.0, "Teaser", "hi")
+    co_dur = lf_render._render_cold_open_with_hook(seg, seg, wav, 2.0, tmp_path / "co.mp4", tmp_path, format_kind="best_of", brand_name="@Brand")
+    assert co_dur == pytest.approx(4.8)
+    fc = last_graph()
+    assert "[bedsrc0]volume=0.06,lowpass=f=900,afade=t=out:st=2.180:d=0.35[bedduck]" in fc
+    assert "[bedsrc1]volume=0.18,lowpass=f=2400,afade=t=in:st=2.180:d=0.35[bedopen]" in fc
+    assert "aformat=channel_layouts=stereo,asetpts=N/SR/TB[aout]" in fc and limiter_last in fc
+
+
 def test_longform_invariants_winproc_and_no_idle_numpy():
     proc = subprocess.run(
         [sys.executable, "-c", "import sys, app.main, app.review, app.config, app.db, app.logging_config; assert 'numpy' not in sys.modules"],

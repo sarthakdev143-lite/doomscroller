@@ -27,6 +27,14 @@ _MOTION_WIDTH, _MOTION_HEIGHT = 1996, 1124
 _TRANSITION_SEC = 0.16
 _END_SCREEN_SEC = 8.0
 _ALIMITER = "alimiter=limit=0.84:attack=2:release=40:level=0:latency=1"
+# Source audio under a narrator (cold open hook, narrator bridge): low and muffled so the voice reads.
+_NARRATION_DUCK = "volume=0.06,lowpass=f=900"
+# Once the narration ends the bed returns to these, each card's level from before the duck existed.
+_COLD_OPEN_BED_OPEN = "volume=0.18,lowpass=f=2400"
+_BRIDGE_BED_OPEN = "volume=0.14,lowpass=f=2000"
+_BED_RELEASE_SEC = 0.35
+_COLD_OPEN_VO_DELAY_MS = 180
+_BRIDGE_VO_DELAY_MS = 120
 _KINETIC_POP = r"\fscx114\fscy114\t(0,140,\fscx100\fscy100)"
 _BRAND_ASS_STYLE = (
     "Style: Brand,{font_name},30,&H38FFFFFF,&H000000FF,&H20000000,&H00000000,"
@@ -345,6 +353,43 @@ def _build_entry_sfx(
     return None
 
 
+def _narrated_source_bed(
+    dur: float,
+    narration_end: float,
+    *,
+    open_level: str,
+    fade_in: float,
+    fade_out_st: float,
+    fade_out: float = 0.20,
+) -> list[str]:
+    """Filter parts turning `[0:a]` into the `[bed]` of a narrated card (cold open, narrator bridge).
+
+    The source is ducked to `_NARRATION_DUCK` while the narrator speaks, so the voice stays clear.
+    A card can outlast its narration: the cold open never runs under 4.8s however short the hook, and
+    a bridge may be given longer than its voice-over. A duck that never lets go leaves that remainder
+    ~24 dB under the source, which measured as -48 dBFS dead air between the narrator and the next act.
+    So once the narration ends (`narration_end`, card time) the bed crossfades over `_BED_RELEASE_SEC`
+    to `open_level`, the level these cards used before the duck was added. Both copies are one decode
+    of the same samples, so the linear crossfade has no dip. An unknown narration end (<= 0) or one at
+    the card's end keeps the duck throughout, the old graph exactly: never swell under a voice.
+    """
+    d = f"{dur:.3f}"
+    fades = f"afade=t=in:d={fade_in:.2f},afade=t=out:st={fade_out_st:.3f}:d={fade_out:.2f},asetpts=N/SR/TB[bed]"
+    release = float(narration_end or 0.0)
+    if release <= 0.0 or release >= dur - 0.05:
+        return [
+            f"[0:a]atrim=0:{d},asetpts=PTS-STARTPTS,{_NARRATION_DUCK},"
+            f"aresample=48000,aformat=channel_layouts=stereo,apad=whole_dur={d},atrim=0:{d},{fades}"
+        ]
+    return [
+        f"[0:a]atrim=0:{d},asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo,"
+        f"apad=whole_dur={d},atrim=0:{d},asetpts=N/SR/TB,asplit=2[bedsrc0][bedsrc1]",
+        f"[bedsrc0]{_NARRATION_DUCK},afade=t=out:st={release:.3f}:d={_BED_RELEASE_SEC:.2f}[bedduck]",
+        f"[bedsrc1]{open_level},afade=t=in:st={release:.3f}:d={_BED_RELEASE_SEC:.2f}[bedopen]",
+        f"[bedduck][bedopen]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,{fades}",
+    ]
+
+
 def _pick_real_music(seed: str) -> Optional[Path]:
     """Pick an owner/CC track from content/music/, never a _synth sine bed."""
     if not settings.clip_music:
@@ -422,9 +467,11 @@ def _render_cold_open_with_hook(
         f"[0:v]tpad=stop_mode=clone:stop_duration=3,trim=0:{dur:.3f},"
         f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,crop={WIDTH}:{HEIGHT},setsar=1,fps={FPS},"
         f"fade=t=in:st=0:d=0.18,fade=t=out:st={fade_out_v:.3f}:d=0.20,{ass_arg}[vout]",
-        f"[1:a]adelay=180|180,loudnorm=I=-14:TP=-1.5:LRA=9,aresample=48000,"
+        f"[1:a]adelay={_COLD_OPEN_VO_DELAY_MS}|{_COLD_OPEN_VO_DELAY_MS},loudnorm=I=-14:TP=-1.5:LRA=9,aresample=48000,"
         f"aformat=channel_layouts=stereo,apad=whole_dur={dur:.3f},atrim=0:{dur:.3f},asetpts=N/SR/TB[vo]",
     ]
+    # hook_dur is the trimmed TTS length (synthesize_wav), so the voice ends at its delay plus that.
+    narration_end = (_COLD_OPEN_VO_DELAY_MS / 1000.0 + float(hook_dur)) if hook_dur else 0.0
     mix_labels = ["[vo]"]
     if has_music:
         parts.append(
@@ -434,11 +481,9 @@ def _render_cold_open_with_hook(
         )
         mix_labels.append("[bed]")
     elif info.has_audio:
-        parts.append(
-            f"[0:a]atrim=0:{dur:.3f},asetpts=PTS-STARTPTS,volume=0.06,lowpass=f=900,"
-            f"aresample=48000,aformat=channel_layouts=stereo,apad=whole_dur={dur:.3f},atrim=0:{dur:.3f},"
-            f"afade=t=in:d=0.18,afade=t=out:st={fade_out_a:.3f}:d=0.20,asetpts=N/SR/TB[bed]"
-        )
+        parts.extend(_narrated_source_bed(
+            dur, narration_end, open_level=_COLD_OPEN_BED_OPEN, fade_in=0.18, fade_out_st=fade_out_a,
+        ))
         mix_labels.append("[bed]")
     if sfx_idx >= 0:
         parts.append(

@@ -522,7 +522,18 @@ def render_narrator_bridge(
 ) -> float:
     """Render a live-motion 1080p narrator bridge with clean upper-left typography & ducked stereo audio."""
     from app.clipper.render import _filter_path_arg
-    from .render import FPS, HEIGHT, WIDTH, _common_encode_args, _find_bright_offset, _probe_duration, _write_bridge_ass
+    from .render import (
+        _BRIDGE_BED_OPEN,
+        _BRIDGE_VO_DELAY_MS,
+        FPS,
+        HEIGHT,
+        WIDTH,
+        _common_encode_args,
+        _find_bright_offset,
+        _narrated_source_bed,
+        _probe_duration,
+        _write_bridge_ass,
+    )
 
     dur = max(1.0, float(duration or 1.0) + 0.35)
     need_src = max(1.0, dur / 1.18)
@@ -565,9 +576,13 @@ def render_narrator_bridge(
         f"crop={WIDTH}:{HEIGHT},setsar=1,eq=brightness=-0.12:contrast=1.08:saturation=1.05,"
         f"tpad=stop_mode=clone:stop_duration=3,trim=0:{dur:.3f},fps={FPS},"
         f"fade=t=in:st=0:d=0.22,fade=t=out:st={fade_out_v:.3f}:d=0.18,{ass_arg}[v]",
-        f"[1:a]adelay=120|120,loudnorm=I=-14:TP=-1.5:LRA=9,aresample=48000,"
+        f"[1:a]adelay={_BRIDGE_VO_DELAY_MS}|{_BRIDGE_VO_DELAY_MS},loudnorm=I=-14:TP=-1.5:LRA=9,aresample=48000,"
         f"aformat=channel_layouts=stereo,apad=whole_dur={dur:.3f},atrim=0:{dur:.3f},asetpts=N/SR/TB[vo]",
     ]
+    # The narration's own length, not `duration`: a bridge can be asked to run longer than its voice.
+    # synthesize_wav measured this same file with _wav_duration; 0.0 (unreadable) keeps the duck throughout.
+    vo_len = _wav_duration(Path(wav_path))
+    narration_end = (_BRIDGE_VO_DELAY_MS / 1000.0 + vo_len) if vo_len > 0 else 0.0
     if has_music:
         filters.append(
             f"[2:a]volume=0.08,aresample=48000,aformat=channel_layouts=stereo,"
@@ -576,11 +591,9 @@ def render_narrator_bridge(
         )
         filters.append(f"[vo][bed]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,{_ALIMITER},aformat=channel_layouts=stereo,asetpts=N/SR/TB[a]")
     elif src_info.has_audio:
-        filters.append(
-            f"[0:a]atrim=0:{dur:.3f},asetpts=PTS-STARTPTS,volume=0.06,lowpass=f=900,"
-            f"aresample=48000,aformat=channel_layouts=stereo,apad=whole_dur={dur:.3f},atrim=0:{dur:.3f},"
-            f"afade=t=in:d=0.20,afade=t=out:st={fade_out_a:.3f}:d=0.20,asetpts=N/SR/TB[bed]"
-        )
+        filters.extend(_narrated_source_bed(
+            dur, narration_end, open_level=_BRIDGE_BED_OPEN, fade_in=0.20, fade_out_st=fade_out_a,
+        ))
         filters.append(f"[vo][bed]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,{_ALIMITER},aformat=channel_layouts=stereo,asetpts=N/SR/TB[a]")
     else:
         filters.append(f"[vo]{_ALIMITER},aformat=channel_layouts=stereo,asetpts=N/SR/TB[a]")
