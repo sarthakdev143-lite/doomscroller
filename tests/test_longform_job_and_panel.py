@@ -47,6 +47,9 @@ def _signed_client() -> TestClient:
 
 def test_real_channels_json_is_valid_and_sets_both_channels_to_1_long_per_day(monkeypatch):
     real_cfg = Path(__file__).resolve().parent.parent / "channels.json"
+    if not real_cfg.is_file():
+        # The owner's live channel config is git-ignored, so CI and fresh worktrees have none to check.
+        pytest.skip("no channels.json at the repo root (owner-only, git-ignored)")
     monkeypatch.setattr(settings, "channels_file", str(real_cfg))
     entries = channels._load_config()
     assert entries is not None

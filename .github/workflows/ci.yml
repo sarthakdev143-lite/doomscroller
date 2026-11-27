@@ -1,8 +1,11 @@
 name: CI
 
+# Every branch is tested here, on GitHub's runners, so the heavy suites (real ffmpeg renders, the SaaS app,
+# the Workers) never have to run on the owner's laptop. This runs the repo's own tests only: customer
+# rendering never runs on Actions (its terms forbid using it as a compute backend; see CLAUDE.md).
 on:
   push:
-    branches: [main, master]
+    branches: ["**"]
   pull_request:
   workflow_dispatch:
 
@@ -12,6 +15,9 @@ permissions:
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  DOOMSCROLLER_ENV_FILE: ""
 
 jobs:
   test:
@@ -71,10 +77,103 @@ jobs:
       - name: Run offline system and repo surface audit
         shell: bash
         env:
-          DOOMSCROLLER_ENV_FILE: ""
           USE_MOCK: "true"
         run: python scripts/final_audit.py --offline
 
       - name: Run fast test suite
         shell: bash
         run: pytest -q -m "not slow"
+
+  slow:
+    # The real-ffmpeg tier (renders, filter graphs, long-form audio): ~20 minutes and several GB of memory.
+    name: Slow tier (real ffmpeg)
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install ffmpeg and fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core fonts-noto-core
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pytest
+
+      - name: Run slow test suite
+        run: pytest -q -m slow --ignore=tests/saas -o console_output_style=classic -rfE --junitxml=slow-junit.xml
+
+      - name: Upload slow-tier report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: slow-junit
+          path: slow-junit.xml
+          if-no-files-found: ignore
+
+  saas:
+    # The SaaS app (its own venv, as on the owner's machine), then both Cloudflare projects. edge-app's end-to-end
+    # tests start the real app from .venv-saas, so the venv is built at the repo root first.
+    name: SaaS + Workers
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-saas.txt
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: |
+            edge/package-lock.json
+            edge-app/package-lock.json
+
+      - name: Install ffmpeg and fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core fonts-noto-core
+
+      - name: Build .venv-saas
+        run: |
+          python -m venv .venv-saas
+          .venv-saas/bin/python -m pip install --upgrade pip
+          .venv-saas/bin/python -m pip install -r requirements-saas.txt pytest
+
+      - name: SaaS tests (fast)
+        run: .venv-saas/bin/python -m pytest tests/saas -q -m "not slow"
+
+      - name: SaaS tests (slow)
+        run: .venv-saas/bin/python -m pytest tests/saas -q -m slow
+
+      - name: Waitlist site (edge/)
+        working-directory: edge
+        run: |
+          npm ci
+          npm test
+
+      - name: Beta-access Worker (edge-app/)
+        working-directory: edge-app
+        run: |
+          npm ci
+          npm test
