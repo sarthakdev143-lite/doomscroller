@@ -1,0 +1,49 @@
+# doomscroller beta edge Worker: app proxy over Workers VPC + Buy Me a Coffee relay on D1.
+# Separate from the marketing site (edge/, a Pages project): different name, different D1 database.
+# Run every wrangler command for this Worker from edge-app/ so this file is the one in use.
+# Setup steps, in order: docs/saas/beta-edge.md (guided: scripts/setup.ps1).
+#
+# Built from these pages (read 2026-11-27; Workers VPC is a beta product and may change before GA):
+#   https://developers.cloudflare.com/workers-vpc/                              overview, "free to all Workers plans" in beta
+#   https://developers.cloudflare.com/workers-vpc/get-started/                  tunnel -> VPC service -> [[vpc_services]] -> deploy
+#   https://developers.cloudflare.com/workers-vpc/configuration/vpc-services/  binding keys, host/port routing, http vs https
+#   https://developers.cloudflare.com/workers-vpc/configuration/tunnel/        cloudflared >= 2025.7.0, QUIC, UDP 7844 outbound
+#   https://developers.cloudflare.com/workers-vpc/reference/wrangler-commands/ wrangler vpc service create|list|get|update|delete
+#   https://developers.cloudflare.com/workers-vpc/reference/troubleshooting/   fetch() throws when the service is unreachable
+#   https://developers.cloudflare.com/workers-vpc/platform/limits/             "Standard Workers limits apply"
+#   https://developers.cloudflare.com/workers/platform/limits/                 Free: 100,000 requests/day, 10 ms CPU, 100 MB request body
+#   https://developers.cloudflare.com/workers/runtime-apis/streams/            stream bodies instead of buffering
+#   https://www.cloudflare.com/service-specific-terms-application-services/    video must go through e.g. the Developer Platform
+#   https://cdn.buymeacoffee.com/assets/integrations/bmc-webhooks-openapi.json BMC signature, retries, 15 s deadline
+
+name = "doomscroller-app"
+main = "src/index.js"
+# The installed runtime (workerd 1.20261110) supports dates up to 2026-11-10; keep this at or below that.
+compatibility_date = "2026-11-01"
+workers_dev = true
+
+[vars]
+# Public, non-secret settings. Secrets are uploaded with `wrangler deploy --secrets-file` or
+# `wrangler secret put` (EDGE_SECRET, BMC_WEBHOOK_SECRET, RELAY_TOKEN), never written here.
+BRAND_NAME = "doomscroller"
+PUBLIC_SITE_URL = "https://doomscroller-studio.pages.dev"   # linked from the offline page
+UPSTREAM_HEADERS_TIMEOUT_MS = "60000"                       # GET/HEAD only; 0 turns it off
+BMC_MAX_EVENT_AGE_HOURS = "72"                              # same default as SAAS_BMC_MAX_EVENT_AGE_HOURS
+RELAY_RETENTION_DAYS = "90"                                 # acknowledged BMC events are deleted after this
+
+# The laptop's app, through a cloudflared tunnel registered as a Workers VPC service
+# (`wrangler vpc service create ... --type http --tunnel-id <id> --ipv4 127.0.0.1 --http-port 8700`).
+# Replace the placeholder with the service id that command prints (docs/saas/beta-edge.md step 4).
+# `remote = true` makes `wrangler dev` reach the real service; the tests never use this file.
+[[vpc_services]]
+binding = "STUDIO"
+service_id = "00000000-0000-0000-0000-000000000000"
+remote = true
+
+# A NEW database for the relay. Never put the waitlist database id from edge/wrangler.toml here.
+# Replace the placeholder with the id printed by `npx wrangler d1 create doomscroller-relay` (step 3).
+[[d1_databases]]
+binding = "DB"
+database_name = "doomscroller-relay"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"

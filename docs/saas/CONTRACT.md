@@ -144,6 +144,27 @@ connection address and the X-DS-* headers are removed, so `client_ip()` and ever
 see the real visitor. **The proxy must drop any client-sent `X-DS-*` headers before adding its own, and
 must also carry `/webhooks/*`** (BMC etc. can then only reach the origin through it).
 
+**Beta edge Worker and BMC relay** (`edge-app/`, `saas/billing/bmc_relay.py`; setup in docs/saas/beta-edge.md).
+The proxy above is a Worker (`doomscroller-app` on workers.dev) that reaches the laptop through a Workers VPC
+binding. It signs the canonical IP (`str(ipaddress.ip_address(ip))`; shared vectors in
+`edge-app/test/vectors.json`). If the laptop is unreachable it answers 503 `studio_offline` (504 `studio_timeout`
+for a GET with no answer in 60 s). That is a branded HTML page for browsers and `{"error", "message"}` for
+`/api`, `/mcp`, `/files` and `/webhooks`. The app's own responses pass through unchanged. The Worker answers
+`POST /webhooks/bmc` itself; the app never sees it. Relay endpoints (`Authorization: Bearer <RELAY_TOKEN>` =
+`SAAS_BMC_RELAY_TOKEN`, 32+ chars):
+- `GET /_relay/bmc/events?after=<seq>&limit=<1-100>` → `{ok, events: [{seq, event_id, type, live_mode, created,
+  attempt, received_at, signature, body_b64, failures, last_error}], next_after, more}`. Returns unacked events
+  oldest first and does not consume them. `body_b64` is the exact signed body.
+- `POST /_relay/bmc/ack {acks: [{seq, result: /^[a-z_]{1,32}$/, detail?}]}` (≤200) → `{ok, acked,
+  errors_recorded}`. `result: "error"` counts a failure and keeps the event queued. Any other result removes it.
+- The Worker stores each distinct body once (by SHA-256). It refuses bad signatures with 400 and stale events
+  with 200 `ignored`, answers 503 when D1 fails, and deletes acked rows after 90 days.
+- The poller (`SAAS_BMC_RELAY_URL`, `SAAS_BMC_RELAY_TOKEN`, `SAAS_BMC_RELAY_POLL_SECONDS`=30; started by
+  `saas_serve.py` in the web process) re-runs the `/webhooks/bmc` checks with the same code:
+  `verify_bmc_signature`, the test-event rule, then `process_event` + `bmc.stable_key`. One difference: age is
+  measured from `received_at`, not now. It acks definitive results; 5xx, signature mismatches and undecodable
+  bodies stay queued.
+
 **Edge waitlist -> app invites** (core agent, `saas/auth/waitlist_bridge.py`). The live waitlist is D1
 (edge/); app signup redeems invites against the app's `waitlist_entries`. The owner bridges them with
 `scripts/saas_manage.py import-waitlist <export.csv> [--invite N] [--include-flagged] [--dry-run] [--out invites.csv]`

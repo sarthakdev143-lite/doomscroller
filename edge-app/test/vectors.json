@@ -1,0 +1,122 @@
+{
+ "_comment": "Shared by edge-app/test (JS) and tests/saas/test_billing_bmc_relay.py (Python). Generated from saas.auth.edge.client_sig and Python's ipaddress; the Python test re-derives every value, so the two sides cannot drift.",
+ "edge_secret": "vectors-edge-secret-0123456789abcdef",
+ "client_sig": [
+  {
+   "ip": "203.0.113.7",
+   "minute": 29620800,
+   "sig": "fa147c8013a7d0cb3f78ab7c9d44aebd82ad0b49e1533e3f1c4c0acf21ed98ea"
+  },
+  {
+   "ip": "2001:db8::1",
+   "minute": 29620801,
+   "sig": "b288733d2fa92ad8d4705aeb1bcde52f329463358fb4cb66b858ffd4a94e3304"
+  },
+  {
+   "ip": "198.51.100.9",
+   "minute": 0,
+   "sig": "a6b42de889b13cb3095a76201c4bfff35c5ef8c3b9aeeaff1f410dd857fe0d9f"
+  }
+ ],
+ "ip_canonical": [
+  {
+   "in": "203.0.113.7",
+   "out": "203.0.113.7"
+  },
+  {
+   "in": "8.8.8.8",
+   "out": "8.8.8.8"
+  },
+  {
+   "in": "2001:DB8::1",
+   "out": "2001:db8::1"
+  },
+  {
+   "in": "2001:0db8:0000:0000:0000:ff00:0042:8329",
+   "out": "2001:db8::ff00:42:8329"
+  },
+  {
+   "in": "2001:db8:0:0:1:0:0:1",
+   "out": "2001:db8::1:0:0:1"
+  },
+  {
+   "in": "2001:db8:0:1:0:0:0:1",
+   "out": "2001:db8:0:1::1"
+  },
+  {
+   "in": "::1",
+   "out": "::1"
+  },
+  {
+   "in": "::",
+   "out": "::"
+  },
+  {
+   "in": "1:0:0:0:0:0:0:0",
+   "out": "1::"
+  },
+  {
+   "in": "0:0:0:0:0:0:0:1",
+   "out": "::1"
+  },
+  {
+   "in": "2001:db8:1:1:1:1:1:0",
+   "out": "2001:db8:1:1:1:1:1:0"
+  },
+  {
+   "in": "2a06:98c0:3600::103",
+   "out": "2a06:98c0:3600::103"
+  },
+  {
+   "in": "64:ff9b::192.0.2.33",
+   "out": "64:ff9b::c000:221"
+  },
+  {
+   "in": "fe80:0:0:0:0:0:0:1",
+   "out": "fe80::1"
+  },
+  {
+   "in": "2001:db8:0:0:0:0:2:1",
+   "out": "2001:db8::2:1"
+  },
+  {
+   "in": "2001:0:0:1:0:0:0:1",
+   "out": "2001:0:0:1::1"
+  },
+  {
+   "in": "::ffff:198.51.100.9",
+   "out": "198.51.100.9",
+   "note": "IPv4-mapped: the Worker sends the IPv4 client itself; Python prints this form differently across versions"
+  },
+  {
+   "in": "::FFFF:203.0.113.200",
+   "out": "203.0.113.200",
+   "note": "IPv4-mapped, upper case"
+  },
+  {
+   "in": " 1.2.3.4 ",
+   "out": "1.2.3.4",
+   "note": "surrounding whitespace is dropped, as saas/auth/edge.py strips the header before parsing"
+  }
+ ],
+ "ip_invalid": [
+  "1.2.3",
+  "300.1.1.1",
+  "01.2.3.4",
+  "2001:db8::1::2",
+  "fe80::1%eth0",
+  "",
+  "not-an-ip",
+  "1:2:3:4:5:6:7:8:9",
+  "::ffff:1.2.3",
+  "12345::1",
+  "1::2::3",
+  ":1:2:3:4:5:6:7",
+  "1:2:3:4:5:6:7:"
+ ],
+ "bmc": {
+  "secret": "vectors-bmc-signing-secret",
+  "body": "{\"event_id\": 4242, \"type\": \"extra_purchase.created\", \"live_mode\": true, \"created\": 1795000000, \"attempt\": 1, \"data\": {\"id\": 9001, \"supporter_email\": \"Zoë@example.com\", \"amount\": 35.0, \"currency\": \"USD\", \"note\": \"café ☕\"}}",
+  "sig": "6ed3d3f83b774cc93630c46b7bd8325bec84602e5e7f001f69793050b702db92"
+ }
+}

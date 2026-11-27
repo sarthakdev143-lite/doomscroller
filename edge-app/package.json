@@ -1,0 +1,18 @@
+{
+  "name": "doomscroller-app-edge",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Beta-access Worker: proxies the app on the owner's laptop through Workers VPC and relays Buy Me a Coffee webhooks via D1. Setup: docs/saas/beta-edge.md",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test --test-concurrency=1 \"test/*.test.mjs\"",
+    "check": "wrangler deploy --dry-run --outdir .wrangler/dry-run"
+  },
+  "devDependencies": {
+    "miniflare": "5.20261110.2-beta",
+    "wrangler": "4.161.0"
+  }
+}

@@ -174,6 +174,13 @@ def main() -> int:
     sup = threading.Thread(target=pool.supervise, daemon=True, name="saas-workers")
     sup.start()
     threading.Thread(target=_backup_loop, args=(pool.stop,), daemon=True, name="saas-backup").start()
+    from saas.billing import bmc_relay
+
+    if not args.no_web and bmc_relay.configured():
+        # Buy Me a Coffee posts to the edge Worker, which keeps events in D1 until we pull them (docs/saas/beta-edge.md).
+        threading.Thread(target=bmc_relay.run_forever, args=(pool.stop,), daemon=True, name="saas-bmc-relay").start()
+        print(f"[saas] pulling Buy Me a Coffee events from the edge relay every "
+              f"{max(5, bmc_relay.relay_settings.poll_seconds)}s", flush=True)
     try:
         if args.no_web:
             while True:
