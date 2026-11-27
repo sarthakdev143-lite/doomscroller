@@ -116,6 +116,12 @@ def main() -> int:
     args = ap.parse_args()
 
     loaded = _load_env_file()
+    if not os.environ.get("SAAS_SECRET_KEY") and os.environ.get("SAAS_ENV", "dev").lower() != "prod":
+        # Dev convenience: one random key shared by the web process and every worker, so links signed in
+        # one process verify in another. Still dies on restart; prod requires a real SAAS_SECRET_KEY.
+        import secrets as _secrets
+
+        os.environ["SAAS_SECRET_KEY"] = _secrets.token_urlsafe(48)
     from saas.config import settings
     from saas.db import init_db
 

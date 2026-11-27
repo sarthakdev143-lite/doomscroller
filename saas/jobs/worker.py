@@ -252,10 +252,14 @@ class Worker:
             if actual_s > 0:
                 charge = min(job.credits_reserved, service.credits_for(actual_s))
             shorts = min(len(rows), job.shorts_reserved) if job.funding == "free" else 0
+            notes = [str(w)[:300] for w in (result.get("warnings") or []) if w][:10]
+            asked = int((job.options or {}).get("clips", len(rows)))
+            if len(rows) < asked:
+                notes.insert(0, f"Only {len(rows)} of the {asked} clips you asked for met our quality bar in this video.")
             now = utcnow()
             res = db.execute(update(Job).where(Job.id == job_id, Job.status.in_(RUNNING_STATUSES))
                              .values(status="done", stage="done", progress=1.0, finished_at=now, credits_charged=charge,
-                                     shorts_charged=shorts,
+                                     shorts_charged=shorts, notes=notes,
                                      meter=_safe_meter(result.get("meter")),
                                      source_title=(str(src.get("title"))[:300] if src.get("title") else job.source_title)))
             if res.rowcount != 1:

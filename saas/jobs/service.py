@@ -215,7 +215,7 @@ def job_view(db: Session, job: Job, *, include_clips: bool = True, signed: bool 
            "created_at": job.created_at.isoformat(),
            "started_at": job.started_at.isoformat() if job.started_at else None,
            "finished_at": job.finished_at.isoformat() if job.finished_at else None,
-           "cancel_requested": bool(job.cancel_requested),
+           "cancel_requested": bool(job.cancel_requested), "notes": list(job.notes or []),
            "error": {"code": job.error_code, "message": job.error_message} if job.error_code else None}
     if include_clips:
         clips = (db.query(Clip).filter(Clip.job_id == job.id, Clip.user_id == job.user_id, Clip.deleted_at.is_(None))

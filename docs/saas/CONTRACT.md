@@ -261,7 +261,9 @@ API key scopes: `jobs:read`, `jobs:write`, `clips:read`, `clips:write`, `billing
 - `GET /api/jobs?status=&limit=&before=`, `GET /api/jobs/{id}` → `{id, status, stage, progress (0-1),
   source: {kind, url, upload_id, title, duration_s, thumbnail}, options, credits_reserved, credits_charged,
   funding: "free"|"credits", shorts_reserved, shorts_charged, watermark, via,
-  created_at, started_at, finished_at, cancel_requested, clips: [...], error: {code, message} | null}`;
+  created_at, started_at, finished_at, cancel_requested, notes: [str], clips: [...], error: {code, message} | null}`;
+  `notes` are customer-safe engine warnings, led by "Only N of the M clips you asked for met our quality
+  bar" when the engine finds fewer strong moments than requested (credits are still per source minute).
   `POST /api/jobs/{id}/cancel` → job.
 - Job creation errors: 402 `insufficient_credits`, 403 `email_unverified` / `billing_hold`,
   429 `too_many_active_jobs` / `daily_limit`, 400 `source_not_allowed` / `source_too_long` / `invalid_options`.

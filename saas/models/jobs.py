@@ -70,6 +70,7 @@ class Job(Base):
     error_code: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     meter: Mapped[dict] = mapped_column(JSON, default=dict)  # app.clipper.metering summary (admin cost view)
+    notes: Mapped[list] = mapped_column(JSON, default=list)  # customer-safe engine warnings, e.g. fewer clips
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, index=True)
     claimed_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime, nullable=True)
     heartbeat_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime, nullable=True)

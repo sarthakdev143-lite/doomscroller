@@ -23,6 +23,7 @@ from ..config import settings
 log = logging.getLogger("saas.auth.crypto")
 
 _EPHEMERAL = secrets.token_bytes(32)
+_warned_ephemeral = False
 _MIN_PROD_SECRET = 32
 
 
@@ -35,7 +36,10 @@ def master_key() -> bytes:
     if settings.is_prod and len(raw) < _MIN_PROD_SECRET:
         raise SecretKeyMissing("SAAS_SECRET_KEY must be set (32+ characters) when SAAS_ENV=prod")
     if not raw:
-        log.warning("SAAS_SECRET_KEY is empty: using an ephemeral key (sessions and 2FA die on restart)")
+        global _warned_ephemeral
+        if not _warned_ephemeral:
+            _warned_ephemeral = True
+            log.warning("SAAS_SECRET_KEY is empty: using an ephemeral key (sessions and 2FA die on restart)")
         return _EPHEMERAL
     return raw
 

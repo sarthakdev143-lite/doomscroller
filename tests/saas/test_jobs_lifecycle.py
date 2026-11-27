@@ -102,6 +102,25 @@ def test_free_tier_ends_at_whichever_meter_runs_out(client, core, saas_db, sourc
     assert ledger.balance(saas_db, u.id) == 0
 
 
+def test_fewer_clips_than_asked_are_explained(client, core, saas_db, sources):
+    from saas.jobs.engine import MockEngine
+
+    class OneGoodMoment(MockEngine):
+        def run(self, **kw):
+            out = super().run(**kw)
+            out["clips"] = out["clips"][:1]
+            out["warnings"] = ["clip 2 failed: no strong moment"]
+            return out
+
+    make_user(saas_db, "fewer@example.com", plan="pro", credits=20)
+    h = login(client, "fewer@example.com")
+    job = _create(client, h, clips=2)
+    worker(OneGoodMoment()).run_one()
+    body = client.get(f"/api/jobs/{job['id']}").json()
+    assert body["status"] == "done" and len(body["clips"]) == 1
+    assert body["notes"][0].startswith("Only 1 of the 2 clips") and "clip 2 failed: no strong moment" in body["notes"]
+
+
 def test_engine_failure_releases_credits(client, core, saas_db, sources):
     from saas.billing import ledger
     from saas.jobs.engine import EngineError, MockEngine
