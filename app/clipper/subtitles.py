@@ -79,7 +79,7 @@ def parse_vtt(raw: str | bytes) -> list[tuple[float, float, str]]:
 
 
 def already_captioned(path: str, info: MediaInfo) -> bool:
-    if not ai.available() or not math.isfinite(info.duration) or info.duration <= 0:
+    if not ai.can_see() or not math.isfinite(info.duration) or info.duration <= 0:
         return False
     with tempfile.TemporaryDirectory(prefix="clipper-subs-", ignore_cleanup_errors=True) as tmp:
         frames = []

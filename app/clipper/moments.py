@@ -636,7 +636,12 @@ def pick_visual(path: str, info: MediaInfo, signals: Signals, *, count: int, tit
                   if not any(clashes(c, other) for other in used)]  # snapping to a cut can move an edge into used footage
     if not candidates:
         return []
-    reply = _ai_rank_visual(path, candidates, title, used) if ai.available() else None
+    sees = ai.can_see()
+    if not sees and ai.available():
+        # A text-only model (an API without a vision model) cannot judge frames, so the floor its
+        # presence set does not apply: rules rank instead. With no AI at all the floor still means "none".
+        min_score = 0.0
+    reply = _ai_rank_visual(path, candidates, title, used) if sees else None
     rated: list[Moment] = []
     for clip in _reply_clips(reply):
         if not isinstance(clip, dict):

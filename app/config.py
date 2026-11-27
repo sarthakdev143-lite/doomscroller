@@ -235,6 +235,9 @@ class Settings(BaseSettings):
     # it at one folder shared by every job (Pixabay's 24h cache rule, Giphy's quota) while each job's source
     # and transcript stay private under its own CONTENT_DIR.
     clip_shared_cache_dir: str = ""
+    # The CC0-only sound pack the seam uses by default (built by `scripts/fetch_sfx.py --cc0`, or synthesised
+    # on first use). Empty means CONTENT_DIR/sfx_cc0. The owner pipeline keeps CLIP_SFX_PACK_DIR.
+    clip_cc0_sfx_dir: str = ""
     # With the api backend: "anthropic" (Messages API) or "openai_compatible" (any /chat/completions endpoint,
     # e.g. Gemini https://generativelanguage.googleapis.com/v1beta/openai or Groq https://api.groq.com/openai/v1).
     clip_ai_api_provider: str = "anthropic"
@@ -243,10 +246,16 @@ class Settings(BaseSettings):
     clip_ai_api_key: str = ""
     # Empty means claude-haiku-5-5 for anthropic (cheapest); openai_compatible needs one named.
     clip_ai_api_model: str = ""
-    # Must accept images (stock-shot judging, frame strips). Empty means clip_ai_api_model.
+    # Must accept images (stock-shot judging, frame strips). Empty means clip_ai_api_model for anthropic (every
+    # current Claude model sees); for openai_compatible empty means "no vision", so picture checks are skipped
+    # (and B-roll with them) rather than sent to a text-only model.
     clip_ai_api_vision_model: str = ""
-    # Anthropic only: low | medium | high | xhigh | max; empty leaves the model's own default.
+    # anthropic: low | medium | high | xhigh | max. openai_compatible: low | medium | high, sent as
+    # reasoning_effort (gpt-oss on Groq). Empty leaves the model's own default.
     clip_ai_api_effort: str = ""
+    # The reply budget per call; 0 means 16000 (anthropic) or 8192 (openai_compatible). Groq reserves it
+    # against the per-minute token limit (8K on its base tier), so a Groq setup wants ~2048.
+    clip_ai_api_max_tokens: int = 0
     # Anthropic only: server-side refusal fallback (beta), a declined request re-run on a fallback model.
     clip_ai_api_fallbacks: bool = True
     # Empty means https://api.anthropic.com for anthropic; openai_compatible needs one.
@@ -469,7 +478,7 @@ class Settings(BaseSettings):
         "max_uploads_per_day", "youtube_default_category", "growth_uploads_per_day",
         "growth_explore_days", "growth_horizon_hours", "growth_min_gap_minutes",
         "growth_min_inventory", "growth_clips_per_source", "growth_watch_minutes",
-        "growth_watch_min_seconds", "llm_timeout_sec",
+        "growth_watch_min_seconds", "llm_timeout_sec", "clip_ai_api_max_tokens",
         mode="before",
     )
     @classmethod

@@ -231,7 +231,26 @@ def _api_model(files: Sequence[str]) -> str:
     if not text and api_provider() == ANTHROPIC:
         # Cheapest current model: the owner runs on a zero budget. Name a bigger one in CLIP_AI_API_MODEL.
         text = "claude-haiku-5-5"
-    return (vision or text) if files else text
+    if not files:
+        return text
+    # Every Claude model sees, so Anthropic may reuse the text model. An OpenAI-compatible text model
+    # (gpt-oss on Groq) does not: sending it pictures fails every call, so no vision model means no call.
+    return vision or (text if api_provider() == ANTHROPIC else "")
+
+
+def can_see() -> bool:
+    """Whether the AI in use can look at pictures (stock shots, frame strips, burned-in captions)."""
+    if backend() == "api":
+        return bool(_api_key() and _api_base() and _api_model(("frame.jpg",)))
+    return available()
+
+
+def _max_tokens(default: int) -> int:
+    try:
+        configured = int(getattr(settings, "clip_ai_api_max_tokens", 0) or 0)
+    except (TypeError, ValueError):
+        configured = 0
+    return configured if configured > 0 else default
 
 
 def _images(files: Sequence[str]) -> list[tuple[str, str]]:
@@ -281,7 +300,7 @@ def _retry_wait(response: Optional[httpx.Response], attempt: int) -> float:
 def _anthropic_request(prompt: str, files: Sequence[str], model: str, key: str, base: str) -> tuple[str, dict, dict]:
     body: dict = {
         "model": model,
-        "max_tokens": _API_MAX_TOKENS,
+        "max_tokens": _max_tokens(_API_MAX_TOKENS),
         "system": _CLAUDE_SYSTEM,
         "messages": [{"role": "user", "content": _api_content(prompt, files)}],
     }
@@ -311,10 +330,13 @@ def _anthropic_reply(data: dict) -> tuple[Optional[str], dict]:
 def _openai_request(prompt: str, files: Sequence[str], model: str, key: str, base: str) -> tuple[str, dict, dict]:
     body = {
         "model": model,
-        "max_tokens": _OPENAI_MAX_TOKENS,
+        "max_tokens": _max_tokens(_OPENAI_MAX_TOKENS),
         "messages": [{"role": "system", "content": _CLAUDE_SYSTEM},
                      {"role": "user", "content": _openai_content(prompt, files)}],
     }
+    effort = str(getattr(settings, "clip_ai_api_effort", "") or "").strip().lower()
+    if effort in ("low", "medium", "high"):
+        body["reasoning_effort"] = effort
     headers = {"authorization": f"Bearer {key}", "content-type": "application/json"}
     return f"{base}/chat/completions", headers, body
 
@@ -353,6 +375,7 @@ def _ask_api(prompt: str, *, files: Sequence[str] = ()) -> Optional[str]:
         metering.record("llm", provider=provider, model=served_by or model, ok=ok, images=len(files),
                         **{"input_tokens": 0, "output_tokens": 0, **(counts or {})})
 
+    shrunk = False
     for attempt in range(_API_RETRIES + 1):
         try:
             response = httpx.post(url, json=body, headers=headers, timeout=timeout)
@@ -364,6 +387,14 @@ def _ask_api(prompt: str, *, files: Sequence[str] = ()) -> Optional[str]:
             spent(False)
             return None
         status = response.status_code
+        smaller = _fitted_max_tokens(response, body.get("max_tokens")) if status in (413, 429) else None
+        if smaller and not shrunk:
+            # Groq reserves the reply budget against its per-minute token limit, so a request can be "too
+            # large" with a short prompt. Ask for a smaller reply once, instead of failing every call.
+            log.info("%s api: reply budget %s is over the per-minute limit; retrying with %s",
+                     provider, body.get("max_tokens"), smaller)
+            body["max_tokens"], shrunk = smaller, True
+            continue
         if (status in (408, 409, 429) or status >= 500) and attempt < _API_RETRIES:
             time.sleep(_retry_wait(response, attempt))
             continue
@@ -381,6 +412,24 @@ def _ask_api(prompt: str, *, files: Sequence[str] = ()) -> Optional[str]:
         spent(text is not None, counts, str(data.get("model") or ""))
         return text
     return None
+
+
+_TOO_LARGE = re.compile(r"Limit\D{0,3}(\d+)\D{1,12}Requested\D{0,3}(\d+)", re.IGNORECASE)
+_MIN_REPLY_TOKENS = 1024
+
+
+def _fitted_max_tokens(response: httpx.Response, current: object) -> Optional[int]:
+    """A reply budget that fits a "request too large" token limit, or None when the error is not that."""
+    try:
+        text = response.text or ""
+    except Exception:
+        return None
+    match = _TOO_LARGE.search(text) if "too large" in text.lower() else None
+    if not match or not isinstance(current, int):
+        return None
+    limit, requested = int(match.group(1)), int(match.group(2))
+    fitted = current - (requested - limit) - 256
+    return fitted if _MIN_REPLY_TOKENS <= fitted < current else None
 
 
 def _events_text_and_error(stdout: str | bytes) -> tuple[str, str]:

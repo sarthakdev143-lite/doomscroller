@@ -101,6 +101,17 @@ _MEME_BAND_GAP = 90
 _MEME_FILL_Y = 230
 # A customer logo fits inside this box, centred where the brand handle sits.
 _LOGO_BOX = (220, 88)
+# The editor can move the logo to a corner, clear of the progress bar at the top, of the title Shorts draws
+# over the bottom fifth and of its button column on the right. Captions sit under the picture in the framed
+# layout, so there a bottom corner is the picture's own corner (a station bug); in fill it is under the captions.
+LOGO_POSITIONS = ("center", "top-left", "top-right", "bottom-left", "bottom-right")
+_LOGO_MARGIN_X = 40
+_LOGO_BUTTONS_MARGIN_X = 140  # bottom-right keeps clear of the like/comment/share column
+_LOGO_TOP_Y = 120
+_LOGO_FILL_BOTTOM_Y = 1530  # the logo's lower edge in fill: under the captions, above the Shorts title
+_LOGO_PICTURE_INSET = 24
+# A meme the editor silenced: drawn, with no sound of its own.
+NO_SOUND = "none"
 
 
 @dataclass
@@ -126,6 +137,13 @@ class ClipPlan:
     focus_y_expr: str = ""
     tail: float = 0.0  # seconds the last frame is held at the end, under a meme sound
     logo: str = ""  # an image shown small where the brand handle would be, for the whole clip
+    logo_position: str = "center"
+    logo_scale: float = 0.0  # share of the canvas width; 0 keeps the default box
+    # The cut as rendered, before the end hold: an opening the render skipped is already gone. The editor
+    # keeps these, so a clip rendered again from them comes out the same length.
+    edit_segments: tuple[Segment, ...] = ()
+    moment_start: float = 0.0
+    moment_end: float = 0.0
     end_fade: float = _END_FADE
     ass_path: str = "clip.ass"
     fonts_dir: str = "fonts"
@@ -317,6 +335,8 @@ def sound_cues(edit: EditPlan, points: Sequence[float] = (), *, effects: bool = 
         for start, _seconds, _path, _offset in _broll_shots(edit):
             cues.append(Cue(max(0.0, start - 0.14), WHOOSH))
     for start, seconds, _path, sound in _meme_shots(edit):
+        if sound == NO_SOUND:
+            continue
         if sound in (IMPACT, POP, WHOOSH):
             cues.append(Cue(start, sound))
         else:
@@ -613,17 +633,29 @@ def build_filtergraph(plan: ClipPlan, info: MediaInfo, seek: float) -> str:
         parts.append(f"[{meme_base + index}:v]scale={_MEME_WIDTH}:-2:flags=lanczos,setsar=1,fps={FPS},"
                      f"setpts=PTS-STARTPTS+{start:.3f}/TB[meme{index}]")
         parts.append(chain + f"[munder{index}]")
-        parts.append(f"[munder{index}][meme{index}]overlay=x='W-w-40+max(0,(1-(t-{start:.3f})/0.14))*140':y={meme_y}:"
+        # A logo in the top-right corner owns that slot, so memes slide in on the left instead.
+        meme_x = (f"40-max(0,(1-(t-{start:.3f})/0.14))*140" if plan.logo and plan.logo_position == "top-right"
+                  else f"W-w-40+max(0,(1-(t-{start:.3f})/0.14))*140")
+        parts.append(f"[munder{index}][meme{index}]overlay=x='{meme_x}':y={meme_y}:"
                      f"eof_action=pass:enable='between(t,{start - _HALF_FRAME:.3f},{start + seconds - _HALF_FRAME:.3f})'"
                      f"[mover{index}]")
         chain = f"[mover{index}]null"
     if plan.logo:
         logo_input = meme_base + len(plan.memes) + (1 if plan.music else 0)
         brand_y = max(160, top - 48) if plan.picture_height else 175
-        parts.append(f"[{logo_input}:v]scale={_LOGO_BOX[0]}:{_LOGO_BOX[1]}:force_original_aspect_ratio=decrease:"
+        scale = plan.logo_scale if math.isfinite(plan.logo_scale) and plan.logo_scale > 0 else 0.0
+        box_w = max(2, int(round(WIDTH * scale)) // 2 * 2) if scale else _LOGO_BOX[0]
+        box_h = max(2, int(round(box_w * 0.5)) // 2 * 2) if scale else _LOGO_BOX[1]
+        parts.append(f"[{logo_input}:v]scale={box_w}:{box_h}:force_original_aspect_ratio=decrease:"
                      f"flags=lanczos,format=rgba,setsar=1[logo]")
         parts.append(chain + "[unlogo]")
-        chain = f"[unlogo][logo]overlay=x=(W-w)/2:y={brand_y}-h/2:shortest=0:eof_action=repeat"
+        position = plan.logo_position if plan.logo_position in LOGO_POSITIONS else "center"
+        bottom = top + height - _LOGO_PICTURE_INSET if plan.picture_height else _LOGO_FILL_BOTTOM_Y
+        x = {"top-left": str(_LOGO_MARGIN_X), "bottom-left": str(_LOGO_MARGIN_X),
+             "top-right": f"W-w-{_LOGO_MARGIN_X}", "bottom-right": f"W-w-{_LOGO_BUTTONS_MARGIN_X}"}.get(position, "(W-w)/2")
+        y = {"top-left": str(_LOGO_TOP_Y), "top-right": str(_LOGO_TOP_Y),
+             "bottom-left": f"{bottom}-h", "bottom-right": f"{bottom}-h"}.get(position, f"{brand_y}-h/2")
+        chain = f"[unlogo][logo]overlay=x={x}:y={y}:shortest=0:eof_action=repeat"
     if plan.has_graphics:
         chain += f",ass={_filter_path_arg(plan.ass_path)}:fontsdir={_filter_path_arg(plan.fonts_dir)}"
     parts.append(chain + "[graphics]")
@@ -853,7 +885,8 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
                   words: Sequence[Word], out_path: str, edit: Optional[EditPlan] = None, creator: str = "",
                   music: Optional[str] = None, captions: bool = True, source_captioned: bool = False,
                   brand: Optional[str] = None, sting: Optional[str] = None, language: str = "",
-                  watermark: str = "", logo: str = "") -> ClipPlan:
+                  watermark: str = "", logo: str = "", logo_position: str = "center", logo_scale: float = 0.0,
+                  summary: bool = True, skip_dark_opening: bool = True) -> ClipPlan:
     """Write the finished clip to ``out_path`` and return its plan.
 
     ``source_captioned`` means the footage burns in its own captions. In the framed layout their band is cut
@@ -870,7 +903,8 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
     # Only speech clips close up their pauses; captions apply to either kind.
     cut_on = words if moment.kind == "speech" else []
     segments = list(edit.segments) if edit else keep_segments(moment.start, moment.end, cut_on, settings.clip_silence_gap_sec)
-    if segments and segments[0][1] - segments[0][0] >= 4.0:
+    # A re-render starts from a cut this already trimmed, so it never shaves the opening twice.
+    if skip_dark_opening and segments and segments[0][1] - segments[0][0] >= 4.0:
         seg0_start, seg0_end = segments[0]
         word_source = (edit.words or edit.opening_words or words) if edit else words
         first_w = next((w for w in word_source if w.end > seg0_start and w.start < seg0_end), None)
@@ -900,6 +934,7 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
         beats = []
     sound = load_sting(sting) if sting and info.has_audio and settings.clip_sfx else None
     loop_clean = bool(settings.clip_loop_ending) and sound is None
+    cut = tuple(segments)
     if not loop_clean:
         segments = with_end_hold(segments, info.duration)
     crop_bottom = _CAPTION_BAND if source_captioned and _picture_height(info) else 0.0
@@ -933,7 +968,7 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
     est_dur = total_duration(segments) / speed_est
     summary_cues = (
         _clean_vlog_summary_cues(moment, est_dur, moment.hook, language=language)
-        if (not captions and not clip_words and not (source_captioned and not crop_bottom))
+        if (summary and not captions and not clip_words and not (source_captioned and not crop_bottom))
         else []
     )
     has_text = bool(font and os.path.isfile(font)) and bool(
@@ -944,14 +979,17 @@ def render_moment(source: str, info: MediaInfo, signals: Signals, moment: Moment
                      end_fade=0.02 if loop_clean else _END_FADE, hold_end=not loop_clean)
     if music and info.has_audio:
         plan.music = os.path.abspath(music)
+    plan.edit_segments, plan.moment_start, plan.moment_end = cut, moment.start, moment.end
     plan.logo = logo
+    plan.logo_position = logo_position if logo_position in LOGO_POSITIONS else "center"
+    plan.logo_scale = min(0.25, max(0.06, logo_scale)) if math.isfinite(logo_scale) and logo_scale > 0 else 0.0
     sting_at = plan.duration
     if sound is not None:
         # Hold the last frame under the sound, so it lands after the punchline and never over a word.
         plan.tail = round(len(sound) / RATE + _STING_PAD_SEC, 3)
         plan.duration += plan.tail
         plan.has_sfx = True
-    if not captions and not clip_words and not (source_captioned and not crop_bottom):
+    if summary and not captions and not clip_words and not (source_captioned and not crop_bottom):
         summary_cues = _clean_vlog_summary_cues(moment, plan.duration, moment.hook, language=language)
 
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)

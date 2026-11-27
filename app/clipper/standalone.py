@@ -26,7 +26,7 @@ from typing import Callable, Iterator, Optional, Sequence
 from app.config import settings
 from app.logging_config import scrub_secrets
 
-from . import ai, metering, subtitles
+from . import ai, cc0_sfx, editor, metering, subtitles
 from . import music as music_mod
 from . import sfx as sfx_mod
 from .broll import StockSession
@@ -100,6 +100,33 @@ def logo_ok(path: str) -> bool:
         return False
 
 
+def resolve_sfx_pack(explicit: Optional[Path], cache: Path) -> Path:
+    """The caller's pack, else the CC0 pack. Resolved before CONTENT_DIR is pointed at the job's cache."""
+    if explicit:
+        return Path(explicit).expanduser()
+    try:
+        return cc0_sfx.ensure_pack()
+    except (OSError, ValueError) as exc:
+        # No pack at all means every cue is synthesised in the render, which is still licence-free.
+        log.warning("standalone: no CC0 sound pack (%s); effects are synthesised", exc)
+        return cache / "sfx_none"
+
+
+def write_bundle(*args, **kwargs):
+    """What a clip was made from, kept for :func:`rerender_clip` (a module-level name, so tests can stub it)."""
+    return editor.write_bundle(*args, **kwargs)
+
+
+def rerender_clip(manifest_path, spec, out_path, *, custom_memes: Sequence[str] = (), logo_path: Optional[str] = None,
+                  sfx_pack_dir: Optional[Path] = None, music_dir: Optional[Path] = None,
+                  cache_dir: Optional[Path] = None,
+                  on_stage: Optional[Callable[[str, float], None]] = None) -> dict:
+    """Render a clip again from its manifest with an edit spec applied. See :func:`app.clipper.editor.rerender_clip`."""
+    return editor.rerender_clip(manifest_path, spec, out_path, custom_memes=custom_memes, logo_path=logo_path,
+                                sfx_pack_dir=sfx_pack_dir, music_dir=music_dir, cache_dir=cache_dir,
+                                on_stage=on_stage)
+
+
 def make_thumbnail(clip_path: Path, duration: float) -> Optional[Path]:
     """A JPEG of one frame a third of the way in, after the hook has left the screen. None if it fails."""
     target = clip_path.with_suffix(".jpg")
@@ -135,8 +162,9 @@ def clip_to_directory(source: str, out_dir: Path, *, count: int = 3, language: s
     the meme library on each reaction beat, with the same no-repeat rule and a sound of their own or a
     matching sting. Both are read from where they are; nothing is written beside them.
 
-    ``sfx_pack_dir`` defaults to this deployment's configured pack; ``music_dir`` defaults to an empty
-    folder under the cache, so music (when on) is the zero-copyright synthesised bed.
+    ``sfx_pack_dir`` defaults to the CC0-only pack (:mod:`app.clipper.cc0_sfx`, synthesised on first use), never
+    the owner's meme-sound pack; ``music_dir`` defaults to an empty folder under the cache, so music (when on)
+    is the zero-copyright synthesised bed.
 
     ``shared_cache_dir`` holds only stock-footage and meme searches and downloads, so jobs share them
     (Pixabay asks for 24h caching; Giphy's quota is small). The source, transcript and everything else
@@ -145,7 +173,7 @@ def clip_to_directory(source: str, out_dir: Path, *, count: int = 3, language: s
     out = Path(out_dir).expanduser().resolve()
     out.mkdir(parents=True, exist_ok=True)
     cache = Path(cache_dir).expanduser().resolve() if cache_dir else out / ".cache"
-    pack = Path(sfx_pack_dir).expanduser() if sfx_pack_dir else sfx_mod.pack_dir()
+    pack = resolve_sfx_pack(sfx_pack_dir, cache)
     count = max(1, min(20, int(count)))
     max_clip_seconds = max(15, min(90, int(max_clip_seconds)))
     wanted_language = language if language in _LANGUAGES else "auto"
@@ -220,6 +248,9 @@ def _run(source: str, out: Path, *, count: int, wanted_language: str, captions: 
     if wanted_language != "auto" and language and language != wanted_language:
         warn(f"asked for {wanted_language}, but the speech sounds like {language}; clips follow the speech")
     burned_in = speech and subtitles.already_captioned(src.path, info)
+    if speech and ai.available() and not ai.can_see():
+        warn("the AI model in use cannot look at pictures, so the video was not checked for captions of its "
+             "own, stock footage is off, and visual moments are picked by rules")
 
     report("selecting", 0.3)
     signals = analyse(src.path, info)
@@ -268,6 +299,23 @@ def _run(source: str, out: Path, *, count: int, wanted_language: str, captions: 
         thumb = make_thumbnail(clip_path, made.plan.duration)
         title = moment.title or (f"{src.title} - part {number}" if src.title else f"Clip {number}")
         description = " ".join(p for p in (moment.description, made.credit) if p).strip()
+        tags = hashtags(moment.tags or tuple(src.keywords), title)
+        manifest = None
+        try:
+            manifest = write_bundle(
+                clip_path, src_path=src.path, info=info, signals=signals, moment=moment, edit=made.edit,
+                plan=made.plan, words=words,
+                language=language, timed=timed, burned_in=burned_in, captions=captions, track=track,
+                sting=str(stings[moment.sound]) if moment.sound in stings else None, brand=brand,
+                watermark=watermark, logo=logo if getattr(made.plan, "logo", "") else "", title=title[:100],
+                description=description[:5000], hashtags=tags,
+                score=round(float(moment.score or 0.0), 2), custom_memes=custom_memes,
+                options={"captions": captions, "broll": settings.clip_broll, "memes": settings.clip_memes,
+                         "sfx": settings.clip_sfx, "music": settings.clip_music, "max_clip_seconds": max_clip_seconds})
+        except Interrupted:
+            raise
+        except Exception as exc:  # the clip is fine; only later editing is lost
+            warn(f"clip {number} cannot be edited later: {exc}")
         clips.append({
             "path": str(clip_path),
             "thumbnail_path": str(thumb) if thumb else None,
@@ -276,12 +324,14 @@ def _run(source: str, out: Path, *, count: int, wanted_language: str, captions: 
             "end_s": round(moment.end, 2),
             "title": title[:100],
             "description": description[:5000],
-            "hashtags": hashtags(moment.tags or tuple(src.keywords), title),
+            "hashtags": tags,
             "score": round(float(moment.score or 0.0), 2),
             "language": language or "",
             "kind": moment.kind,
             "hook": moment.hook,
             "memes_used": [key for keys in made.meme_keys for key in keys],
+            "manifest_path": str(manifest) if manifest else None,
+            "source_excerpt_path": str(clip_path.with_name(f"{clip_path.stem}_source.mp4")) if manifest else None,
         })
     if not clips:
         raise ClipError("render_failed", warnings[-1] if warnings else "every clip failed to render")

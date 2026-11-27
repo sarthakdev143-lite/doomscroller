@@ -570,6 +570,10 @@ def attach_stock(plan: EditPlan, session: Optional[broll.StockSession] = None) -
         # A library search matches tags, not meaning, so an unjudged result is a guess.
         plan.cutaways = []
         return ["no AI to check stock footage against the words, so this clip has no B-roll"]
+    if not ai.can_see():
+        plan.cutaways = []
+        return ["the AI model in use cannot look at pictures (no CLIP_AI_API_VISION_MODEL), "
+                "so stock footage cannot be checked and this clip has no B-roll"]
     session = session or broll.StockSession()
     warnings: list[str] = []
     used: set[str] = set()

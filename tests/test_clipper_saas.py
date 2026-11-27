@@ -126,6 +126,7 @@ def _api(monkeypatch, provider="anthropic", **extra):
     monkeypatch.setattr(settings, "clip_ai_api_key", extra.get("key", ""))
     monkeypatch.setattr(settings, "clip_ai_api_model", extra.get("model", ""))
     monkeypatch.setattr(settings, "clip_ai_api_base_url", extra.get("base", ""))
+    monkeypatch.setattr(settings, "clip_ai_api_vision_model", extra.get("vision", ""))
     monkeypatch.setattr(ai, "opencode_path", lambda: pytest.fail("the api backend never runs a CLI"))
     monkeypatch.setattr(ai, "claude_path", lambda: pytest.fail("the api backend never runs a CLI"))
 
@@ -189,8 +190,8 @@ def test_anthropic_refusal_rate_limit_and_errors(monkeypatch, caplog):
 
 def test_openai_compatible_provider_for_gemini_or_groq(monkeypatch, tmp_path):
     _api(monkeypatch, provider="openai_compatible", key="gk", model="gemini-2.5-flash",
-         base="https://generativelanguage.googleapis.com/v1beta/openai")
-    assert ai.available()
+         base="https://generativelanguage.googleapis.com/v1beta/openai", vision="gemini-2.5-flash")
+    assert ai.available() and ai.can_see()
     sent = []
 
     def post(url, json=None, headers=None, timeout=None):
@@ -214,6 +215,108 @@ def test_openai_compatible_provider_for_gemini_or_groq(monkeypatch, tmp_path):
 def test_openai_compatible_needs_a_model_and_a_base_url(monkeypatch):
     _api(monkeypatch, provider="openai_compatible", key="gk")
     assert not ai.available()
+
+
+# The free Groq setup, exactly as CONTRACT.md documents it (models checked against Groq's docs 2026-11-27:
+# gpt-oss-120b and whisper-large-v3-turbo are production models; Groq lists no vision model).
+GROQ_PRESET = {
+    "CLIP_AI_BACKEND": "api",
+    "CLIP_AI_API_PROVIDER": "openai_compatible",
+    "CLIP_AI_API_BASE_URL": "https://api.groq.com/openai/v1",
+    "CLIP_AI_API_KEY": "gsk_test",
+    "CLIP_AI_API_MODEL": "openai/gpt-oss-120b",
+    "CLIP_AI_API_EFFORT": "low",
+    "CLIP_AI_API_MAX_TOKENS": "2048",
+    "CLIP_STT_PROVIDER": "openai_compatible",
+    "CLIP_STT_BASE_URL": "https://api.groq.com/openai/v1",
+    "CLIP_STT_API_KEY": "gsk_test",
+    "CLIP_STT_MODEL": "whisper-large-v3-turbo",
+}
+
+
+@pytest.fixture
+def groq(monkeypatch):
+    from app.config import Settings
+    for name, value in GROQ_PRESET.items():
+        monkeypatch.setenv(name, value)
+    parsed = Settings(_env_file=None)
+    for name in GROQ_PRESET:
+        monkeypatch.setattr(settings, name.lower(), getattr(parsed, name.lower()))
+    monkeypatch.setattr(settings, "clip_ai_api_vision_model", "")
+    monkeypatch.setattr(ai, "opencode_path", lambda: pytest.fail("the api backend never runs a CLI"))
+    monkeypatch.setattr(ai, "claude_path", lambda: pytest.fail("the api backend never runs a CLI"))
+    return parsed
+
+
+def test_the_groq_preset_parses_and_asks_gpt_oss_with_a_budget_that_fits_the_free_tier(groq, monkeypatch):
+    from app.clipper import whisper_stt
+    assert groq.clip_ai_api_max_tokens == 2048 and ai.available() and whisper_stt.available()
+    sent = []
+
+    def post(url, json=None, headers=None, timeout=None):
+        sent.append((url, json, headers))
+        return _Response(200, {"model": "openai/gpt-oss-120b", "usage": {"prompt_tokens": 9, "completion_tokens": 3},
+                               "choices": [{"message": {"content": '{"ok": 1}'}, "finish_reason": "stop"}]})
+
+    monkeypatch.setattr(ai.httpx, "post", post)
+    assert ai.ask_json("Pick. JSON only.") == {"ok": 1}
+    url, body, headers = sent[0]
+    assert url == "https://api.groq.com/openai/v1/chat/completions" and headers["authorization"] == "Bearer gsk_test"
+    assert body["model"] == "openai/gpt-oss-120b" and body["max_tokens"] == 2048 and body["reasoning_effort"] == "low"
+    assert isinstance(body["messages"][1]["content"], str)  # plain text, no image parts for a text model
+
+
+def test_without_a_vision_model_pictures_are_never_sent_and_broll_turns_off_with_a_note(groq, monkeypatch, tmp_path):
+    from app.clipper import edit, subtitles
+    from app.clipper.edit import Cutaway, EditPlan
+    monkeypatch.setattr(ai.httpx, "post", lambda *a, **k: pytest.fail("no picture may reach a text-only model"))
+    sheet = tmp_path / "sheet.jpg"
+    sheet.write_bytes(b"\xff\xd8jpeg")
+    assert not ai.can_see() and ai.ask_json("Judge.", files=[str(sheet)]) is None
+    monkeypatch.setattr(edit.broll, "available", lambda: True)
+    plan = EditPlan(words=[], segments=[(0.0, 30.0)], cutaways=[Cutaway(5.0, 2.0, "red car", subject="car")])
+    notes = edit.attach_stock(plan)
+    assert plan.cutaways == [] and "cannot look at pictures" in notes[0]
+    monkeypatch.setattr(subtitles, "run_ffmpeg", lambda *a, **k: pytest.fail("no frames are pulled for nothing"))
+    assert subtitles.already_captioned(str(sheet), INFO) is False
+
+
+def test_without_vision_visual_moments_are_ranked_by_rules_not_dropped(groq, monkeypatch):
+    from app.clipper import moments
+    picked = [Moment(10.0, 30.0, kind="visual", score=40.0), Moment(60.0, 80.0, kind="visual", score=30.0)]
+    monkeypatch.setattr(moments, "rank_windows", lambda *a, **k: list(picked))
+    monkeypatch.setattr(moments, "_ai_rank_visual", lambda *a, **k: pytest.fail("no frames go to a text model"))
+    signals = type("S", (), {"duration": 600.0})()
+    # The seam asks for a 75 floor whenever an AI is configured; a text-only one must not empty the job.
+    got = moments.pick_visual("v.mp4", INFO, signals, count=2, title="Talk", min_score=75.0)
+    assert [m.start for m in got] == [10.0, 60.0]
+
+
+def test_a_vision_model_turns_picture_checks_back_on(groq, monkeypatch):
+    monkeypatch.setattr(settings, "clip_ai_api_vision_model", "a-vision-model")
+    assert ai.can_see() and ai._api_model(["x.jpg"]) == "a-vision-model"
+
+
+def test_groq_request_too_large_retries_once_with_a_reply_budget_that_fits(groq, monkeypatch):
+    monkeypatch.setattr(settings, "clip_ai_api_max_tokens", 4096)
+    budgets = []
+    too_large = ("Request too large for model `openai/gpt-oss-120b` in organization `org_x` service tier "
+                 "`on_demand` on tokens per minute (TPM): Limit 8000, Requested 8881, please reduce your message size")
+
+    def post(url, json=None, headers=None, timeout=None):
+        budgets.append(json["max_tokens"])
+        if len(budgets) == 1:
+            return _Response(413, {"error": {"message": too_large, "type": "tokens", "code": "rate_limit_exceeded"}})
+        return _Response(200, {"choices": [{"message": {"content": "fits"}, "finish_reason": "stop"}], "usage": {}})
+
+    monkeypatch.setattr(ai.httpx, "post", post)
+    assert ai.ask("x") == "fits" and budgets == [4096, 4096 - 881 - 256]
+    # A prompt that is itself over the limit is not retried into a uselessly small reply.
+    budgets.clear()
+    monkeypatch.setattr(settings, "clip_ai_api_max_tokens", 2048)
+    monkeypatch.setattr(ai.httpx, "post", lambda url, json=None, **k: budgets.append(json["max_tokens"]) or
+                        _Response(413, {"error": {"message": too_large.replace("8881", "9900")}}))
+    assert ai.ask("x") is None and budgets == [2048]
 
 
 # ---------- cheaper speech-to-text ----------
@@ -285,6 +388,54 @@ def test_a_failed_sarvam_still_falls_back_to_deepgram_once(monkeypatch, tmp_path
     monkeypatch.setattr(sarvam, "transcribe", lambda *a, **k: asked.append(1) or None)
     tr.transcribe(str(video), INFO)
     assert sent == ["sample_0.mp3", "sample_1.mp3", "audio.mp3"] and len(asked) == 1
+
+
+def _speech_wav(path, spans, seconds):
+    """A 16kHz mono WAV with a voice-like tone inside ``spans`` and near-silence elsewhere."""
+    import wave
+
+    import numpy as np
+    t = np.arange(int(16000 * seconds)) / 16000
+    level = np.full_like(t, 0.0005)
+    for a, b in spans:
+        level[(t >= a) & (t < b)] = 0.3
+    pcm = (np.sin(2 * np.pi * 180 * t) * level * 32767).astype("<i2")
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(16000)
+        handle.writeframes(pcm.tobytes())
+    return str(path)
+
+
+def test_sarvam_windows_end_in_a_pause_and_words_land_on_speech(monkeypatch, tmp_path):
+    from app.clipper import sarvam
+    wav = _speech_wav(tmp_path / "a.wav", [(0.5, 18.0), (19.2, 40.0)], 40.0)
+    active = sarvam.speech_frames(wav)
+    assert active[100] and not active[1860] and active[2500]
+    # The window ends in the 18.0-19.2s pause instead of cutting a word at 25s.
+    assert sarvam._window_end(active, 0.0, 40.0) == pytest.approx(18.6, abs=0.05)
+    assert sarvam._window_end(None, 0.0, 40.0) == 25.0
+    # Sarvam's one chunk per window is spread over the speech, never into the pause.
+    words = sarvam._split_chunk(" ".join(f"w{i}" for i in range(20)), 10.0, 25.0, active)
+    assert all(not (18.0 <= w.start < 19.2) for w in words)
+    assert all(w.end <= 18.05 or w.start >= 19.2 for w in words)  # the word before the pause ends with its sound
+    assert words[0].start == pytest.approx(10.0, abs=0.02) and words[-1].end <= 25.0
+    assert sarvam._split_chunk("a b", 10.0, 12.0) == sarvam._split_chunk("a b", 10.0, 12.0, None)  # old behaviour kept
+
+    monkeypatch.setattr(settings, "sarvam_api_key", "sv")
+    monkeypatch.setattr(sarvam, "_segment", lambda *a, **k: None)
+    windows = []
+    monkeypatch.setattr(sarvam, "_call", lambda path, code: windows.append(path) or
+                        {"transcript": "एक दो", "timestamps": {"words": ["एक दो"], "start_time_seconds": [0.0],
+                                                               "end_time_seconds": [5.0]}})
+    starts = []
+    real_words_from = sarvam._words_from
+    monkeypatch.setattr(sarvam, "_words_from", lambda p, offset, seg_len, active=None:
+                        starts.append((offset, seg_len)) or real_words_from(p, offset, seg_len, active))
+    got = sarvam.transcribe(wav, 40.0)
+    assert got is not None and starts[0] == (0.0, pytest.approx(18.6, abs=0.05))
+    assert sum(length for _, length in starts) == pytest.approx(40.0)
 
 
 def test_whisper_words_take_punctuation_from_their_segments():
@@ -365,6 +516,16 @@ def _seam(monkeypatch, tmp_path, *, moments=None, fail=None):
 
     monkeypatch.setattr(standalone, "produce_clip", produce_clip)
     monkeypatch.setattr(standalone, "make_thumbnail", lambda path, d: Path(path).with_suffix(".jpg"))
+
+    def write_bundle(clip_path, **kw):
+        calls.setdefault("bundle", []).append(kw)
+        manifest = Path(clip_path).with_name(Path(clip_path).stem + "_manifest.json")
+        manifest.write_text("{}", encoding="utf-8")
+        return manifest
+
+    monkeypatch.setattr(standalone, "write_bundle", write_bundle)
+    monkeypatch.setattr(standalone, "resolve_sfx_pack",
+                        lambda explicit, cache: Path(explicit) if explicit else tmp_path / "cc0")
     return calls
 
 
