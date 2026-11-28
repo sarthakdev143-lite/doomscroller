@@ -1,7 +1,13 @@
 # Direction D footage: sources and licences
 
-Everything in this folder comes from one public NASA video, cut by this product's own pipeline
-(`app.clipper.standalone.clip_to_directory`). Checked 2026-11-28.
+The direction D footage comes from two public NASA videos, cut by this product's own pipeline
+(`app.clipper.standalone.clip_to_directory`) on GitHub Actions (`.github/workflows/showcase.yml`, driven by
+`scripts/showcase/edit_decision_list.json`), never on the owner's laptop. Checked 2026-11-28.
+
+- Source 1, "Shedding Light on Black Holes" (`black_holes`): the sections below through "Third-party material
+  inside the footage", and "Black Holes: cut results".
+- Source 2, "Eye on Neptune" (`eye_on_neptune`): "Source 2: Eye on Neptune" (vetting evidence, edits, credits).
+- The NASA licence decision ("Licence decision") covers both.
 
 ## Source
 
@@ -131,10 +137,132 @@ ESO's terms also say: "ESO materials, images and videos may not be used to state
 any ESO employee of a commercial product or service" and "If an image includes a picture of an identifiable person,
 using that image for commercial purposes is not permitted." Neither applies here.
 
-## Shipped files
+## Black Holes: cut results
 
-**None yet (status 2026-11-28).** The licence check, source choice and edit list are done; no clip has been cut.
-The cut runs on GitHub Actions, never on the owner's laptop: `.github/workflows/showcase.yml` downloads the NASA
-original, checks its sha256, rebuilds the working copy from `scripts/showcase/edit_decision_list.json`, verifies it,
-runs one cutting run and uploads the clips and judging evidence as the artifact `showcase-black_holes`. Kept clips,
-their source ranges and the credits each contains are listed here once they are judged.
+Run 46085200172 (success): 3 clips returned for 8 asked.
+
+| Clip | Title | Decision | Why |
+|---|---|---|---|
+| `clip_01_20_50` | Myth Busted: Black Holes Emit Light | **Keep** | Title and hook match myth 1. The 0.37 s dark stretch at 16 s is NASA's own dissolve, not a render fault. |
+| `clip_02_64_85` | How Close Can You Get to a Black Hole? | **Keep** | Matches myth 3. Note: it opens on the spoken "Myth 3" (and its title card), which a page caption may want to account for. |
+| `clip_03_86_117` | (not shipped) | **Reject** | Ends mid-sentence ("…learn even more about the properties"); drifts from swap-the-sun into the EHT/Einstein lines and NASA's outro; 0.9 s of black at 10.1 s. The mid-sentence end is being investigated separately in `app/clipper/`. |
+
+The burned-in caption detector said **True** (the myth title cards print the spoken sentence); the driver override
+kept our word captions, as the edit list documents.
+
+`cut_on_push` is now **false** for this source, so later pushes do not re-cut it.
+
+## The standard every shipped frame meets
+
+- No identifiable person (no faces, no name cards; astronaut footage is not used at all).
+- No NASA insignia, wordmark or logo in any frame; no title, hook or caption that says "NASA".
+- No third-party material unless its licence allows commercial use, checked at the origin, with its credit kept.
+- No licensed music: narration only, measured (a narration-only track falls silent between sentences).
+- No dated or housekeeping lines ("on September 9", "visit science.nasa.gov").
+- Every cut sits in a pause between sentences; nothing of a removed segment's picture leaks in (bumpers, dissolves).
+
+## Source 2: "NASA ScienceCasts: Eye on Neptune" (`eye_on_neptune`)
+
+Vetted on 2026-11-28 from the workflow's vetting pack (contact sheets every 2 s, top-corner strips every 4 s,
+bottom credit band every 2 s, frames at every cut point, silence profile, caption wording scan), plus five single
+full-resolution frames fetched by range request to test the bug treatment.
+
+| | |
+|---|---|
+| Original | https://images-assets.nasa.gov/video/302_EyeOnNeptune/302_EyeOnNeptune~orig.mp4 (NASA HQ, Sept 2019) |
+| Size / sha256 | 92,878,849 bytes / `63e01601b2964438a9a7650fdeb87bbaf3f69699aa9e87c2f9cb8cc9c4753e86` (pinned) |
+| Streams | H.264 1900x1068 30 fps; AAC stereo 48 kHz (track used) + AC-3; 194.9 s |
+| Verdict | **Passes, as a 59.37 s working copy of three segments.** `approved: true`, `cut_on_push: true` |
+
+### Kept segments (original seconds) and why each boundary is where it is
+
+| Segment | Keep | Says | Boundary evidence |
+|---|---|---|---|
+| 1 | 14.40-21.40 | "It is an ice giant, a planet of monster storms, and a recluse rarely seen." | Speech 14.76-21.07 (-60 dB pauses 13.85-14.76, 21.07-21.73). The Science@NASA wordmark is still faintly visible at 14.19 and gone by 14.29. "September 9th" is drawn on screen from ~22 s. |
+| 2 | 98.49-128.90 | "Voyager 2 provided our closest glimpse of Neptune … a dark and violent vortex … Since then, observatories such as the Hubble Space Telescope have given us additional observations of the planet from afar." | Speech 98.91-128.84 (pauses 98.06-98.91, 128.84-129.74). The preceding "…in 1989." ends at 98.06. The Hubble-to-Neptune dissolve starts ~129.0. |
+| 3 | 139.44-161.40 | "Scientists have determined that Neptune has seasons … spanning decades instead of months … including right here on Earth." | Speech 139.86-161.34 (pauses 139.08-139.86, 161.34-162.00). The Earth shot dissolves into a Stellarium sky from ~161.6. |
+
+The segments join as one coherent narration: "…a planet of monster storms, and a recluse rarely seen. Voyager 2
+provided our closest glimpse … from afar. Scientists have determined that Neptune has seasons …".
+
+Working time to original time: `orig = work + 14.40` (work < 7.0), `work + 91.49` (7.0-37.41), `work + 102.03`
+(>= 37.41).
+
+### What was dropped, and why
+
+| Original | Reason |
+|---|---|
+| 0-14.40 | Science@NASA bumper and wordmark (fades out 13.7-14.3). |
+| 21.40-64.66 | Dated lines ("on the night of September 9 … at opposition", "evenings in September"); stargazer silhouettes (32-38 s) and a person at a computer (40-42 s); "September 9th" on screen. |
+| 64.66-89.17 | Stellarium-rendered sky and sky chart ("Skymap Credit: Stellarium", 44-69.6 s) under a sentence that runs 65.08-80.57, so no sentence-boundary cut avoids it (see licences below). Without it, "That atmosphere surrounds…" (81.29-88.84) has no antecedent. Also ends in a dissolve into 1977 launch footage (~88.85). |
+| 89.17-98.49 | "This opposition event also comes just after the 30th anniversary of the Voyager 2 spacecraft's flyby of the planet, in 1989." (dated); a "1989" title on screen. |
+| 128.90-139.44 | "NASA scientists have learned, for instance, that unlike Jupiter, the Neptune vortex disappears for a time…" (says NASA). |
+| 161.40-194.9 | Stellarium sky; "So consider taking a look at … Neptune in September" (dated); telescope silhouettes; "visit science.nasa.gov"; NASA end cards. |
+
+### Insignia bug
+
+A "science @ NASA" bug with the NASA insignia sits top right from 12 s to 2:56, at about x 1635-1840, y 55-142 of
+1900x1068 (measured from the 0.658-scale corner strips; uncertainty about ±5 px). No single 16:9 window clears it:
+a window below it is at most ~1624 px wide, and the kept shots carry credits or labels at both edges (left-edge
+"Artist Rendering" and the 1996/1998/2002 year labels at x ~89-312; right-aligned credits to x ~1818). So each
+segment gets the treatment its own frames allow, scaled to a common 1900x1068 (segments are scene cuts, so a
+change of window at a join reads as an edit):
+
+| Segment | Treatment | Evidence |
+|---|---|---|
+| 1 | crop 1618x910 at (0,158) | Dense starfield behind the bug, where `delogo` left a visible streaky block (frame at 17 s). The window keeps the planet (x ~742-1128) and the left credit. |
+| 2 | crop 1618x910 at (282,158) | The Voyager photos pass under the bug at 1:50-1:58, where `delogo` would smear them. Frame at 113 s through this window: clean, no bug, photos intact. Keeps the right-aligned credits. |
+| 3 | `delogo` x 1622, y 44, w 232, h 112 | Corner is black or sparse stars; the frame at 149 s showed no trace. The full frame keeps the year labels (left) and the Sromovsky/Fry credit (right). A faint trace is possible for ~0.5 s at the segment's start, where the previous shot's speckled starfield is dissolving out. |
+
+The workflow's rebuild step uploads top-right and top-left corner strips of the built working copy (`checks/`);
+those are the proof that no insignia survives.
+
+### Credits in the kept ranges, and their licences
+
+| Working time (approx.) | On-screen credit | Licence |
+|---|---|---|
+| 0-7.0, 7.0-14.5, 30.5-38 | Artist Rendering | NASA (no copyright in the US; see "Licence decision") |
+| ~16.5-28.5 | (none) Voyager 2 photographs of Neptune | NASA/JPL. NASA marks third-party material "as copyright protected with the name of the copyright holder"; these are unmarked. |
+| ~38-46.5 | Image Credit: NASA, L. Sromovsky, and P. Fry (University of Wisconsin-Madison) | NASA Hubble release "Brighter Neptune Suggests a Planetary Change of Seasons" (May 15, 2003), hosted by NASA at https://science.nasa.gov/missions/hubble/brighter-neptune-suggests-a-planetary-change-of-seasons/ with credit "NASA, L. Sromovsky, and P. Fry (University of Wisconsin-Madison)" and no copyright notice. HubbleSite's copyright page (https://hubblesite.org/copyright) now redirects to NASA's Images and Media guidelines. Treated as NASA material; keep the credit line. |
+| ~46.5-55 | Voyager 2 Images Time-Lapse | NASA/JPL |
+| ~56-59.4 | (none) full-disk Earth | NASA (unmarked) |
+
+**Stellarium (why segment 2 of the original plan was dropped).** Stellarium's FAQ
+(https://github.com/Stellarium/stellarium/wiki/FAQ), on "Can I use Stellarium screenshots or videos in my
+book/website/blog/vlog/calendar/almanac etc?": "If you want to use screenshots or video sequences for publications,
+videos, presentations etc., this is fine in principle for non-profit productions (or those released under
+CreativeCommons terms) if credit is given. However, some of the images and textures used by Stellarium, and
+especially the skyculture data, are copyright by others, [and] may require separate attribution or copyright/use
+clarification with the original authors." A commercial landing page is neither non-profit nor CC-released, so
+Stellarium frames are out.
+
+The working-copy times above are measured from the original's credit bands; re-read them from the job's
+`checks/credit_band_*.jpg` strips of the built copy before printing credits on the page.
+
+### People, dates, NASA wording, music
+
+- People: none in the kept ranges (Neptune renders, Voyager renders and photographs, Hubble images, a Hubble
+  rendering over Earth, a full-disk Earth). Every person in the video (silhouettes at 32-38 s and 2:52-2:56, a person
+  at a computer at 40-42 s) is in a dropped range.
+- Dated lines: none kept. The vetting scan flagged only "in 1989", whose cue overlaps segment 2's start in the SRT
+  timing, but the spoken words end at 98.06, before the 98.49 cut. The on-screen year labels 1996/1998/2002 are
+  observation dates on historical images, not time-sensitive copy.
+- "NASA" spoken or captioned: none kept.
+- Music: narration only. Every 15 s window of every kept segment holds a pause at -50 dB; 39 pauses at -60 dB
+  across the video.
+- Caption detector: the source has no burned-in speech captions in the kept ranges (only credits and year labels),
+  so the driver keeps our captions if the detector misfires; its real verdict is logged.
+
+## Open items
+
+- **Credit times on the built copies.** Re-read both sources' credits from the job's `checks/credit_band_*.jpg`
+  before the page prints them; list each shipped clip's credits in this file.
+- **Caption-detector override** is on for both sources (Black Holes: title cards; Neptune: precaution). Keep it
+  in the record and in the report to the owner.
+- **NASA advertising notice.** Whether to email nasa-merchandise-&-brand-team@mail.nasa.gov before go-live is the
+  owner's call (clause quoted under "Licence decision").
+
+- **Neptune's treatment is proven only on single frames.** The `delogo` trace at segment 3's first ~0.5 s and the
+  crop windows must be checked on the built copy's corner strips and the clips' contact sheets.
+- **Narrator's voice** (uncredited in both videos): a low residual risk, recorded under "Licence decision".
+- Web encodes, posters, the hero excerpt, the high-quality excerpt and `manifest.json` are not built yet.

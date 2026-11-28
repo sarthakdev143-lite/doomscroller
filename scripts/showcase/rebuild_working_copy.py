@@ -68,15 +68,45 @@ def plan_segments(src_doc: dict, src_path: Path, snap_to_silence: bool | None = 
             "work_to_orig": "orig = work + offset of the segment whose [work_start, work_end) holds work"}
 
 
+def _segment_filters(seg_doc: dict, width: int, height: int, output: dict | None) -> str:
+    """Per-segment picture treatment: an optional crop window, an optional delogo box, then the common output size.
+
+    Used when one window cannot clear an insignia bug for the whole video (credits at both edges in some shots),
+    so each segment gets the treatment its own frames allow. Segments are scene cuts, so a change of window at a
+    join reads as an edit."""
+    filters = []
+    crop = seg_doc.get("crop")
+    if crop:
+        w, h, x, y = int(crop["w"]), int(crop["h"]), int(crop["x"]), int(crop["y"])
+        if w % 2 or h % 2 or x < 0 or y < 0 or x + w > width or y + h > height:
+            raise SystemExit(f"segment crop {w}x{h}+{x}+{y} does not fit a {width}x{height} frame (or is odd)")
+        filters.append(f"crop={w}:{h}:{x}:{y}")
+    box = seg_doc.get("delogo")
+    if box:
+        w, h, x, y = int(box["w"]), int(box["h"]), int(box["x"]), int(box["y"])
+        if x < 1 or y < 1 or x + w > width - 1 or y + h > height - 1:
+            raise SystemExit(f"delogo box {w}x{h}+{x}+{y} must sit inside the {width}x{height} frame")
+        filters.append(f"delogo=x={x}:y={y}:w={w}:h={h}")
+    if filters and not output:
+        raise SystemExit("per-segment crop/delogo needs a source-level 'output' size so the segments can be joined")
+    if output:
+        filters.append(f"scale={int(output['w'])}:{int(output['h'])}:flags=lanczos,setsar=1")
+    return "".join("," + f for f in filters)
+
+
 def build(src_doc: dict, src_path: Path, plan: dict, out: Path) -> None:
     info = probe(src_path)
     video = next(s for s in info["streams"] if s.get("codec_type") == "video")
     width, height = int(video["width"]), int(video["height"])
     audio = int(src_doc.get("audio_stream", 0))
+    output = src_doc.get("output")
+    if output and (int(output["w"]) % 2 or int(output["h"]) % 2):
+        raise SystemExit("output size must be even")
     parts, labels = [], []
     for i, seg in enumerate(plan["segments"]):
         a, b = seg["orig_start"], seg["orig_end"]
-        parts.append(f"[0:v]trim=start={a}:end={b},setpts=PTS-STARTPTS[v{i}]")
+        extra = _segment_filters(src_doc["segments"][i], width, height, output)
+        parts.append(f"[0:v]trim=start={a}:end={b},setpts=PTS-STARTPTS{extra}[v{i}]")
         parts.append(f"[0:a:{audio}]atrim=start={a}:end={b},asetpts=PTS-STARTPTS[a{i}]")
         labels.append(f"[v{i}][a{i}]")
     graph = ";".join(parts) + ";" + "".join(labels) + f"concat=n={len(labels)}:v=1:a=1[v][a]"
