@@ -695,6 +695,7 @@ for c in cuts:
     lamp = bpy.data.lights.new(f"bladelight{c['gap']}", "POINT")
     lamp.color = (1.0, 0.1, 0.06)
     lamp.shadow_soft_size = 0.05
+    lamp.volume_factor = 0.15   # it reddens the glass and the floor; in the air it only tints (a full red fog read cheap)
     lo = new_object(f"bladelight{c['gap']}", lamp)
     lo.parent = ob
     c["ob"], c["lamp"] = ob, lamp
@@ -720,6 +721,7 @@ if not args.quick:
     haze.data.materials.append(hm)
     for attr in ("visible_shadow",):
         setattr(haze, attr, False)
+    AIR = []
     HAZE_SET = bpy.data.collections.new("AirOnly")
     HAZE_SET.objects.link(haze)
     # Soft light in the air only (light linking): columns of glow above and behind the strip, which the camera
@@ -735,6 +737,7 @@ if not args.quick:
         ob.location = (x, 7.0, 8.5)
         ob.rotation_euler = (Vector((x + 1.0, -2.5, 0.0)) - ob.location).to_track_quat("-Z", "Y").to_euler()
         ob.light_linking.receiver_collection = HAZE_SET
+        AIR.append(L)
 
 
 def area(name, energy, size, size_y, loc, aim, color):
@@ -809,6 +812,11 @@ for f in range(0, F + 2):
         glow, red = hair_state(h, f)
         h["ob"].color = (glow / 4, red, 0, 1)
         key(h["ob"], "color", f)
+    if args.camera == "phone" and not args.quick:
+        # a tall frame looks up into the air behind the decks: ease the glow down as they form
+        for L in AIR:
+            L.energy = LOOK["air"] * mix(1.0, 0.55, smooth(lin(f, 150, 205)))
+            L.keyframe_insert("energy", frame=f)
     for dl in DECK_LIGHTS:
         dl.data.energy = LOOK["deck"] * smooth(lin(f, GATHER_X[0], ROLL[1]))
         dl.data.keyframe_insert("energy", frame=f)
@@ -822,7 +830,8 @@ for f in range(0, F + 2):
         c["lamp"].energy = 900.0 * math.sin(math.pi * clamp01(t)) if live else 0.0
         c["lamp"].keyframe_insert("energy", frame=f)
 
-for ob in list(sc.objects) + [cam_data] + [c["lamp"] for c in cuts] + [dl.data for dl in DECK_LIGHTS]:
+animated = list(sc.objects) + [cam_data] + [c["lamp"] for c in cuts] + [dl.data for dl in DECK_LIGHTS]
+for ob in animated + (AIR if not args.quick else []):
     ad = getattr(ob, "animation_data", None)
     if ad and ad.action:
         for fc in ad.action.fcurves:

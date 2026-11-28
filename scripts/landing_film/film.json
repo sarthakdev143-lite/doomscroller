@@ -234,8 +234,8 @@
   "samples": 40,
   "stills": [1, 24, 48, 90, 128, 147, 176, 200, 222, 250],
   "chunk": 16,
-  "patch": {"base_runs": ["46100630797"], "ranges": {"desk": [136, 214], "phone": [136, 214]}},
-  "patch_chunk": 8
+  "patch": {"base_runs": ["46100630797"], "ranges": {"desk": [136, 214], "phone": [136, 256]}},
+  "patch_chunk": 10
  },
  "look": {}
 }
