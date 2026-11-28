@@ -57,7 +57,8 @@ LOOK = {
     "fstop": 2.0,
     "glare": -0.5,
     "vignette": 0.62,
-    "hair": 2.6,          # sentence hairlines
+    "hair": 2.0,          # sentence hairlines
+    "air": 520.0,         # soft spots that light only the haze: a glow in the air above and behind the strip
     "blade": 140.0,
     "warm": [1.0, 0.86, 0.7],
 }
@@ -171,7 +172,8 @@ FACE = (228, 231)                 # the face changes inside a brief dip of the s
 DIP = (223, 229, 236)
 GLIDE = (172, 236)
 CENTRE = 24.0
-FINAL = {0: Vector((CENTRE - 0.84, -3.0, 1.62)), 1: Vector((CENTRE + 0.84, -3.0, 1.62))}
+DECK_Z = 1.08                     # a deck's centre: its foot hangs 28 cm over the lacquer, close enough to reflect
+FINAL = {0: Vector((CENTRE - 0.84, -3.0, DECK_Z)), 1: Vector((CENTRE + 0.84, -3.0, DECK_Z))}
 YAW = {0: math.radians(13), 1: math.radians(-13)}
 
 
@@ -288,9 +290,9 @@ RIGS = {
         (B["s2"][1], (5.3, -4.75, 1.45), (15.9, 0.0, 1.22), 40),
         (162, (2.8, -7.0, 1.65), (21.0, 0.0, 1.15), 42),
         (190, (13.0, -8.8, 1.95), (22.8, -1.6, 1.3), 40),
-        (214, (20.3, -9.2, 2.0), (23.7, -2.6, 1.45), 40),
-        (B["s3"][0], (23.6, -8.9, 2.05), (23.75, -3.0, 1.45), 40),
-        (B["s3"][1], (23.65, -8.5, 2.0), (23.75, -3.0, 1.45), 40),
+        (214, (20.6, -9.6, 1.6), (23.7, -2.6, 1.05), 38),
+        (B["s3"][0], (23.6, -9.3, 1.3), (23.75, -3.0, 0.92), 36),
+        (B["s3"][1], (23.62, -8.9, 1.28), (23.75, -3.0, 0.92), 36),
     ],
     "phone": [
         (1, (-1.6, -3.2, 0.6), (4.0, 0.0, 1.35), 22),
@@ -301,9 +303,9 @@ RIGS = {
         (B["s2"][1], (6.45, -4.5, 1.62), (15.4, 0.0, 1.2), 26),
         (162, (3.6, -6.8, 1.9), (20.5, 0.0, 1.1), 28),
         (190, (13.5, -9.0, 2.1), (23.0, -1.6, 1.3), 30),
-        (214, (20.8, -9.4, 2.1), (23.9, -2.6, 1.45), 32),
-        (B["s3"][0], (24.0, -8.6, 1.95), (24.0, -3.0, 1.5), 32),
-        (B["s3"][1], (24.0, -8.2, 1.92), (24.0, -3.0, 1.5), 32),
+        (214, (21.0, -9.6, 1.7), (23.9, -2.6, 1.1), 30),
+        (B["s3"][0], (24.0, -9.0, 1.35), (24.0, -3.0, 0.95), 30),
+        (B["s3"][1], (24.0, -8.6, 1.33), (24.0, -3.0, 0.95), 30),
     ],
 }
 PLATEAUS = [tuple(B["s1"]), tuple(B["s2"]), tuple(B["s3"])]
@@ -715,6 +717,21 @@ if not args.quick:
     haze.data.materials.append(hm)
     for attr in ("visible_shadow",):
         setattr(haze, attr, False)
+    HAZE_SET = bpy.data.collections.new("AirOnly")
+    HAZE_SET.objects.link(haze)
+    # Soft light in the air only (light linking): columns of glow above and behind the strip, which the camera
+    # passes as it moves, so the dark has depth. They light nothing solid.
+    for k, x in enumerate((6.0, 21.0, 36.0)):
+        L = bpy.data.lights.new(f"Air{k}", "SPOT")
+        L.energy = LOOK["air"]
+        L.spot_size = math.radians(34)
+        L.spot_blend = 1.0
+        L.shadow_soft_size = 0.8
+        L.color = (1.0, 0.9, 0.78)
+        ob = new_object(f"Air{k}", L)
+        ob.location = (x, 2.2, 9.0)
+        ob.rotation_euler = (Vector((x + 1.5, -0.6, 0.0)) - ob.location).to_track_quat("-Z", "Y").to_euler()
+        ob.light_linking.receiver_collection = HAZE_SET
 
 
 def area(name, energy, size, size_y, loc, aim, color):
@@ -740,7 +757,7 @@ area("Rim", LOOK["rim"], 56, 0.8, (24, 4.5, 2.6), (24, 0.0, 1.3), (1.0, 0.95, 0.
 # Seen only in the glass: a long dim softbox behind the cameras, so the faces carry a soft sheen as real glass does.
 area("Sheen", LOOK["sheen"], 70, 5.0, (24, -16, 3.6), (24, 0.0, 1.0), WARMWHITE)
 # Scene 3: two tall strips either side of the decks, so their stacked edges (a tile per few seconds) read as layers.
-DECK_LIGHTS = [area(f"Deck{k}", 0.0, 0.25, 2.6, (CENTRE + side * 2.3, -1.7, 1.9), (CENTRE + side * 0.84, -3.0, 1.62),
+DECK_LIGHTS = [area(f"Deck{k}", 0.0, 0.25, 2.6, (CENTRE + side * 2.3, -1.7, DECK_Z + 0.3), (CENTRE + side * 0.84, -3.0, DECK_Z),
                     WARMWHITE) for k, side in ((0, -1), (1, 1))]
 
 # Cameras: the one asked for is the active one.
