@@ -34,6 +34,12 @@ vec3 pass(sampler2D t, vec2 uv) {
 void main() {
   vec2 uv = (vUv - 0.5) * uScale + 0.5;
   vec3 c = mix(pass(uA, uv), pass(uB, uv), uMix);
+  // a screen taller than the film: past the frame's top and bottom the stage's own black takes over, softly (the
+  // film's edges are near-black under its vignette, so the join cannot be seen)
+  if (uScale.y > 1.0) {
+    float edge = smoothstep(0.0, 0.06, uv.y) * smoothstep(1.0, 0.94, uv.y);
+    c = mix(vec3(7.0, 7.0, 10.0) / 255.0, c, edge);
+  }
   if (uPointer.z > 0.001) {
     vec2 d = (uPointer.xy - uv) * vec2(uAspect, 1.0);
     float r2 = dot(d, d);
@@ -139,7 +145,14 @@ export class Film {
     this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     const fa = this.size.w / this.size.h;
     const va = cw / ch;
-    this.scale = va > fa ? [1, fa / va] : [va / fa, 1];
+    if (va > fa) {
+      this.scale = [1, fa / va]; // wider than the film: crop top and bottom
+    } else {
+      // taller than the film (a tall phone): crop the sides by at most 7%, so the decks of scene 3 stay whole,
+      // and let the rest fall into the stage's black above and below
+      const z = Math.max(va / fa, 0.93);
+      this.scale = [z, (z * fa) / va];
+    }
     this.view = { cw, ch, dpr };
   }
 
