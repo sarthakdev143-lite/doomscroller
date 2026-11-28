@@ -120,15 +120,25 @@ def _ends_sentence(word: str, next_word: str | None, gap: float = 0.0) -> bool:
     return not (next_word and next_word[0].islower()) or gap >= _RUN_ON_GAP_SEC
 
 
+def _ends_at(words: Sequence[Word], index: int) -> bool:
+    """Whether a sentence ends after ``words[index]``, judged with the word that follows it."""
+    following = words[index + 1] if index + 1 < len(words) else None
+    if following is None:
+        return _ends_sentence(words[index].text, None)
+    return _ends_sentence(words[index].text, following.text, following.start - words[index].end)
+
+
 def is_punctuated(words: Sequence[Word]) -> bool:
     """Whether a transcript marks where its sentences end often enough to cut by: once per ``_SENTENCE_MAX_WORDS``
     words on average. Not every engine or alignment punctuates, and where sentences would average longer than the
     cap, its splits are the only units there are.
 
+    Only the ends ``build_sentences`` really makes count: a period it reads as an abbreviation ("word. word" with no
+    pause) splits nothing, and counting it joined three cap-split runs into one 45s sentence that fit no clip.
     Sarvam ends Hindi sentences with a danda (about one per nine words), which these rules do not read as an end.
     Counting its few "?" and "." as the punctuation joined real sentences into cap-split runs of up to 80s, so a
     transcript punctuated mostly by danda keeps the cap's splits as edges, exactly as before they were marked."""
-    marks = sum(1 for w in words if _ends_sentence(w.text, None))
+    marks = sum(1 for index in range(len(words)) if _ends_at(words, index))
     dandas = sum(1 for w in words if w.text.rstrip(_CLOSERS).endswith(_DANDAS))
     return marks > dandas and marks * _SENTENCE_MAX_WORDS >= len(words)
 
@@ -156,7 +166,7 @@ def build_sentences(words: Sequence[Word], *, punctuated: Optional[bool] = None)
             flush(index - 1)
         following = words[index + 1] if index + 1 < len(words) else None
         gap = following.start - word.end if following is not None else 0.0
-        if _ends_sentence(word.text, following.text if following is not None else None, gap):
+        if _ends_at(words, index):
             flush(index)
         elif index - first + 1 >= _SENTENCE_MAX_WORDS:
             # Numbered in parts for the AI, but unless a pause follows, the speaker has not finished.

@@ -226,3 +226,34 @@ def test_a_hindi_transcript_ending_its_sentences_with_danda_keeps_the_cap_as_bef
     assert sum(t.endswith("?") for t in tokens) * 40 >= len(tokens)  # dense enough to count as punctuated alone
     assert not moments.is_punctuated(words)
     assert not any(s.forced for s in build_sentences(words))
+
+
+def _nine_word_sentences(next_capitalised: bool) -> list[Word]:
+    """Ten 9-word sentences at 0.5s a word with no pauses, as in tests/e2e R2-T2-06."""
+    def text(i):
+        if i % 9 == 8:
+            return "word."
+        return "Word" if next_capitalised and i % 9 == 0 else "word"
+    return [Word(text(i), round(i * 0.5, 2), round(i * 0.5 + 0.4, 2), 0.95) for i in range(90)]
+
+
+def test_periods_read_as_abbreviations_do_not_make_a_transcript_punctuated(monkeypatch):
+    # "word. word" with no pause splits nothing, so these are three cap-split runs, not ten sentences: counting
+    # those periods anyway marked the runs forced, joined them into one 45s sentence, and left no clip at all.
+    words = _nine_word_sentences(next_capitalised=False)
+    assert not moments.is_punctuated(words)
+    assert not any(s.forced for s in build_sentences(words))
+    _stub_ai(monkeypatch, 1, 10)
+    picked = moments.pick_speech(words, _signals(50.0), count=1, min_sec=15, max_sec=32, target_sec=22)
+    assert picked and all(m.duration <= 32.0 + moments._EDGE_PADDING_SEC for m in picked)
+
+
+def test_an_overlong_pick_shrinks_by_whole_sentences(monkeypatch):
+    words = _nine_word_sentences(next_capitalised=True)
+    assert len(build_sentences(words)) == 10 and moments.is_punctuated(words)
+    starts, ends = _sentence_edges(words)
+    _stub_ai(monkeypatch, 1, 9)
+    picked = moments.pick_speech(words, _signals(50.0), count=1, min_sec=15, max_sec=32, target_sec=22)
+    assert len(picked) == 1 and picked[0].duration <= 32.0 + moments._EDGE_PADDING_SEC
+    a, b = _edges(picked[0], words)
+    assert a in starts and b == len(words) - 1  # shrunk from the front, ending on the pick's last sentence
