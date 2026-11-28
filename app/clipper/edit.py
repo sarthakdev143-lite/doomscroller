@@ -343,9 +343,9 @@ def _number_readings(text: str) -> list[set[float]]:
 
 
 def number_is_spoken(text: str, sentence_text: str) -> bool:
-    """Whether every number shown in `text` was said in `sentence_text`. On-screen numbers are facts: a model once
-    labelled Voyager 2's flyby "1,500 MILES" while the narrator said "about 3,000 miles", over footage that printed
-    3,000. A number nobody said is dropped (its beat becomes a punch) rather than shown."""
+    """Whether every number shown in `text` was said in `sentence_text`. On-screen numbers are facts, and the prompt's
+    "do not invent facts" was never enforced. A number nobody said is dropped (its beat becomes a punch) rather than
+    shown. (A stat counts up from zero, so a still taken mid-animation shows a smaller number: that is not a fault.)"""
     shown = _number_readings(text)
     if not shown:
         return False

@@ -99,14 +99,15 @@
       "expected_duration": 59.37,
       "dark_joins": false,
       "approved": true,
-      "cut_on_push": true,
+      "cut_on_push": false,
       "count": 4,
       "max_clip_seconds": 45,
       "caption_detector_override": true,
       "caption_detector_override_why": "the vetting pack's contact sheets and credit bands show no burned-in speech captions in the kept ranges (only image credits and the year labels 1996/1998/2002); a false positive would strip our captions from every clip, so the driver keeps them. The detector's real verdict is still logged to already_captioned_verdict.json",
       "vetted": "2026-11-28 from the job's vetting pack (run with sha256 63e01601...): see docs/saas/landing-d-sources.md",
       "run_history": [
-        "run 46092113147 (fdac9f4): 1 clip, rejected - a '1,500 MILES' stat the narrator never said (he said about 3,000). Re-cut after e155f30/3f3f975 (on-screen numbers must be spoken)."
+        "run 46092113147 (fdac9f4): 1 clip. Its stat was '3,000 MILES', correct; a contact-sheet still caught the count-up animation at 1,500 and was misread as an invented number. Re-cut anyway after e155f30/3f3f975.",
+        "run 46095409250 (93cb66c): 2 clips. KEEP clip_01_0_29 'Neptune's Monster Storms Revealed' (stat 3,000, card VORTEX). REJECT clip_02_30_59: ends 'right here on' - segment 3 ends before 'Earth.' because the next shot is the Stellarium chart (not licensed for commercial use)."
       ]
     }
   }

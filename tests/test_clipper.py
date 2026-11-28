@@ -656,7 +656,7 @@ def _beats_for(text, beats):
 
 
 def test_a_stat_showing_a_number_nobody_said_becomes_a_punch():
-    # The real case: the narrator said "about 3,000 miles", the model put "1,500 MILES" on screen.
+    # The narrator said "about 3,000 miles"; a stat claiming "1,500 MILES" must never reach the screen.
     from app.clipper.edit import PUNCH, STAT
     text = "Voyager 2 passed about 3,000 miles above the north pole. It sent back pictures of a storm."
     wrong = _beats_for(text, [{"sentence": 0, "phrase": "about 3,000 miles", "text": "1,500 MILES",
