@@ -22,8 +22,8 @@ from app.config import settings
 from . import ai, broll, memes, reactions, sfx, shots, timeline
 from .captions import COUNTABLE, beat_is_drawable
 from .media import Interrupted
-from .moments import Moment, Sentence, build_sentences, is_finished
-from .timeline import Segment, edit_segments, on_grid, output_time, total_duration
+from .moments import Moment, Sentence, build_sentences, is_finished, is_punctuated, whole_range
+from .timeline import TAIL_SEC, Segment, edit_segments, on_grid, output_time, total_duration
 from .transcribe import Word
 
 log = logging.getLogger(__name__)
@@ -47,6 +47,8 @@ _MIN_BEAT_GAP_SEC = 2.5
 _FIRST_BEAT_SEC = 3.0
 _RULE_BEAT_GAP_SEC = 5.0
 _MIN_KEPT_SEC = 12.0
+# A length cap ends the clip at a sentence (or, without words, a pause) while that keeps this share of the limit.
+_MIN_CAP_KEEP_SHARE = 0.5
 # Below this share of the moment's speech an edit has usually cut the story, not the padding.
 _MIN_KEPT_SHARE = 0.6
 # Open on the speaker so viewers know whose voice this is, and end on them too.
@@ -296,6 +298,15 @@ def grounded_subject(subject: str, query: str, sentence_text: str) -> bool:
         return False
     searched = set(_content_tokens(query))
     return any(t in searched for t in concrete)
+
+
+def _whole_sentences(numbers: Sequence[int], sentences: Sequence[Sentence]) -> list[int]:
+    """Sentence numbers with every part of a sentence the word cap split, so an edit never stops or resumes inside one."""
+    chosen: set[int] = set()
+    for number in numbers:
+        first, last = whole_range(number, number, sentences)
+        chosen.update(range(first, last + 1))
+    return sorted(chosen)
 
 
 def _reply_keep(reply: Optional[dict], sentences: Sequence[Sentence]) -> list[int]:
@@ -731,23 +742,61 @@ def attach_memes(
     return warnings
 
 
+def _cut_at(segments: Sequence[Segment], stop: float) -> list[Segment]:
+    """The segments up to source time ``stop``."""
+    cut: list[Segment] = []
+    for seg_a, seg_b in segments:
+        if seg_a >= stop:
+            break
+        if min(seg_b, stop) > seg_a:
+            cut.append((seg_a, min(seg_b, stop)))
+    return cut
+
+
+def _sentence_cut(plan: EditPlan, budget_src: float) -> list[Segment]:
+    """The edit ending after its last whole sentence that fits ``budget_src`` source seconds, or [] if none fits
+    while keeping ``_MIN_CAP_KEEP_SHARE`` of it: a 5s setup without its 26s payoff is no clip either."""
+    words = plan.words
+    for sentence in reversed(build_sentences(words)):
+        # Only punctuation says a sentence is over: a pause before a filler the edit removed can look like one.
+        if sentence.forced or not is_finished(sentence.text):
+            continue
+        stop = words[sentence.last_word].end + TAIL_SEC
+        if sentence.last_word + 1 < len(words):
+            stop = min(stop, words[sentence.last_word + 1].start)
+        cut = _cut_at(plan.segments, on_grid(stop))
+        length = total_duration(cut)
+        if length < budget_src * _MIN_CAP_KEEP_SHARE:
+            break
+        if length <= budget_src + 1e-6:
+            return cut
+    return []
+
+
 def trim_to(plan: EditPlan, max_sec: float) -> None:
-    """Cut the edit's end so it plays at most ``max_sec``, dropping anything that no longer lands inside it."""
+    """Cut the edit's end so it plays at most ``max_sec``, dropping anything that no longer lands inside it.
+
+    The cut goes after the last whole sentence that fits, because a clip ends on a sentence. Only an edit with no
+    sentence short enough (or no punctuated words to tell) is cut at the limit itself.
+    """
     if not (math.isfinite(max_sec) and max_sec > 0) or plan.duration <= max_sec:
         return
     budget_src = max_sec * plan._effective_speed
-    trimmed: list[Segment] = []
-    used_src = 0.0
-    for seg_a, seg_b in plan.segments:
-        seg_len = seg_b - seg_a
-        if used_src + seg_len <= budget_src:
-            trimmed.append((seg_a, seg_b))
-            used_src += seg_len
-        else:
-            rem = budget_src - used_src
-            if rem > 0.2:
-                trimmed.append((seg_a, on_grid(seg_a + rem)))
-            break
+    trimmed = _sentence_cut(plan, budget_src)
+    if not trimmed:
+        if plan.words:
+            log.info("edit: no whole sentence fits in %.1fs, so the clip is cut at the limit", max_sec)
+        used_src = 0.0
+        for seg_a, seg_b in plan.segments:
+            seg_len = seg_b - seg_a
+            if used_src + seg_len <= budget_src:
+                trimmed.append((seg_a, seg_b))
+                used_src += seg_len
+            else:
+                rem = budget_src - used_src
+                if rem > 0.2:
+                    trimmed.append((seg_a, on_grid(seg_a + rem)))
+                break
     if not trimmed:
         return
     plan.segments = trimmed
@@ -845,7 +894,9 @@ def build_clean_vlog_edit(
                 used_src += seg_len
             else:
                 rem = budget_src - used_src
-                if rem > 0.2:
+                # These segments end at the speaker's pauses, so stop at the last one that fits rather than
+                # inside a word. Only a clip that would lose over half its time that way is cut mid-run.
+                if rem > 0.2 and used_src < budget_src * _MIN_CAP_KEEP_SHARE:
                     capped.append((begin, on_grid(begin + rem)))
                 break
         if capped:
@@ -856,7 +907,8 @@ def build_clean_vlog_edit(
 def build_edit(moment: Moment, words: Sequence[Word], *, title: str = "") -> EditPlan:
     """Decide the edit for one speech moment. Always returns a usable plan."""
     inside = [w for w in words if w.end > moment.start and w.start < moment.end]
-    sentences = build_sentences(inside)
+    # Punctuation is judged on the whole transcript, as when the moment was picked: this clip may hold none.
+    sentences = build_sentences(inside, punctuated=is_punctuated(words))
     reply = ai.ask_json(_edit_prompt(sentences, title)) if sentences else None
     keep = _reply_keep(reply, sentences)
     drop = droppable_indices(inside, sentences)
@@ -874,6 +926,7 @@ def build_edit(moment: Moment, words: Sequence[Word], *, title: str = "") -> Edi
     # The ending is the payoff the moment was chosen for, so it survives any edit.
     if keep and sentences and sentences[-1].index not in keep:
         keep = [*keep, sentences[-1].index]
+    keep = _whole_sentences(keep, sentences)
     kept = indices_for(keep, drop)
     segments = segments_for(kept)
     whole = total_duration(segments_for(indices_for(every_sentence, drop)))

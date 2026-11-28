@@ -2,7 +2,13 @@
 
 Speech goes to the AI as numbered sentences, and it answers with sentence numbers
 rather than timestamps, so whatever the model does a clip starts and ends on a
-sentence boundary. (A very long sentence or a long pause can still force a boundary.)
+sentence boundary. A pause of nearly a second still counts as one. A sentence longer
+than the word cap is numbered in parts for the AI, but those parts are marked
+``forced`` and every range is widened to whole sentences, so no clip starts or ends
+inside one: a NASA narration once ended "...learn even more about the properties"
+because the cap had split its last sentence there. Only a transcript punctuated too
+sparsely to cut by, or mostly by Hindi's danda (see ``is_punctuated``), lets the cap's
+splits be clip edges.
 No-speech footage is ranked on measured motion and sound, and the AI then looks at
 frames from the best candidates to re-rank and title them.
 
@@ -18,7 +24,7 @@ import re
 import tempfile
 import unicodedata
 from dataclasses import dataclass, replace
-from typing import Sequence
+from typing import Optional, Sequence
 
 import numpy as np
 
@@ -33,6 +39,7 @@ from .transcribe import Word
 log = logging.getLogger(__name__)
 
 _SENTENCE_END = (".", "?", "!")
+_DANDAS = ("\u0964", "\u0965")  # Devanagari full stops; see is_punctuated
 _CLOSERS = "\"')]}\u201d\u2019"
 # Periods that do not end a sentence. "no." stays out: it usually ends one.
 _ABBREVIATIONS = {"mr.", "mrs.", "ms.", "dr.", "prof.", "sr.", "jr.", "st.", "mt.", "vs.", "etc."}
@@ -41,6 +48,9 @@ _DOTTED_ACRONYM = re.compile(r"^(?:[A-Za-z]\.){2,}$")
 _INITIAL = re.compile(r"^[A-HJ-Z]\.$")
 _SENTENCE_MAX_GAP_SEC = 0.9
 _SENTENCE_MAX_WORDS = 40
+# A period before a lowercase word is an abbreviation read straight on ("approx. ten") unless the speaker stops
+# after it. Whisper wrote "a perfect circle. and as scientists...", with a 0.66s pause after "circle.".
+_RUN_ON_GAP_SEC = 0.3
 # A silence longer than this separates passages, and a clip may not cross it.
 # Starting values, not tuned on real footage.
 _MAX_PASSAGE_GAP_SEC = 4.0
@@ -91,13 +101,15 @@ class Sentence:
     text: str
     first_word: int = 0
     last_word: int = 0
+    # Closed by the word cap while the speaker ran on: the next sentence is the rest of this one.
+    forced: bool = False
 
 
 def is_finished(text: str) -> bool:
     return text.rstrip().rstrip(_CLOSERS).endswith(_SENTENCE_END)
 
 
-def _ends_sentence(word: str, next_word: str | None) -> bool:
+def _ends_sentence(word: str, next_word: str | None, gap: float = 0.0) -> bool:
     bare = word.rstrip(_CLOSERS)
     if bare.endswith(("?", "!")):
         return True
@@ -105,31 +117,61 @@ def _ends_sentence(word: str, next_word: str | None) -> bool:
         return False
     if (bare.lower() in _ABBREVIATIONS or _DOTTED_ACRONYM.match(bare) or _INITIAL.match(bare)):
         return False
-    return not (next_word and next_word[0].islower())
+    return not (next_word and next_word[0].islower()) or gap >= _RUN_ON_GAP_SEC
 
 
-def build_sentences(words: Sequence[Word]) -> list[Sentence]:
+def is_punctuated(words: Sequence[Word]) -> bool:
+    """Whether a transcript marks where its sentences end often enough to cut by: once per ``_SENTENCE_MAX_WORDS``
+    words on average. Not every engine or alignment punctuates, and where sentences would average longer than the
+    cap, its splits are the only units there are.
+
+    Sarvam ends Hindi sentences with a danda (about one per nine words), which these rules do not read as an end.
+    Counting its few "?" and "." as the punctuation joined real sentences into cap-split runs of up to 80s, so a
+    transcript punctuated mostly by danda keeps the cap's splits as edges, exactly as before they were marked."""
+    marks = sum(1 for w in words if _ends_sentence(w.text, None))
+    dandas = sum(1 for w in words if w.text.rstrip(_CLOSERS).endswith(_DANDAS))
+    return marks > dandas and marks * _SENTENCE_MAX_WORDS >= len(words)
+
+
+def build_sentences(words: Sequence[Word], *, punctuated: Optional[bool] = None) -> list[Sentence]:
+    """The words as sentences. ``punctuated`` says whether the whole transcript carries sentence punctuation
+    (worked out from ``words`` when not given): only then does a split the word cap forces get marked ``forced``.
+    Pass it when ``words`` is part of a longer transcript, which may punctuate where this part does not."""
+    marked = is_punctuated(words) if punctuated is None else punctuated
     sentences: list[Sentence] = []
     first = 0
 
-    def flush(last: int) -> None:
+    def flush(last: int, forced: bool = False) -> None:
         nonlocal first
         if last >= first:
             sentences.append(Sentence(
                 index=len(sentences), start=words[first].start, end=words[last].end,
                 text=" ".join(w.text for w in words[first:last + 1]),
-                first_word=first, last_word=last,
+                first_word=first, last_word=last, forced=forced,
             ))
         first = last + 1
 
     for index, word in enumerate(words):
         if index > first and word.start - words[index - 1].end > _SENTENCE_MAX_GAP_SEC:
             flush(index - 1)
-        following = words[index + 1].text if index + 1 < len(words) else None
-        if _ends_sentence(word.text, following) or index - first + 1 >= _SENTENCE_MAX_WORDS:
+        following = words[index + 1] if index + 1 < len(words) else None
+        gap = following.start - word.end if following is not None else 0.0
+        if _ends_sentence(word.text, following.text if following is not None else None, gap):
             flush(index)
+        elif index - first + 1 >= _SENTENCE_MAX_WORDS:
+            # Numbered in parts for the AI, but unless a pause follows, the speaker has not finished.
+            flush(index, forced=marked and following is not None and gap <= _SENTENCE_MAX_GAP_SEC)
     flush(len(words) - 1)
     return sentences
+
+
+def whole_range(first: int, last: int, sentences: Sequence[Sentence]) -> tuple[int, int]:
+    """A sentence range widened to whole sentences, so it neither starts nor stops at a split the word cap forced."""
+    while first > 0 and sentences[first - 1].forced:
+        first -= 1
+    while last + 1 < len(sentences) and sentences[last].forced:
+        last += 1
+    return first, last
 
 
 def clean_title(raw: object) -> str:
@@ -255,6 +297,9 @@ def _fit_range(first: int, last: int, sentences: Sequence[Sentence], words: Sequ
 
     Tightening hides how far apart sentences really are, so the span is limited
     too. Otherwise a clip could join two passages minutes apart.
+
+    Every step keeps the range on whole sentences (see ``whole_range``): a range that
+    cannot fit without cutting one is no clip at all.
     """
     lo_sec = settings.clip_min_sec if min_sec is None else min_sec
     hi_sec = settings.clip_max_sec if max_sec is None else max_sec
@@ -263,18 +308,26 @@ def _fit_range(first: int, last: int, sentences: Sequence[Sentence], words: Sequ
     def length(end_index: int) -> float:
         return _spoken_length(first, end_index, sentences, words, limit)
 
+    def gap_after(index: int) -> float:
+        return sentences[index + 1].start - sentences[index].end
+
+    first, last = whole_range(first, last, sentences)
     for index in range(first, last):
-        if sentences[index + 1].start - sentences[index].end > _MAX_PASSAGE_GAP_SEC:
-            last = index
+        if gap_after(index) > _MAX_PASSAGE_GAP_SEC:
+            last = index  # never a forced split: those have no pause after them
             break
     while first < last and (length(last) > hi_sec
                             or sentences[last].end - sentences[first].start > max_span):
-        first += 1
-    while (last + 1 < len(sentences)
-           and length(last) < lo_sec
-           and sentences[last + 1].start - sentences[last].end <= _MAX_PASSAGE_GAP_SEC
-           and sentences[last + 1].end - sentences[first].start <= max_span):
-        last += 1
+        later = whole_range(first, first, sentences)[1] + 1  # the next sentence that starts afresh
+        if later > last:
+            break
+        first = later
+    while last + 1 < len(sentences) and length(last) < lo_sec:
+        grown = whole_range(last + 1, last + 1, sentences)[1]
+        if (any(gap_after(index) > _MAX_PASSAGE_GAP_SEC for index in range(last, grown))
+                or sentences[grown].end - sentences[first].start > max_span):
+            break
+        last = grown
     return (first, last) if lo_sec <= length(last) <= hi_sec else None
 
 
@@ -428,12 +481,13 @@ def _rule_based_speech(sentences: Sequence[Sentence], words: Sequence[Word], sig
         band = interest[lo:hi]
         energy = float(band.mean()) if len(band) else 0.0
         finished = 1.0 if is_finished(sentences[fitted[1]].text) else 0.0
+        opening = sentences[fitted[0]].text  # the line the clip opens on, not a sentence's second half
         moments.append(Moment(
             start=a, end=b,
-            title=clean_title(sentences[first].text),
-            hook=clean_hook(sentences[first].text),
+            title=clean_title(opening),
+            hook=clean_hook(opening),
             reason="rule-based: strong opening line and delivery",
-            score=_opening_strength(sentences[first].text) + 0.5 * energy + finished,
+            score=_opening_strength(opening) + 0.5 * energy + finished,
             kind="speech",
         ))
     return _dedupe(moments, count, used)
@@ -501,8 +555,12 @@ def _complete_payoffs(reply: dict | None, sentences: Sequence[Sentence], words: 
             continue
         if key not in ranges or wanted <= ranges[key][1] or wanted >= len(sentences):
             continue
-        first, last = ranges[key]
-        if wanted - last > _PAYOFF_LOOKAHEAD or any(
+        if wanted - ranges[key][1] > _PAYOFF_LOOKAHEAD:
+            continue
+        # Judged on whole sentences, which is what _moments_from_reply will cut.
+        first, last = whole_range(*ranges[key], sentences)
+        wanted = whole_range(first, wanted, sentences)[1]
+        if wanted <= last or any(
                 sentences[i + 1].start - sentences[i].end > _MAX_PASSAGE_GAP_SEC for i in range(last, wanted)):
             continue
         picked_dur = _spoken_length(first, last, sentences, words, limit)

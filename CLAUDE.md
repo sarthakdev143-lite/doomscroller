@@ -301,6 +301,13 @@ drive it through the `ClipJob` table, so queued work survives a restart.
   non-English speech for now, is ranked on measured motion, loudness and cuts, and the AI re-ranks frame
   strips of the best candidates. Without AI both paths fall back to rules; without a Deepgram key every video
   takes the no-speech path.
+- **A sentence is only as good as the transcript's punctuation** (`moments.build_sentences`). Runs longer than 40
+  words are split by a cap; such a split is marked `Sentence.forced`, and ranges widen, shrink, grow and trim only by
+  whole sentences, so a cap split is never a clip edge. Whisper writes "circle. and as..." (a period before a lowercase
+  word): with a pause of 0.3s or more after it, that is a sentence end, not an abbreviation; missing it once merged two
+  sentences and a NASA clip ended on "...about the properties". In a sparsely punctuated transcript (under one mark per
+  40 words) or one punctuated mostly by Hindi danda, which is not yet read as a sentence end, cap splits still act as
+  edges (`is_punctuated`).
 - **Claude is the fallback** (`ai.py`). When OpenCode fails or times out, the call goes to the `claude` CLI and
   OpenCode is skipped for 30 minutes, since one timeout costs four minutes. Claude runs with `--tools ""`,
   `--strict-mcp-config`, `--safe-mode`, no session and its own system prompt, from an empty directory, and images travel
