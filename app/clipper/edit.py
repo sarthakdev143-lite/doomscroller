@@ -324,6 +324,35 @@ def _reply_keep(reply: Optional[dict], sentences: Sequence[Sentence]) -> list[in
     return sorted(set(kept)) or [s.index for s in sentences]
 
 
+_NUMBER = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(thousand|million|billion|crore|lakh|bn|k|m|b)?\b", re.IGNORECASE)
+_SCALE = {"k": 1e3, "thousand": 1e3, "lakh": 1e5, "m": 1e6, "million": 1e6, "crore": 1e7,
+          "b": 1e9, "bn": 1e9, "billion": 1e9}
+
+
+def _number_readings(text: str) -> list[set[float]]:
+    """Each number in `text`, as the values it can mean: face value, and scaled by a unit after it ("500K",
+    "1.5 million"). "40m" may be 40 metres or 40 million, so both readings are kept."""
+    readings = []
+    for raw, unit in _NUMBER.findall(text):
+        try:
+            value = float(raw.replace(",", ""))
+        except ValueError:
+            continue
+        readings.append({value, value * _SCALE[unit.lower()]} if unit else {value})
+    return readings
+
+
+def number_is_spoken(text: str, sentence_text: str) -> bool:
+    """Whether every number shown in `text` was said in `sentence_text`. On-screen numbers are facts: a model once
+    labelled Voyager 2's flyby "1,500 MILES" while the narrator said "about 3,000 miles", over footage that printed
+    3,000. A number nobody said is dropped (its beat becomes a punch) rather than shown."""
+    shown = _number_readings(text)
+    if not shown:
+        return False
+    spoken: set[float] = set().union(*_number_readings(sentence_text))
+    return all(any(math.isclose(v, s, rel_tol=1e-9) for v in options for s in spoken) for options in shown)
+
+
 def _reply_beats(reply: Optional[dict], sentences: Sequence[Sentence], words: Sequence[Word],
                  kept: set[int]) -> list[Beat]:
     raw = (reply or {}).get("beats")
@@ -341,6 +370,9 @@ def _reply_beats(reply: Optional[dict], sentences: Sequence[Sentence], words: Se
         text = re.sub(r"\s+", " ", str(item.get("text") or "")).strip()
         style = str(item.get("style") or "").lower()
         if style == STAT and not any(c.isdigit() for c in text):
+            style = PUNCH
+        if style in (STAT, CARD) and any(c.isdigit() for c in text) and not number_is_spoken(text, sentence.text):
+            log.info("edit: dropped on-screen %r: that number is not in what was said", text)
             style = PUNCH
         if at is None or at not in kept or style not in _STYLES:
             continue

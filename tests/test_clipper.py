@@ -648,6 +648,49 @@ def test_a_stat_without_a_number_becomes_a_punch(monkeypatch):
     assert beat.style == PUNCH and beat.text == ""
 
 
+def _beats_for(text, beats):
+    from app.clipper.edit import _reply_beats
+    words = _words(text, start=10.0)
+    sentences = build_sentences(words)
+    return _reply_beats({"beats": beats}, sentences, words, set(range(len(words))))
+
+
+def test_a_stat_showing_a_number_nobody_said_becomes_a_punch():
+    # The real case: the narrator said "about 3,000 miles", the model put "1,500 MILES" on screen.
+    from app.clipper.edit import PUNCH, STAT
+    text = "Voyager 2 passed about 3,000 miles above the north pole. It sent back pictures of a storm."
+    wrong = _beats_for(text, [{"sentence": 0, "phrase": "about 3,000 miles", "text": "1,500 MILES",
+                               "label": "distance", "style": "stat"}])
+    assert [(b.style, b.text) for b in wrong] == [(PUNCH, "")]
+    right = _beats_for(text, [{"sentence": 0, "phrase": "about 3,000 miles", "text": "3,000 MILES",
+                               "label": "distance", "style": "stat"}])
+    assert [(b.style, b.text) for b in right] == [(STAT, "3,000 MILES")]
+
+
+@pytest.mark.parametrize("shown, said, ok", [
+    ("3,000", "about 3,000 miles", True),
+    ("500K", "a 500,000 dollar ticket", True),
+    ("1.5M", "1.5 million views", True),
+    ("40°C", "it hit 40 degrees", True),
+    ("40m", "a 40m drop", True),
+    ("50%", "half, 50 percent", True),
+    ("1,500", "about 3,000 miles", False),
+    ("$500K", "five hundred thousand", False),  # spelled out: unverifiable, so not shown
+    ("3,000 TO 5,000", "about 3,000 miles", False),
+    ("2017", "", False),
+])
+def test_number_is_spoken_matches_written_forms(shown, said, ok):
+    from app.clipper.edit import number_is_spoken
+    assert number_is_spoken(shown, said) is ok
+
+
+def test_a_card_with_an_unspoken_number_loses_its_text():
+    from app.clipper.edit import PUNCH
+    beats = _beats_for("The ticket cost one dollar. Nobody expected what came next.",
+                       [{"sentence": 1, "phrase": "what came next", "text": "$500K LATER", "style": "card"}])
+    assert [(b.style, b.text) for b in beats] == [(PUNCH, "")]
+
+
 @pytest.mark.parametrize("text", ["", "BIG WORD", "x" * 99, "🔥"])
 def test_a_punch_has_no_text_whatever_the_ai_wrote(monkeypatch, text):
     from app.clipper.edit import PUNCH, build_edit
