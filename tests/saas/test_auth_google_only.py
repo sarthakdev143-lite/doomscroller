@@ -347,6 +347,19 @@ def test_admin_grant_google_sign_in_totp_then_admin_and_next_survives_2fa(client
     assert client.get("/admin/api/live").status_code == 200
 
 
+def test_granted_gmail_admin_is_claimed_whichever_way_the_address_was_typed(client, gonly, saas_db, monkeypatch):
+    from saas.models.core import User
+
+    waitlist_mode(gonly, monkeypatch)
+    assert manage().main(["grant-admin", "j.doe@gmail.com"]) == 0
+    r = round_trip(client, monkeypatch, email="jdoe@gmail.com")  # Google's form of the same inbox
+    assert r.headers["location"] == "/app", r.headers["location"]
+    saas_db.expire_all()
+    (owner,) = saas_db.query(User).all()
+    assert owner.role == "admin" and owner.email_verified_at is not None
+    assert client.get("/api/me").json()["free"] == {"minutes": 10, "shorts": 10}
+
+
 def test_admin_email_list_skips_the_invite_gate(client, gonly, saas_db, monkeypatch):
     from saas.models.core import User
 

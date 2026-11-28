@@ -98,6 +98,10 @@ def require_recent_auth(request: Request, db: Session = Depends(get_db)) -> Auth
         raise _unauthenticated(request)
     sess, _user = found
     if not sessions.recently_authenticated(sess):
+        from . import policy
+
+        if policy.google_only():
+            raise ApiError(403, "reauth_required", "Confirm it's you: continue with Google (or enter your 2FA code).")
         raise ApiError(403, "reauth_required", "Confirm it's you: enter your password (or 2FA code) again.")
     return sess
 

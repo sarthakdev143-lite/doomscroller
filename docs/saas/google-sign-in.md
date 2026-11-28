@@ -32,7 +32,10 @@ Use a project of its own, separate from the YouTube projects in `channels.json`.
 4. **Clients**
    - **Create client** → **Web application**. Name it `doomscroller web`.
    - **Authorized redirect URIs:**
-     - `https://doomscroller-studio.pages.dev/auth/google/callback`
+     - `https://doomscroller-app.<account>.workers.dev/auth/google/callback`: where the app is reachable today,
+       through the beta Worker (docs/saas/beta-edge.md).
+     - `https://doomscroller-studio.pages.dev/auth/google/callback`: only for once that host forwards the app's
+       routes (see below).
      - `http://127.0.0.1:8700/auth/google/callback` (local development)
    - **Authorized JavaScript origins:** none. The exchange happens on the server, with PKCE.
    - Copy the **Client ID** and **Client secret**.
@@ -42,7 +45,7 @@ Use a project of its own, separate from the YouTube projects in `channels.json`.
 ```ini
 SAAS_GOOGLE_CLIENT_ID=<client id>.apps.googleusercontent.com
 SAAS_GOOGLE_CLIENT_SECRET=<client secret>
-SAAS_PUBLIC_URL=https://doomscroller-studio.pages.dev   # exactly the origin of a registered redirect URI
+SAAS_PUBLIC_URL=https://doomscroller-app.<account>.workers.dev   # exactly the origin of a registered redirect URI
 # SAAS_AUTH_GOOGLE_ONLY=        # unset/auto: on, because Google is set and SMTP isn't. true/false to force it.
 # SAAS_SMTP_HOST=               # leave empty: Google-only mode sends no email at all
 SAAS_ADMIN_EMAILS=you@gmail.com # optional: this Google account becomes an admin and skips the invite gate
@@ -55,15 +58,13 @@ trailing slash.
 Check the result with `.venv-saas\Scripts\python.exe scripts\saas_serve.py --check`. It should print
 `sign-in=google-only mail=off`. In prod it refuses to start Google-only without a client ID and secret.
 
-**Check the redirect URI before relying on the pages.dev one.** `doomscroller-studio.pages.dev` is today the static
-marketing site (`edge/`). It has no `/auth` route, and the app runs behind the `doomscroller-app` Worker on
-workers.dev (docs/saas/beta-edge.md). Until that host forwards `/auth/*`, `/login` and `/app` to the app:
+**Why workers.dev and not pages.dev (as of 2026-11-28).** `doomscroller-studio.pages.dev` is the static marketing
+site (`edge/`). It has no `/auth`, `/login` or `/app` route, so a callback sent there would 404. The app runs
+behind the `doomscroller-app` Worker on workers.dev.
 
-- also register `https://doomscroller-app.<account>.workers.dev/auth/google/callback` (one client can hold several
-  redirect URIs);
-- point `SAAS_PUBLIC_URL` at that origin.
-
-The sign-in cookie is tied to the host, so the whole round trip must stay on one origin.
+Switch `SAAS_PUBLIC_URL` to the pages.dev origin only once that host forwards those routes to the app. Keep both
+redirect URIs registered, since one client can hold several. The sign-in cookie is tied to the host, so the whole
+round trip must stay on one origin.
 
 ## 3. Admin access (the owner can't be locked out)
 

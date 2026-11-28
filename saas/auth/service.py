@@ -71,15 +71,16 @@ def find_user_for_google(db: Session, email: str) -> Optional[User]:
 
     Exact address first. For gmail.com, Google owns the namespace and dots and +tags reach the same inbox, so a
     verified account registered as j.doe+saas@gmail.com is the same person as Google's jdoe@gmail.com: match it
-    on the canonical form, but only a verified account, and only when exactly one matches.
+    on the canonical form, but only a verified account (or an admin row from provision_admin, which is unverified
+    until claimed), and only when exactly one matches.
     """
     user = find_user_by_email(db, email)
     if user is not None:
         return user
     if email.rpartition("@")[2] not in _GMAIL:
         return None
-    rows = (db.query(User).filter(User.email_canonical == canonical_email(email), User.email_verified_at.is_not(None),
-                                  User.status == "active").limit(2).all())
+    rows = [u for u in db.query(User).filter(User.email_canonical == canonical_email(email), User.status == "active")
+            .limit(5).all() if u.email_verified_at is not None or (u.flags or {}).get("provisioned") == "admin"]
     return rows[0] if len(rows) == 1 else None
 
 
@@ -111,7 +112,7 @@ def provision_admin(db: Session, email: str) -> tuple[User, bool]:
     user = User(email=email, email_canonical=canonical_email(email), name="", password_hash=None, role="admin",
                 status="active", plan_slug="free", referral_code=_new_referral_code(db),
                 signup_risk={"score": 0, "reasons": ["provisioned_admin"], "block": False,
-                             "grant_free_credits": False},
+                             "grant_free_credits": True},  # the owner sees the free tier as customers do
                 flags={"provisioned": "admin"})
     db.add(user)
     db.flush()
