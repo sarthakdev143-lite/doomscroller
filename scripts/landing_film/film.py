@@ -53,7 +53,7 @@ LOOK = {
     "sheen": 160.0,       # a big dim softbox behind the camera, seen only as a reflection in the glass faces
     "deck": 110.0,        # two strip lights that find the decks' layered edges in scene 3
     "floor_rough": 0.13,  # black lacquer: the strip reflects in it
-    "glass_rough": 0.08,
+    "glass_rough": 0.03,  # clear glass; smudges vary it a little
     "fstop": 2.0,
     "glare": -0.5,
     "vignette": 0.62,
@@ -251,7 +251,7 @@ def tile_state(i, f):
         if i == p["tiles"][-1]:
             face = smooth(lin(f, *FACE))
             dip = smooth(lin(f, DIP[0], DIP[1])) * (1 - smooth(lin(f, DIP[1], DIP[2])))
-            pw *= (1 - 0.8 * dip) * mix(1.0, 1.35, face)  # a finished Short glows a little brighter
+            pw *= (1 - 0.8 * dip) * mix(1.0, 1.6, face)  # a finished Short glows brighter
     return pw, warm, sat, face
 
 
@@ -289,9 +289,9 @@ RIGS = {
         (B["s1"][0], (-1.35, -2.75, 0.92), (5.4, 0.0, 1.28), 30),
         (B["s1"][1], (-1.05, -2.6, 0.95), (5.8, 0.0, 1.28), 30),
         (88, (2.0, -3.7, 1.15), (10.5, 0.0, 1.25), 34),
-        (B["s2"][0], (6.6, -3.5, 1.32), (16.2, 0.0, 1.24), 35),
-        (B["s2"][1], (6.95, -3.55, 1.33), (16.6, 0.0, 1.24), 35),
-        (162, (2.8, -7.0, 1.65), (16.8, 0.0, 1.15), 40),
+        (B["s2"][0], (9.2, -2.35, 1.28), (15.2, 0.0, 1.22), 30),
+        (B["s2"][1], (9.55, -2.4, 1.29), (15.6, 0.0, 1.22), 30),
+        (162, (2.8, -7.0, 1.65), (14.5, 0.0, 1.15), 40),
         (190, (13.0, -8.8, 1.95), (22.8, -1.6, 1.3), 40),
         (214, (20.6, -9.6, 1.6), (23.7, -2.6, 1.05), 38),
         (B["s3"][0], (23.6, -9.3, 1.3), (23.75, -3.0, 0.92), 36),
@@ -302,9 +302,9 @@ RIGS = {
         (B["s1"][0], (-0.9, -2.45, 0.82), (4.4, 0.0, 1.3), 23),
         (B["s1"][1], (-0.7, -2.3, 0.85), (4.7, 0.0, 1.3), 23),
         (88, (2.4, -3.4, 1.2), (10.0, 0.0, 1.25), 24),
-        (B["s2"][0], (8.2, -2.05, 1.0), (21.0, 0.0, 1.32), 28),
-        (B["s2"][1], (8.5, -2.0, 1.02), (21.4, 0.0, 1.32), 28),
-        (162, (2.6, -5.2, 1.5), (18.6, 0.0, 1.2), 24),
+        (B["s2"][0], (9.4, -1.55, 1.04), (17.6, 0.0, 1.3), 24),
+        (B["s2"][1], (9.7, -1.55, 1.05), (18.0, 0.0, 1.3), 24),
+        (162, (2.6, -5.2, 1.5), (15.7, 0.0, 1.2), 24),
         (190, (13.5, -9.0, 2.1), (23.0, -1.6, 1.3), 30),
         (214, (21.0, -9.6, 1.7), (23.9, -2.6, 1.1), 30),
         (B["s3"][0], (24.0, -7.9, 1.3), (24.0, -3.0, 0.98), 30),
@@ -361,10 +361,10 @@ sc.cycles.use_adaptive_sampling = True
 sc.cycles.adaptive_threshold = 0.02
 sc.cycles.use_denoising = True
 sc.cycles.denoiser = "OPENIMAGEDENOISE"
-sc.cycles.max_bounces = 6
+sc.cycles.max_bounces = 10
 sc.cycles.diffuse_bounces = 2
 sc.cycles.glossy_bounces = 3
-sc.cycles.transmission_bounces = 2
+sc.cycles.transmission_bounces = 8   # through the glass slabs and back
 sc.cycles.volume_bounces = 0
 sc.cycles.transparent_max_bounces = 8
 sc.cycles.caustics_reflective = False
@@ -479,7 +479,7 @@ def screen_mat(name, face=None):
     nt = m.node_tree
     pb = nt.nodes["Principled BSDF"]
     pb.inputs["Base Color"].default_value = (0.0, 0.0, 0.0, 1)
-    pb.inputs["Roughness"].default_value = 0.06
+    pb.inputs["Roughness"].default_value = 0.45   # a print behind the glass: the glass carries the shine
     pb.inputs["Specular IOR Level"].default_value = 0.5
     info = nt.nodes.new("ShaderNodeObjectInfo")
     sep = nt.nodes.new("ShaderNodeSeparateColor")
@@ -527,14 +527,24 @@ def screen_mat(name, face=None):
 
 
 def glass_mat():
+    """Clear glass, a touch warm, with faint smudges in its roughness: real glass is never perfectly clean."""
     m = bpy.data.materials.new("Glass")
     m.use_nodes = True
     nt = m.node_tree
     pb = nt.nodes["Principled BSDF"]
-    pb.inputs["Base Color"].default_value = (0.006, 0.006, 0.007, 1)
-    pb.inputs["Roughness"].default_value = LOOK["glass_rough"]
-    pb.inputs["Coat Weight"].default_value = 0.6
-    pb.inputs["Coat Roughness"].default_value = 0.03
+    pb.inputs["Base Color"].default_value = (0.97, 0.965, 0.955, 1)
+    pb.inputs["Transmission Weight"].default_value = 1.0
+    pb.inputs["IOR"].default_value = 1.5
+    nz = nt.nodes.new("ShaderNodeTexNoise")
+    nz.inputs["Scale"].default_value = 9.0
+    nz.inputs["Detail"].default_value = 5.0
+    mr = nt.nodes.new("ShaderNodeMapRange")
+    mr.inputs["From Min"].default_value = 0.45
+    mr.inputs["From Max"].default_value = 0.75
+    mr.inputs["To Min"].default_value = LOOK["glass_rough"] * 0.5
+    mr.inputs["To Max"].default_value = LOOK["glass_rough"] * 2.2
+    nt.links.new(nz.outputs["Fac"], mr.inputs["Value"])
+    nt.links.new(mr.outputs["Result"], pb.inputs["Roughness"])
     aov_outputs(nt, 1.0)
     return m
 
@@ -603,39 +613,40 @@ SCREEN = screen_mat("Screen")
 HERO = {p["tiles"][-1]: screen_mat(f"Hero{p['clip']}", FACES[p["clip"]]) for p in CHOSEN}
 
 
-def tile_mesh(i):
-    """A 16:9 slab, face toward -Y. Two UV maps on the face: its tile in the atlas, and 0..1 across the face."""
+INSET = 0.028        # clear glass round the picture
+PIC_Y = D / 2 - 0.009  # the picture sits near the back of the slab, so you look into the glass at it
+
+
+def picture_mesh(i):
+    """The picture inside a slab: a quad facing -Y, its tile in the atlas and 0..1 across it (for the face)."""
     cols, rows = LAYOUT["cols"], LAYOUT["rows"]
     col, row = i % cols, i // cols
     u0, u1 = col / cols, (col + 1) / cols
     v0, v1 = 1 - (row + 1) / rows, 1 - row / rows
     bm = bmesh.new()
-    hw, hd, hh = W / 2, D / 2, H / 2
-    v = [bm.verts.new(p) for p in [(-hw, -hd, -hh), (hw, -hd, -hh), (hw, -hd, hh), (-hw, -hd, hh),
-                                   (-hw, hd, -hh), (hw, hd, -hh), (hw, hd, hh), (-hw, hd, hh)]]
-    faces = [
-        ((0, 1, 2, 3), 0),        # front (-Y)
-        ((5, 4, 7, 6), 1),        # back
-        ((4, 0, 3, 7), 1),        # left
-        ((1, 5, 6, 2), 1),        # right
-        ((3, 2, 6, 7), 1),        # top
-        ((4, 5, 1, 0), 1),        # bottom
-    ]
+    hw, hh = W / 2 - INSET, H / 2 - INSET
+    v = [bm.verts.new(p) for p in [(-hw, 0, -hh), (hw, 0, -hh), (hw, 0, hh), (-hw, 0, hh)]]
+    fc = bm.faces.new(v)
     uv_a = bm.loops.layers.uv.new("atlas")
     uv_l = bm.loops.layers.uv.new("local")
-    for idx, mat in faces:
-        fc = bm.faces.new([v[k] for k in idx])
-        fc.material_index = mat
-        fc.smooth = True
-        if mat == 0:
-            for loop, (a, b) in zip(fc.loops, [(u0, v0), (u1, v0), (u1, v1), (u0, v1)]):
-                loop[uv_a].uv = (a, b)
-            for loop, (a, b) in zip(fc.loops, [(0, 0), (1, 0), (1, 1), (0, 1)]):
-                loop[uv_l].uv = (a, b)
-    me = bpy.data.meshes.new(f"tile{i}")
+    for loop, (a, b) in zip(fc.loops, [(u0, v0), (u1, v0), (u1, v1), (u0, v1)]):
+        loop[uv_a].uv = (a, b)
+    for loop, (a, b) in zip(fc.loops, [(0, 0), (1, 0), (1, 1), (0, 1)]):
+        loop[uv_l].uv = (a, b)
+    me = bpy.data.meshes.new(f"pic{i}")
     bm.to_mesh(me)
     bm.free()
     return me
+
+
+SLAB_ME = bpy.data.meshes.new("slab")
+_bm = bmesh.new()
+bmesh.ops.create_cube(_bm, size=1.0)
+bmesh.ops.scale(_bm, vec=(W, D, H), verts=_bm.verts)
+for _f in _bm.faces:
+    _f.smooth = True
+_bm.to_mesh(SLAB_ME)
+_bm.free()
 
 
 def new_object(name, data=None):
@@ -651,18 +662,21 @@ for k, p in enumerate(pieces):
     root.location = (p["x0"], 0, Z0)
     roots.append(root)
     for j, i in enumerate(p["tiles"]):
-        me = tile_mesh(i)
-        me.materials.append(HERO.get(i, SCREEN))
-        me.materials.append(GLASS)
-        ob = new_object(f"tile{i}", me)
+        ob = new_object(f"tile{i}", SLAB_ME)   # a slab of clear glass ...
+        if not SLAB_ME.materials:
+            SLAB_ME.materials.append(GLASS)
         ob.parent = root
         bev = ob.modifiers.new("Bevel", "BEVEL")
         bev.width = 0.012
         bev.segments = 3
         bev.limit_method = "ANGLE"
-        bev.material = 1
         bev.harden_normals = True
-        tiles[i] = (ob, k, j)
+        pme = picture_mesh(i)                  # ... with the footage inside it
+        pme.materials.append(HERO.get(i, SCREEN))
+        pic = new_object(f"pic{i}", pme)
+        pic.parent = ob
+        pic.location = (0, PIC_Y, 0)
+        tiles[i] = (ob, k, j, pic)
         GLASS_SET.objects.link(ob)
 
 hair_me = bpy.data.meshes.new("hair")
@@ -802,12 +816,12 @@ for f in range(0, F + 2):
         root.rotation_euler = rot
         key(root, "location", f)
         key(root, "rotation_euler", f)
-    for i, (ob, k, j) in tiles.items():
+    for i, (ob, k, j, pic) in tiles.items():
         ob.location = tile_local(pieces[k], j, f)
         key(ob, "location", f)
         pw, warm, sat, face = tile_state(i, f)
-        ob.color = (pw / 2, warm, sat, face)
-        key(ob, "color", f)
+        pic.color = (pw / 2, warm, sat, face)
+        key(pic, "color", f)
     for h in hairs:
         glow, red = hair_state(h, f)
         h["ob"].color = (glow / 4, red, 0, 1)
@@ -815,7 +829,7 @@ for f in range(0, F + 2):
     if args.camera == "phone" and not args.quick:
         # a tall frame looks up into the air behind the decks: ease the glow down as they form
         for L in AIR:
-            L.energy = LOOK["air"] * mix(1.0, 0.55, smooth(lin(f, 150, 205)))
+            L.energy = LOOK["air"] * mix(1.0, 0.18, smooth(lin(f, 150, 205)))
             L.keyframe_insert("energy", frame=f)
     for dl in DECK_LIGHTS:
         dl.data.energy = LOOK["deck"] * smooth(lin(f, GATHER_X[0], ROLL[1]))
@@ -911,6 +925,17 @@ if args.dry:
             sc.frame_set(int(round(f)))
             v = world_to_camera_view(sc, cam, Vector((c["x"], 0.0, Z0)))
             print(f"cut gap {c['gap']} frame {f}: screen x {v.x:.3f} y {v.y:.3f}", flush=True)
+    sc.frame_set(F)
+    faces = []
+    for pdeck in CHOSEN:
+        pic = tiles[pdeck["tiles"][-1]][3]
+        hw, hh = W / 2 - INSET, H / 2 - INSET
+        corners = []
+        for cx, cz in ((-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)):
+            v = world_to_camera_view(sc, cam, pic.matrix_world @ Vector((cx, 0.0, cz)))
+            corners.append([round(v.x, 4), round(1 - v.y, 4)])  # image coords, y down
+        faces.append(corners)
+    print("DECK_FACES " + json.dumps({args.camera: faces}), flush=True)
     for f in (1, B["s1"][0], B["s2"][0], cuts[0]["mid"], 200, 230, F):
         sc.frame_set(int(f))
         print(f"frame {int(f)}: cam {tuple(round(x, 2) for x in cam.matrix_world.translation)}; "

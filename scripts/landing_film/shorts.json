@@ -1,0 +1,30 @@
+{
+ "_about": [
+  "The three approved Shorts shown in landing-D scenes 4-5: this product's own output (app.clipper, run by the showcase",
+  "workflow), web-encoded by .github/workflows/landing-film.yml (job 'shorts') into saas/web/static/media/d/. Assets for",
+  "this project's own website only. Each source is the showcase artifact's file, checked against the sha256 of the copy",
+  "the owner approved (content/site-previews/D/shorts/). Titles are the pipeline's own AI titles (result.json); credits",
+  "come from docs/saas/landing-d-sources.md for the working-copy range each clip covers. Yellow word captions are the",
+  "product's real caption style, burned in by the renderer: they are output, not page chrome."
+ ],
+ "size": "540x960",
+ "budget_bytes": 5200000,
+ "shorts": [
+  {"id": "clip_01_20_50", "run": "46085200172", "artifact": "showcase-black_holes", "path": "clips/clip_01_20_50.mp4",
+   "sha256": "8cf00a994357a25a12c9e9f5c5e6510c7b413e6de4840b6dca165e5d8b46e25a",
+   "poster": "clips/clip_01_20_50.jpg",
+   "title": "Myth Busted: Black Holes Emit Light", "hook": "Black holes aren't completely black",
+   "handoff_s": 4.0,
+   "credit": "NASA ScienceCasts, “Shedding Light on Black Holes” (2019). Image: Event Horizon Telescope Collaboration (CC BY 4.0); artist rendering: NASA/GSFC."},
+  {"id": "clip_02_64_85", "run": "46085200172", "artifact": "showcase-black_holes", "path": "clips/clip_02_64_85.mp4",
+   "sha256": "56650e17c917d7cb3b445f8e02fcfa2c23078ec7c1186ecc828a168fae3034ec",
+   "poster": "clips/clip_02_64_85.jpg",
+   "title": "How Close Can You Get to a Black Hole?", "hook": "You could orbit a black hole",
+   "credit": "NASA ScienceCasts, “Shedding Light on Black Holes” (2019). Artist rendering: NASA."},
+  {"id": "neptune_clip_01_0_29", "run": "46095409250", "artifact": "showcase-eye_on_neptune", "path": "clips/clip_01_0_29.mp4",
+   "sha256": "4d8a81172012e08676a4ee9b35576e309ebe3f93ca275e8b829689eef21e57a5",
+   "poster": "clips/clip_01_0_29.jpg",
+   "title": "Neptune's Monster Storms Revealed", "hook": "A dark vortex like Jupiter's",
+   "credit": "NASA ScienceCasts, “Eye on Neptune” (2019). Artist renderings and Voyager 2 images: NASA/JPL."}
+ ]
+}

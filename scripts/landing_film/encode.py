@@ -88,7 +88,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{cam}: {len(pngs)} stills", flush=True)
         return 0
 
-    manifest = {"fps": film["fps"], "frames": F, "beats": beats, "face_from": film["face_from"], "cams": {}}
+    manifest = {"fps": film["fps"], "frames": F, "beats": beats, "face_from": film["face_from"],
+                "deck_faces": film.get("deck_faces", {}), "cams": {}}
     # pack order: the critical pack first (intro, then every 4th frame), the rest in film order
     intro_end = beats["intro"][1]
     critical = list(range(1, intro_end + 1)) + [f for f in range(intro_end + 1, F + 1) if f % 4 == 0]

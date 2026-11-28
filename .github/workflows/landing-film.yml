@@ -96,6 +96,36 @@ jobs:
           print(mode, len(items), "jobs")
           EOF
 
+  # The approved Shorts for scenes 4-5, web-encoded from the showcase artifacts (sha256-checked against the copies the
+  # owner approved; scripts/landing_film/shorts.json). Cheap, so it runs with every film run.
+  shorts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/landing_film
+      - name: ffmpeg and Pillow
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ffmpeg > /dev/null
+          python3 -m pip install --quiet pillow
+      - name: The showcase artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 -c "import json; [print(s['run'], s['artifact']) for s in json.load(open('scripts/landing_film/shorts.json'))['shorts']]" | sort -u |
+          while read -r run art; do
+            [ -d "src/$art" ] || gh run download "$run" --repo "$GITHUB_REPOSITORY" --name "$art" --dir "src/$art"
+          done
+          find src -name '*.mp4' | sort
+      - name: Encode
+        run: python3 scripts/landing_film/shorts.py --src src --out shorts-web
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shorts-web
+          path: shorts-web
+          retention-days: 14
+
   prep:
     needs: plan
     runs-on: ubuntu-latest

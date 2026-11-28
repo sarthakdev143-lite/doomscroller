@@ -87,7 +87,7 @@ def framed(frame: Image.Image, w: int, h: int) -> Image.Image:
     bg = frame.resize((max(w, round(sw * scale)), h), Image.LANCZOS)
     left = (bg.width - w) // 2
     bg = bg.crop((left, 0, left + w, h)).filter(ImageFilter.GaussianBlur(w / 30))
-    bg = Image.eval(bg, lambda v: int(v * 0.36))
+    bg = Image.eval(bg, lambda v: int(v * 0.6))
     fg_h = round(sh * w / sw)
     fg = frame.resize((w, fg_h), Image.LANCZOS)
     bg.paste(fg, (0, (h - fg_h) // 2))

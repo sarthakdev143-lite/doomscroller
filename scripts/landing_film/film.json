@@ -215,7 +215,9 @@
     256
    ]
   },
-  "face_from": 200
+  "face_from": 200,
+  "_deck_faces": "where each deck's picture lands in the last frame, as image coordinates (x right, y down) of its four corners; from film.py --dry. Scene 4 grows the real Short out of deck 0.",
+  "deck_faces": {"desk": [[[0.4695, 0.6774], [0.469, 0.2207], [0.3257, 0.2145], [0.3285, 0.6876]], [[0.7551, 0.6848], [0.7593, 0.2162], [0.6137, 0.2212], [0.6119, 0.6765]]], "phone": [[[0.3655, 0.616], [0.3626, 0.3432], [0.0845, 0.3389], [0.0936, 0.6231]], [[0.9064, 0.6231], [0.9155, 0.3389], [0.6374, 0.3432], [0.6345, 0.616]]]}
  },
  "render": {
   "mode": "stills",
@@ -232,7 +234,7 @@
    "phone": "720x1280"
   },
   "samples": 40,
-  "stills": [1, 24, 48, 90, 128, 147, 176, 200, 222, 250],
+  "stills": [24, 48, 90, 128, 141, 159, 176, 200, 224, 250],
   "chunk": 16
  },
  "look": {}
