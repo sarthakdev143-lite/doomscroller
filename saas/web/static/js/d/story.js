@@ -36,8 +36,9 @@ export class Story {
     // each line's entrance and exit, in film frames
     this.lineWindows = {
       1: [b.intro[1] - 18, b.intro[1], b.s1[1] + 8, b.s1[1] + 24],
-      2: [b.s2[0] - 18, b.s2[0], b.cut[0] + 2, b.cut[0] + 12],
-      3: [b.cut[0] + 3, b.cut[0] + 18, Infinity, Infinity],
+      // line 2 leaves as the first blade falls; line 3 rises once it has gone, so they never cross
+      2: [b.s2[0] - 18, b.s2[0], b.cut[0] - 1, b.cut[0] + 5],
+      3: [b.cut[0] + 7, b.cut[0] + 20, Infinity, Infinity],
     };
     this.story = story;
     this.lines = lines;

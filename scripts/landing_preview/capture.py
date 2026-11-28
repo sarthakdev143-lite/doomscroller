@@ -23,6 +23,7 @@ import statistics
 import subprocess
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
@@ -30,6 +31,8 @@ from playwright.sync_api import sync_playwright
 ARGS = ["--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist", "--enable-webgl"]
 FPS = 30
 STEP = 1000.0 / FPS
+LOADER_SECONDS = 3.0   # how long the loader should count in the video
+LOADER_STEP_REAL = 0.25  # real seconds per video frame while it counts (fixed, so the throttle can be derived)
 PATH = "/preview/d/"
 
 WATCH = """
@@ -71,11 +74,13 @@ class Recorder:
         self.n = 0
         self.ms = 0.0  # fake time owed, so 1/30 s steps never drift
         self.stills: dict[str, str] = {}
+        self.holds: list[dict] = []  # the playhead during each hold: does the idle film breathe?
 
     def state(self):
         return self.page.evaluate("window.__d && window.__d.snapshot ? window.__d.snapshot() : null")
 
-    def frame(self, real_wait: float = 0.0):
+    def frame(self, real_wait: float = 0.0, pad_to: float = 0.0):
+        t_start = time.time()
         self.ms += STEP
         whole = int(self.ms)
         self.ms -= whole
@@ -91,6 +96,8 @@ class Recorder:
         self.page.evaluate("window.__d && window.__d.draw && window.__d.draw()")
         self.page.screenshot(path=str(self.dir / f"{self.n:05d}.png"))
         self.n += 1
+        if pad_to:
+            time.sleep(max(0.0, pad_to - (time.time() - t_start)))
 
     def still(self, name: str, out: Path):
         src = self.dir / f"{self.n - 1:05d}.png"
@@ -98,8 +105,15 @@ class Recorder:
         self.stills[name] = f"{name}.png"
 
     def hold(self, seconds: float):
+        heads = []
         for _ in range(round(seconds * FPS)):
             self.frame()
+            s = self.state() or {}
+            if s.get("head") is not None:
+                heads.append(s["head"])
+        if heads:
+            self.holds.append({"at_video_s": round(self.n / FPS, 1), "seconds": seconds,
+                               "head_min": round(min(heads), 2), "head_max": round(max(heads), 2)})
 
     def scroll_to(self, y_to: float, seconds: float, mouse=None):
         y0 = self.page.evaluate("window.scrollY")
@@ -135,9 +149,13 @@ def record(pw, base: str, out: Path, kind: str, errors: list) -> dict:
     page.on("pageerror", lambda e: errors.append(f"{kind} pageerror: {e}"))
     cdp = ctx.new_cdp_session(page)
     cdp.send("Network.enable")
-    # a realistic connection for the loader: its count shows real bytes arriving
+    # The loader counts real bytes, so the connection decides how long it shows. Derive the throughput from the
+    # critical pack's real size (plus the page's own files, about 0.35 MB) so it counts for ~LOADER_SECONDS.
+    manifest = json.loads(urllib.request.urlopen(base + "/static/media/d/film.json").read())
+    critical = manifest["cams"]["phone" if phone else "desk"]["packs"][0]["bytes"]
+    throughput = int((critical + 350_000) / (LOADER_SECONDS * FPS * LOADER_STEP_REAL))
     cdp.send("Network.emulateNetworkConditions", {"offline": False, "latency": 30,
-                                                   "downloadThroughput": 160_000, "uploadThroughput": 100_000})
+                                                   "downloadThroughput": throughput, "uploadThroughput": 100_000})
     start = 1_767_000_000_000
     page.clock.install(time=start)
     page.clock.pause_at(start + 1000)  # from here on, time moves only when the recorder steps it
@@ -149,7 +167,7 @@ def record(pw, base: str, out: Path, kind: str, errors: list) -> dict:
     # 0. the loader, until the cut
     seen_half = False
     for _ in range(FPS * 60):
-        rec.frame(real_wait=0.03)
+        rec.frame(pad_to=LOADER_STEP_REAL)
         s = rec.state() or {}
         if s.get("mode") == "still":
             raise SystemExit(f"{kind}: the page fell back to stills ({s}); not recording the fallback as the film")
@@ -198,7 +216,7 @@ def record(pw, base: str, out: Path, kind: str, errors: list) -> dict:
     rec.hold(1.4)
 
     # 3. the cut, to scene 3
-    rec.scroll_to(scroll_for(page, 0.47), 2.6)
+    rec.scroll_to(scroll_for(page, 0.515), 3.0)  # the last blade, once line 3 has risen
     rec.still(f"{kind}-6-blade", stills_dir)
     rec.scroll_to(scroll_for(page, 0.72), 3.4)
     rec.still(f"{kind}-7-gather", stills_dir)
@@ -230,6 +248,7 @@ def record(pw, base: str, out: Path, kind: str, errors: list) -> dict:
                     "-movflags", "+faststart", str(video)], check=True)
     work = (stats or {}).get("work") or [0]
     return {"frames": rec.n, "seconds": round(rec.n / FPS, 1), "video": video.name, "final_state": state,
+            "loader_throughput_bytes_per_s": throughput, "critical_bytes": critical, "holds": rec.holds,
             "stills": rec.stills,
             "js_ms_per_tick_stepped": {"p50": round(statistics.median(work), 2),
                                        "p95": round(sorted(work)[int(len(work) * 0.95) - 1], 2)}}

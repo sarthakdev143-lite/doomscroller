@@ -143,19 +143,53 @@ async function boot() {
   };
   requestAnimationFrame(go);
 
-  // the rest of the film, nearest the start first, then the light pass (pointer screens only)
+  // the rest of the film, then the light pass (pointer screens only). The film already plays from the critical
+  // pack (every fourth frame, blended), so a pack that fails to arrive costs smoothness, never the film.
   for (let i = 1; i < cam.packs.length; i++) {
-    await store.loadPack(i, (n) => {
-      probe.bytes.fill = n;
-    });
+    try {
+      await store.loadPack(i, (n) => {
+        probe.bytes.fill = n;
+      });
+    } catch (err) {
+      probe.error = `pack ${i}: ${err && err.message ? err.message : err}`;
+    }
   }
   probe.bytes.all = cam.packs.reduce((s, p) => s + p.bytes, 0);
   mark("film-loaded");
   if (hover) {
-    await store.loadLight();
-    probe.bytes.light = cam.light ? cam.light.bytes : 0;
-    mark("light-loaded");
+    try {
+      await store.loadLight();
+      probe.bytes.light = cam.light ? cam.light.bytes : 0;
+      mark("light-loaded");
+    } catch (_) {
+      /* no light pass: the pointer still warms the air, it just cannot find the glass */
+    }
   }
+
+  // turning a phone (or resizing across portrait) swaps to the other camera's frames, without a second loader
+  let swapping = false;
+  window.addEventListener("resize", async () => {
+    const want = portrait() && manifest.cams.phone ? "phone" : "desk";
+    if (swapping || want === probe.cam || !manifest.cams[want] || probe.mode !== "film") return;
+    swapping = true;
+    try {
+      const next = new FrameStore(base, manifest.cams[want], hover ? 28 : 18);
+      await next.loadPack(0);
+      probe.cam = want;
+      story.store = next;
+      probe.store = next;
+      film.size = { w: next.cam.w, h: next.cam.h };
+      film.view = null;
+      film.resize();
+      story.drawn = "";
+      for (let i = 1; i < next.cam.packs.length; i++) await next.loadPack(i).catch(() => {});
+      if (hover) await next.loadLight().catch(() => {});
+    } catch (_) {
+      /* keep the frames we have */
+    } finally {
+      swapping = false;
+    }
+  });
 }
 
 /** For recordings and measurements: the state, and a way to draw now. */
