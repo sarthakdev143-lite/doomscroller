@@ -371,15 +371,18 @@ def _reply_beats(reply: Optional[dict], sentences: Sequence[Sentence], words: Se
         style = str(item.get("style") or "").lower()
         if style == STAT and not any(c.isdigit() for c in text):
             style = PUNCH
-        if style in (STAT, CARD) and any(c.isdigit() for c in text) and not number_is_spoken(text, sentence.text):
-            log.info("edit: dropped on-screen %r: that number is not in what was said", text)
-            style = PUNCH
         if at is None or at not in kept or style not in _STYLES:
             continue
         if style == PUNCH:
             beats.append(Beat(words[at].start, "", PUNCH))
         elif text and len(text) <= _MAX_BEAT_CHARS and beat_is_drawable(text):
-            beats.append(Beat(words[at].start, text.upper(), style, str(item.get("label") or "")[:_MAX_BEAT_CHARS].upper()))
+            if any(c.isdigit() for c in text) and not number_is_spoken(text, sentence.text):
+                # The moment still lands, just without a number nobody said.
+                log.info("edit: dropped on-screen %r: that number is not in what was said", text)
+                beats.append(Beat(words[at].start, "", PUNCH))
+            else:
+                beats.append(Beat(words[at].start, text.upper(), style,
+                                  str(item.get("label") or "")[:_MAX_BEAT_CHARS].upper()))
     return beats
 
 
