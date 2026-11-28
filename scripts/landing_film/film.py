@@ -51,7 +51,7 @@ LOOK = {
     "top": 900.0,         # softbox over the strip: lights only the glass (light linking), for its top edges
     "rim": 900.0,         # behind and above, glass only: outlines the tile edges
     "sheen": 160.0,       # a big dim softbox behind the camera, seen only as a reflection in the glass faces
-    "deck": 260.0,        # two strip lights that find the decks' layered edges in scene 3
+    "deck": 110.0,        # two strip lights that find the decks' layered edges in scene 3
     "floor_rough": 0.13,  # black lacquer: the strip reflects in it
     "glass_rough": 0.08,
     "fstop": 2.0,
@@ -286,8 +286,8 @@ RIGS = {
         (B["s1"][0], (-1.35, -2.75, 0.92), (5.4, 0.0, 1.28), 30),
         (B["s1"][1], (-1.05, -2.6, 0.95), (5.8, 0.0, 1.28), 30),
         (88, (2.0, -3.7, 1.15), (10.5, 0.0, 1.25), 34),
-        (B["s2"][0], (5.0, -4.6, 1.42), (15.5, 0.0, 1.22), 40),
-        (B["s2"][1], (5.3, -4.75, 1.45), (15.9, 0.0, 1.22), 40),
+        (B["s2"][0], (6.6, -3.5, 1.32), (16.2, 0.0, 1.24), 35),
+        (B["s2"][1], (6.95, -3.55, 1.33), (16.6, 0.0, 1.24), 35),
         (162, (2.8, -7.0, 1.65), (21.0, 0.0, 1.15), 42),
         (190, (13.0, -8.8, 1.95), (22.8, -1.6, 1.3), 40),
         (214, (20.6, -9.6, 1.6), (23.7, -2.6, 1.05), 38),
@@ -299,13 +299,13 @@ RIGS = {
         (B["s1"][0], (-0.9, -2.45, 0.82), (4.4, 0.0, 1.3), 23),
         (B["s1"][1], (-0.7, -2.3, 0.85), (4.7, 0.0, 1.3), 23),
         (88, (2.4, -3.4, 1.2), (10.0, 0.0, 1.25), 24),
-        (B["s2"][0], (6.2, -4.4, 1.6), (15.0, 0.0, 1.2), 26),
-        (B["s2"][1], (6.45, -4.5, 1.62), (15.4, 0.0, 1.2), 26),
-        (162, (3.6, -6.8, 1.9), (20.5, 0.0, 1.1), 28),
+        (B["s2"][0], (7.4, -2.3, 1.02), (19.5, 0.0, 1.32), 22),
+        (B["s2"][1], (7.7, -2.25, 1.04), (19.9, 0.0, 1.32), 22),
+        (162, (6.2, -3.4, 1.38), (22.5, 0.0, 1.22), 22),
         (190, (13.5, -9.0, 2.1), (23.0, -1.6, 1.3), 30),
         (214, (21.0, -9.6, 1.7), (23.9, -2.6, 1.1), 30),
-        (B["s3"][0], (24.0, -9.0, 1.35), (24.0, -3.0, 0.95), 30),
-        (B["s3"][1], (24.0, -8.6, 1.33), (24.0, -3.0, 0.95), 30),
+        (B["s3"][0], (24.0, -7.9, 1.3), (24.0, -3.0, 0.98), 30),
+        (B["s3"][1], (24.0, -7.6, 1.28), (24.0, -3.0, 0.98), 30),
     ],
 }
 PLATEAUS = [tuple(B["s1"]), tuple(B["s2"]), tuple(B["s3"])]
@@ -757,7 +757,7 @@ area("Rim", LOOK["rim"], 56, 0.8, (24, 4.5, 2.6), (24, 0.0, 1.3), (1.0, 0.95, 0.
 # Seen only in the glass: a long dim softbox behind the cameras, so the faces carry a soft sheen as real glass does.
 area("Sheen", LOOK["sheen"], 70, 5.0, (24, -16, 3.6), (24, 0.0, 1.0), WARMWHITE)
 # Scene 3: two tall strips either side of the decks, so their stacked edges (a tile per few seconds) read as layers.
-DECK_LIGHTS = [area(f"Deck{k}", 0.0, 0.25, 2.6, (CENTRE + side * 2.3, -1.7, DECK_Z + 0.3), (CENTRE + side * 0.84, -3.0, DECK_Z),
+DECK_LIGHTS = [area(f"Deck{k}", 0.0, 0.9, 2.6, (CENTRE + side * 2.3, -1.7, DECK_Z + 0.3), (CENTRE + side * 0.84, -3.0, DECK_Z),
                     WARMWHITE) for k, side in ((0, -1), (1, 1))]
 
 # Cameras: the one asked for is the active one.

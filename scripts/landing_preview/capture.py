@@ -45,6 +45,17 @@ try {
 """
 
 
+def wait_js(page, expr: str, timeout: float = 60.0) -> None:
+    """Poll a JavaScript expression until it is truthy. (page.wait_for_function evaluates its predicate with eval,
+    which the production CSP rightly blocks.)"""
+    end = time.time() + timeout
+    while time.time() < end:
+        if page.evaluate(expr):
+            return
+        time.sleep(0.1)
+    raise TimeoutError(f"timed out waiting for {expr}")
+
+
 def smooth(t: float) -> float:
     t = max(0.0, min(1.0, t))
     return t * t * (3 - 2 * t)
@@ -235,9 +246,9 @@ def measure(pw, base: str, kind: str, errors: list) -> dict:
     page.on("pageerror", lambda e: errors.append(f"{kind} rt pageerror: {e}"))
     t0 = time.time()
     page.goto(base + PATH, wait_until="load")
-    page.wait_for_function("window.__d && window.__d.phase === 'film'", timeout=60000)
+    wait_js(page, "window.__d && window.__d.phase === 'film'")
     cut_wall = time.time() - t0
-    page.wait_for_function("window.__d.marks['film-loaded'] !== undefined", timeout=60000)
+    wait_js(page, "window.__d.marks['film-loaded'] !== undefined")
     page.wait_for_timeout(2500)
     page.evaluate("window.__d.story.stats.intervals.length = 0; window.__d.story.stats.work.length = 0;")
     page.evaluate("""() => new Promise(done => {
@@ -301,16 +312,21 @@ def main() -> int:
     report: dict = {"note": "frame timings are from GitHub's CPU-only runner (SwiftShader WebGL); they show the "
                             "page's JavaScript cost per frame, not a visitor's GPU"}
     kinds = [args.only] if args.only else ["desktop", "phone"]
-    with sync_playwright() as pw:
+    try:
+        with sync_playwright() as pw:
+            for kind in kinds:
+                report[kind] = {}
+                for part, fn in (("recording", record), ("real_time", measure), ("reduced_motion", reduced)):
+                    try:
+                        report[kind][part] = fn(pw, args.base, out, kind, errors) if fn is not measure                             else fn(pw, args.base, kind, errors)
+                    except Exception as exc:  # keep going: the other parts are still worth seeing
+                        errors.append(f"{kind} {part} failed: {type(exc).__name__}: {exc}")
+    finally:
+        report["errors"] = errors
+        (out / "metrics.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
         for kind in kinds:
-            report[kind] = {"recording": record(pw, args.base, out, kind, errors),
-                            "real_time": measure(pw, args.base, kind, errors),
-                            "reduced_motion": reduced(pw, args.base, out, kind, errors)}
-    report["errors"] = errors
-    (out / "metrics.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
+            shutil.rmtree(out / f"{kind}-frames", ignore_errors=True)
     print(json.dumps(report, indent=1)[:6000])
-    for kind in kinds:
-        shutil.rmtree(out / f"{kind}-frames", ignore_errors=True)
     if errors:
         print("errors:\n" + "\n".join(errors), file=sys.stderr)
         return 1

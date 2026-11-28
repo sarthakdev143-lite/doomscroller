@@ -31,6 +31,7 @@ from PIL import Image, ImageDraw
 
 HERE = Path(__file__).resolve().parent
 BUDGET = {"desk": 6.0e6, "phone": 5.0e6}   # bytes of frames per camera (critical + rest)
+CRITICAL_BUDGET = 2.4e6                     # what the loader counts (docs/saas/landing-d.md says <= 2.5 MB)
 DATA_BUDGET = 0.6e6
 
 
@@ -100,14 +101,17 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit(f"{cam}: {len(missing)} frames missing, first {missing[:5]}")
         imgs = {f: Image.open(folder / f"f{f:04d}.png").convert("RGB") for f in range(1, F + 1)}
         w, h = imgs[1].size
-        quality, enc = 74, {}
-        for _ in range(5):
+        # the best quality that fits both budgets: every frame, and the loader's critical pack
+        quality, enc = 86, {}
+        for _ in range(8):
             enc = {f: webp(im, quality) for f, im in imgs.items()}
             total = sum(len(b) for b in enc.values())
-            print(f"{cam}: q{quality} -> {total / 1e6:.2f} MB ({total / F / 1e3:.1f} kB/frame)", flush=True)
-            if total <= BUDGET[cam] or quality <= 50:
+            crit = sum(len(enc[f]) for f in critical)
+            print(f"{cam}: q{quality} -> {total / 1e6:.2f} MB ({total / F / 1e3:.1f} kB/frame), "
+                  f"critical {crit / 1e6:.2f} MB", flush=True)
+            if (total <= BUDGET[cam] and crit <= CRITICAL_BUDGET) or quality <= 50:
                 break
-            quality -= 6
+            quality -= 4
         entry = {"w": w, "h": h, "quality": quality, "packs": [], "frames": [None] * (F + 1)}
         for name, order in [("k", critical)] + [(str(i + 1), fill[i]) for i in range(3)]:
             blob, offset = bytearray(), 0
