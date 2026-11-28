@@ -46,7 +46,7 @@ CFG = json.load(open(args.config, encoding="utf-8"))
 LOOK = {
     "exposure": 0.0,
     "emit": 2.3,          # footage light, W/m2-ish
-    "haze": 0.011,        # volume density: lit only by the footage and the blade, so it glows round the strip
+    "haze": 0.016,        # volume density (also a little aerial perspective down the strip)
     "aniso": 0.45,        # haze scatters forward
     "top": 900.0,         # softbox over the strip: lights only the glass (light linking), for its top edges
     "rim": 900.0,         # behind and above, glass only: outlines the tile edges
@@ -58,7 +58,7 @@ LOOK = {
     "glare": -0.5,
     "vignette": 0.62,
     "hair": 2.0,          # sentence hairlines
-    "air": 520.0,         # soft spots that light only the haze: a glow in the air above and behind the strip
+    "air": 6000.0,        # soft spots that light only the haze, from behind toward the camera (forward scatter)
     "blade": 140.0,
     "warm": [1.0, 0.86, 0.7],
 }
@@ -248,7 +248,7 @@ def tile_state(i, f):
         if i == p["tiles"][-1]:
             face = smooth(lin(f, *FACE))
             dip = smooth(lin(f, DIP[0], DIP[1])) * (1 - smooth(lin(f, DIP[1], DIP[2])))
-            pw *= 1 - 0.8 * dip
+            pw *= (1 - 0.8 * dip) * mix(1.0, 1.35, face)  # a finished Short glows a little brighter
     return pw, warm, sat, face
 
 
@@ -721,16 +721,16 @@ if not args.quick:
     HAZE_SET.objects.link(haze)
     # Soft light in the air only (light linking): columns of glow above and behind the strip, which the camera
     # passes as it moves, so the dark has depth. They light nothing solid.
-    for k, x in enumerate((6.0, 21.0, 36.0)):
+    for k, x in enumerate((7.0, 22.0, 37.0)):
         L = bpy.data.lights.new(f"Air{k}", "SPOT")
         L.energy = LOOK["air"]
-        L.spot_size = math.radians(34)
+        L.spot_size = math.radians(30)
         L.spot_blend = 1.0
         L.shadow_soft_size = 0.8
         L.color = (1.0, 0.9, 0.78)
         ob = new_object(f"Air{k}", L)
-        ob.location = (x, 2.2, 9.0)
-        ob.rotation_euler = (Vector((x + 1.5, -0.6, 0.0)) - ob.location).to_track_quat("-Z", "Y").to_euler()
+        ob.location = (x, 7.0, 8.5)
+        ob.rotation_euler = (Vector((x + 1.0, -2.5, 0.0)) - ob.location).to_track_quat("-Z", "Y").to_euler()
         ob.light_linking.receiver_collection = HAZE_SET
 
 
