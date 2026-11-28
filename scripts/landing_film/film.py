@@ -157,7 +157,10 @@ def vmix(a, b, t):
 # ── Choreography (frames) ──────────────────────────────────────────────────────────────────────────
 BLADE0 = B["cut"][0]              # first blade
 BLADE_LEN = 6                     # frames per blade
-cuts = [{"gap": g, "f0": BLADE0 + k * BLADE_LEN, "x": gap_x(g)} for k, g in enumerate(cut_after)]
+# The blades fall far to near: the camera is pulling back as they fall, so the nearest gap comes into frame last,
+# and the last blade lands closest to the lens. (cuts stays in strip order: piece k sits between cut k-1 and cut k.)
+FALL_ORDER = sorted(cut_after, reverse=True)
+cuts = [{"gap": g, "f0": BLADE0 + FALL_ORDER.index(g) * BLADE_LEN, "x": gap_x(g)} for g in cut_after]
 for c in cuts:
     c["mid"] = c["f0"] + BLADE_LEN / 2
 WARM = (96, 116)                  # the chosen stretches warm up
@@ -288,7 +291,7 @@ RIGS = {
         (88, (2.0, -3.7, 1.15), (10.5, 0.0, 1.25), 34),
         (B["s2"][0], (6.6, -3.5, 1.32), (16.2, 0.0, 1.24), 35),
         (B["s2"][1], (6.95, -3.55, 1.33), (16.6, 0.0, 1.24), 35),
-        (162, (2.8, -7.0, 1.65), (21.0, 0.0, 1.15), 42),
+        (162, (2.8, -7.0, 1.65), (16.8, 0.0, 1.15), 40),
         (190, (13.0, -8.8, 1.95), (22.8, -1.6, 1.3), 40),
         (214, (20.6, -9.6, 1.6), (23.7, -2.6, 1.05), 38),
         (B["s3"][0], (23.6, -9.3, 1.3), (23.75, -3.0, 0.92), 36),
@@ -301,7 +304,7 @@ RIGS = {
         (88, (2.4, -3.4, 1.2), (10.0, 0.0, 1.25), 24),
         (B["s2"][0], (8.2, -2.05, 1.0), (21.0, 0.0, 1.32), 28),
         (B["s2"][1], (8.5, -2.0, 1.02), (21.4, 0.0, 1.32), 28),
-        (162, (6.6, -3.2, 1.34), (23.0, 0.0, 1.22), 26),
+        (162, (2.6, -5.2, 1.5), (18.6, 0.0, 1.2), 24),
         (190, (13.5, -9.0, 2.1), (23.0, -1.6, 1.3), 30),
         (214, (21.0, -9.6, 1.7), (23.9, -2.6, 1.1), 30),
         (B["s3"][0], (24.0, -7.9, 1.3), (24.0, -3.0, 0.98), 30),
@@ -893,6 +896,12 @@ if args.quick:
     sc.render.resolution_x, sc.render.resolution_y = (384, 216) if args.camera == "desk" else (216, 384)
 
 if args.dry:
+    from bpy_extras.object_utils import world_to_camera_view
+    for c in cuts:  # is every blade in frame while it falls? (x, y in 0..1 means on screen)
+        for f in (c["f0"], c["mid"], c["f0"] + BLADE_LEN):
+            sc.frame_set(int(round(f)))
+            v = world_to_camera_view(sc, cam, Vector((c["x"], 0.0, Z0)))
+            print(f"cut gap {c['gap']} frame {f}: screen x {v.x:.3f} y {v.y:.3f}", flush=True)
     for f in (1, B["s1"][0], B["s2"][0], cuts[0]["mid"], 200, 230, F):
         sc.frame_set(int(f))
         print(f"frame {int(f)}: cam {tuple(round(x, 2) for x in cam.matrix_world.translation)}; "

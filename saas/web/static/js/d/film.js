@@ -55,6 +55,9 @@ void main() {
       }
     }
   }
+  // a static one-step dither, so the haze's dark gradients do not band at 8 bits (not grain: it never moves)
+  float ign = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+  c += (ign - 0.5) / 255.0;
   outColor = vec4(c, 1.0);
 }`;
 

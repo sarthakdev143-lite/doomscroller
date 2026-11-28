@@ -8,6 +8,9 @@
 #           look (one job per frame, in parallel); "full" renders every frame, split into chunks.
 #   prep    downloads the source, rebuilds the working copy, writes the tile atlases and the vertical faces.
 #   render  Blender 4.2.3 LTS (the version film.py was tested with), CPU.
+#   patch   render.patch in film.json ({"base_runs": [full run, earlier patches...], "ranges": {"desk": [a, b]}})
+#           re-renders only those frames and lays them over the base runs' frames at encode (waiting for a base run
+#           that is still rendering): a fix to a few seconds costs minutes, not another full hour.
 #   encode  packs the frames for the web (artifact "film-web", copied into saas/web/static/media/d/ once accepted)
 #           and makes review files (artifact "film-review": the film as MP4, contact sheets, stills).
 #
@@ -31,6 +34,7 @@ on:
 
 permissions:
   contents: read
+  actions: read   # a patch reads the frames of its base run
 
 # One run per commit: a draft of the whole film can run beside a stills run of the next look.
 concurrency:
@@ -44,6 +48,7 @@ jobs:
       mode: ${{ steps.p.outputs.mode }}
       matrix: ${{ steps.p.outputs.matrix }}
       atlas_frames: ${{ steps.p.outputs.atlas_frames }}
+      base_runs: ${{ steps.p.outputs.base_runs }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -65,7 +70,15 @@ jobs:
           res = lambda cam: r["draft_res"][cam] if draft else ""
           samples = r.get("draft_samples", 12) if draft else 0
           chunk = r.get("draft_chunk", 64) if draft else r["chunk"]
-          if mode == "stills":
+          patch = r.get("patch") or {}
+          bases = [str(x) for x in (patch.get("base_runs") or ([patch["base_run"]] if patch.get("base_run") else []))]
+          if mode == "full" and bases:
+              pc = r.get("patch_chunk", 8)
+              for cam, (lo, hi) in patch["ranges"].items():
+                  for a in range(lo, hi + 1, pc):
+                      b = min(hi, a + pc - 1)
+                      items.append({"camera": cam, "frames": f"{a}-{b}", "name": f"{cam}-{a:04d}", "res": "", "samples": 0})
+          elif mode == "stills":
               for cam in r["cameras"]:
                   for s in r["stills"]:
                       items.append({"camera": cam, "frames": str(s), "name": f"{cam}-{s:04d}", "res": res(cam), "samples": samples})
@@ -79,6 +92,7 @@ jobs:
               fh.write(f"mode={mode}\n")
               fh.write("matrix=" + json.dumps({"include": items}) + "\n")
               fh.write(f"atlas_frames={atlas}\n")
+              fh.write(f"base_runs={' '.join(bases) if mode == 'full' else ''}\n")
           print(mode, len(items), "jobs")
           EOF
 
@@ -203,16 +217,38 @@ jobs:
   encode:
     needs: [plan, render]
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
         with:
           sparse-checkout: scripts/landing_film
+      - name: Frames of the base runs, in order (waits for one still rendering)
+        if: needs.plan.outputs.base_runs != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASES: ${{ needs.plan.outputs.base_runs }}
+        run: |
+          mkdir -p rendered
+          for r in $BASES; do
+            for i in $(seq 1 120); do
+              st=$(gh run view "$r" --repo "$GITHUB_REPOSITORY" --json status --jq .status)
+              [ "$st" = "completed" ] && break
+              echo "base run $r is $st; waiting"; sleep 60
+            done
+            gh run download "$r" --repo "$GITHUB_REPOSITORY" --pattern 'frames-*' --dir "base-$r"
+            for d in base-$r/*/; do cp -a "$d". rendered/; done
+            echo "after base run $r: $(find rendered -name 'f*.png' | wc -l) frames"
+          done
       - uses: actions/download-artifact@v4
         with:
           pattern: frames-*
           merge-multiple: true
-          path: rendered
+          path: ${{ needs.plan.outputs.base_runs != '' && 'patch' || 'rendered' }}
+      - name: Lay the patch over the base runs' frames
+        if: needs.plan.outputs.base_runs != ''
+        run: |
+          echo "patch frames: $(find patch -name 'f*.png' | wc -l)"
+          cp -a patch/. rendered/
       - name: ffmpeg and Pillow
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ffmpeg > /dev/null
