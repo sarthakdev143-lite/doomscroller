@@ -218,7 +218,11 @@
   "face_from": 200
  },
  "render": {
-  "mode": "stills",
+  "mode": "full",
+  "draft": true,
+  "draft_res": {"desk": "640x360", "phone": "360x640"},
+  "draft_samples": 12,
+  "draft_chunk": 64,
   "cameras": [
    "desk",
    "phone"

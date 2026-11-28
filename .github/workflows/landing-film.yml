@@ -32,9 +32,10 @@ on:
 permissions:
   contents: read
 
+# One run per commit: a draft of the whole film can run beside a stills run of the next look.
 concurrency:
-  group: landing-film-${{ github.ref }}
-  cancel-in-progress: true
+  group: landing-film-${{ github.sha }}
+  cancel-in-progress: false
 
 jobs:
   plan:
@@ -59,15 +60,20 @@ jobs:
           if mode == "config":
               mode = r["mode"]
           items = []
+          # a draft: the whole film small and noisy, to exercise the page and the recorder while the look settles
+          draft = bool(r.get("draft"))
+          res = lambda cam: r["draft_res"][cam] if draft else ""
+          samples = r.get("draft_samples", 12) if draft else 0
+          chunk = r.get("draft_chunk", 64) if draft else r["chunk"]
           if mode == "stills":
               for cam in r["cameras"]:
                   for s in r["stills"]:
-                      items.append({"camera": cam, "frames": str(s), "name": f"{cam}-{s:04d}"})
+                      items.append({"camera": cam, "frames": str(s), "name": f"{cam}-{s:04d}", "res": res(cam), "samples": samples})
           else:
               for cam in r["cameras"]:
-                  for a in range(1, F + 1, r["chunk"]):
-                      b = min(F, a + r["chunk"] - 1)
-                      items.append({"camera": cam, "frames": f"{a}-{b}", "name": f"{cam}-{a:04d}"})
+                  for a in range(1, F + 1, chunk):
+                      b = min(F, a + chunk - 1)
+                      items.append({"camera": cam, "frames": f"{a}-{b}", "name": f"{cam}-{a:04d}", "res": res(cam), "samples": samples})
           atlas = ",".join(str(s) for s in r["stills"]) if mode == "stills" else ""
           with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
               fh.write(f"mode={mode}\n")
@@ -168,15 +174,20 @@ jobs:
         env:
           CAM: ${{ matrix.camera }}
           FR: ${{ matrix.frames }}
+          RES: ${{ matrix.res }}
+          SAMPLES: ${{ matrix.samples }}
         run: |
           if [[ "$FR" == *-* ]]; then
             sel="--start ${FR%-*} --end ${FR#*-}"; want=$(( ${FR#*-} - ${FR%-*} + 1 ))
           else
             sel="--stills $FR"; want=$(tr ',' '\n' <<< "$FR" | wc -l)
           fi
+          extra=""
+          [ -n "$RES" ] && extra="$extra --res $RES"
+          [ -n "$SAMPLES" ] && [ "$SAMPLES" != "0" ] && extra="$extra --samples $SAMPLES"
           set +e
           ./blender/blender -b --python-exit-code 1 -P scripts/landing_film/film.py -- \
-            --inputs inputs --camera "$CAM" $sel --out "out/$CAM" > blender.log 2>&1
+            --inputs inputs --camera "$CAM" $sel $extra --out "out/$CAM" > blender.log 2>&1
           status=$?
           set -e
           grep -E "look:|tiles|encoding|rendered|Error|error|Traceback" blender.log || true
