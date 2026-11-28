@@ -297,9 +297,10 @@ html[data-d="film"] .d-scene--3 .d-line {
   font-size: clamp(52px, 7.6vw, 138px);
 }
 
+/* bottom right, clear of the lines (which sit left) */
 html[data-d="film"] .d-cue {
   position: fixed;
-  left: 50%;
+  right: calc(var(--d-edge) + 20px);
   bottom: calc(var(--d-edge) + 10px);
   z-index: 2;
   margin: 0;
@@ -307,7 +308,6 @@ html[data-d="film"] .d-cue {
   flex-direction: column;
   align-items: center;
   gap: 12px;
-  transform: translateX(-50%);
   font: 520 10px / 1 var(--d-text);
   letter-spacing: 0.24em;
   text-transform: uppercase;

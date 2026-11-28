@@ -48,10 +48,10 @@ void main() {
         vec3 n = normalize(vec3(nxy, sqrt(max(0.0, 1.0 - dot(nxy, nxy)))));
         vec3 L = normalize(vec3(d, 0.22));
         vec3 H = normalize(L + vec3(0.0, 0.0, 1.0));
-        float spec = pow(max(dot(n, H), 0.0), 90.0);
-        float sheen = pow(max(dot(n, H), 0.0), 9.0) * 0.08;
-        float fall = exp(-r2 * 5.0);
-        c += uWarm * (spec * 1.1 + sheen) * gloss * fall * uPointer.z;
+        float spec = pow(max(dot(n, H), 0.0), 110.0);
+        float sheen = pow(max(dot(n, H), 0.0), 9.0) * 0.06;
+        float fall = exp(-r2 * 7.0);
+        c += uWarm * (spec * 0.85 + sheen) * gloss * fall * uPointer.z;
       }
     }
   }

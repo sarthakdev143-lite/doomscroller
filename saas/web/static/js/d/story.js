@@ -52,7 +52,7 @@ export class Story {
     this.lastInput = 0;
     this.breath = { amp: 0, phase: 0 };
     this.drag = { on: false, x0: 0, offset: 0, vel: 0 };
-    this.light = { x: 0.5, y: 0.55, tx: 0.5, ty: 0.55, k: 0, tk: 0 };
+    this.light = { x: 0.5, y: 0.55, tx: 0.5, ty: 0.55, k: 0, tk: 0, moved: 0 };
     this.drawn = "";
     this.stats = { frames: 0, intervals: [], work: [] };
     this.last = 0;
@@ -123,7 +123,7 @@ export class Story {
       document.documentElement.classList.add("d-dragging");
       // pulling the strip left brings later footage in: forward in time
       const raw = this.drag.base - (dx / window.innerWidth) * 64;
-      this.drag.offset = 40 * Math.tanh(raw / 40); // elastic past the first few seconds of pull
+      this.drag.offset = 28 * Math.tanh(raw / 28); // elastic: the further you pull, the harder it gets
       const now = performance.now();
       this.drag.vel = (e.clientX - this.drag.lastX) / Math.max(1, now - this.drag.lastT);
       this.drag.lastX = e.clientX;
@@ -151,6 +151,7 @@ export class Story {
     this.light.tx = u;
     this.light.ty = v;
     this.light.tk = k;
+    this.light.moved = performance.now();
     if (this.light.k < 0.01) {
       this.light.x = u;
       this.light.y = v;
@@ -222,7 +223,10 @@ export class Story {
     const L = this.light;
     L.x += (L.tx - L.x) * (1 - Math.exp(-dt * 10));
     L.y += (L.ty - L.y) * (1 - Math.exp(-dt * 10));
-    L.k += (L.tk - L.k) * (1 - Math.exp(-dt * (L.tk > L.k ? 6 : 2.5)));
+    // a held hand lets the light settle to a glow; moving it brings the light back
+    const still = L.moved ? (now - L.moved) / 1000 : 0;
+    const want = L.tk * (this.drag.on ? 1 : 1 - 0.7 * smooth((still - 1.6) / 1.8));
+    L.k += (want - L.k) * (1 - Math.exp(-dt * (want > L.k ? 6 : 1.6)));
 
     this.updateLines();
     if (this.cue) this.cue.classList.toggle("is-on", this.intro !== null && !introOn && p < 0.012);

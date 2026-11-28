@@ -35,9 +35,11 @@ PATH = "/preview/d/"
 WATCH = """
 window.__csp = [];
 document.addEventListener('securitypolicyviolation', e => window.__csp.push(e.violatedDirective + ' ' + e.blockedURI));
-window.__lcp = 0; window.__cls = 0;
+window.__lcp = 0; window.__lcps = []; window.__cls = 0;
 try {
-  new PerformanceObserver(l => { for (const e of l.getEntries()) window.__lcp = e.startTime; })
+  new PerformanceObserver(l => { for (const e of l.getEntries()) { window.__lcp = e.startTime;
+    const el = e.element; window.__lcps.push({t: Math.round(e.startTime), size: e.size,
+      el: el ? (el.className || el.tagName) + ': ' + (el.textContent || '').trim().slice(0, 40) : String(e.url || '')}); } })
     .observe({type: 'largest-contentful-paint', buffered: true});
   new PerformanceObserver(l => { for (const e of l.getEntries()) if (!e.hadRecentInput) window.__cls += e.value; })
     .observe({type: 'layout-shift', buffered: true});
@@ -250,6 +252,9 @@ def measure(pw, base: str, kind: str, errors: list) -> dict:
     cut_wall = time.time() - t0
     wait_js(page, "window.__d.marks['film-loaded'] !== undefined")
     page.wait_for_timeout(2500)
+    # LCP as a visitor gets it: the candidates painted before they first scroll (a scripted scroll is not input,
+    # so the browser would otherwise keep counting the lines that appear later)
+    lcp_before_scroll = page.evaluate("window.__lcps.slice()")
     page.evaluate("window.__d.story.stats.intervals.length = 0; window.__d.story.stats.work.length = 0;")
     page.evaluate("""() => new Promise(done => {
         const s = document.querySelector('[data-d-story]');
@@ -269,6 +274,9 @@ def measure(pw, base: str, kind: str, errors: list) -> dict:
     wk = sorted(data.pop("work") or [0])
     res = data.pop("resources")
     media = sum(b for n, b in res if "/media/d/" in n)
+    data["lcp_after_scripted_scroll"] = data.pop("lcp")
+    data["lcp_candidates_before_scroll"] = lcp_before_scroll
+    data["lcp_visitor_ms"] = lcp_before_scroll[-1]["t"] if lcp_before_scroll else None
     data.update({
         "wall_seconds_to_cut": round(cut_wall, 2),
         "frame_interval_ms_software_gl": {"p50": round(iv[len(iv) // 2], 2), "p95": round(iv[int(len(iv) * 0.95) - 1], 2),
