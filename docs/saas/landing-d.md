@@ -118,3 +118,22 @@ means the film advances at the speed you scroll and runs backwards (re-joining t
 So the opening stays at or under ~6.5 MB for one orientation (desktop or phone frames, never both), leaving at least
 5.5 MB of the page's ~12 MB for scenes 4-7. Frames ship as a few packed bundles with hashed names (not hundreds of
 files), indexed by a manifest the template versions through `asset()`.
+
+### The opening as built (for the next session)
+
+- **Film:** `scripts/landing_film/` (`film.json` holds the cut data, beats and render config; `prep.py` builds the
+  tile atlases and the captionless vertical faces from the showcase edit list; `film.py` is the Blender scene;
+  `encode.py` packs the frames). `.github/workflows/landing-film.yml` renders it on Actions: set `render.mode` to
+  `stills` to judge a look (one job per frame), `full` for the whole film (a few hundred frames, two cameras, about an
+  hour), or `draft: true` for a small noisy whole film. Its `film-web` artifact is what ships in
+  `saas/web/static/media/d/`.
+- **Beats (film frames, 24 fps):** intro 1-40 runs on its own clock after the loader's cut; scene 1 rests on 40-58,
+  scene 2 on 118-138, the blades fall on 138-162, the decks gather 180-212, roll upright 210-233, and scene 3 rests
+  on 234-256. A rest is a slow camera drift, so the idle playhead can breathe across it.
+- **Review:** `.github/workflows/landing-preview.yml` exports the preview, serves it under the production CSP and
+  records desktop (1440x900) and phone (390x844) scroll-throughs frame by frame, plus stills and measurements
+  (artifact `landing-preview`). `scripts/landing_preview/preview.json` can point it at a film run's frames instead of
+  the committed ones.
+- **Known limits:** LCP is the loader's number until the cut, then the first line once it rises; the base template
+  still preloads the old Archivo and Plex fonts (about 105 KB D never uses); the NASA title cards inside the footage
+  carry their own cyan numerals.
