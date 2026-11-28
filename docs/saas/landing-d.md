@@ -125,7 +125,10 @@ files), indexed by a manifest the template versions through `asset()`.
   tile atlases and the captionless vertical faces from the showcase edit list; `film.py` is the Blender scene;
   `encode.py` packs the frames). `.github/workflows/landing-film.yml` renders it on Actions: set `render.mode` to
   `stills` to judge a look (one job per frame), `full` for the whole film (a few hundred frames, two cameras, about an
-  hour), or `draft: true` for a small noisy whole film. Its `film-web` artifact is what ships in
+  hour), or `draft: true` for a small noisy whole film. To fix a few seconds without another hour, add
+  `"patch": {"base_runs": [<full run id>], "ranges": {"desk": [a, b], "phone": [a, b]}}`: only those frames render,
+  laid over the base run's frames at encode (base frames expire after 3 days). The shipped film is full run
+  46100630797 plus patch 46105828943; a fresh `full` render of the scripts as committed reproduces it. Its `film-web` artifact is what ships in
   `saas/web/static/media/d/`.
 - **Beats (film frames, 24 fps):** intro 1-40 runs on its own clock after the loader's cut; scene 1 rests on 40-58,
   scene 2 on 118-138, the blades fall on 138-162, the decks gather 180-212, roll upright 210-233, and scene 3 rests
