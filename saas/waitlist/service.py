@@ -229,6 +229,13 @@ def join(db: Session, request: Request, data: dict) -> Outcome:
 
             scoring.rescore(vis)
     db.commit()
+    if not emails.mail_allowed():
+        # Google-only mode sends no email, so there is no double opt-in: the entry is confirmed now, as on
+        # the live edge waitlist (CONTRACT: "no double opt-in").
+        confirm(db, request, tok, fp)
+        return Outcome(200, {"ok": True, "already": False, "confirm_required": False,
+                             "position": position(db, entry), "referral_url": referral_url(entry),
+                             "referral_code": entry.referral_code}, entry)
     pos = position_if_confirmed(db, entry)
     emails.confirm_email(email, tok, pos)
     return Outcome(200, {"ok": True, "already": False, "confirm_required": True, "position": pos,
@@ -252,7 +259,14 @@ def _already(db: Session, request: Request, entry: WaitlistEntry, *, ip: str, fp
     """
     now = utcnow()
     same = _same_person(entry, ip=ip, fp=fp, vid=vid)
-    if entry.status == "pending":
+    if not emails.mail_allowed():
+        if entry.status == "pending":  # joined before mail was switched off: confirm it now, as join() does
+            tok = secrets.token_urlsafe(32)
+            entry.confirm_token_hash = _hash(tok)
+            entry.confirm_expires_at = now + timedelta(hours=settings.waitlist_confirm_hours)
+            db.commit()
+            confirm(db, request, tok, fp)
+    elif entry.status == "pending":
         recently = entry.confirm_sent_at and now - entry.confirm_sent_at < timedelta(minutes=10)
         if not recently and (entry.confirm_sends or 0) < 6:
             tok = secrets.token_urlsafe(32)
@@ -409,12 +423,23 @@ def invite(db: Session, entry: WaitlistEntry, *, batch_id: str | None = None, se
     entry.invited_at = now
     entry.invite_expires_at = now + timedelta(days=settings.waitlist_invite_days)
     entry.invite_batch_id = batch_id or entry.invite_batch_id
+    send = send and emails.mail_allowed()  # Google-only mode: the admin copies invite_url() instead
     entry.invite_sends = int(entry.invite_sends or 0) + (1 if send else 0)
     entry.updated_at = now
     db.flush()
     if send:
         emails.invite_email(entry.email, entry.invite_code, settings.waitlist_invite_days)
     return entry
+
+
+def invite_url(entry: WaitlistEntry) -> str | None:
+    """The link to hand an invited person: the sign-up page, whose one button starts Google sign-in with
+    this invite (/auth/google/start?invite=<code>). The invite is bound to entry.email."""
+    if not entry.invite_code:
+        return None
+    from urllib.parse import quote
+
+    return f"{settings.public_url.rstrip('/')}/signup?invite={quote(entry.invite_code)}"
 
 
 def invite_batch(db: Session, count: int, *, actor_id: str | None = None, note: str | None = None,
@@ -437,7 +462,17 @@ def invite_batch(db: Session, count: int, *, actor_id: str | None = None, note: 
 
 
 def resend(db: Session, entry: WaitlistEntry) -> str:
-    """Re-send whatever this entry is waiting on. -> 'confirm' | 'invite' | 'nothing'."""
+    """Re-send whatever this entry is waiting on. -> 'confirm' | 'invite' | 'link' | 'nothing'.
+
+    Without mail (Google-only mode) nothing is sent: an expired invite is renewed and 'link' tells the caller
+    to show invite_url(entry) for the admin to copy."""
+    if not emails.mail_allowed():
+        if entry.status == "invited":
+            if entry.invite_expires_at and entry.invite_expires_at < utcnow():
+                invite(db, entry, send=False)
+            db.commit()
+            return "link"
+        return "nothing"
     if entry.status == "pending":
         tok = secrets.token_urlsafe(32)
         now = utcnow()

@@ -47,8 +47,9 @@ def _b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
 
 
-def start(db: Session, *, next_path: str, data: dict) -> tuple[str, str]:
-    """(authorization URL, raw state for the binding cookie)."""
+def start(db: Session, *, next_path: str, data: dict, login_hint: Optional[str] = None) -> tuple[str, str]:
+    """(authorization URL, raw state for the binding cookie). `login_hint` pre-selects that account in
+    Google's chooser (an invite's address, or the signed-in user's on a re-auth)."""
     if not enabled():
         raise ApiError(404, "google_disabled", "Google sign-in is not available.")
     state = random_token(32)
@@ -71,20 +72,58 @@ def start(db: Session, *, next_path: str, data: dict) -> tuple[str, str]:
         "prompt": "select_account",
         "access_type": "online",
     }
+    if login_hint and "@" in login_hint and len(login_hint) <= 320:
+        params["login_hint"] = login_hint
     return f"{AUTH_URL}?{urlencode(params)}", state
 
 
+STATE_EXPIRED = "oauth_state_expired"  # took longer than STATE_TTL, or this callback was already used
+STATE_MISMATCH = "oauth_state_mismatch"  # finished in a browser (or tab profile) that did not start it
+
+
+def find_state(db: Session, state: Optional[str]) -> Optional[OAuthState]:
+    """The attempt a callback's `state` names, used or not. Read-only: for choosing what to show and where a
+    retry should lead (next_path, invite), never for signing anyone in."""
+    if not state or len(state) > 200:
+        return None
+    return db.query(OAuthState).filter(OAuthState.state_hash == sha256_hex(state)).one_or_none()
+
+
 def consume_state(db: Session, state: Optional[str], cookie_state: Optional[str]) -> OAuthState:
-    if not state or not cookie_state or len(state) > 200 or not hmac.compare_digest(state, cookie_state):
-        raise ApiError(400, "oauth_state", "That sign-in attempt expired. Start again.")
-    row = db.query(OAuthState).filter(OAuthState.state_hash == sha256_hex(state)).one_or_none()
-    if row is None or row.used_at is not None or row.expires_at <= utcnow():
-        raise ApiError(400, "oauth_state", "That sign-in attempt expired. Start again.")
+    """The attempt, marked used. The row is looked up before the cookie is compared: the cookie lives as long
+    as the state, so an expired attempt would otherwise always read as "another browser"."""
+    row = find_state(db, state)
+    if row is not None and (row.used_at is not None or row.expires_at <= utcnow()):
+        raise ApiError(400, STATE_EXPIRED, "That sign-in attempt expired. Start again.")
+    if row is None:
+        if state and cookie_state and hmac.compare_digest(state, cookie_state):
+            raise ApiError(400, STATE_EXPIRED, "That sign-in attempt expired. Start again.")  # pruned
+        raise ApiError(400, STATE_MISMATCH, "That sign-in started somewhere else. Start again here.")
+    if not cookie_state or not hmac.compare_digest(state or "", cookie_state):
+        raise ApiError(400, STATE_MISMATCH, "That sign-in started somewhere else. Start again here.")
     res = db.execute(update(OAuthState).where(OAuthState.id == row.id, OAuthState.used_at.is_(None))
                      .values(used_at=utcnow()))
     if res.rowcount != 1:
-        raise ApiError(400, "oauth_state", "That sign-in attempt expired. Start again.")
+        raise ApiError(400, STATE_EXPIRED, "That sign-in attempt expired. Start again.")
     return row
+
+
+# Google's `error=` values (RFC 6749 4.1.2.1 + Google's own) -> our page codes. access_denied is the user
+# pressing Cancel in the chooser or declining to share; the rest are Google (or a Workspace admin) refusing.
+_GOOGLE_ERRORS = {
+    "access_denied": "google_cancelled",
+    "admin_policy_enforced": "google_blocked",
+    "org_internal": "google_blocked",
+    "unauthorized_client": "google_blocked",
+    "consent_required": "google_blocked",
+    "interaction_required": "google_blocked",
+    "login_required": "google_blocked",
+    "account_selection_required": "google_blocked",
+}
+
+
+def error_code(google_error: str) -> str:
+    return _GOOGLE_ERRORS.get((google_error or "").strip()[:64], "google_failed")
 
 
 def _decode_segment(seg: str) -> dict:

@@ -90,8 +90,8 @@ the owner's `.env` (it reads `SAAS_*` / `.env.saas`) and never writes `doomscrol
 | `POST /auth/magic/{token}` | form post | 303 → `next` or `/app`; with TOTP → 303 `/login?mfa=<mfa_token>` (login page then posts `/auth/login/mfa`) |
 | `POST /auth/forgot` | `{email, fp, ts, website, cf_turnstile_response?}` | always `{ok: true}` |
 | `POST /auth/reset` | `{token, password}` | `{ok: true}`; every session revoked, user signs in again |
-| `GET /auth/google/start?next=/app` | – | 303 → Google (404 `google_disabled` when unconfigured) |
-| `GET /auth/google/callback` | Google's query | 303 → `next`, `/login?mfa=...`, or `/login?error=<code>` |
+| `GET /auth/google/start?next=/app` | `invite`, `ref`, `fp`, `link=1`, `reauth=1` | 303 → Google; a signed-in browser → `next`. Unconfigured: browsers → `/login?error=google_unavailable`, JSON → 404 `google_disabled` |
+| `GET /auth/google/callback` | Google's query | 303 → `next` (`/app?welcome=1` for a new account), `/login?mfa=...&next=...`, or `/login?error=<code>` (codes under "Google-only sign-in") |
 | `POST /auth/reauth` | `{password}` or `{code}` | `{ok: true, until}` |
 | `POST /auth/mfa/verify` | `{code}` | step-up for the current session (admins) `{ok: true}` |
 
@@ -130,6 +130,52 @@ newest `SAAS_BACKUP_KEEP`=14 kept, default folder `backups/` beside the DB; Post
 `SAAS_SMTP_SSL` (465). Gmail: `smtp.gmail.com`, 587, STARTTLS, user and from = the Gmail address,
 password = a Google **App Password**. `saas_manage.py mail-test <to>` sends one message synchronously and
 prints OK or the reason (never the password).
+
+**Google-only sign-in** (`SAAS_AUTH_GOOGLE_ONLY`; `saas/auth/policy.py`; setup in docs/saas/google-sign-in.md).
+The owner's choice: no email is sent at all, so Google is the only way in.
+- **Default.** Unset (or `auto`), it is on when `SAAS_GOOGLE_CLIENT_ID`/`SECRET` are set and `SAAS_SMTP_HOST` is
+  empty. `true`/`false` force it. `policy.google_only()` reads settings live, and pages get `google_only` from
+  `_base_context`. `saas_serve.py --check` prints `sign-in=...`, and in prod refuses Google-only with no Google client.
+- **Off in this mode:** `POST /auth/signup`, `/auth/login`, `/auth/magic`, `/auth/forgot`, `/auth/reset`,
+  `/auth/verify/resend` and `/api/me/password` answer 404 `{"error": "google_only", "sign_in": "/login"}`.
+  `/auth/reauth` refuses a password (400 `google_only`). `/forgot`, `/reset/*`, `/verify-email`, `/auth/verify/*`
+  and `/auth/magic/*` 303 to `/login?notice=google_only`.
+- **Still on:** `/auth/login/mfa`, `/auth/mfa/verify`, `/auth/logout`, and `/auth/reauth` with a TOTP code.
+- **Pages.** `/login` and `/signup` show Google's own button (`static/vendor/google-signin`, unmodified PNGs) and one
+  line saying we keep only name and email. The settings page drops the password panel. The re-auth dialog offers
+  Google (or a 2FA code). When the flag is false, the old email/password pages are unchanged.
+- **No mail, anywhere.** `mailer.send`, `mailer.send_test` and `waitlist.emails.send` return before doing anything.
+  Callers check `policy.mail_allowed()` first, so they never call them. App-side waitlist joins are confirmed at
+  once, with no double opt-in, as on the edge. Invites become links: the admin API returns `invite_url`, the batch
+  returns `links`, and `resend` returns `"link"`. `invite_sends` stays 0.
+- **Accounts.** `validate_id_token` refuses an address Google has not verified, so an existing account is linked only
+  through `email_verified`. `service.find_user_for_google` matches the exact address. For gmail.com it also matches
+  one verified account with the same canonical form (dots and +tags), which is how a password-era account gets in.
+  A new account gets `/app?welcome=1` and its free tier at once (Google verified the address).
+- **`/auth/google/start`** takes `next`, `invite`, `ref`, `fp`, `link=1` and `reauth=1`. A signed-in browser
+  without `link`/`reauth` is sent straight to `next`.
+  - `reauth=1` confirms the signed-in user: another Google account fails with `reauth_other_account`, and the new
+    session resets `reauth_at`.
+  - Google gets `login_hint` with an invite's address, or the signed-in user's on re-auth.
+  - Browser navigations get pages, not JSON: unconfigured or rate-limited goes to `/login?error=google_unavailable`
+    or `rate_limited`.
+- **`/auth/google/callback`** ends signed in, at `/login?mfa=<token>&next=<next>` (`/auth/login/mfa` then answers
+  `{ok, user, next}`), or at `/login?error=<code>[&next=][&invite=][&reauth=1]`.
+  - Codes: `google_cancelled` (`access_denied`), `google_blocked` (policy/org errors), `oauth_state_mismatch`
+    (another browser), `oauth_state_expired` (over 10 min or already used), `google_failed`,
+    `google_unreachable`, `oauth_unverified_email`, `invite_required` (shown as `invite_other_email` or
+    `invite_expired` when the invite is known), `signup_blocked`, `account_unavailable`,
+    `google_linked_elsewhere` and `reauth_other_account`.
+  - `/login` renders `auth/error.html` for each. Its retry button repeats the same attempt.
+  - A replayed callback in a signed-in browser just continues to `next`.
+- **Admin.** `saas_manage.py grant-admin <email>` (alias `make-admin`) works before the first sign-in. It creates a
+  passwordless, unverified admin row, which the first Google sign-in claims. A Google-verified address on
+  `SAAS_ADMIN_EMAILS` skips the invite gate and the risk block. Admin access still needs TOTP:
+  Google → `/app/settings` 2FA → `/admin`. Later sign-ins pass the TOTP step and land on `next`. The 2FA-denied page
+  links `/login?stepup=1&next=/admin` (a session step-up through `/auth/mfa/verify`) and the settings page.
+- **Invites** are bound to the waitlist address. `saas_manage.py invite <email> [--add]` prints
+  `SAAS_PUBLIC_URL/signup?invite=<code>`. The admin waitlist page has "Copy invite link". That page's one button is
+  `/auth/google/start?invite=<code>`.
 
 **Edge trust** (`SAAS_TRUST_PROXY=edge`, `SAAS_EDGE_SECRET`; `saas/auth/edge.py`, installed outermost by
 `saas.mcp.mount`). For a Cloudflare Pages Function in front of the origin. Every request must carry:
@@ -179,7 +225,8 @@ for a GET with no answer in 60 s). That is a branded HTML page for browsers and 
   Idempotent: re-importing the same file changes nothing and never undoes issued invites.
 - `--invite N` invites the top N un-invited, unflagged, waiting entries by position (`saas.waitlist.service.invite`,
   no email sent) and prints/writes `email,invite_code,signup_url,expires_at` with
-  `signup_url = SAAS_PUBLIC_URL/signup?invite=<code>`. The owner mails them.
+  `signup_url = SAAS_PUBLIC_URL/signup?invite=<code>`. The owner sends them (the app itself never emails in
+  Google-only mode; that page's one button is `/auth/google/start?invite=<code>`).
 
 ### Security (tracking agent) — `saas.security`
 - `limits.enforce(request, bucket: str, limit: int, window_s: int, key: str | None = None)` — raises

@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import os
 from functools import lru_cache
+from typing import Any, Optional
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -64,6 +65,14 @@ class SaasSettings(BaseSettings):
     login_max_per_account_15m: int = 10  # failed logins per account before throttling
     login_max_per_ip_15m: int = 30  # login attempts per IP
     signup_max_per_ip_hour: int = 5
+    # Google is the only way in: no passwords, magic links, verification or reset mail, and no mail at all.
+    # Unset (or "auto") = on when Google is configured and SMTP isn't. Resolved live by saas.auth.policy.
+    auth_google_only: Optional[bool] = None
+
+    @field_validator("auth_google_only", mode="before")
+    @classmethod
+    def _auto_is_unset(cls, v: Any) -> Any:
+        return None if isinstance(v, str) and v.strip().lower() in ("", "auto") else v
 
     # ---- billing (core agent) ------------------------------------------------------------------
     default_currency: str = "USD"

@@ -4,6 +4,9 @@ Sending happens on a background thread so an SMTP round trip never shows up in r
 would let a timing attacker tell "account exists" from "no account" on forgot-password). Every message
 is plain text plus a minimal escaped HTML alternative. `outbox` keeps the last messages in dev so
 tests and local runs can read links without an SMTP server; it is never filled in prod.
+
+In Google-only mode (saas.auth.policy) nothing is sent, queued, printed or kept in the outbox: `send` returns
+before building the message. Every sender in the app, the waitlist's included, goes through `send`.
 """
 from __future__ import annotations
 
@@ -56,6 +59,10 @@ def _html(paragraphs: list[str], button: tuple[str, str] | None = None) -> str:
 
 def _deliver(mail: Mail) -> tuple[bool, str]:
     """(sent, detail). Never raises and never logs credentials."""
+    from . import policy
+
+    if not policy.mail_allowed():  # backstop: send() already stops before here
+        return False, "Google-only mode: this server sends no email"
     if not settings.smtp_host:
         if settings.is_prod:
             log.error("SMTP is not configured in prod; dropped mail '%s'", mail.subject)
@@ -94,6 +101,11 @@ def _deliver(mail: Mail) -> tuple[bool, str]:
 
 
 def send(to: str, subject: str, paragraphs: list[str], button: tuple[str, str] | None = None) -> None:
+    from . import policy
+
+    if not policy.mail_allowed():
+        log.debug("google-only mode: not sending '%s'", subject)
+        return
     text = "\n\n".join(paragraphs)
     if button:
         text += f"\n\n{button[0]}: {button[1]}"
@@ -107,6 +119,10 @@ def send(to: str, subject: str, paragraphs: list[str], button: tuple[str, str] |
 
 def send_test(to: str) -> tuple[bool, str]:
     """Send one message synchronously and report what happened (scripts/saas_manage.py mail-test)."""
+    from . import policy
+
+    if not policy.mail_allowed():
+        return False, "Google-only mode (SAAS_AUTH_GOOGLE_ONLY): this server sends no email, so nothing was tried"
     paragraphs = [f"This is a test message from {settings.brand_name}.",
                   f"If you can read it, outgoing email works (server {settings.smtp_host or 'none'}, "
                   f"from {settings.smtp_from or settings.support_email})."]

@@ -1464,6 +1464,88 @@ input[type="range"].range {
   --btn-border: var(--rule-strong);
 }
 
+/* Google's own "Sign in with Google" image (static/vendor/google-signin). Scaled only, aspect ratio kept:
+   180x40 drawn at 216x48, a comfortable thumb target. No recolouring; hover lifts it like Google's own button. */
+.gsi-btn {
+  display: inline-block;
+  line-height: 0;
+  border-radius: 4px;
+  transition: box-shadow var(--dur-1) linear;
+}
+
+.gsi-btn img {
+  width: 13.5rem;
+  max-width: 100%;
+  height: auto;
+}
+
+.gsi-btn:hover {
+  box-shadow: 0 1px 2px rgba(60, 64, 67, 0.3), 0 1px 3px 1px rgba(60, 64, 67, 0.15);
+}
+
+.gsi-btn:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 3px;
+}
+
+.auth__google {
+  margin-top: var(--space-6);
+}
+
+.auth__note {
+  margin-top: var(--space-3);
+  max-width: 24rem;
+  color: var(--ink-3);
+  font-size: var(--text-sm);
+}
+
+.auth__cta {
+  margin-top: var(--space-5);
+}
+
+.auth-error__kicker {
+  margin-bottom: var(--space-3);
+  color: var(--ink-3);
+  font-size: var(--text-sm);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.auth-error__detail {
+  margin-top: var(--space-3);
+  color: var(--ink-2);
+  font-size: var(--text-sm);
+}
+
+.auth-error__actions {
+  margin-top: var(--space-6);
+}
+
+.auth-error__retry-label {
+  margin-bottom: var(--space-3);
+  font-weight: 650;
+}
+
+.auth-error__links {
+  margin-top: var(--space-5);
+  gap: var(--space-3);
+}
+
+.reauth-google {
+  margin-top: var(--space-4);
+}
+
+.auth form .btn--block + .hint {
+  margin-top: var(--space-3);
+}
+
+/* Phones: the button and the actions take the full measure, so nothing needs a precise tap. */
+@media (max-width: 520px) {
+  .auth-error__links .btn {
+    width: 100%;
+  }
+}
+
 .done-state {
   margin-top: var(--space-6);
   padding: var(--space-5);

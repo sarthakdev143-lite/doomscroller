@@ -1,0 +1,10 @@
+"Sign in with Google" button images, unmodified, from Google's pre-approved asset pack:
+  https://developers.google.com/static/identity/images/signin-assets.zip
+  (downloaded 2026-11-28, sha256 ba884069e12093b06bcfd776915081254a7c95094b80d50be2c5dc6bac1c1da1)
+
+Files: "Android + Web/PNG @Nx/<Theme>/Theme=<Theme>, Show text=Yes, Shape=Square, Platform=Android+Web[@Nx].png"
+renamed to <theme>-<N>x.png (light, dark, neutral; 1x-4x). The pixels are byte-for-byte Google's.
+
+Google and the Google logo are trademarks of Google LLC. Use is governed by the Sign in with Google
+branding guidelines: https://developers.google.com/identity/branding-guidelines
+Do not recolour, crop, stretch or redraw these images; scale them only with the aspect ratio kept.

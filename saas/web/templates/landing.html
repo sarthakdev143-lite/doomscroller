@@ -26,9 +26,9 @@
       {% if launch_mode == "waitlist" %}
       <div class="hero__form">{{ waitlist_form("hero") }}</div>
       {% else %}
-      <p class="hero__form"><a class="btn btn--accent btn--lg" href="/signup" data-track="hero-cta-signup">Start free</a></p>
+      <p class="hero__form"><a class="btn btn--accent btn--lg" href="{% if google_only %}/auth/google/start?next=/app{% else %}/signup{% endif %}" data-track="hero-cta-signup">Start free</a></p>
       {% endif %}
-      <p class="hero__fine">{% if launch_mode == "waitlist" %}Opening in batches from the waitlist. {% endif %}Free for your first {{ free_shorts }} Shorts or {{ free_minutes }} minutes of video, whichever comes first. After that you pay per minute of source video, however many clips you take from it.</p>
+      <p class="hero__fine">{% if launch_mode == "waitlist" %}Opening in batches from the waitlist. {% elif google_only %}One click with your Google account: we keep only your name and email. {% endif %}Free for your first {{ free_shorts }} Shorts or {{ free_minutes }} minutes of video, whichever comes first. After that you pay per minute of source video, however many clips you take from it.</p>
     </div>
 
     <figure class="hero__demo" data-demo>

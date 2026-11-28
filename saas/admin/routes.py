@@ -30,6 +30,7 @@ from ..security import events
 from ..templating import SAAS_DIR, templates
 from ..tracking import replay as replay_mod
 from ..tracking import retention
+from ..waitlist import emails as wl_emails
 from ..waitlist import service as wl
 from . import charts, core_adapter, csvutil, guard, queries
 
@@ -253,7 +254,9 @@ def waitlist(request: Request, q: str = "", status: str = "", flagged: str = "",
     return render(request, "waitlist.html", {
         "active": "waitlist", "rows": rows, "total": total, "page": page, "pages": max(1, -(-total // PAGE)),
         "positions": positions, "counts": queries.waitlist_counts(db), "batches": batches,
-        "f": {"q": q, "status": status, "flagged": flagged, "sort": sort}})
+        "f": {"q": q, "status": status, "flagged": flagged, "sort": sort},
+        # Google-only mode sends no email: invites become links the admin copies to each person.
+        "mail_enabled": wl_emails.mail_allowed(), "invite_url": wl.invite_url})
 
 
 @router.get("/admin/waitlist/export.csv")
@@ -413,7 +416,14 @@ async def waitlist_invite_batch(request: Request, db: Session = Depends(get_db))
                             note=str(data.get("note") or "")[:500], include_flagged=include_flagged)
     guard.audit(db, request, "waitlist_invite_batch", target_kind="invite_batch", target_id=batch.id,
                 detail={"requested": count, "invited": batch.invited, "include_flagged": include_flagged}, commit=True)
-    return {"ok": True, "batch": batch.id, "invited": batch.invited}
+    out = {"ok": True, "batch": batch.id, "invited": batch.invited}
+    if not wl_emails.mail_allowed():
+        links = [{"email": e.email, "invite_url": wl.invite_url(e)}
+                 for e in db.execute(select(WaitlistEntry).where(WaitlistEntry.invite_batch_id == batch.id)
+                                     .order_by(WaitlistEntry.rank_key, WaitlistEntry.seq)).scalars()]
+        out.update(links=links, message=f"Created {batch.invited} invite links. Nothing was emailed: copy each "
+                                        "person's link from the list (status: invited) and send it to them.")
+    return out
 
 
 @router.post("/admin/api/waitlist/{entry_id}/{action}")
@@ -427,8 +437,13 @@ def waitlist_action(entry_id: str, action: str, request: Request, db: Session = 
             return _err(409, "bad_state", f"Cannot invite an entry that is {e.status}.")
         wl.invite(db, e)
         db.commit()
+        if not wl_emails.mail_allowed():
+            result.update(invite_url=wl.invite_url(e),
+                          message=f"Invite link created for {e.email}. Nothing was emailed: copy it from the row.")
     elif action == "resend":
         result["sent"] = wl.resend(db, e)
+        if result["sent"] == "link":
+            result.update(invite_url=wl.invite_url(e), message="Nothing is emailed here: copy the link from the row.")
     elif action in ("flag", "unflag"):
         e.flagged = action == "flag"
         db.commit()

@@ -36,7 +36,8 @@ $("[data-profile-form]").addEventListener("submit", async (e) => {
 
 /* ---- password ---------------------------------------------------------------------------------- */
 
-$("[data-password-form]").addEventListener("submit", async (e) => {
+// Absent in Google-only mode (SAAS_AUTH_GOOGLE_ONLY): there are no passwords to change.
+$("[data-password-form]")?.addEventListener("submit", async (e) => {
   e.preventDefault();
   const form = e.currentTarget;
   const out = form.querySelector("[data-form-error]");
@@ -62,6 +63,7 @@ $("[data-password-form]").addEventListener("submit", async (e) => {
 });
 
 function passwordMode() {
+  if (!$("[data-password-form]")) return;
   const has = Boolean(account?.has_password);
   $("[data-current-pw]").hidden = !has;
   $("[data-pw-title]").textContent = has ? "Password" : "Set a password";

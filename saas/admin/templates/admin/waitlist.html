@@ -14,11 +14,12 @@
 
 <section class="adm-card">
   <div class="adm-card-head"><h2>Invite the next batch</h2></div>
-  <form class="adm-inline-form" data-api="/admin/api/waitlist/invite" data-confirm="Send invites to the next people in line?">
+  {% if not mail_enabled %}<p class="adm-muted adm-small">This server sends no email (Google-only sign-in). Inviting creates a link per person: copy it from their row and send it yourself. The link opens the sign-up page, whose one button continues with Google; it only works for the Google account with that email.</p>{% endif %}
+  <form class="adm-inline-form" data-api="/admin/api/waitlist/invite" data-confirm="{{ 'Send invites to the next people in line?' if mail_enabled else 'Create invite links for the next people in line?' }}">
     <label class="adm-field adm-field-sm"><span>How many</span><input type="number" name="count" min="1" max="1000" value="25" required></label>
     <label class="adm-field adm-field-grow"><span>Note (for the log)</span><input type="text" name="note" maxlength="200" placeholder="e.g. creators wave 1"></label>
     <label class="adm-check"><input type="checkbox" name="include_flagged" value="1"> include flagged</label>
-    <button class="adm-btn adm-btn-primary" type="submit">Send invites</button>
+    <button class="adm-btn adm-btn-primary" type="submit">{{ 'Send invites' if mail_enabled else 'Create invite links' }}</button>
   </form>
   {% if batches %}<p class="adm-muted adm-small">Recent: {% for b in batches %}{{ b.invited }} on {{ b.created_at.strftime('%d %b') }}{{ ' (' ~ b.note ~ ')' if b.note }}{{ ', ' if not loop.last }}{% endfor %}</p>{% endif %}
 </section>
@@ -48,8 +49,10 @@
           {% if e.risk_score %}<span class="adm-small" title="{{ (e.risk_reasons or [])|join(', ') }}">{{ e.risk_score }} · {{ (e.risk_reasons or [])[:2]|join(', ') }}</span>{% endif %}</td>
         <td class="adm-muted">{{ h.ago(e.created_at) }}</td>
         <td class="adm-row-actions">
-          {% if e.status in ('confirmed', 'pending') %}<button class="adm-btn adm-btn-xs" data-api="/admin/api/waitlist/{{ e.id }}/invite" data-confirm="Invite {{ e.email }} now?">Invite</button>{% endif %}
-          {% if e.status in ('pending', 'invited') %}<button class="adm-btn adm-btn-xs adm-btn-quiet" data-api="/admin/api/waitlist/{{ e.id }}/resend">Resend</button>{% endif %}
+          {% if e.status in ('confirmed', 'pending') %}<button class="adm-btn adm-btn-xs" data-api="/admin/api/waitlist/{{ e.id }}/invite" data-confirm="{{ ('Invite ' ~ e.email ~ ' now?') if mail_enabled else ('Create an invite link for ' ~ e.email ~ '?') }}">{{ 'Invite' if mail_enabled else 'Create link' }}</button>{% endif %}
+          {% if e.status == 'invited' and invite_url(e) %}<button class="adm-btn adm-btn-xs" type="button" data-copy-text="{{ invite_url(e) }}" title="{{ invite_url(e) }}">Copy invite link</button>{% endif %}
+          {% if mail_enabled and e.status in ('pending', 'invited') %}<button class="adm-btn adm-btn-xs adm-btn-quiet" data-api="/admin/api/waitlist/{{ e.id }}/resend">Resend</button>{% endif %}
+          {% if not mail_enabled and e.status == 'invited' and e.invite_expires_at and e.invite_expires_at < now %}<button class="adm-btn adm-btn-xs adm-btn-quiet" data-api="/admin/api/waitlist/{{ e.id }}/resend">Renew link</button>{% endif %}
           <button class="adm-btn adm-btn-xs adm-btn-quiet" data-api="/admin/api/waitlist/{{ e.id }}/{{ 'unflag' if e.flagged else 'flag' }}">{{ 'Unflag' if e.flagged else 'Flag' }}</button>
           {% if e.status != 'removed' %}<button class="adm-btn adm-btn-xs adm-btn-danger" data-api="/admin/api/waitlist/{{ e.id }}/remove" data-confirm="Remove {{ e.email }} from the waitlist?">Remove</button>
           {% else %}<button class="adm-btn adm-btn-xs" data-api="/admin/api/waitlist/{{ e.id }}/restore">Restore</button>{% endif %}

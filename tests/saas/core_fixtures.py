@@ -24,6 +24,8 @@ def core(monkeypatch, tmp_path, saas_db):
 
     monkeypatch.setattr(settings, "hibp_enabled", False)
     monkeypatch.setattr(settings, "launch_mode", "open")
+    # The password/magic-link tests predate Google-only mode; test_auth_google_only.py switches it on itself.
+    monkeypatch.setattr(settings, "auth_google_only", False)
     monkeypatch.setattr(settings, "data_dir", str(tmp_path / "data"))
     monkeypatch.setattr(settings, "turnstile_secret_key", "")
     monkeypatch.setattr(settings, "engine", "mock")

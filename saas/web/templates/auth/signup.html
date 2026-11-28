@@ -1,8 +1,51 @@
 {% extends "auth/_layout.html" %}
+{% from "partials/google_button.html" import google_button, google_note, google_start %}
 {% block title %}Create an account | {{ brand_name }}{% endblock %}
 {% block description %}Create a {{ brand_name }} account. Your first {{ free_shorts }} Shorts or {{ free_minutes }} minutes are free.{% endblock %}
 
 {% block auth %}
+{% if google_only %}
+<div data-signup-page data-google-only>
+  {% if launch_mode == "waitlist" and invite_state == "ok" %}
+  <h1 id="auth-title">You’re invited.</h1>
+  <p class="auth__lede">Your first {{ free_shorts }} Shorts or {{ free_minutes }} minutes of video are free. This invite is for <strong>{{ invite_hint }}</strong>: continue with that Google account.</p>
+  {% elif launch_mode == "waitlist" and invite_state == "joined" %}
+  <h1 id="auth-title">This invite is already in use.</h1>
+  <p class="auth__lede">It created an account for <strong>{{ invite_hint }}</strong>. Sign in with that Google account to get back to it.</p>
+  {% elif launch_mode == "waitlist" and invite_state == "expired" %}
+  <h1 id="auth-title">This invite has expired.</h1>
+  <p class="auth__lede">Invites last a couple of weeks. Reply to whoever sent it for a fresh one, or join the waitlist again below.</p>
+  {% elif launch_mode == "waitlist" and invite_state == "invalid" %}
+  <h1 id="auth-title">We don’t recognise that invite.</h1>
+  <p class="auth__lede">Check you opened the whole link from your invite. If it still doesn’t work, join the waitlist and we’ll get you in.</p>
+  {% elif launch_mode == "waitlist" %}
+  <h1 id="auth-title">Sign-ups are invite-only for now.</h1>
+  <p class="auth__lede">We’re opening in batches. Join the waitlist and we’ll send you an invite link. Already have an account? Sign in below.</p>
+  {% else %}
+  <h1 id="auth-title">Create your account</h1>
+  <p class="auth__lede">Your first {{ free_shorts }} Shorts or {{ free_minutes }} minutes of video are free. No card, no password: one click with Google.</p>
+  {% endif %}
+
+  {% if launch_mode == "waitlist" and invite_state in ("expired", "invalid", "") %}
+  <p class="auth__cta"><a class="btn btn--accent btn--lg" href="/#join" data-track="signup-waitlist">Join the waitlist</a></p>
+  {% endif %}
+
+  <div class="auth__google">
+    {% if google_enabled %}
+    <input type="hidden" name="fp" value="">{# t.js fills it; auth.js adds it to the Google link #}
+    {% set use_invite = invite if invite_state == "ok" else "" %}
+    {{ google_button(google_start(next_path, use_invite), "signup-google") }}
+    {{ google_note() }}
+    {% else %}
+    <p class="notice notice--error">Sign-in isn’t set up on this server yet. Try again later, or email <a href="mailto:{{ support_email }}" data-track="signup-unavailable-support">{{ support_email }}</a>.</p>
+    {% endif %}
+  </div>
+  <div class="auth__alt">
+    <p>By continuing you agree to the <a href="/terms" data-track="signup-terms">terms</a> and the <a href="/privacy" data-track="signup-privacy">privacy policy</a>.</p>
+    <p>Already have an account? The same button signs you in.</p>
+  </div>
+</div>
+{% else %}
 <div data-signup-page>
   <h1 id="auth-title">Create an account</h1>
   <p class="auth__lede">Your first {{ free_shorts }} Shorts or {{ free_minutes }} minutes of video are free, once you confirm your email.</p>
@@ -42,10 +85,11 @@
   </div>
 
   <div class="auth__alt">
-    {% if google_enabled and launch_mode != "waitlist" %}
-    <a class="btn btn--google btn--block" href="/auth/google/start?next=/app" data-track="signup-google">Continue with Google</a>
+    {% if google_enabled and (launch_mode != "waitlist" or invite) %}
+    <a class="btn btn--google btn--block" href="/auth/google/start?next=/app{% if invite %}&amp;invite={{ invite|urlencode }}{% endif %}" data-track="signup-google">Continue with Google</a>
     {% endif %}
     <p>Already have an account? <a href="/login" data-track="signup-to-login">Sign in</a></p>
   </div>
 </div>
+{% endif %}
 {% endblock %}

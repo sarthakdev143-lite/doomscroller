@@ -5,6 +5,7 @@
  *  data-confirm       asks first; data-redirect goes somewhere after success, else the page reloads
  *  table[data-live]   polls that URL every 5s and redraws the rows (text only, never HTML)
  *  tr[data-href]      the whole row is a link
+ *  [data-copy-text]   copies that text (an invite link) to the clipboard, or shows it to copy by hand
  */
 (function () {
   'use strict';
@@ -73,7 +74,24 @@
     run(form, formBody(form));
   });
 
+  function copy(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      return navigator.clipboard.writeText(text).then(function () { return true; }, function () { return false; });
+    }
+    return Promise.resolve(false);
+  }
+
   D.addEventListener('click', function (e) {
+    var copyEl = e.target && e.target.closest ? e.target.closest('[data-copy-text]') : null;
+    if (copyEl) {
+      e.preventDefault();
+      var text = copyEl.getAttribute('data-copy-text');
+      copy(text).then(function (ok) {
+        if (ok) toast('Link copied. Send it to them.');
+        else window.prompt('Copy this link:', text);
+      });
+      return;
+    }
     var el = e.target && e.target.closest ? e.target.closest('[data-api]') : null;
     if (el && el.tagName !== 'FORM') {
       e.preventDefault();

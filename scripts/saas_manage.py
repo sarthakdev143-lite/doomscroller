@@ -1,7 +1,8 @@
 """Operator commands for the SaaS database (never the owner's doomscroller.db).
 
     python scripts/saas_manage.py seed-catalog
-    python scripts/saas_manage.py make-admin owner@example.com
+    python scripts/saas_manage.py grant-admin owner@gmail.com   # before or after their first Google sign-in
+    python scripts/saas_manage.py invite friend@gmail.com --add # print an invite link (no email is sent)
     python scripts/saas_manage.py grant someone@example.com 60 --note "Support goodwill"
     python scripts/saas_manage.py set-plan someone@example.com studio
     python scripts/saas_manage.py promo LAUNCH50 --percent 50 --max 100 --days 30
@@ -80,11 +81,59 @@ def _user(db, email: str):
     return u
 
 
+def settings_url(path: str) -> str:
+    from saas.config import settings
+
+    return settings.public_url.rstrip("/") + path
+
+
+def _invite_link(db, email: str, *, add: bool) -> str:
+    """Issue (or reuse) a waitlist invite for `email` and return the link to send. Never emails anything."""
+    from sqlalchemy import or_
+
+    from saas.auth import service
+    from saas.common import utcnow
+    from saas.config import settings
+    from saas.models.waitlist import WaitlistEntry
+    from saas.security import disposable
+    from saas.waitlist import service as wl
+
+    if settings.launch_mode != "waitlist":
+        return f"launch_mode={settings.launch_mode}: no invite needed, anyone can sign up at {settings_url('/signup')}"
+    email = service.normalise_email(email)
+    canon = disposable.canonical(email)
+    entry = (db.query(WaitlistEntry).filter(or_(WaitlistEntry.email == email, WaitlistEntry.email_canonical == canon))
+             .order_by(WaitlistEntry.seq).first())
+    if entry is None:
+        if not add:
+            raise SystemExit(f"{email} is not on the waitlist; pass --add to add and invite them")
+        now = utcnow()
+        entry = WaitlistEntry(email=email, email_canonical=canon, status="confirmed", seq=wl._next_seq(db),
+                              referral_code=wl._new_referral_code(db), confirmed_at=now, created_at=now,
+                              updated_at=now, notes="added by saas_manage.py invite")
+        entry.rank_key = wl._rank_key(entry)
+        db.add(entry)
+        db.flush()
+    if entry.status == "removed":
+        raise SystemExit(f"{email} was removed from the waitlist; restore them in the admin panel first")
+    if entry.status == "joined":
+        return f"{email} already has an account: they sign in at {settings_url('/login')}"
+    if entry.status != "invited" or (entry.invite_expires_at and entry.invite_expires_at < utcnow()):
+        wl.invite(db, entry, send=False)
+    return (f"{wl.invite_url(entry)}\n(for {entry.email}; it works only with the Google account for that address, "
+            f"until {entry.invite_expires_at:%Y-%m-%d})")
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="SaaS operator commands")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("seed-catalog")
-    p = sub.add_parser("make-admin"); p.add_argument("email")  # noqa: E702
+    for name in ("grant-admin", "make-admin"):  # make-admin: the old name, same command
+        p = sub.add_parser(name, help="make this (Google) email an admin, even before its first sign-in")
+        p.add_argument("email")
+    p = sub.add_parser("invite", help="print a waitlist invite link for this email (nothing is emailed)")
+    p.add_argument("email")
+    p.add_argument("--add", action="store_true", help="put them on the waitlist first if they aren't on it")
     p = sub.add_parser("grant"); p.add_argument("email"); p.add_argument("minutes", type=int)  # noqa: E702
     p.add_argument("--note", default="Admin grant")
     p = sub.add_parser("set-plan"); p.add_argument("email"); p.add_argument("slug")  # noqa: E702
@@ -145,10 +194,20 @@ def main(argv: list[str] | None = None) -> int:
     with session_scope() as db:
         if args.cmd == "seed-catalog":
             print(catalog.seed_catalog(db))
-        elif args.cmd == "make-admin":
-            u = _user(db, args.email)
-            u.role = "admin"
-            print(f"{u.email} is now an admin; they must enable 2FA before the admin panel opens.")
+        elif args.cmd in ("grant-admin", "make-admin"):
+            from saas.auth import policy, service
+
+            try:
+                u, created = service.provision_admin(db, args.email)
+            except ValueError as exc:
+                raise SystemExit(str(exc))
+            how = "Continue with Google" if policy.google_only() else "sign in (Google, or email and password)"
+            print(f"{u.email} is an admin{' (no account yet: it is claimed at their first Google sign-in)' if created else ''}.")
+            print(f"To open the admin panel: {how} as {u.email} at {settings_url('/login')}, turn on two-factor in "
+                  f"Settings ({settings_url('/app/settings')}), then open {settings_url('/admin')}. Each later "
+                  "sign-in asks for the 2FA code.")
+        elif args.cmd == "invite":
+            print(_invite_link(db, args.email, add=args.add))
         elif args.cmd == "grant":
             u = _user(db, args.email)
             if args.minutes > 0:

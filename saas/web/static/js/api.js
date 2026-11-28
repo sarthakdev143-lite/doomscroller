@@ -115,11 +115,17 @@ export function upload(path, file, { field = "file", onProgress, signal } = {}) 
 
 let identityPromise = null;
 
-/** Ask for the password (or a 2FA code) in the page's reauth dialog, post /auth/reauth, resolve true on success. */
+/** Ask for the password (or a 2FA code) in the page's reauth dialog, post /auth/reauth, resolve true on success.
+ *  In Google-only mode the dialog has no password field: its Google button leaves for Google and comes back to
+ *  this page with a fresh session (the action is then repeated), and a 2FA code still works in place. */
 export function confirmIdentity() {
   if (identityPromise) return identityPromise;
   const dialog = document.querySelector("[data-reauth]");
   if (!dialog || typeof dialog.showModal !== "function") return Promise.resolve(false);
+  const google = dialog.querySelector("[data-google-start]");
+  if (google) {
+    google.href = `/auth/google/start?reauth=1&next=${encodeURIComponent(location.pathname + location.search)}`;
+  }
   identityPromise = new Promise((resolve) => {
     const form = dialog.querySelector("form");
     const error = dialog.querySelector("[data-form-error]");
@@ -134,10 +140,12 @@ export function confirmIdentity() {
     const onSubmit = async (e) => {
       e.preventDefault();
       error.textContent = "";
-      const password = form.elements.password.value;
-      const code = form.elements.code.value.trim();
+      const password = form.elements.password ? form.elements.password.value : "";
+      const code = form.elements.code ? form.elements.code.value.trim() : "";
       if (!password && !code) {
-        error.textContent = "Enter your password, or a code from your authenticator app.";
+        error.textContent = form.elements.password
+          ? "Enter your password, or a code from your authenticator app."
+          : "Enter the code from your authenticator app, or confirm with Google.";
         return;
       }
       try {
@@ -152,7 +160,7 @@ export function confirmIdentity() {
     dialog.addEventListener("close", onClose, { once: true });
     error.textContent = "";
     dialog.showModal();
-    form.elements.password.focus();
+    (form.elements.password || form.elements.code || google)?.focus();
   });
   return identityPromise;
 }

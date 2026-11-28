@@ -1,4 +1,6 @@
 // Sign-in pages: login (+ 2FA step and magic link), signup, forgot, reset, verify-email.
+// In Google-only mode (SAAS_AUTH_GOOGLE_ONLY) the login page has no email/password form and no magic link, only
+// Google's button and the 2FA step, so every hook below is optional.
 import { api, busy, safeNext } from "./api.js";
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
@@ -48,6 +50,30 @@ document.querySelectorAll("form [name=ts]").forEach((el) => {
   el.value = String(Date.now());
 });
 
+/* ---- Google buttons --------------------------------------------------------------------------- */
+
+// The device fingerprint (t.js) and a remembered referral ride along to account creation, as the password form
+// sends them, so the one-free-tier-per-device rule and referrals work for Google sign-ups too.
+document.querySelectorAll("a[data-google-start]").forEach((link) => {
+  link.addEventListener("click", () => {
+    try {
+      const url = new URL(link.href, location.origin);
+      const fp = document.querySelector("input[name=fp]")?.value || "";
+      if (fp && !url.searchParams.has("fp")) url.searchParams.set("fp", fp);
+      let ref = new URLSearchParams(location.search).get("ref") || "";
+      try {
+        ref = ref || localStorage.getItem("ds_ref") || "";
+      } catch (_) {
+        /* storage blocked */
+      }
+      if (ref && !url.searchParams.has("ref")) url.searchParams.set("ref", ref);
+      link.href = url.pathname + url.search;
+    } catch (_) {
+      /* leave the link as it is */
+    }
+  });
+});
+
 /* ---- login ------------------------------------------------------------------------------------ */
 
 const loginPage = document.querySelector("[data-login-page]");
@@ -55,21 +81,26 @@ if (loginPage) {
   const next = safeNext(loginPage.dataset.next || new URLSearchParams(location.search).get("next"));
   const form = loginPage.querySelector("[data-login-form]");
   const mfaForm = loginPage.querySelector("[data-mfa-form]");
-  const alt = loginPage.querySelector("[data-login-alt]");
+  const others = loginPage.querySelectorAll("[data-login-alt], [data-login-more]");
+  const stepUp = loginPage.hasAttribute("data-stepup");
   let mfaToken = loginPage.dataset.mfaToken || "";
 
   const askForCode = (token) => {
     mfaToken = token;
-    loginPage.querySelector("h1").textContent = "Enter your code";
-    loginPage.querySelector(".auth__lede").textContent = "Your account asks for a second step. Open your authenticator app.";
-    form.hidden = true;
-    alt.hidden = true;
+    if (!stepUp) {
+      loginPage.querySelector("h1").textContent = "Enter your code";
+      loginPage.querySelector(".auth__lede").textContent = "Your account asks for a second step. Open your authenticator app.";
+    }
+    if (form) form.hidden = true;
+    others.forEach((el) => {
+      el.hidden = true;
+    });
     mfaForm.hidden = false;
     mfaForm.elements.code.focus();
   };
-  if (mfaToken) askForCode(mfaToken);
+  if (mfaToken || stepUp) askForCode(mfaToken);
 
-  form.addEventListener("submit", async (e) => {
+  form?.addEventListener("submit", async (e) => {
     e.preventDefault();
     const email = form.elements.email.value.trim();
     const password = form.elements.password.value;
@@ -88,24 +119,28 @@ if (loginPage) {
     });
   });
 
-  mfaForm.addEventListener("submit", async (e) => {
+  mfaForm?.addEventListener("submit", async (e) => {
     e.preventDefault();
     const code = mfaForm.elements.code.value.replace(/\s+/g, "");
     if (!code) return setError(mfaForm, "Enter the code.", mfaForm.elements.code);
     setError(mfaForm, "");
     await busy(mfaForm.querySelector("button[type=submit]"), async () => {
       try {
-        await api("/auth/login/mfa", { method: "POST", body: { mfa_token: mfaToken, code } });
-        location.assign(next);
+        // Step-up (already signed in, e.g. on the way to /admin) proves 2FA for this session; otherwise the code
+        // finishes a sign-in, and the server says where that sign-in was heading.
+        const res = stepUp
+          ? await api("/auth/mfa/verify", { method: "POST", body: { code }, reauth: false })
+          : await api("/auth/login/mfa", { method: "POST", body: { mfa_token: mfaToken, code } });
+        location.assign(safeNext(res.next || next));
       } catch (err) {
-        const expired = err.status === 401 && err.code !== "invalid_code";
+        const expired = !stepUp && err.status === 401 && err.code !== "invalid_code";
         setError(mfaForm, err.code === "invalid_code" ? "That code didn’t work. Codes change every 30 seconds."
           : expired ? "This sign-in expired. Start again." : err.message, mfaForm.elements.code);
       }
     });
   });
 
-  loginPage.querySelector("[data-magic-link]").addEventListener("click", async (e) => {
+  loginPage.querySelector("[data-magic-link]")?.addEventListener("click", async (e) => {
     const email = form.elements.email.value.trim();
     if (!EMAIL.test(email)) {
       setError(form, "Enter your email first, then ask for the link.", form.elements.email);
@@ -116,7 +151,7 @@ if (loginPage) {
       try {
         await api("/auth/magic", { method: "POST", body: { email, next, ...identity(form) } });
         loginPage.querySelector("[data-magic-email]").textContent = email;
-        showDone(loginPage.querySelector("[data-magic-done]"), [form, alt]);
+        showDone(loginPage.querySelector("[data-magic-done]"), [form, ...others]);
       } catch (err) {
         setError(form, err.message);
       }
@@ -127,8 +162,9 @@ if (loginPage) {
 /* ---- signup ----------------------------------------------------------------------------------- */
 
 const signupPage = document.querySelector("[data-signup-page]");
-if (signupPage) {
-  const form = signupPage.querySelector("[data-signup-form]");
+const signupForm = signupPage?.querySelector("[data-signup-form]");
+if (signupPage && signupForm) {
+  const form = signupForm;
   if (form.elements.ref && !form.elements.ref.value) {
     try {
       form.elements.ref.value = localStorage.getItem("ds_ref") || "";

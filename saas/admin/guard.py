@@ -67,7 +67,17 @@ _DENIED_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>Admin</title><link rel="stylesheet" href="/static/css/tokens.css">
 <link rel="stylesheet" href="/admin-static/public.css"></head><body class="pub"><main class="pub-card">
 <p class="pub-brand">Admin</p><h1>{title}</h1><p class="pub-lead">{message}</p>
-<p><a class="pub-btn" href="/login?next=/admin">Sign in</a></p></main></body></html>"""
+{actions}</main></body></html>"""
+
+# Where a denied admin goes next. Admin access is Google sign-in (or a password, where those are on) plus 2FA on
+# the session, so the 2FA page offers both ways forward: prove the code on this session, or set 2FA up first.
+# Neither sends a signed-in admin back to /login?next=/admin, which would bounce straight back here.
+_ACTIONS = {
+    "mfa_required": ('<p><a class="pub-btn" href="/login?stepup=1&amp;next=/admin">Enter my 2FA code</a></p>'
+                     '<p><a href="/app/settings#mfa-title">No 2FA yet? Turn it on in Settings</a>, then come back.</p>'),
+}
+_DEFAULT_ACTIONS = ('<p><a class="pub-btn" href="/login?next=/admin">Sign in</a></p>'
+                    '<p><a href="/app">Back to the app</a></p>')
 
 _denied_seen: dict[str, float] = {}
 _denied_lock = threading.Lock()
@@ -105,7 +115,8 @@ def denied_response(request: Request, status: int, code: str, message: str) -> R
     import html
 
     title = "Two-factor needed" if code == "mfa_required" else "Admins only"
-    return HTMLResponse(_DENIED_HTML.format(title=title, message=html.escape(message)), status_code=status)
+    return HTMLResponse(_DENIED_HTML.format(title=title, message=html.escape(message),
+                                            actions=_ACTIONS.get(code, _DEFAULT_ACTIONS)), status_code=status)
 
 
 class AdminRoute(APIRoute):

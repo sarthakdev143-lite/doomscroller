@@ -9,6 +9,7 @@ This README is not exported (the exporter skips `.md`); each folder's licence fi
 | `three/` | `three` (npm) | 0.187.0 | MIT, `three/LICENSE` | `three.core.min.js`, `three.module.min.js` |
 | `gsap/` | `gsap` (npm) | 3.15.1 | Standard "No Charge" GSAP License, `gsap/LICENSE.txt` | `gsap-core.js`, `CSSPlugin.js`, `index.js`, `Observer.js`, `ScrollTrigger.js` |
 | `lenis/` | `lenis` (npm) | 1.3.29 | MIT, `lenis/LICENSE` | `lenis.min.js` |
+| `google-signin/` | Google's Sign in with Google asset pack | 2026-11-28 | Google brand asset, `google-signin/NOTICE.txt` | `{light,dark,neutral}-{1,2,3,4}x.png` (unmodified PNGs; the sign-in pages use `light`) |
 
 ## How they were made
 

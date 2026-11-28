@@ -11,6 +11,16 @@ from ..config import settings
 log = logging.getLogger("saas.waitlist.emails")
 
 
+def mail_allowed() -> bool:
+    """False in Google-only mode (saas.auth.policy): then no waitlist mail is even attempted, and the
+    service confirms joins at once and hands invite links to the admin instead."""
+    try:
+        from ..auth import policy
+    except Exception:  # pragma: no cover - the core package is always present in this app
+        return True
+    return policy.mail_allowed()
+
+
 def send(to: str, subject: str, text: str, html: str, *, paragraphs: list[str] | None = None,
          button: tuple[str, str] | None = None) -> bool:
     """Deliver through the core mailer, whichever of its two shapes it has:
@@ -18,6 +28,8 @@ def send(to: str, subject: str, text: str, html: str, *, paragraphs: list[str] |
     (what the contract first said). Without a mailer the email is logged (dev)."""
     import inspect
 
+    if not mail_allowed():  # Google-only mode: the server sends no email, and says nothing about it
+        return False
     try:
         from ..auth import mailer  # core agent
         sender = getattr(mailer, "send")

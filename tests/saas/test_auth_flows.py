@@ -365,7 +365,7 @@ def test_google_signup_creates_verified_user(client, core, monkeypatch, saas_db)
     from saas.models.core import Identity, User
 
     r, seen = _google_flow(client, monkeypatch, core, email="guser@example.com")
-    assert r.status_code == 303 and r.headers["location"] == "/app"
+    assert r.status_code == 303 and r.headers["location"] == "/app?welcome=1"  # first sign-in: the welcome notice
     u = saas_db.query(User).filter(User.email == "guser@example.com").one()
     assert u.email_verified_at is not None and u.password_hash is None
     assert saas_db.query(Identity).filter(Identity.user_id == u.id).count() == 1
@@ -382,7 +382,7 @@ def test_google_state_must_match_browser_cookie(client, core, monkeypatch):
     state = parse_qs(urlparse(r.headers["location"]).query)["state"][0]
     client.cookies.delete("g_state")  # the callback lands in a different browser (login CSRF)
     r = client.get(f"/auth/google/callback?state={state}&code=x", follow_redirects=False)
-    assert r.headers["location"] == "/login?error=oauth_state"
+    assert r.headers["location"] == "/login?error=oauth_state_mismatch"
 
 
 def test_google_rejects_bad_nonce_and_unverified_email(core, monkeypatch):

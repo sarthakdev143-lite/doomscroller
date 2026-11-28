@@ -1,0 +1,37 @@
+{% extends "auth/_layout.html" %}
+{% from "partials/google_button.html" import google_button, google_note, google_start %}
+{% block title %}{{ problem.title }} | {{ brand_name }}{% endblock %}
+{% block description %}Sign in to {{ brand_name }}.{% endblock %}
+
+{% block auth %}
+<div class="auth-error" data-auth-error="{{ problem.code }}">
+  <p class="auth-error__kicker mono">{{ problem.kicker }}</p>
+  <h1 id="auth-title">{{ problem.title }}</h1>
+  <p class="auth__lede">{{ problem.message }}</p>
+  {% if problem.detail %}<p class="auth-error__detail">{{ problem.detail }}</p>{% endif %}
+
+  <div class="auth-error__actions">
+    {% if problem.retry and google_enabled %}
+    <p class="auth-error__retry-label">{{ problem.retry }}</p>
+    <input type="hidden" name="fp" value="">{# t.js fills it; auth.js adds it to the Google link #}
+    {{ google_button(google_start(retry_next, retry_invite, retry_reauth), "auth-error-retry-" ~ problem.code) }}
+    {{ google_note() }}
+    {% endif %}
+    <div class="cluster auth-error__links">
+      {% for link in problem.links %}
+      <a class="btn{% if not loop.first or (problem.retry and google_enabled) %} btn--ghost{% endif %}" href="{{ link.href }}" data-track="auth-error-{{ link.track }}">{{ link.label }}</a>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block aside %}
+<h2>Signing in, step by step</h2>
+<ul role="list">
+  <li><strong>One button.</strong> It opens Google’s own account chooser, on Google’s site.</li>
+  <li><strong>Pick your account.</strong> Google asks you to confirm, then sends you straight back here.</li>
+  <li><strong>We get your name and email.</strong> Never your password, your contacts or your files.</li>
+  <li><strong>Nothing is lost on the way.</strong> An attempt that fails changes nothing; just start again.</li>
+</ul>
+{% endblock %}

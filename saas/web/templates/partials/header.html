@@ -9,12 +9,12 @@
         <a href="/pricing" data-track="nav-pricing">Pricing</a>
         <a href="/#api" data-track="nav-api">API</a>
         <a href="/#faq" data-track="nav-faq">FAQ</a>
-        {% if not static_export %}<a href="/login" data-track="nav-sign-in">Sign in</a>{% endif %}
+        {% if not static_export %}<a href="{% if google_only %}/auth/google/start?next=/app{% else %}/login{% endif %}" data-track="nav-sign-in">Sign in</a>{% endif %}
       </div>
       {% if launch_mode == "waitlist" %}
       <a class="btn btn--sm" href="/#join" data-track="nav-cta-waitlist">Join the waitlist</a>
       {% else %}
-      <a class="btn btn--sm" href="/signup" data-track="nav-cta-signup">Start free</a>
+      <a class="btn btn--sm" href="{% if google_only %}/auth/google/start?next=/app{% else %}/signup{% endif %}" data-track="nav-cta-signup">Start free</a>
       {% endif %}
       <button class="icon-btn menu-btn" type="button" aria-expanded="false" aria-controls="site-menu" data-menu-toggle data-track="nav-menu-toggle">
         <span class="visually-hidden">Menu</span>

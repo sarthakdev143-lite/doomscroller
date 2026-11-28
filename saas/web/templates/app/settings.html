@@ -32,6 +32,12 @@
     </form>
   </section>
 
+  {% if google_only %}
+  <section class="app-section panel" aria-labelledby="signin-title" data-track-section="app-settings-sign-in">
+    <h2 class="panel__title" id="signin-title">How you sign in</h2>
+    <p class="muted">With Google, as <strong>{{ user_email }}</strong>. There’s no password to remember or reset: to change accounts, sign out and continue with another Google account.</p>
+  </section>
+  {% else %}
   <section class="app-section panel" aria-labelledby="pw-title" data-track-section="app-settings-password">
     <h2 class="panel__title" id="pw-title" data-pw-title>Password</h2>
     <form class="stack-form" data-password-form novalidate>
@@ -48,6 +54,7 @@
       <button class="btn" type="submit" data-track="settings-password-save"><span class="spinner" aria-hidden="true"></span>Change password</button>
     </form>
   </section>
+  {% endif %}
 
   <section class="app-section panel" aria-labelledby="mfa-title" data-track-section="app-settings-2fa">
     <h2 class="panel__title" id="mfa-title">Two-factor authentication</h2>

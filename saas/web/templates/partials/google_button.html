@@ -1,0 +1,20 @@
+{# Google's own pre-approved "Sign in with Google" button (static/vendor/google-signin, unmodified PNGs from
+   Google's asset pack; light theme, rectangular). Branding rules: developers.google.com/identity/branding-guidelines.
+   Only scale it with the aspect ratio kept; never recolour, crop or redraw it. auth.js adds fp/ref to the link. #}
+{% macro google_button(href, track) -%}
+<a class="gsi-btn" href="{{ href }}" data-google-start data-track="{{ track }}">
+  <img src="{{ asset('/static/vendor/google-signin/light-1x.png') }}"
+       srcset="{{ asset('/static/vendor/google-signin/light-2x.png') }} 2x, {{ asset('/static/vendor/google-signin/light-3x.png') }} 3x, {{ asset('/static/vendor/google-signin/light-4x.png') }} 4x"
+       width="180" height="40" alt="Sign in with Google" decoding="async">
+</a>
+{%- endmacro %}
+
+{# The one line about what we get from Google: the scopes are openid, email and profile, and we keep two of the fields. #}
+{% macro google_note() -%}
+<p class="auth__note">We keep only your name and email address from Google, and we never see your Google password.</p>
+{%- endmacro %}
+
+{# /auth/google/start with the attempt's destination, invite and re-auth flag. #}
+{% macro google_start(next_path="/app", invite="", reauth=false) -%}
+/auth/google/start?next={{ next_path|urlencode }}{% if invite %}&amp;invite={{ invite|urlencode }}{% endif %}{% if reauth %}&amp;reauth=1{% endif %}
+{%- endmacro %}

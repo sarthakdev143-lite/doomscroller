@@ -66,6 +66,59 @@ def find_user_by_email(db: Session, email: str) -> Optional[User]:
     return db.query(User).filter(User.email == email).one_or_none()
 
 
+def find_user_for_google(db: Session, email: str) -> Optional[User]:
+    """The account a Google sign-in with this (Google-verified) address belongs to.
+
+    Exact address first. For gmail.com, Google owns the namespace and dots and +tags reach the same inbox, so a
+    verified account registered as j.doe+saas@gmail.com is the same person as Google's jdoe@gmail.com: match it
+    on the canonical form, but only a verified account, and only when exactly one matches.
+    """
+    user = find_user_by_email(db, email)
+    if user is not None:
+        return user
+    if email.rpartition("@")[2] not in _GMAIL:
+        return None
+    rows = (db.query(User).filter(User.email_canonical == canonical_email(email), User.email_verified_at.is_not(None),
+                                  User.status == "active").limit(2).all())
+    return rows[0] if len(rows) == 1 else None
+
+
+def apply_admin_list(db: Session, user: User) -> None:
+    """SAAS_ADMIN_EMAILS: a verified account on the list is an admin (it still needs 2FA to open /admin)."""
+    if user.email_verified_at is not None and user.email in settings.admin_email_set and user.role != "admin":
+        user.role = "admin"
+        db.flush()
+
+
+def provision_admin(db: Session, email: str) -> tuple[User, bool]:
+    """Make `email` an admin, before or after its first sign-in. -> (user, created).
+
+    With no account yet, a passwordless, unverified admin row is created. The first Google sign-in with that
+    address (Google-verified) claims it through the normal pre-hijack path, which marks it verified, so the
+    owner gets in even while sign-ups are invite-only. Nobody can sign in to it any other way: it has no
+    password, and Google-only mode has no magic links.
+    """
+    from ..billing import ledger
+
+    email = normalise_email(email)
+    user = find_user_by_email(db, email)
+    if user is not None:
+        if user.status != "active":
+            raise ValueError(f"{email} is {user.status}; reactivate it first")
+        user.role = "admin"
+        db.flush()
+        return user, False
+    user = User(email=email, email_canonical=canonical_email(email), name="", password_hash=None, role="admin",
+                status="active", plan_slug="free", referral_code=_new_referral_code(db),
+                signup_risk={"score": 0, "reasons": ["provisioned_admin"], "block": False,
+                             "grant_free_credits": False},
+                flags={"provisioned": "admin"})
+    db.add(user)
+    db.flush()
+    ledger.ensure_account(db, user.id)
+    return user, True
+
+
 def safe_next(raw: Optional[str], default: str = "/app") -> str:
     """Only same-site relative paths: no scheme, no //host, no backslash tricks."""
     if not raw or not isinstance(raw, str) or len(raw) > 300:
@@ -88,14 +141,21 @@ def _new_referral_code(db: Session) -> str:
 
 def signup_gates(db: Session, request: Request, *, email: str, invite: Optional[str], fingerprint: Optional[str],
                  honeypot: Any = None, form_ts: Any = None, turnstile_ok: Optional[bool] = None,
-                 method: str = "password") -> tuple[Any, dict]:
+                 method: str = "password", trusted_admin: bool = False) -> tuple[Any, dict]:
     """Invite redemption (waitlist mode) and the risk verdict. Raises ApiError on refusal.
 
     Signup runs these *before* it looks at whether the email exists, so a new and an existing address
     get the same refusals (no enumeration); the existing-email path then rolls back, so its invite is
     not consumed. Returns (waitlist entry or None, verdict).
+
+    `trusted_admin` (a Google-verified address on SAAS_ADMIN_EMAILS) skips the invite and never blocks: the
+    owner must never be locked out of their own app by its own waitlist or by signing in over a VPN.
     """
     entry = None
+    if trusted_admin:
+        verdict = compat.assess_signup(db, request, email, fingerprint, honeypot=honeypot, form_ts=form_ts,
+                                       turnstile_ok=turnstile_ok)
+        return None, {**verdict, "block": False}
     if settings.launch_mode == "waitlist":
         entry = compat.redeem_invite(db, (invite or "").strip() or None, email)
         if not entry:
@@ -124,7 +184,8 @@ def create_account(db: Session, request: Request, *, email: str, password: Optio
 
     if gates is None:
         gates = signup_gates(db, request, email=email, invite=invite, fingerprint=fingerprint, honeypot=honeypot,
-                             form_ts=form_ts, turnstile_ok=turnstile_ok, method=method)
+                             form_ts=form_ts, turnstile_ok=turnstile_ok, method=method,
+                             trusted_admin=email_verified and email in settings.admin_email_set)
     entry, verdict = gates
     ip = client_ip(request)
 

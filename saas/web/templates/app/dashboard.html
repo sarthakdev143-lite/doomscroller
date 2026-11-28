@@ -6,6 +6,8 @@
 <section data-track-section="app-dashboard" aria-labelledby="dash-title">
   {% if verified_now %}
   <div class="app-notice"><p class="notice notice--ok">Email confirmed. Your free Shorts are ready: paste a link to start.</p></div>
+  {% elif welcome_now %}
+  <div class="app-notice"><p class="notice notice--ok" data-welcome>{% if welcome_credits %}Welcome to {{ brand_name }}. Your free {{ free_grant.shorts }} Shorts or {{ free_grant.minutes }} minutes are ready: paste a link to start.{% else %}Welcome to {{ brand_name }}. Paste a link to start.{% endif %}</p></div>
   {% endif %}
 
   <header class="app-head">

@@ -329,8 +329,13 @@ def legal_context(slug: str) -> dict:
 
 
 def _base_context(request: Request, **extra: Any) -> dict:
+    from ..auth import policy  # late: the auth package imports the db layer
+
     ctx = common_context(request.url.path, settings.public_url)
     ctx["request"] = request
+    # Google-only sign-in (SAAS_AUTH_GOOGLE_ONLY). Read per request, never a frozen template global; the static
+    # export has no request, so its pages keep their plain /login and /signup links.
+    ctx["google_only"] = policy.google_only()
     ctx.update(extra)
     return ctx
 

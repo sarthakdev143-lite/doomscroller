@@ -70,6 +70,10 @@ def require_user(request: Request, db: Session = Depends(get_db)) -> User:
 
 def require_verified_user(user: User = Depends(require_user)) -> User:
     if user.email_verified_at is None:
+        from . import policy
+
+        if policy.google_only():
+            raise ApiError(403, "email_unverified", "Sign in with Google once to confirm your email address.")
         raise ApiError(403, "email_unverified", "Confirm your email address first. Check your inbox for the link.")
     return user
 

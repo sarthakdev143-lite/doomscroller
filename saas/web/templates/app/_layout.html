@@ -54,10 +54,17 @@
   <div class="app-main__inner">
     {% if not user_verified and nav != "settings" %}
     <div class="app-notice">
+      {% if google_only %}
+      <p class="notice" data-verify-banner>
+        <span><strong>Confirm your email to start.</strong> Sign in with Google once as {{ user_email }} and your free Shorts unlock.</span>
+        <a class="btn btn--sm btn--ghost" href="/auth/google/start?reauth=1&amp;next=/app" data-google-start data-track="app-verify-google">Confirm with Google</a>
+      </p>
+      {% else %}
       <p class="notice" data-verify-banner>
         <span><strong>Confirm your email to start.</strong> We sent a link to {{ user_email }}. Your free Shorts unlock when you open it.</span>
         <button class="btn btn--sm btn--ghost" type="button" data-resend-verify data-track="app-resend-verify">Send it again</button>
       </p>
+      {% endif %}
     </div>
     {% endif %}
     {% block app %}{% endblock %}
@@ -70,6 +77,24 @@
       <p class="modal__title" id="reauth-title">Confirm it’s you</p>
       <button class="icon-btn" type="button" data-modal-close data-track="reauth-close"><span class="visually-hidden">Close</span><svg viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 5l10 10M15 5L5 15"/></svg></button>
     </div>
+    {% if google_only %}
+    {% from "partials/google_button.html" import google_button %}
+    <div class="modal__body">
+      <p class="muted small">This change needs a quick check that it’s you. Google brings you back to this page; then do it again.</p>
+      <div class="reauth-google">{{ google_button("/auth/google/start?reauth=1", "reauth-google") }}</div>
+      {% if user_mfa %}
+      <div class="field">
+        <label class="label" for="reauth-code">Or a code from your authenticator app</label>
+        <input class="input mono" id="reauth-code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="32">
+      </div>
+      {% endif %}
+      <p class="error-text" data-form-error role="alert"></p>
+    </div>
+    <div class="modal__foot">
+      <button class="btn btn--ghost" type="button" data-modal-close data-track="reauth-cancel">Cancel</button>
+      {% if user_mfa %}<button class="btn" type="submit" data-track="reauth-confirm">Confirm with code</button>{% endif %}
+    </div>
+    {% else %}
     <div class="modal__body">
       <p class="muted small">This change needs your password, or a code from your authenticator app if you use one.</p>
       <div class="field">
@@ -86,6 +111,7 @@
       <button class="btn btn--ghost" type="button" data-modal-close data-track="reauth-cancel">Cancel</button>
       <button class="btn" type="submit" data-track="reauth-confirm">Confirm</button>
     </div>
+    {% endif %}
   </form>
 </dialog>
 {% endblock %}

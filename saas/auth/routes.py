@@ -7,6 +7,9 @@ Enumeration safety:
   them into an attacker's account.
 * login runs one argon2 verify whether or not the account exists, and fails with one message.
 * forgot-password and magic-link always answer {"ok": true}; mail goes out on a background thread.
+
+Google-only mode (saas.auth.policy, SAAS_AUTH_GOOGLE_ONLY): every email/password route answers 404
+`google_only`, their pages redirect to /login, and Google sign-in (plus the TOTP step) is the only way in.
 """
 from __future__ import annotations
 
@@ -15,6 +18,7 @@ import html
 import logging
 import time
 from typing import Any, Optional, Union
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -25,7 +29,7 @@ from ..common import client_ip, utcnow
 from ..config import settings
 from ..db import get_db
 from ..models.core import AuthSession, Identity, User
-from . import compat, google, keys as keys_mod, mailer, passwords, service, sessions, totp
+from . import compat, google, keys as keys_mod, mailer, passwords, policy, service, sessions, totp
 from .crypto import sign, verify_sig
 from .deps import require_recent_auth, require_user, require_verified_user
 from .errors import ApiError, ApiRoute
@@ -34,6 +38,7 @@ log = logging.getLogger("saas.auth")
 
 router = APIRouter(route_class=ApiRoute)
 SIGNUP_COOKIE = "su"
+_PASSWORD_AUTH = [Depends(policy.require_password_auth)]  # off (404 google_only) in Google-only mode
 
 
 # ---- bodies ---------------------------------------------------------------------------------------
@@ -156,7 +161,7 @@ def _set_signup_cookie(resp: Response, email: str) -> None:
 
 # ---- signup / verify ------------------------------------------------------------------------------
 
-@router.post("/auth/signup", status_code=201)
+@router.post("/auth/signup", status_code=201, dependencies=_PASSWORD_AUTH)
 def signup(body: SignupIn, request: Request, db: Session = Depends(get_db)):
     compat.rate_limit(request, "signup_ip", settings.signup_max_per_ip_hour, 3600)
     email = service.normalise_email(body.email)
@@ -191,8 +196,15 @@ def signup(body: SignupIn, request: Request, db: Session = Depends(get_db)):
     return resp
 
 
+def _to_google_login() -> RedirectResponse:
+    """Where a stale password-era link (verify, magic, reset) lands in Google-only mode."""
+    return RedirectResponse("/login?notice=google_only", status_code=303)
+
+
 @router.get("/auth/verify/{token}")
 def verify_email(token: str, request: Request, db: Session = Depends(get_db)):
+    if policy.google_only():
+        return _to_google_login()
     found = service.consume_email_token(db, token, "verify")
     if found is None:
         owner = service.token_owner(db, token, "verify")
@@ -216,7 +228,7 @@ def verify_email(token: str, request: Request, db: Session = Depends(get_db)):
     return RedirectResponse("/login?verified=1", status_code=303)
 
 
-@router.post("/auth/verify/resend")
+@router.post("/auth/verify/resend", dependencies=_PASSWORD_AUTH)
 def resend_verification(request: Request, user: User = Depends(require_user), db: Session = Depends(get_db)):
     if user.email_verified_at is not None:
         return {"ok": True, "already_verified": True}
@@ -229,7 +241,7 @@ def resend_verification(request: Request, user: User = Depends(require_user), db
 
 # ---- login / logout -------------------------------------------------------------------------------
 
-@router.post("/auth/login")
+@router.post("/auth/login", dependencies=_PASSWORD_AUTH)
 def login(body: LoginIn, request: Request, db: Session = Depends(get_db)):
     compat.rate_limit(request, "login_ip", settings.login_max_per_ip_15m, 900)
     invalid = ApiError(401, "invalid_credentials", "Email or password is incorrect.")
@@ -265,8 +277,10 @@ def login_mfa(body: MfaLoginIn, request: Request, db: Session = Depends(get_db))
         db.commit()  # keep the attempt counter
         raise ApiError(401, "invalid_code", "That code didn't work. Check your authenticator app and try again.")
     ch, user = done
-    resp = _session_response(db, request, user, method=ch.method, mfa=True)
-    return resp
+    # `next` is where the sign-in that raised this challenge was heading (Google's callback, a magic link).
+    return _session_response(db, request, user, method=ch.method, mfa=True,
+                             body={"ok": True, "user": service.public_user(db, user),
+                                   "next": service.safe_next(ch.next_path)})
 
 
 @router.post("/auth/logout")
@@ -280,7 +294,7 @@ def logout(request: Request, db: Session = Depends(get_db)):
 
 # ---- magic link -----------------------------------------------------------------------------------
 
-@router.post("/auth/magic")
+@router.post("/auth/magic", dependencies=_PASSWORD_AUTH)
 def request_magic_link(body: EmailIn, request: Request, db: Session = Depends(get_db)):
     compat.rate_limit(request, "magic_ip", 10, 3600)
     _require_turnstile(body.cf_turnstile_response, request)
@@ -311,6 +325,8 @@ def _page(request: Request, title: str, body_html: str) -> HTMLResponse:
 
 @router.get("/auth/magic/{token}")
 def magic_confirm_page(token: str, request: Request, db: Session = Depends(get_db)):
+    if policy.google_only():
+        return _to_google_login()
     found = service.peek_email_token(db, token, "magic")
     if found is None:
         return RedirectResponse("/login?error=link_expired", status_code=303)
@@ -336,6 +352,8 @@ def magic_confirm_page(token: str, request: Request, db: Session = Depends(get_d
 
 @router.post("/auth/magic/{token}")
 def magic_consume(token: str, request: Request, db: Session = Depends(get_db)):
+    if policy.google_only():
+        return _to_google_login()
     compat.rate_limit(request, "magic_consume", 20, 900)
     found = service.consume_email_token(db, token, "magic")
     if found is None:
@@ -348,13 +366,13 @@ def magic_consume(token: str, request: Request, db: Session = Depends(get_db)):
     if service.has_totp(db, user.id):
         raw = service.begin_mfa_challenge(db, user, method="magic", next_path=next_path, ip=client_ip(request))
         db.commit()
-        return RedirectResponse(f"/login?mfa={raw}", status_code=303)
+        return RedirectResponse(_mfa_url(raw, next_path), status_code=303)
     return _session_response(db, request, user, method="magic", mfa=False, redirect_to=next_path)
 
 
 # ---- forgot / reset -------------------------------------------------------------------------------
 
-@router.post("/auth/forgot")
+@router.post("/auth/forgot", dependencies=_PASSWORD_AUTH)
 def forgot_password(body: EmailIn, request: Request, db: Session = Depends(get_db)):
     compat.rate_limit(request, "forgot_ip", 10, 3600)
     _require_turnstile(body.cf_turnstile_response, request)
@@ -373,7 +391,7 @@ def forgot_password(body: EmailIn, request: Request, db: Session = Depends(get_d
     return {"ok": True}
 
 
-@router.post("/auth/reset")
+@router.post("/auth/reset", dependencies=_PASSWORD_AUTH)
 def reset_password(body: ResetIn, request: Request, db: Session = Depends(get_db)):
     compat.rate_limit(request, "reset_ip", 20, 3600)
     found = service.peek_email_token(db, body.token, "reset")
@@ -399,28 +417,93 @@ def reset_password(body: ResetIn, request: Request, db: Session = Depends(get_db
 
 
 # ---- Google ---------------------------------------------------------------------------------------
+#
+# Every way out of the round trip that is not a signed-in redirect is a 303 to /login?error=<code> (with the
+# attempt's next/invite/reauth), which renders a page for that code with a retry button. Redirecting rather
+# than rendering on the callback URL means a refresh never replays Google's code.
 
-def _login_error(code: str) -> RedirectResponse:
-    resp = RedirectResponse(f"/login?error={code}", status_code=303)
+# What the callback can raise -> the page code /login renders (saas.web.app_pages.AUTH_ERRORS).
+_CALLBACK_CODES = {
+    "oauth_code": "google_failed", "oauth_exchange": "google_failed", "oauth_token": "google_failed",
+    "oauth_unreachable": "google_unreachable", "invalid_email": "google_failed",
+}
+
+
+def _mfa_url(raw: str, next_path: Optional[str]) -> str:
+    nxt = service.safe_next(next_path)
+    return f"/login?mfa={raw}" + (f"&{urlencode({'next': nxt})}" if nxt != "/app" else "")
+
+
+def _login_error(code: str, row=None, *, next_path: Optional[str] = None, invite: Optional[str] = None,
+                 reauth: bool = False) -> RedirectResponse:
+    """303 to the sign-in page's error view; its retry button starts the same attempt again."""
+    data = (row.data or {}) if row is not None else {}
+    nxt = service.safe_next(next_path or (row.next_path if row is not None else None))
+    invite = invite or data.get("invite")
+    params = {"error": code}
+    if nxt != "/app":
+        params["next"] = nxt
+    if invite:
+        params["invite"] = str(invite)[:64]
+    if reauth or data.get("reauth_user_id"):
+        params["reauth"] = "1"
+    resp = RedirectResponse("/login?" + urlencode(params), status_code=303)
     resp.delete_cookie(google.STATE_COOKIE, path="/auth/google")
     return resp
 
 
+def _wants_page(request: Request) -> bool:
+    """A browser navigation (a link or a button), as opposed to a script asking for JSON."""
+    accept = request.headers.get("accept", "")
+    return "text/html" in accept or "application/json" not in accept
+
+
+def _invite_email(db: Session, code: Optional[str]) -> Optional[str]:
+    """The address an invite was issued to, for Google's account chooser. None when unknown or unusable."""
+    code = (code or "").strip().upper()
+    if not code or len(code) > 32 or settings.launch_mode != "waitlist":
+        return None
+    try:
+        from ..models.waitlist import WaitlistEntry
+    except Exception:  # pragma: no cover - the waitlist package is part of the app
+        return None
+    entry = db.query(WaitlistEntry).filter(WaitlistEntry.invite_code == code).one_or_none()
+    return entry.email if entry is not None and entry.status in ("invited", "joined") else None
+
+
 @router.get("/auth/google/start")
 def google_start(request: Request, next: Optional[str] = None, invite: Optional[str] = None,
-                 ref: Optional[str] = None, fp: Optional[str] = None, link: int = 0,
+                 ref: Optional[str] = None, fp: Optional[str] = None, link: int = 0, reauth: int = 0,
                  db: Session = Depends(get_db)):
+    """303 to Google. `reauth=1` confirms the signed-in user (the fresh session resets the re-auth clock);
+    `link=1` attaches Google to the signed-in account; `invite` carries a waitlist invite to account creation."""
+    next_path = service.safe_next(next)
+    page = _wants_page(request)
     if not google.enabled():
+        if page:
+            return _login_error("google_unavailable", next_path=next_path, invite=invite)
         raise ApiError(404, "google_disabled", "Google sign-in is not available.")
-    compat.rate_limit(request, "google_start", 20, 600)
+    try:
+        compat.rate_limit(request, "google_start", 20, 600)
+    except ApiError as exc:
+        if page and exc.status == 429:
+            return _login_error("rate_limited", next_path=next_path, invite=invite, reauth=bool(reauth))
+        raise
+    if not (link or reauth) and page and sessions.from_request(db, request) is not None:
+        # Already signed in (a "Sign in" link on a marketing page, a second tab): no need to visit Google.
+        return RedirectResponse(next_path, status_code=303)
     data: dict[str, Any] = {"invite": (invite or "")[:200] or None, "ref": (ref or "")[:40] or None,
                             "fp": compat.clean_fingerprint(fp)}
-    if link:
+    hint = _invite_email(db, invite)
+    if link or reauth:
         current = sessions.from_request(db, request)
         if current is None:
-            raise ApiError(401, "unauthenticated", "Sign in first to link Google.")
-        data["link_user_id"] = current[1].id
-    url, state = google.start(db, next_path=service.safe_next(next), data=data)
+            if page:  # the session ended meanwhile: a normal sign-in gets them back to the same place
+                return RedirectResponse("/login?" + urlencode({"next": next_path}), status_code=303)
+            raise ApiError(401, "unauthenticated", "Sign in first.")
+        data["link_user_id" if link else "reauth_user_id"] = current[1].id
+        hint = current[1].email
+    url, state = google.start(db, next_path=next_path, data=data, login_hint=hint)
     db.commit()
     resp = RedirectResponse(url, status_code=303)
     resp.set_cookie(google.STATE_COOKIE, state, max_age=600, httponly=True, samesite="lax",
@@ -431,64 +514,96 @@ def google_start(request: Request, next: Optional[str] = None, invite: Optional[
 @router.get("/auth/google/callback")
 def google_callback(request: Request, state: Optional[str] = None, code: Optional[str] = None,
                     error: Optional[str] = None, db: Session = Depends(get_db)):
-    if error:
-        return _login_error("google_denied")
+    if error:  # Google sends `state` back with the error, so the retry can keep next/invite
+        row = google.find_state(db, state)
+        if row is not None and row.used_at is None:
+            row.used_at = utcnow()
+            db.commit()
+        return _login_error(google.error_code(error), row)
     try:
         row = google.consume_state(db, state, request.cookies.get(google.STATE_COOKIE))
-        tokens = google.exchange_code(code or "", row.code_verifier)
-        claims = google.validate_id_token(tokens["id_token"], nonce=row.nonce)
-        user = _google_user(db, request, claims, row.data or {})
     except ApiError as exc:
         db.rollback()
-        return _login_error(exc.code)
+        old = google.find_state(db, state)
+        if exc.code == google.STATE_EXPIRED and sessions.from_request(db, request) is not None:
+            # Refresh or Back after a finished sign-in: this browser is signed in, so just carry on.
+            resp = RedirectResponse(service.safe_next(old.next_path if old else None), status_code=303)
+            resp.delete_cookie(google.STATE_COOKIE, path="/auth/google")
+            return resp
+        return _login_error(exc.code, old)
+    db.commit()  # the attempt is spent whatever happens next
+    try:
+        tokens = google.exchange_code(code or "", row.code_verifier)
+        claims = google.validate_id_token(tokens["id_token"], nonce=row.nonce)
+        user, created = _google_user(db, request, claims, row.data or {})
+    except ApiError as exc:
+        db.rollback()
+        log.info("google sign-in refused: %s", exc.code)
+        return _login_error(_CALLBACK_CODES.get(exc.code, exc.code), row)
     if user.status != "active":
         db.rollback()
-        return _login_error("account_unavailable")
+        return _login_error("account_unavailable", row)
     next_path = service.safe_next(row.next_path)
+    if created and next_path == "/app":
+        next_path = "/app?welcome=1"
     if service.has_totp(db, user.id):
         raw = service.begin_mfa_challenge(db, user, method="google", next_path=next_path, ip=client_ip(request))
         db.commit()
-        resp = RedirectResponse(f"/login?mfa={raw}", status_code=303)
+        resp = RedirectResponse(_mfa_url(raw, next_path), status_code=303)
     else:
         resp = _session_response(db, request, user, method="google", mfa=False, redirect_to=next_path)
     resp.delete_cookie(google.STATE_COOKIE, path="/auth/google")
     return resp
 
 
-def _google_user(db: Session, request: Request, claims: dict, data: dict) -> User:
+def _google_user(db: Session, request: Request, claims: dict, data: dict) -> tuple[User, bool]:
+    """(user, created). validate_id_token has already refused an address Google has not verified, so an
+    existing account is only ever linked to a Google identity whose email Google vouches for."""
     sub = str(claims["sub"])
     email = service.normalise_email(claims["email"])
     ident = db.query(Identity).filter(Identity.provider == "google", Identity.subject == sub).one_or_none()
     link_user_id = data.get("link_user_id")
+    reauth_user_id = data.get("reauth_user_id")
     if ident is not None:
         if link_user_id and ident.user_id != link_user_id:
             raise ApiError(409, "google_linked_elsewhere", "That Google account is linked to another user.")
+        if reauth_user_id and ident.user_id != reauth_user_id:
+            raise ApiError(409, "reauth_other_account", "That is a different Google account.")
         ident.last_login_at = utcnow()
         user = db.get(User, ident.user_id)
         if user is None:
             raise ApiError(400, "account_unavailable", "Account unavailable.")
-        return user
+        service.apply_admin_list(db, user)
+        return user, False
+    created = False
     if link_user_id:
         user = db.get(User, link_user_id)
         if user is None:
             raise ApiError(400, "account_unavailable", "Account unavailable.")
     else:
-        user = service.find_user_by_email(db, email)
+        user = service.find_user_for_google(db, email)
+        if reauth_user_id and (user is None or user.id != reauth_user_id):
+            raise ApiError(409, "reauth_other_account", "That is a different Google account.")
         if user is not None and user.email_verified_at is None:
             # Pre-hijack defence: someone may have registered this address with a password before its
             # owner arrived through Google. Google proves the owner, so the squatter's password and
-            # sessions go.
+            # sessions go. (An admin row from `saas_manage.py grant-admin` has no password and is claimed
+            # here too, quietly.)
+            had_password = bool(user.password_hash)
             user.password_hash = None
             sessions.revoke_all(db, user.id, reason="google_takeover_guard")
-            compat.log_event(db, "prehijack_reset", "medium", ip=client_ip(request), user_id=user.id)
+            if had_password:
+                compat.log_event(db, "prehijack_reset", "medium", ip=client_ip(request), user_id=user.id)
             service.mark_verified(db, user)
     if user is None:
         user = service.create_account(db, request, email=email, name=str(claims.get("name") or "")[:120],
                                       invite=data.get("invite"), ref=data.get("ref"), fingerprint=data.get("fp"),
                                       method="google", email_verified=True)
+        created = True
+    service.apply_admin_list(db, user)
     db.add(Identity(user_id=user.id, provider="google", subject=sub, email=email, last_login_at=utcnow()))
     db.flush()
-    return user
+    return user, created
 
 
 # ---- re-auth & step-up ----------------------------------------------------------------------------
@@ -504,6 +619,9 @@ def _session_and_user(request: Request, db: Session) -> tuple[AuthSession, User]
 def reauth(body: ReauthIn, request: Request, db: Session = Depends(get_db)):
     sess, user = _session_and_user(request, db)
     compat.rate_limit(request, "reauth", 10, 900, key=f"user:{user.id}")
+    if body.password and policy.google_only():
+        raise ApiError(400, "google_only", "Confirm with Google, or with a code from your authenticator app.",
+                       google="/auth/google/start?reauth=1")
     ok = False
     if body.password:
         ok = passwords.verify_password(user.password_hash, body.password)
@@ -556,7 +674,7 @@ def update_me(body: ProfileIn, user: User = Depends(require_user), db: Session =
     return service.public_user(db, user)
 
 
-@router.post("/api/me/password")
+@router.post("/api/me/password", dependencies=_PASSWORD_AUTH)
 def change_password(body: PasswordChangeIn, request: Request, user: User = Depends(require_user),
                     db: Session = Depends(get_db)):
     compat.rate_limit(request, "password_change", 10, 3600, key=f"user:{user.id}")
@@ -630,7 +748,8 @@ def totp_confirm(body: CodeIn, request: Request, user: User = Depends(require_us
     sess.mfa_at = utcnow()
     raw = sessions.rotate(db, sess)
     db.commit()
-    mailer.send_mfa_changed(user.email, True)
+    if policy.mail_allowed():
+        mailer.send_mfa_changed(user.email, True)
     resp = JSONResponse({"ok": True, "recovery_codes": codes})
     sessions.set_cookie(resp, raw, sess)
     return resp
@@ -646,7 +765,8 @@ def totp_disable(body: CodeIn, user: User = Depends(require_user), _sess: AuthSe
         raise ApiError(401, "invalid_code", "That code didn't work.")
     totp.disable(db, user)
     db.commit()
-    mailer.send_mfa_changed(user.email, False)
+    if policy.mail_allowed():
+        mailer.send_mfa_changed(user.email, False)
     return {"ok": True}
 
 

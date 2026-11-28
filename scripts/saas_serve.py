@@ -154,6 +154,17 @@ def main() -> int:
             problems.append("SAAS_PUBLIC_URL must be https in prod")
         if settings.engine != "clipper":
             problems.append("SAAS_ENGINE should be 'clipper' in prod (mock makes placeholder clips)")
+    from saas.auth import policy
+
+    print(f"[saas] sign-in={policy.describe()} mail={'on' if policy.mail_allowed() else 'off'}", flush=True)
+    if policy.google_only() and not policy.google_configured():
+        # Nobody, the owner included, could sign in: Google is the only door and it has no key.
+        msg = ("Google-only sign-in is on but SAAS_GOOGLE_CLIENT_ID / SAAS_GOOGLE_CLIENT_SECRET are empty, so nobody "
+               "can sign in (docs/saas/google-sign-in.md)")
+        if settings.is_prod:
+            problems.append(msg)
+        else:
+            print(f"[saas] WARNING: {msg}", flush=True)
     if settings.host == "0.0.0.0":
         print("[saas] WARNING: SAAS_HOST=0.0.0.0 exposes the server on every interface", flush=True)
     for p in problems:
