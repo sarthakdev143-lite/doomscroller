@@ -109,8 +109,30 @@ jobs:
           path: ${{ runner.temp }}/inputs
           retention-days: 3
 
+  # One download for the whole matrix: twenty parallel downloads get refused (403) by blender.org.
+  blender:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/cache@v4
+        with:
+          path: blender
+          key: blender-4.2.3-linux-x64
+      - name: Blender 4.2.3 LTS
+        run: |
+          if [ ! -x blender/blender ]; then
+            for base in https://download.blender.org/release https://mirrors.ocf.berkeley.edu/blender/release                         https://mirror.clarkson.edu/blender/release https://ftp.nluug.nl/pub/graphics/blender/release; do
+              for try in 1 2 3; do
+                if curl -fsSL "$base/Blender4.2/blender-4.2.3-linux-x64.tar.xz" -o blender.tar.xz; then break 2; fi
+                sleep $((try * 10))
+              done
+            done
+            tar -xJf blender.tar.xz && rm blender.tar.xz && mv blender-4.2.3-linux-x64 blender
+          fi
+          ./blender/blender --version | head -1
+
   render:
-    needs: [plan, prep]
+    needs: [plan, prep, blender]
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
@@ -122,16 +144,22 @@ jobs:
           sparse-checkout: scripts/landing_film
       - name: Libraries Blender needs, even headless
         run: sudo apt-get update -qq && sudo apt-get install -y -qq libxi6 libxxf86vm1 libxfixes3 libxrender1 libgl1 libxkbcommon0 libsm6 libegl1 > /dev/null
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
         with:
           path: blender
           key: blender-4.2.3-linux-x64
       - name: Blender 4.2.3 LTS
         run: |
           if [ ! -x blender/blender ]; then
-            curl -fsSL https://download.blender.org/release/Blender4.2/blender-4.2.3-linux-x64.tar.xz | tar -xJ
-            mv blender-4.2.3-linux-x64 blender
+            for base in https://download.blender.org/release https://mirrors.ocf.berkeley.edu/blender/release                         https://mirror.clarkson.edu/blender/release https://ftp.nluug.nl/pub/graphics/blender/release; do
+              for try in 1 2 3; do
+                if curl -fsSL "$base/Blender4.2/blender-4.2.3-linux-x64.tar.xz" -o blender.tar.xz; then break 2; fi
+                sleep $((try * 10))
+              done
+            done
+            tar -xJf blender.tar.xz && rm blender.tar.xz && mv blender-4.2.3-linux-x64 blender
           fi
+          ./blender/blender --version | head -1
       - uses: actions/download-artifact@v4
         with:
           name: film-inputs

@@ -45,19 +45,18 @@ args = ap.parse_args(argv)
 CFG = json.load(open(args.config, encoding="utf-8"))
 LOOK = {
     "exposure": 0.0,
-    "emit": 1.5,          # footage light, W/m2-ish
-    "haze": 0.009,        # volume density
-    "aniso": 0.4,         # haze scatters forward
-    "top": 650.0,         # long softbox over the strip, W
-    "rim": 420.0,         # behind and above: outlines the tile edges
-    "kick": 2600.0,       # spot from behind: a soft cone in the haze
-    "floor_rough": 0.24,
-    "glass_rough": 0.1,
+    "emit": 2.3,          # footage light, W/m2-ish
+    "haze": 0.0045,       # volume density: lit only by the footage and the blade, so it glows round the strip
+    "aniso": 0.45,        # haze scatters forward
+    "top": 260.0,         # softbox over the strip: lights only the glass (light linking), for its top edges
+    "rim": 340.0,         # behind and above, glass only: outlines the tile edges
+    "floor_rough": 0.13,  # black lacquer: the strip reflects in it
+    "glass_rough": 0.08,
     "fstop": 2.0,
-    "glare": -0.62,
-    "vignette": 0.6,
-    "hair": 7.0,          # sentence hairlines
-    "blade": 90.0,
+    "glare": -0.5,
+    "vignette": 0.62,
+    "hair": 3.6,          # sentence hairlines
+    "blade": 140.0,
     "warm": [1.0, 0.86, 0.7],
 }
 LOOK.update(CFG.get("look") or {})
@@ -169,8 +168,8 @@ ROLL = (210, 233)
 FACE = (213, 228)
 GLIDE = (172, 236)
 CENTRE = 24.0
-FINAL = {0: Vector((CENTRE - 0.82, -2.3, 1.62)), 1: Vector((CENTRE + 0.82, -2.3, 1.62))}
-YAW = {0: math.radians(9), 1: math.radians(-9)}
+FINAL = {0: Vector((CENTRE - 0.84, -3.0, 1.62)), 1: Vector((CENTRE + 0.84, -3.0, 1.62))}
+YAW = {0: math.radians(13), 1: math.radians(-13)}
 
 
 def piece_transform(p_index, f):
@@ -275,28 +274,30 @@ def hair_state(h, f):
 # steady speed; between the others it eases, matching the drift speeds at either end, so it never stops dead.
 RIGS = {
     "desk": [
-        (1, (-4.6, -6.6, 0.62), (5.2, 0.0, 1.32), 32),
-        (B["s1"][0], (-3.1, -4.75, 0.82), (6.1, 0.0, 1.33), 35),
-        (B["s1"][1], (-2.65, -4.45, 0.86), (6.5, 0.0, 1.33), 35),
-        (B["s2"][0], (6.2, -9.6, 3.35), (19.5, 0.0, 1.05), 34),
-        (B["s2"][1], (6.9, -9.4, 3.25), (20.1, 0.0, 1.05), 34),
-        (162, (8.2, -10.2, 3.5), (21.6, 0.0, 0.95), 34),
-        (190, (14.0, -11.0, 2.9), (23.6, -0.4, 1.1), 38),
-        (214, (20.6, -9.6, 2.2), (24.0, -1.9, 1.45), 42),
-        (B["s3"][0], (CENTRE - 0.4, -8.1, 1.78), (CENTRE, -2.3, 1.6), 46),
-        (B["s3"][1], (CENTRE - 0.25, -7.5, 1.74), (CENTRE, -2.3, 1.6), 46),
+        (1, (-2.5, -3.7, 0.72), (4.6, 0.0, 1.3), 28),
+        (B["s1"][0], (-1.35, -2.75, 0.92), (5.4, 0.0, 1.28), 30),
+        (B["s1"][1], (-1.05, -2.6, 0.95), (5.8, 0.0, 1.28), 30),
+        (88, (3.5, -3.6, 1.35), (12.0, 0.0, 1.2), 30),
+        (B["s2"][0], (7.2, -4.3, 1.85), (19.0, 0.0, 1.15), 30),
+        (B["s2"][1], (7.7, -4.25, 1.85), (19.6, 0.0, 1.15), 30),
+        (162, (8.6, -4.6, 2.0), (21.0, 0.0, 1.1), 30),
+        (190, (14.5, -6.2, 2.1), (22.5, -1.2, 1.2), 34),
+        (214, (20.6, -6.8, 1.9), (23.8, -2.4, 1.45), 38),
+        (B["s3"][0], (23.25, -7.6, 1.72), (23.65, -3.0, 1.58), 42),
+        (B["s3"][1], (23.4, -7.2, 1.7), (23.65, -3.0, 1.58), 42),
     ],
     "phone": [
-        (1, (-2.7, -4.6, 0.5), (4.2, 0.0, 1.42), 24),
-        (B["s1"][0], (-1.9, -3.5, 0.66), (4.8, 0.0, 1.38), 25),
-        (B["s1"][1], (-1.65, -3.3, 0.7), (5.1, 0.0, 1.38), 25),
-        (B["s2"][0], (9.2, -8.4, 4.3), (16.8, 0.0, 1.0), 24),
-        (B["s2"][1], (9.6, -8.2, 4.2), (17.3, 0.0, 1.0), 24),
-        (162, (10.2, -9.0, 4.5), (19.4, 0.0, 0.95), 24),
-        (190, (15.0, -10.0, 3.6), (23.2, -0.4, 1.1), 26),
-        (214, (21.0, -9.8, 2.6), (24.0, -1.9, 1.5), 28),
-        (B["s3"][0], (CENTRE - 0.3, -8.55, 1.9), (CENTRE, -2.3, 1.62), 30),
-        (B["s3"][1], (CENTRE - 0.2, -7.95, 1.86), (CENTRE, -2.3, 1.62), 30),
+        (1, (-1.6, -3.2, 0.6), (4.0, 0.0, 1.35), 22),
+        (B["s1"][0], (-0.9, -2.45, 0.82), (4.4, 0.0, 1.3), 23),
+        (B["s1"][1], (-0.7, -2.3, 0.85), (4.7, 0.0, 1.3), 23),
+        (88, (3.8, -3.3, 1.3), (11.0, 0.0, 1.2), 23),
+        (B["s2"][0], (8.6, -4.0, 2.2), (17.5, 0.0, 1.1), 22),
+        (B["s2"][1], (9.0, -3.95, 2.2), (18.0, 0.0, 1.1), 22),
+        (162, (9.8, -4.5, 2.4), (20.0, 0.0, 1.05), 22),
+        (190, (15.5, -6.6, 2.2), (22.8, -1.2, 1.2), 24),
+        (214, (21.6, -7.6, 2.0), (24.0, -2.4, 1.5), 26),
+        (B["s3"][0], (23.8, -8.6, 1.85), (24.0, -3.0, 1.62), 30),
+        (B["s3"][1], (23.85, -8.2, 1.82), (24.0, -3.0, 1.62), 30),
     ],
 }
 PLATEAUS = [tuple(B["s1"]), tuple(B["s2"]), tuple(B["s3"])]
@@ -633,6 +634,7 @@ def new_object(name, data=None):
 
 
 roots, tiles, hair_obs, blades = [], {}, [], []
+GLASS_SET = bpy.data.collections.new("GlassOnly")   # what the edge lights may touch
 for k, p in enumerate(pieces):
     root = new_object(f"piece{k}")
     root.location = (p["x0"], 0, Z0)
@@ -650,6 +652,7 @@ for k, p in enumerate(pieces):
         bev.material = 1
         bev.harden_normals = True
         tiles[i] = (ob, k, j)
+        GLASS_SET.objects.link(ob)
 
 hair_me = bpy.data.meshes.new("hair")
 bm = bmesh.new()
@@ -659,7 +662,7 @@ bm.free()
 hair_me.materials.append(HAIR_M)
 for h in hairs:
     ob = new_object(f"hair{h['gap']}", hair_me)
-    ob.scale = (0.007, 0.012, H + 0.2)
+    ob.scale = (0.0045, 0.01, H + 0.07)
     h["ob"] = ob
     if h["cut"]:
         ob.location = (h["x"], 0, Z0)
@@ -677,7 +680,7 @@ bm.free()
 blade_me.materials.append(BLADE_M)
 for c in cuts:
     ob = new_object(f"blade{c['gap']}", blade_me)
-    ob.scale = (0.01, 0.05, 0.42)
+    ob.scale = (0.006, 0.04, 1.3)
     lamp = bpy.data.lights.new(f"bladelight{c['gap']}", "POINT")
     lamp.color = (1.0, 0.1, 0.06)
     lamp.shadow_soft_size = 0.05
@@ -690,9 +693,9 @@ bpy.ops.mesh.primitive_plane_add(size=400, location=(25, 0, 0))
 floor = bpy.context.object
 floor.data.materials.append(floor_mat())
 if not args.quick:
-    bpy.ops.mesh.primitive_cube_add(size=1, location=(25, -5, 7))
+    bpy.ops.mesh.primitive_cube_add(size=1, location=(25, -6, 3.0))
     haze = bpy.context.object
-    haze.scale = (140, 80, 14.2)
+    haze.scale = (110, 60, 6.2)
     hm = bpy.data.materials.new("Haze")
     hm.use_nodes = True
     nt = hm.node_tree
@@ -708,7 +711,9 @@ if not args.quick:
         setattr(haze, attr, False)
 
 
-def area(name, energy, size, size_y, loc, aim, color, volume=True):
+def area(name, energy, size, size_y, loc, aim, color):
+    """An edge light for the glass alone: light linking keeps it off the floor and out of the haze, so the stage
+    stays black and only the tiles' bevels catch it."""
     L = bpy.data.lights.new(name, "AREA")
     L.energy = energy
     L.shape = "RECTANGLE"
@@ -717,22 +722,14 @@ def area(name, energy, size, size_y, loc, aim, color, volume=True):
     ob = new_object(name, L)
     ob.location = loc
     ob.rotation_euler = (Vector(aim) - Vector(loc)).to_track_quat("-Z", "Y").to_euler()
-    ob.visible_volume_scatter = volume
+    ob.visible_volume_scatter = False
+    ob.light_linking.receiver_collection = GLASS_SET
     return ob
 
 
 WARMWHITE = (1.0, 0.9, 0.8)
-area("Top", LOOK["top"], 46, 2.6, (24, 0.6, 7.6), (24, 0.6, 0), WARMWHITE)
-area("Rim", LOOK["rim"], 40, 1.4, (24, 7.5, 3.4), (24, 0, 1.0), (1.0, 0.95, 0.9), volume=False)
-kick = bpy.data.lights.new("Kick", "SPOT")
-kick.energy = LOOK["kick"]
-kick.spot_size = math.radians(48)
-kick.spot_blend = 0.9
-kick.shadow_soft_size = 1.2
-kick.color = WARMWHITE
-ko = new_object("Kick", kick)
-ko.location = (17, 11, 10)
-ko.rotation_euler = (Vector((19, 0, 0)) - ko.location).to_track_quat("-Z", "Y").to_euler()
+area("Top", LOOK["top"], 48, 1.2, (24, 0.9, 4.6), (24, 0.0, 1.3), WARMWHITE)
+area("Rim", LOOK["rim"], 48, 0.8, (24, 4.5, 2.6), (24, 0.0, 1.3), (1.0, 0.95, 0.9))
 
 # Cameras: the one asked for is the active one.
 cam_data = bpy.data.cameras.new("Cam")
@@ -783,11 +780,11 @@ for f in range(0, F + 2):
     for c in cuts:
         t = (f - c["f0"]) / BLADE_LEN
         live = 0.0 <= t <= 1.0
-        c["ob"].location = (c["x"], 0, mix(Z0 + 1.7, Z0 - 1.3, clamp01(t)))
-        c["ob"].scale = (0.01, 0.05, 0.42) if live else (0.0, 0.0, 0.0)
+        c["ob"].location = (c["x"], 0, mix(Z0 + 2.2, Z0 - 2.0, clamp01(t)))
+        c["ob"].scale = (0.006, 0.04, 1.3) if live else (0.0, 0.0, 0.0)
         key(c["ob"], "location", f)
         key(c["ob"], "scale", f)
-        c["lamp"].energy = 380.0 * math.sin(math.pi * clamp01(t)) if live else 0.0
+        c["lamp"].energy = 900.0 * math.sin(math.pi * clamp01(t)) if live else 0.0
         c["lamp"].keyframe_insert("energy", frame=f)
 
 for ob in list(sc.objects) + [cam_data] + [c["lamp"] for c in cuts]:
