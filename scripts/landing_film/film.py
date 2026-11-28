@@ -46,16 +46,18 @@ CFG = json.load(open(args.config, encoding="utf-8"))
 LOOK = {
     "exposure": 0.0,
     "emit": 2.3,          # footage light, W/m2-ish
-    "haze": 0.0045,       # volume density: lit only by the footage and the blade, so it glows round the strip
+    "haze": 0.011,        # volume density: lit only by the footage and the blade, so it glows round the strip
     "aniso": 0.45,        # haze scatters forward
-    "top": 260.0,         # softbox over the strip: lights only the glass (light linking), for its top edges
-    "rim": 340.0,         # behind and above, glass only: outlines the tile edges
+    "top": 900.0,         # softbox over the strip: lights only the glass (light linking), for its top edges
+    "rim": 900.0,         # behind and above, glass only: outlines the tile edges
+    "sheen": 160.0,       # a big dim softbox behind the camera, seen only as a reflection in the glass faces
+    "deck": 260.0,        # two strip lights that find the decks' layered edges in scene 3
     "floor_rough": 0.13,  # black lacquer: the strip reflects in it
     "glass_rough": 0.08,
     "fstop": 2.0,
     "glare": -0.5,
     "vignette": 0.62,
-    "hair": 3.6,          # sentence hairlines
+    "hair": 2.6,          # sentence hairlines
     "blade": 140.0,
     "warm": [1.0, 0.86, 0.7],
 }
@@ -165,7 +167,8 @@ LIFT = (162, 182)
 GATHER_Y = (180, 189)
 GATHER_X = (188, 212)
 ROLL = (210, 233)
-FACE = (213, 228)
+FACE = (228, 231)                 # the face changes inside a brief dip of the screen's light
+DIP = (223, 229, 236)
 GLIDE = (172, 236)
 CENTRE = 24.0
 FINAL = {0: Vector((CENTRE - 0.84, -3.0, 1.62)), 1: Vector((CENTRE + 0.84, -3.0, 1.62))}
@@ -191,6 +194,7 @@ def piece_transform(p_index, f):
         if f > f0 + FALL:
             z = H / 2 + 0.022 * math.sin(math.pi * lin(f, f0 + FALL, f0 + FALL + 7))
         loc.z = z
+        loc.y += 2.2 * ease(lin(f, f0 + FALL + 6, f0 + FALL + 40))
         return loc, rot
     k = p["clip"]
     lift = ease(lin(f, *LIFT))
@@ -241,6 +245,8 @@ def tile_state(i, f):
     for p in CHOSEN:
         if i == p["tiles"][-1]:
             face = smooth(lin(f, *FACE))
+            dip = smooth(lin(f, DIP[0], DIP[1])) * (1 - smooth(lin(f, DIP[1], DIP[2])))
+            pw *= 1 - 0.8 * dip
     return pw, warm, sat, face
 
 
@@ -277,27 +283,27 @@ RIGS = {
         (1, (-2.5, -3.7, 0.72), (4.6, 0.0, 1.3), 28),
         (B["s1"][0], (-1.35, -2.75, 0.92), (5.4, 0.0, 1.28), 30),
         (B["s1"][1], (-1.05, -2.6, 0.95), (5.8, 0.0, 1.28), 30),
-        (88, (3.5, -3.6, 1.35), (12.0, 0.0, 1.2), 30),
-        (B["s2"][0], (7.2, -4.3, 1.85), (19.0, 0.0, 1.15), 30),
-        (B["s2"][1], (7.7, -4.25, 1.85), (19.6, 0.0, 1.15), 30),
-        (162, (8.6, -4.6, 2.0), (21.0, 0.0, 1.1), 30),
-        (190, (14.5, -6.2, 2.1), (22.5, -1.2, 1.2), 34),
-        (214, (20.6, -6.8, 1.9), (23.8, -2.4, 1.45), 38),
-        (B["s3"][0], (23.25, -7.6, 1.72), (23.65, -3.0, 1.58), 42),
-        (B["s3"][1], (23.4, -7.2, 1.7), (23.65, -3.0, 1.58), 42),
+        (88, (2.0, -3.7, 1.15), (10.5, 0.0, 1.25), 34),
+        (B["s2"][0], (5.0, -4.6, 1.42), (15.5, 0.0, 1.22), 40),
+        (B["s2"][1], (5.3, -4.75, 1.45), (15.9, 0.0, 1.22), 40),
+        (162, (2.8, -7.0, 1.65), (21.0, 0.0, 1.15), 42),
+        (190, (13.0, -8.8, 1.95), (22.8, -1.6, 1.3), 40),
+        (214, (20.3, -9.2, 2.0), (23.7, -2.6, 1.45), 40),
+        (B["s3"][0], (23.6, -8.9, 2.05), (23.75, -3.0, 1.45), 40),
+        (B["s3"][1], (23.65, -8.5, 2.0), (23.75, -3.0, 1.45), 40),
     ],
     "phone": [
         (1, (-1.6, -3.2, 0.6), (4.0, 0.0, 1.35), 22),
         (B["s1"][0], (-0.9, -2.45, 0.82), (4.4, 0.0, 1.3), 23),
         (B["s1"][1], (-0.7, -2.3, 0.85), (4.7, 0.0, 1.3), 23),
-        (88, (3.8, -3.3, 1.3), (11.0, 0.0, 1.2), 23),
-        (B["s2"][0], (8.6, -4.0, 2.2), (17.5, 0.0, 1.1), 22),
-        (B["s2"][1], (9.0, -3.95, 2.2), (18.0, 0.0, 1.1), 22),
-        (162, (9.8, -4.5, 2.4), (20.0, 0.0, 1.05), 22),
-        (190, (15.5, -6.6, 2.2), (22.8, -1.2, 1.2), 24),
-        (214, (21.6, -7.6, 2.0), (24.0, -2.4, 1.5), 26),
-        (B["s3"][0], (23.8, -8.6, 1.85), (24.0, -3.0, 1.62), 30),
-        (B["s3"][1], (23.85, -8.2, 1.82), (24.0, -3.0, 1.62), 30),
+        (88, (2.4, -3.4, 1.2), (10.0, 0.0, 1.25), 24),
+        (B["s2"][0], (6.2, -4.4, 1.6), (15.0, 0.0, 1.2), 26),
+        (B["s2"][1], (6.45, -4.5, 1.62), (15.4, 0.0, 1.2), 26),
+        (162, (3.6, -6.8, 1.9), (20.5, 0.0, 1.1), 28),
+        (190, (13.5, -9.0, 2.1), (23.0, -1.6, 1.3), 30),
+        (214, (20.8, -9.4, 2.1), (23.9, -2.6, 1.45), 32),
+        (B["s3"][0], (24.0, -8.6, 1.95), (24.0, -3.0, 1.5), 32),
+        (B["s3"][1], (24.0, -8.2, 1.92), (24.0, -3.0, 1.5), 32),
     ],
 }
 PLATEAUS = [tuple(B["s1"]), tuple(B["s2"]), tuple(B["s3"])]
@@ -646,7 +652,7 @@ for k, p in enumerate(pieces):
         ob = new_object(f"tile{i}", me)
         ob.parent = root
         bev = ob.modifiers.new("Bevel", "BEVEL")
-        bev.width = 0.007
+        bev.width = 0.012
         bev.segments = 3
         bev.limit_method = "ANGLE"
         bev.material = 1
@@ -723,13 +729,19 @@ def area(name, energy, size, size_y, loc, aim, color):
     ob.location = loc
     ob.rotation_euler = (Vector(aim) - Vector(loc)).to_track_quat("-Z", "Y").to_euler()
     ob.visible_volume_scatter = False
+    ob.visible_camera = False
     ob.light_linking.receiver_collection = GLASS_SET
     return ob
 
 
 WARMWHITE = (1.0, 0.9, 0.8)
-area("Top", LOOK["top"], 48, 1.2, (24, 0.9, 4.6), (24, 0.0, 1.3), WARMWHITE)
-area("Rim", LOOK["rim"], 48, 0.8, (24, 4.5, 2.6), (24, 0.0, 1.3), (1.0, 0.95, 0.9))
+area("Top", LOOK["top"], 56, 1.2, (24, 0.9, 4.6), (24, 0.0, 1.3), WARMWHITE)
+area("Rim", LOOK["rim"], 56, 0.8, (24, 4.5, 2.6), (24, 0.0, 1.3), (1.0, 0.95, 0.9))
+# Seen only in the glass: a long dim softbox behind the cameras, so the faces carry a soft sheen as real glass does.
+area("Sheen", LOOK["sheen"], 70, 5.0, (24, -16, 3.6), (24, 0.0, 1.0), WARMWHITE)
+# Scene 3: two tall strips either side of the decks, so their stacked edges (a tile per few seconds) read as layers.
+DECK_LIGHTS = [area(f"Deck{k}", 0.0, 0.25, 2.6, (CENTRE + side * 2.3, -1.7, 1.9), (CENTRE + side * 0.84, -3.0, 1.62),
+                    WARMWHITE) for k, side in ((0, -1), (1, 1))]
 
 # Cameras: the one asked for is the active one.
 cam_data = bpy.data.cameras.new("Cam")
@@ -777,6 +789,9 @@ for f in range(0, F + 2):
         glow, red = hair_state(h, f)
         h["ob"].color = (glow / 4, red, 0, 1)
         key(h["ob"], "color", f)
+    for dl in DECK_LIGHTS:
+        dl.data.energy = LOOK["deck"] * smooth(lin(f, GATHER_X[0], ROLL[1]))
+        dl.data.keyframe_insert("energy", frame=f)
     for c in cuts:
         t = (f - c["f0"]) / BLADE_LEN
         live = 0.0 <= t <= 1.0
@@ -787,7 +802,7 @@ for f in range(0, F + 2):
         c["lamp"].energy = 900.0 * math.sin(math.pi * clamp01(t)) if live else 0.0
         c["lamp"].keyframe_insert("energy", frame=f)
 
-for ob in list(sc.objects) + [cam_data] + [c["lamp"] for c in cuts]:
+for ob in list(sc.objects) + [cam_data] + [c["lamp"] for c in cuts] + [dl.data for dl in DECK_LIGHTS]:
     ad = getattr(ob, "animation_data", None)
     if ad and ad.action:
         for fc in ad.action.fcurves:
