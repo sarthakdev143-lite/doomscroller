@@ -81,3 +81,40 @@ Footer: legal links only.
 - The CSP allows no third-party scripts or CDNs (vendored only). Brand name comes from config, never a literal
   (`tests/saas/test_web_pages.py` enforces it). Consent-gated analytics and Turnstile as in the existing templates.
 - Accessibility: real text in the DOM for every line, keyboard reachable controls, captions/alt for media.
+
+## The opening as built: how it differs from C (written before building)
+
+C's opening was a real-time three.js ribbon of drawn podcast frames beside a normal text page: a split hero with a
+paragraph and a form, a yellow underline, a transcript panel in mono with IN/OUT timecodes, a HUD bar (file name,
+timecode, chapter, sound toggle), a light scanning words, and shards snapping into phone mockups. The owner rejected
+all of it. D's opening keeps only the idea (a long video is cut on its sentences) and changes everything he saw:
+
+| | C (rejected) | D (opening, scenes 0-3) |
+|---|---|---|
+| Picture | flat planes lit in real time; cartoon podcast hosts drawn in SVG | a pre-rendered Blender Cycles film: glass tiles with thickness and bevels, a dark lacquered floor with real reflections, haze, depth of field, motion blur |
+| Footage | none (drawn frames) | the real NASA working copy, mapped as emission onto the tiles; every tile plays its own seconds of the source |
+| Layout | page with 3D beside it, nav, paragraph, form above the fold | full-bleed film, nothing beside it; one line of copy per screen, no nav, no paragraph, no form in scenes 0-3 |
+| The cut | shards fly into phone mockups | the strip parts at the four sentence boundaries where the pipeline really cut (run 46085200172); the unchosen pieces drop to the floor and switch off; each chosen stretch gathers into a deck whose thickness is its length and stands up into 9:16 |
+| Chrome | HUD bar, timecodes, chapter labels, mono transcript, custom cursor, magnetic button | none: two tiny corner labels on the loader only; the sentence breaks are hairlines of light, never text or timecodes |
+| Colour | yellow accent | near-black, warm off-white ink, one recording red used only for the blade; no yellow anywhere in scenes 0-3 (the Shorts' yellow word captions belong to scene 4 and are flagged there) |
+| Real time | the whole scene | only what adds play: frame blending, the pointer as a light grazing the glass (from a rendered normal pass), drag to scrub, an idle playhead that breathes across each beat |
+
+Checkable against stills: no nav, paragraph, form, timecode, chapter label, transcript text, drawn frame, mockup or
+yellow appears anywhere in scenes 0-3.
+
+What a pre-rendered film cannot do, said plainly: the footage on the tiles is baked into the frames, so it "plays"
+only as the playhead moves (scroll, drag, the intro run and the idle breathing), and "the cut follows scroll velocity"
+means the film advances at the speed you scroll and runs backwards (re-joining the strip) when you scroll back.
+
+### Opening media budget (per visitor, one orientation)
+
+| Set | Budget | Loaded |
+|---|---|---|
+| Critical (the loader counts these bytes) | <= 2.5 MB | before the cut: the intro frames plus every fourth frame of the rest, so scrubbing works at once |
+| Rest of the film | <= 3.5 MB | after the cut, nearest the playhead first |
+| Light pass (normals for the pointer light) | <= 0.6 MB | after the film, skipped on touch screens |
+| Reduced motion / no WebGL | <= 0.6 MB | three stills instead of the film |
+
+So the opening stays at or under ~6.5 MB for one orientation (desktop or phone frames, never both), leaving at least
+5.5 MB of the page's ~12 MB for scenes 4-7. Frames ship as a few packed bundles with hashed names (not hundreds of
+files), indexed by a manifest the template versions through `asset()`.

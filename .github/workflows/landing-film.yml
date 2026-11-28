@@ -1,0 +1,193 @@
+# Renders the opening film of landing direction D (scenes 1-3) in Blender Cycles on GitHub's runners.
+#
+# These are assets for this project's own website, never customer work: customer jobs render only on the owner's
+# machine (CLAUDE.md, "SaaS"). The footage is the public NASA video the showcase uses, rebuilt here from
+# scripts/showcase/edit_decision_list.json (read only) and checked against its pinned sha256.
+#
+#   plan    reads scripts/landing_film/film.json: mode "stills" renders a few frames of each camera to judge the
+#           look (one job per frame, in parallel); "full" renders every frame, split into chunks.
+#   prep    downloads the source, rebuilds the working copy, writes the tile atlases and the vertical faces.
+#   render  Blender 4.2.3 LTS (the version film.py was tested with), CPU.
+#   encode  packs the frames for the web (artifact "film-web", copied into saas/web/static/media/d/ once accepted)
+#           and makes review files (artifact "film-review": the film as MP4, contact sheets, stills).
+#
+# Triggers: workflow_dispatch, and a push that touches the film's own scripts or this file. The edit list is not in
+# the paths filter on purpose: the showcase edits it for other sources, and the pinned sha256 already stops a
+# changed source.
+name: landing-film
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: What to render (config = whatever film.json says)
+        type: choice
+        options: [config, stills, full]
+        default: config
+  push:
+    paths:
+      - "scripts/landing_film/**"
+      - ".github/workflows/landing-film.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: landing-film-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.p.outputs.mode }}
+      matrix: ${{ steps.p.outputs.matrix }}
+      atlas_frames: ${{ steps.p.outputs.atlas_frames }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/landing_film
+      - id: p
+        env:
+          INPUT_MODE: ${{ inputs.mode }}
+        run: |
+          python3 - <<'EOF'
+          import json, os
+          cfg = json.load(open("scripts/landing_film/film.json"))
+          r, F = cfg["render"], cfg["film"]["frames"]
+          mode = os.environ.get("INPUT_MODE") or "config"
+          if mode == "config":
+              mode = r["mode"]
+          items = []
+          if mode == "stills":
+              for cam in r["cameras"]:
+                  for s in r["stills"]:
+                      items.append({"camera": cam, "frames": str(s), "name": f"{cam}-{s:04d}"})
+          else:
+              for cam in r["cameras"]:
+                  for a in range(1, F + 1, r["chunk"]):
+                      b = min(F, a + r["chunk"] - 1)
+                      items.append({"camera": cam, "frames": f"{a}-{b}", "name": f"{cam}-{a:04d}"})
+          atlas = ",".join(str(s) for s in r["stills"]) if mode == "stills" else ""
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write(f"mode={mode}\n")
+              fh.write("matrix=" + json.dumps({"include": items}) + "\n")
+              fh.write(f"atlas_frames={atlas}\n")
+          print(mode, len(items), "jobs")
+          EOF
+
+  prep:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: ffmpeg and Pillow
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ffmpeg > /dev/null
+          python3 -m pip install --quiet pillow
+      - name: Download the NASA source and check it
+        run: |
+          read -r url srt sha bytes < <(python3 -c "import json; d=json.load(open('scripts/showcase/edit_decision_list.json'))['sources']['black_holes']; print(d['url'], d['captions_url'], d['sha256'], d['bytes'])")
+          mkdir -p "$RUNNER_TEMP/src"
+          curl -fsSL --retry 3 --retry-delay 5 -A "Mozilla/5.0" -o "$RUNNER_TEMP/src/source.mp4" "$url"
+          curl -fsSL --retry 3 --retry-delay 5 -A "Mozilla/5.0" -o "$RUNNER_TEMP/src/source.srt" "$srt" || true
+          got=$(sha256sum "$RUNNER_TEMP/src/source.mp4" | cut -d' ' -f1)
+          echo "source: $(stat -c %s "$RUNNER_TEMP/src/source.mp4") bytes, sha256 $got"
+          [ "$got" = "$sha" ] || { echo "::error title=Source changed::sha256 differs from the edit list"; exit 1; }
+      - name: Working copy, atlases, faces
+        env:
+          FRAMES: ${{ needs.plan.outputs.atlas_frames }}
+        run: |
+          python3 scripts/landing_film/prep.py --src "$RUNNER_TEMP/src/source.mp4" --srt "$RUNNER_TEMP/src/source.srt" \
+            --out "$RUNNER_TEMP/inputs" --frames "$FRAMES"
+          rm -rf "$RUNNER_TEMP/inputs/_frames" "$RUNNER_TEMP"/inputs/_face* "$RUNNER_TEMP/inputs/work.mp4"
+          du -sh "$RUNNER_TEMP/inputs"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: film-inputs
+          path: ${{ runner.temp }}/inputs
+          retention-days: 3
+
+  render:
+    needs: [plan, prep]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/landing_film
+      - name: Libraries Blender needs, even headless
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libxi6 libxxf86vm1 libxfixes3 libxrender1 libgl1 libxkbcommon0 libsm6 libegl1 > /dev/null
+      - uses: actions/cache@v4
+        with:
+          path: blender
+          key: blender-4.2.3-linux-x64
+      - name: Blender 4.2.3 LTS
+        run: |
+          if [ ! -x blender/blender ]; then
+            curl -fsSL https://download.blender.org/release/Blender4.2/blender-4.2.3-linux-x64.tar.xz | tar -xJ
+            mv blender-4.2.3-linux-x64 blender
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          name: film-inputs
+          path: inputs
+      - name: Render ${{ matrix.name }}
+        env:
+          CAM: ${{ matrix.camera }}
+          FR: ${{ matrix.frames }}
+        run: |
+          if [[ "$FR" == *-* ]]; then
+            sel="--start ${FR%-*} --end ${FR#*-}"; want=$(( ${FR#*-} - ${FR%-*} + 1 ))
+          else
+            sel="--stills $FR"; want=$(tr ',' '\n' <<< "$FR" | wc -l)
+          fi
+          set +e
+          ./blender/blender -b --python-exit-code 1 -P scripts/landing_film/film.py -- \
+            --inputs inputs --camera "$CAM" $sel --out "out/$CAM" > blender.log 2>&1
+          status=$?
+          set -e
+          grep -E "look:|tiles|encoding|rendered|Error|error|Traceback" blender.log || true
+          [ $status -eq 0 ] || { tail -40 blender.log; exit $status; }
+          got=$(ls out/$CAM/f*.png | wc -l)
+          [ "$got" -eq "$want" ] || { echo "::error::rendered $got of $want frames"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frames-${{ matrix.name }}
+          path: out
+          retention-days: 3
+
+  encode:
+    needs: [plan, render]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/landing_film
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: frames-*
+          merge-multiple: true
+          path: rendered
+      - name: ffmpeg and Pillow
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ffmpeg > /dev/null
+          python3 -m pip install --quiet pillow
+      - name: Encode
+        run: python3 scripts/landing_film/encode.py --frames rendered --web web --review review --mode "${{ needs.plan.outputs.mode }}"
+      - uses: actions/upload-artifact@v4
+        if: needs.plan.outputs.mode == 'full'
+        with:
+          name: film-web
+          path: web
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        with:
+          name: film-review
+          path: review
+          retention-days: 14

@@ -1,0 +1,246 @@
+{
+ "_about": [
+  "The landing-D opening film (scenes 1-3): inputs for scripts/landing_film/prep.py and film.py, rendered by",
+  ".github/workflows/landing-film.yml. Assets for this project's own website only.",
+  "Times are seconds in the black_holes WORKING COPY (built from scripts/showcase/edit_decision_list.json).",
+  "sentences: the product's own transcript (showcase run 46085200172, transcript.json, Whisper via the pipeline),",
+  "split where the clipper's splitter ends a sentence; Whisper merged 'poles' and 'Myth 3' across the 64.1 s join,",
+  "split here where NASA's .srt ends cue 13 ('...north and south poles.').",
+  "bounds: one per gap between sentences. A cut bound is the pipeline's own clip start/end from that run (the two",
+  "kept clips; clip_03 was rejected). Every other bound is the middle of the -45 dB silence in the gap (measured on",
+  "the original audio). Cuts 20.58, 50.64 and 64.84 lie inside a -45 dB silence; 85.72 lies 0.08 s before one,",
+  "after the last word ('miles.', ends 85.62)."
+ ],
+ "source_id": "black_holes",
+ "run": "46085200172",
+ "duration": 125.05,
+ "sentences": [
+  [
+   0.12,
+   11.44,
+   "There's a fascination with the idea of a region of space having a gravitational pull so strong, nothing can escape its deadly grasp, not even a sliver of light."
+  ],
+  [
+   12.05,
+   13.52,
+   "Well, not quite."
+  ],
+  [
+   13.95,
+   19.5,
+   "In fact, much of what we think we know about black holes turns out to be myths."
+  ],
+  [
+   20.64,
+   21.52,
+   "Myth 1."
+  ],
+  [
+   21.52,
+   23.86,
+   "All black holes are black."
+  ],
+  [
+   24.48,
+   32.22,
+   "As this photograph from the Event Horizon Telescope demonstrated, light can be detected near a black hole's event horizon."
+  ],
+  [
+   33.06,
+   40.52,
+   "This is the boundary between normal space and the space affected by the black hole's gravity, from which no escape is possible."
+  ],
+  [
+   41.62,
+   50.54,
+   "Part of this light comes from the black hole's accretion disk, a flat pancake-like structure composed of dust, gas, and other debris."
+  ],
+  [
+   51.04,
+   55.92,
+   "Friction constantly moves the disk's material inward toward the event horizon."
+  ],
+  [
+   56.47,
+   63.337,
+   "Light also comes from jet streams which propel matter outward along the disk's north and south poles"
+  ],
+  [
+   64.897,
+   72.637,
+   "Myth 3 If you get within a few thousand miles of a black hole its supergravity will pull you into its center."
+  ],
+  [
+   73.37,
+   77.177,
+   "It turns out, you can get surprisingly close to a black hole."
+  ],
+  [
+   77.977,
+   85.617,
+   "If you approached a black hole with a mass equal to our suns, for example, you could get as close as tens of miles."
+  ],
+  [
+   86.417,
+   90.877,
+   "So imagine if we replaced our sun with a black hole of the same mass."
+  ],
+  [
+   91.69,
+   99.037,
+   "All of the planets would continue to revolve around it at exactly the same speed and distance as they do now."
+  ],
+  [
+   99.937,
+   113.237,
+   "The image from the Event Horizon Telescope confirmed what Albert Einstein's general theory of relativity predicted over 100 years ago, that a black hole's form is that of a perfect circle."
+  ],
+  [
+   113.897,
+   123.977,
+   "and as scientists learn even more about the properties of this gigantic cosmic mystery we call a black hole they'll be able to puncture even more myths"
+  ]
+ ],
+ "bounds": [
+  [
+   11.928,
+   false
+  ],
+  [
+   13.893,
+   false
+  ],
+  [
+   20.58,
+   true
+  ],
+  [
+   21.717,
+   false
+  ],
+  [
+   24.2,
+   false
+  ],
+  [
+   32.934,
+   false
+  ],
+  [
+   41.176,
+   false
+  ],
+  [
+   50.64,
+   true
+  ],
+  [
+   56.381,
+   false
+  ],
+  [
+   64.84,
+   true
+  ],
+  [
+   73.176,
+   false
+  ],
+  [
+   77.726,
+   false
+  ],
+  [
+   85.72,
+   true
+  ],
+  [
+   91.517,
+   false
+  ],
+  [
+   99.883,
+   false
+  ],
+  [
+   113.751,
+   false
+  ]
+ ],
+ "clips": [
+  {
+   "id": "clip_01_20_50",
+   "start": 20.58,
+   "end": 50.64,
+   "title": "Myth Busted: Black Holes Emit Light",
+   "face": [
+    26.0,
+    31.0
+   ]
+  },
+  {
+   "id": "clip_02_64_85",
+   "start": 64.84,
+   "end": 85.72,
+   "title": "How Close Can You Get to a Black Hole?",
+   "face": [
+    79.0,
+    84.0
+   ]
+  }
+ ],
+ "cell_seconds": 4.0,
+ "film": {
+  "frames": 256,
+  "fps": 24,
+  "beats": {
+   "intro": [
+    1,
+    40
+   ],
+   "s1": [
+    40,
+    58
+   ],
+   "s2": [
+    118,
+    138
+   ],
+   "cut": [
+    138,
+    162
+   ],
+   "s3": [
+    234,
+    256
+   ]
+  },
+  "face_from": 200
+ },
+ "render": {
+  "mode": "stills",
+  "cameras": [
+   "desk",
+   "phone"
+  ],
+  "res": {
+   "desk": "1280x720",
+   "phone": "720x1280"
+  },
+  "samples": 48,
+  "stills": [
+   1,
+   24,
+   48,
+   90,
+   128,
+   150,
+   174,
+   198,
+   222,
+   250
+  ],
+  "chunk": 16
+ },
+ "look": {}
+}
