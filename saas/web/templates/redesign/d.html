@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+
+{#
+  Direction D, "the cut": the opening only (the loader and scenes 1-3), for the owner to review before scenes 4-7
+  are built (docs/saas/landing-d.md). A preview: never linked, never in the sitemap.
+
+  Every line of copy is plain DOM, in reading order. static/js/d/ draws the film behind it: a pre-rendered Blender
+  Cycles sequence of the real footage (scripts/landing_film/, rendered on GitHub Actions) scrubbed by scroll, with
+  the pointer as a light on the glass and drag to scrub. Under reduced motion, or without WebGL 2, the page shows
+  three stills from the same film instead, and no loader.
+
+  Media budget and how D's opening differs from C's: docs/saas/landing-d.md. Footage credits: landing-d-sources.md.
+#}
+{% set media = "/static/media/d/" %}
+{% set scenes = [
+  {"n": 1, "tag": "h1", "line": "Long video in.", "track": "open",
+   "alt": "A long strip of glass tiles floating in the dark, each lit by a few seconds of a NASA video about black holes."},
+  {"n": 2, "tag": "h2", "line": "We find the moments worth posting.", "track": "moments",
+   "alt": "Thin lines of light between the tiles where each sentence ends; two stretches of the strip glow warmer than the rest."},
+  {"n": 3, "tag": "h2", "line": "Cut on the sentence.", "track": "cut",
+   "alt": "The two stretches, cut free at sentence boundaries, stand upright as vertical clips while the rest lies dark on the floor."},
+] %}
+
+{% block title %}{{ brand_name }}: long video in, Shorts out{% endblock %}
+{% block robots %}<meta name="robots" content="noindex, nofollow">{% endblock %}
+{% block styles %}
+<link rel="preload" href="/static/fonts/gloock-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/static/fonts/hanken-grotesk-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="{{ asset('/static/css/redesign-d.css') }}">
+<noscript><style>.d-loader{display:none}.d-still{display:block}</style></noscript>
+{% endblock %}
+{% block head_extra %}
+<meta name="theme-color" content="#07070a">
+{% endblock %}
+{% block scripts %}
+<script type="module" src="{{ asset('/static/js/d/main.js') }}"></script>
+{% endblock %}
+{% block body_class %}page-d{% endblock %}
+{% block site_header %}{% endblock %}
+
+{% block content %}
+{# The loader: counts the bytes of the film's critical frames, while a 1 px frame draws itself round the screen. #}
+<div class="d-loader" data-d-loader role="progressbar" aria-label="Loading footage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+  <div class="d-loader__frame" aria-hidden="true"><i data-side="t"></i><i data-side="r"></i><i data-side="b"></i><i data-side="l"></i></div>
+  <p class="d-loader__count" aria-hidden="true"><span data-d-digit>0</span><span data-d-digit>0</span><span data-d-digit>0</span></p>
+  <p class="d-corner d-corner--br">Loading footage</p>
+</div>
+<p class="d-corner d-corner--tl d-brand">{{ brand_name }}</p>
+
+{# The film. Decorative: everything it shows is said in the words below. #}
+<div class="d-stage" data-d-stage aria-hidden="true">
+  <canvas class="d-canvas" data-d-canvas></canvas>
+</div>
+
+<div class="d-story" data-d-story data-d-film="{{ asset(media ~ 'film.json') }}">
+  {% for s in scenes %}
+  <section class="d-scene d-scene--{{ s.n }}" data-d-scene="{{ s.n }}" data-track-section="{{ s.track }}" aria-labelledby="d-line-{{ s.n }}">
+    <picture class="d-still">
+      <source media="(orientation: portrait)" srcset="{{ asset(media ~ 'phone-s' ~ s.n ~ '.jpg') }}">
+      <img src="{{ asset(media ~ 'desk-s' ~ s.n ~ '.jpg') }}" alt="{{ s.alt }}" width="1280" height="720" loading="lazy" decoding="async">
+    </picture>
+    <{{ s.tag }} class="d-line" id="d-line-{{ s.n }}" data-d-line="{{ s.n }}"><span class="d-line__in">{{ s.line }}</span></{{ s.tag }}>
+  </section>
+  {% endfor %}
+  <p class="d-cue" data-d-cue aria-hidden="true"><span>Scroll</span><i></i></p>
+</div>
+{% endblock %}
+
+{% block site_footer %}
+<footer class="d-foot">
+  <p class="d-foot__credit">Footage: &ldquo;Shedding Light on Black Holes&rdquo;, NASA ScienceCasts (2019). Imagery in it:
+    Event Horizon Telescope Collaboration (CC BY 4.0); NRAO/AUI/NSF (CC BY 4.0); ESO/WFI, MPIfR/ESO/APEX/A. Weiss et al.
+    (CC BY 4.0); NASA, ESA, D. Coe, J. Anderson, R. van der Marel (STScI); NASA/CXC/CfA/R. Kraft et al.;
+    NASA/JPL-Caltech; NASA/GSFC; NASA/Swift/Aurore Simonnet, Sonoma State Univ.</p>
+  <nav class="d-foot__legal" aria-label="Legal">
+    <a href="/privacy" data-track="d-footer-privacy">Privacy</a>
+    <a href="/terms" data-track="d-footer-terms">Terms</a>
+    <a href="/refunds" data-track="d-footer-refunds">Refunds</a>
+    <a href="/cookies" data-track="d-footer-cookies">Cookies</a>
+    <span>&copy; {{ year }} {{ brand_name }}</span>
+  </nav>
+</footer>
+{% endblock %}

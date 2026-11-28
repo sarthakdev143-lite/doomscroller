@@ -1,0 +1,438 @@
+/* Landing direction D, the opening (templates/redesign/d.html). Near-black stage, warm off-white ink, one
+   recording red (used by the film's blade, never by the page chrome), one easing family.
+
+   Two layouts. The default is the calm one: three stills from the film with a line each. html[data-d="film"]
+   (set by static/js/d/main.js once WebGL 2 is there and motion is allowed) switches to the film: a fixed canvas,
+   tall scroll spacers, and the lines pinned where the film leaves room for them. */
+
+@font-face {
+  font-family: "Gloock";
+  src: url("/static/fonts/gloock-latin-400-normal.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Hanken Grotesk";
+  src: url("/static/fonts/hanken-grotesk-latin-wght-normal.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+body.page-d {
+  --d-bg: #07070a;
+  --d-ink: #ede6d9;
+  --d-ink-2: rgba(237, 230, 217, 0.66);
+  --d-ink-3: rgba(237, 230, 217, 0.42);
+  --d-hair: rgba(237, 230, 217, 0.5);
+  --d-red: #e8352c;
+  --d-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --d-display: "Gloock", "Iowan Old Style", Georgia, serif;
+  --d-text: "Hanken Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --d-edge: clamp(16px, 2.6vw, 40px);
+}
+
+:root:has(body.page-d) {
+  background: #07070a;
+  scroll-behavior: auto;
+}
+
+body.page-d {
+  background: var(--d-bg);
+  color: var(--d-ink);
+  font-family: var(--d-text);
+  font-stretch: normal;
+}
+
+.page-d ::selection {
+  background: rgba(232, 53, 44, 0.42);
+  color: var(--d-ink);
+}
+
+.page-d :focus-visible {
+  outline: 1px solid var(--d-ink);
+  outline-offset: 4px;
+}
+
+/* ---- the loader ---------------------------------------------------------------------------------------- */
+
+.d-loader {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: var(--d-bg);
+  color: var(--d-ink);
+}
+
+.d-loader[hidden] {
+  display: none;
+}
+
+.d-loader__frame {
+  position: absolute;
+  inset: var(--d-edge);
+  pointer-events: none;
+}
+
+.d-loader__frame i {
+  position: absolute;
+  background: var(--d-hair);
+}
+
+.d-loader__frame [data-side="t"] { left: 0; right: 0; top: 0; height: 1px; transform-origin: left; transform: scaleX(0); }
+.d-loader__frame [data-side="r"] { top: 0; bottom: 0; right: 0; width: 1px; transform-origin: top; transform: scaleY(0); }
+.d-loader__frame [data-side="b"] { left: 0; right: 0; bottom: 0; height: 1px; transform-origin: right; transform: scaleX(0); }
+.d-loader__frame [data-side="l"] { top: 0; bottom: 0; left: 0; width: 1px; transform-origin: bottom; transform: scaleY(0); }
+
+.d-loader__count {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  margin: 0;
+  display: flex;
+  transform: translate(-50%, -52%);
+  font: 400 clamp(108px, 19vw, 300px) / 0.8 var(--d-display);
+  letter-spacing: 0;
+  font-variant-numeric: lining-nums;
+}
+
+/* fixed cells, so the number never shifts as its digits change */
+.d-loader__count span {
+  display: inline-block;
+  width: 0.64em;
+  text-align: center;
+}
+
+.d-corner {
+  position: fixed;
+  z-index: 61;
+  margin: 0;
+  font: 520 11px / 1 var(--d-text);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--d-ink-2);
+  pointer-events: none;
+}
+
+.d-corner--tl {
+  top: calc(var(--d-edge) + 18px);
+  left: calc(var(--d-edge) + 20px);
+}
+
+.d-corner--br {
+  right: calc(var(--d-edge) + 20px);
+  bottom: calc(var(--d-edge) + 18px);
+}
+
+/* no script: no loader; motion off: no loader either (the stills need none) */
+@media (prefers-reduced-motion: reduce) {
+  .d-loader {
+    display: none;
+  }
+}
+
+/* belt and braces: if the script never runs at all, the loader steps aside on its own */
+html:not([data-d]) .d-loader {
+  animation: d-giveup 0.01s linear 12s forwards;
+}
+
+@keyframes d-giveup {
+  to {
+    visibility: hidden;
+  }
+}
+
+html[data-d-phase="load"] {
+  overflow: hidden;
+}
+
+/* ---- the calm layout (default; reduced motion, no WebGL 2, no script) ----------------------------------- */
+
+.d-stage {
+  display: none;
+}
+
+.d-scene {
+  position: relative;
+  min-height: 100svh;
+  display: flex;
+  align-items: flex-end;
+  padding: 0 7vw 12svh;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.d-still {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  display: block;
+}
+
+.d-still img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.d-scene::after {
+  content: "";
+  position: absolute;
+  inset: 45% 0 0;
+  z-index: -1;
+  background: linear-gradient(to bottom, rgba(7, 7, 10, 0), rgba(7, 7, 10, 0.72));
+  pointer-events: none;
+}
+
+.d-line {
+  margin: 0;
+  max-width: 14ch;
+  font: 400 clamp(46px, 7.4vw, 132px) / 0.94 var(--d-display);
+  letter-spacing: -0.018em;
+  color: var(--d-ink);
+  text-wrap: balance;
+}
+
+.d-scene--2 .d-line {
+  max-width: 20ch;
+  font-size: clamp(40px, 5.8vw, 104px);
+}
+
+.d-line__in {
+  display: block;
+}
+
+.d-cue {
+  display: none;
+}
+
+/* ---- the film -------------------------------------------------------------------------------------------- */
+
+html[data-d="film"] body.page-d {
+  cursor: grab;
+  touch-action: pan-y; /* a sideways drag scrubs the film; up and down still scroll */
+}
+
+html.d-dragging body.page-d {
+  cursor: grabbing;
+  user-select: none;
+}
+
+html[data-d="film"] .d-stage {
+  display: block;
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100vh;
+  height: 100lvh; /* the largest viewport: the canvas keeps its size while a phone's toolbars come and go */
+  background: var(--d-bg);
+}
+
+.d-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+html[data-d="film"] .d-story {
+  position: relative;
+  z-index: 1;
+}
+
+html[data-d="film"] .d-still,
+html[data-d="film"] .d-scene::after {
+  display: none;
+}
+
+html[data-d="film"] .d-scene {
+  display: block;
+  min-height: 0;
+  padding: 0;
+  overflow: visible;
+}
+
+/* the scroll each beat gets; together 640 viewport heights */
+html[data-d="film"] .d-scene--1 { height: 140vh; }
+html[data-d="film"] .d-scene--2 { height: 165vh; }
+html[data-d="film"] .d-scene--3 { height: 335vh; }
+
+/* a line is a mask; its words rise into it and leave upward, keyed to film frames by story.js */
+html[data-d="film"] .d-line {
+  position: fixed;
+  z-index: 2;
+  overflow: hidden;
+  padding: 0.04em 0 0.14em;
+  pointer-events: none;
+  text-shadow: 0 0 48px rgba(7, 7, 10, 0.55);
+}
+
+html[data-d="film"] .d-line:not(.is-on) {
+  visibility: hidden;
+}
+
+html[data-d="film"] .d-line__in {
+  transform: translate3d(0, 108%, 0);
+  will-change: transform;
+}
+
+html[data-d="film"] .d-scene--1 .d-line {
+  left: 6.4vw;
+  bottom: 10.5vh;
+  font-size: clamp(58px, 9vw, 164px);
+}
+
+html[data-d="film"] .d-scene--2 .d-line {
+  left: 6.4vw;
+  top: 12vh;
+}
+
+html[data-d="film"] .d-scene--3 .d-line {
+  left: 6.4vw;
+  bottom: 10.5vh;
+  font-size: clamp(52px, 7.6vw, 138px);
+}
+
+html[data-d="film"] .d-cue {
+  position: fixed;
+  left: 50%;
+  bottom: calc(var(--d-edge) + 10px);
+  z-index: 2;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  transform: translateX(-50%);
+  font: 520 10px / 1 var(--d-text);
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--d-ink-3);
+  opacity: 0;
+  transition: opacity 700ms var(--d-ease);
+  pointer-events: none;
+}
+
+html[data-d="film"] .d-cue.is-on {
+  opacity: 1;
+}
+
+.d-cue i {
+  position: relative;
+  width: 1px;
+  height: 36px;
+  overflow: hidden;
+  background: rgba(237, 230, 217, 0.16);
+}
+
+.d-cue i::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: -40%;
+  width: 1px;
+  height: 40%;
+  background: var(--d-ink-2);
+  animation: d-cue 2.4s var(--d-ease) infinite;
+}
+
+@keyframes d-cue {
+  0% { transform: translateY(0); }
+  70%, 100% { transform: translateY(350%); }
+}
+
+/* ---- phones ---------------------------------------------------------------------------------------------- */
+
+@media (max-width: 700px), (orientation: portrait) and (max-width: 900px) {
+  .d-corner {
+    font-size: 10px;
+    letter-spacing: 0.18em;
+  }
+
+  .d-corner--tl {
+    top: calc(var(--d-edge) + 14px);
+    left: calc(var(--d-edge) + 14px);
+  }
+
+  .d-corner--br {
+    right: calc(var(--d-edge) + 14px);
+    bottom: calc(var(--d-edge) + 14px);
+  }
+
+  .d-line {
+    font-size: clamp(40px, 12.5vw, 72px);
+  }
+
+  .d-scene--2 .d-line {
+    font-size: clamp(34px, 10.4vw, 60px);
+  }
+
+  html[data-d="film"] .d-scene--1 .d-line {
+    left: 7vw;
+    right: 7vw;
+    bottom: 12svh;
+    font-size: clamp(46px, 15vw, 84px);
+  }
+
+  html[data-d="film"] .d-scene--2 .d-line {
+    left: 7vw;
+    right: 7vw;
+    top: 11svh;
+    font-size: clamp(36px, 10.8vw, 64px);
+  }
+
+  html[data-d="film"] .d-scene--3 .d-line {
+    left: 7vw;
+    right: 7vw;
+    top: 11svh;
+    bottom: auto;
+    font-size: clamp(42px, 12.8vw, 76px);
+  }
+}
+
+/* ---- footer: legal links and the footage credit ---------------------------------------------------------- */
+
+.d-foot {
+  position: relative;
+  z-index: 3;
+  display: grid;
+  gap: 18px;
+  padding: 56px 6.4vw 44px;
+  background: var(--d-bg);
+  border-top: 1px solid rgba(237, 230, 217, 0.08);
+  color: var(--d-ink-3);
+  font: 400 12px / 1.65 var(--d-text);
+  cursor: auto;
+}
+
+.d-foot__credit {
+  max-width: 120ch;
+  margin: 0;
+}
+
+.d-foot__legal {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 24px;
+}
+
+.d-foot__legal a {
+  color: var(--d-ink-2);
+  text-decoration: none;
+}
+
+.d-foot__legal a:hover,
+.d-foot__legal a:focus-visible {
+  color: var(--d-ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.d-foot__legal span {
+  margin-left: auto;
+}

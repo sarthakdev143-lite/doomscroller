@@ -1,0 +1,93 @@
+# Records landing direction D's opening for the owner's review: desktop (1440x900) and phone (390x844)
+# scroll-through videos, key-beat stills, the reduced-motion version, and load and frame measurements.
+#
+# Assets and review files for this project's own website only, never customer work. Nothing here is deployed: the
+# static site is exported into the runner (scripts/saas_export_static.py --previews --allow-placeholder), served
+# with the production CSP (scripts/landing_preview/serve.py) and recorded with Playwright
+# (scripts/landing_preview/capture.py). The film's frames come either from the repo (saas/web/static/media/d/, once
+# accepted) or, while the look is still changing, from a landing-film run's "film-web" artifact, so iterations do not
+# pile up in git history: set scripts/landing_preview/preview.json's film_run, or pass it when dispatching.
+name: landing-preview
+
+on:
+  workflow_dispatch:
+    inputs:
+      film_run:
+        description: landing-film run id to take the frames from (blank = preview.json, then the repo's own)
+        type: string
+        default: ""
+  push:
+    paths:
+      - "saas/web/templates/redesign/d.html"
+      - "saas/web/static/css/redesign-d.css"
+      - "saas/web/static/js/d/**"
+      - "saas/web/static/media/d/**"
+      - "scripts/landing_preview/**"
+      - ".github/workflows/landing-preview.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: landing-preview-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      DOOMSCROLLER_ENV_FILE: ""
+      SAAS_ENV_FILE: ""
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-saas.txt
+
+      - name: Python packages, Playwright's Chromium, ffmpeg
+        run: |
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet -r requirements-saas.txt playwright==1.62.0
+          python -m playwright install --with-deps chromium > /dev/null
+          sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ffmpeg > /dev/null
+
+      - name: The film's frames
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_RUN: ${{ inputs.film_run }}
+        run: |
+          run="$INPUT_RUN"
+          if [ -z "$run" ] && [ -f scripts/landing_preview/preview.json ]; then
+            run=$(python -c "import json; print(json.load(open('scripts/landing_preview/preview.json')).get('film_run') or '')")
+          fi
+          if [ -n "$run" ]; then
+            echo "frames from landing-film run $run"
+            rm -rf saas/web/static/media/d && mkdir -p saas/web/static/media/d
+            gh run download "$run" --repo "$GITHUB_REPOSITORY" --name film-web --dir saas/web/static/media/d
+          else
+            echo "frames from the repo"
+          fi
+          ls -la saas/web/static/media/d | head -40
+          du -sh saas/web/static/media/d
+
+      - name: Export the preview site
+        run: python scripts/saas_export_static.py --previews --allow-placeholder --out "$RUNNER_TEMP/site"
+
+      - name: Record
+        run: |
+          python scripts/landing_preview/serve.py "$RUNNER_TEMP/site" 8080 &
+          sleep 1
+          python scripts/landing_preview/capture.py --base http://127.0.0.1:8080 --out preview-out
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: landing-preview
+          path: preview-out
+          retention-days: 14

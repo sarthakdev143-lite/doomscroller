@@ -53,6 +53,7 @@ PREVIEWS = [
     ("redesign/a.html", "preview/a/index.html", "/preview/a/"),
     ("redesign/b.html", "preview/b/index.html", "/preview/b/"),
     ("redesign/c.html", "preview/c/index.html", "/preview/c/"),
+    ("redesign/d.html", "preview/d/index.html", "/preview/d/"),
 ]
 
 GA4_ID = re.compile(r"^G-[A-Z0-9]{4,20}$")
