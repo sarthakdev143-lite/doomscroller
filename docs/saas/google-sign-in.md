@@ -24,8 +24,8 @@ Use a project of its own, separate from the YouTube projects in `channels.json`.
 2. **Audience**
    - **User type:** External.
    - **Publish app**, so the status is **In production**.
-   - In *Testing*, only listed test users (100 at most) can sign in, and their grants lapse after 7 days. With only
-     these three scopes, publishing needs no review.
+   - In *Testing*, only listed test users (100 at most) can sign in. With only these three scopes, publishing needs
+     no review.
 3. **Data Access**
    - **Add or remove scopes**: tick `openid`, `.../auth/userinfo.email` and `.../auth/userinfo.profile`.
    - Add nothing else. A sensitive scope would bring back review and the warning screen.
